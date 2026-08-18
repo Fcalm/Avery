@@ -1,0 +1,1 @@
+-- v3 attachments：引入附件内容寻址存储；表已在 v1 建，本迁移无 DDL，仅登记 checksum。

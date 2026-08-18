@@ -1,0 +1,95 @@
+@font-face {
+  font-family: "Nunito";
+  src: url("/assets/fonts/Nunito-Variable.ttf") format("truetype");
+  font-style: normal;
+  font-weight: 200 1000;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Playwrite DE LA Guides";
+  src: url("/assets/fonts/PlaywriteDELAGuides-Regular.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}
+
+:root {
+  --paper: #f7f4ed;
+  --titlebar-surface: var(--card);
+  --titlebar-control: #fff;
+  --paper-deep: #efebe0;
+  --card: #fcfbf7;
+  --line: #e5dfd1;
+  --ink: #25211b;
+  --ink-soft: #5e574a;
+  --ink-faint: #787065;
+  --accent: #c4530a;
+  --accent-strong: #a84508;
+  --accent-soft: #f6e4d2;
+  --accent-faint: #fbf1e7;
+  --success: #2f7a4d;
+  --success-soft: #e4efe7;
+  --warning: #96660b;
+  --warning-soft: #f7ecd3;
+  --danger: #ae3527;
+  --danger-soft: #f8e3de;
+  --console-surface: #f1eee6;
+  --console-line: #ded8c9;
+  --scrollbar-idle: rgba(94, 87, 74, .1);
+  --scrollbar-active: #5e574a;
+
+  --surface-hover: color-mix(in srgb, var(--ink) 5%, transparent);
+  --surface-hover-strong: color-mix(in srgb, var(--ink) 8%, transparent);
+  --surface-card-muted: color-mix(in srgb, var(--card) 76%, transparent);
+  --surface-menu: color-mix(in srgb, var(--card) 25%, transparent);
+  --surface-deep-muted: color-mix(in srgb, var(--paper-deep) 72%, transparent);
+  --line-subtle: color-mix(in srgb, var(--line) 72%, transparent);
+  --line-thinking: color-mix(in srgb, var(--line) 78%, transparent);
+  --overlay-backdrop: color-mix(in srgb, var(--ink) 18%, transparent);
+  --danger-faint: color-mix(in srgb, var(--danger) 8%, transparent);
+  --danger-muted: color-mix(in srgb, var(--danger) 10%, transparent);
+
+  --font-serif: "Noto Serif SC", "Source Han Serif SC", "Songti SC", "SimSun", serif;
+  --font-sans: "Noto Sans SC", "PingFang SC", "Microsoft YaHei", Arial, sans-serif;
+  --font-mono: "JetBrains Mono", "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
+  --font-developer: "Nunito", var(--font-sans);
+  --font-brand: "Playwrite DE LA Guides", cursive;
+  --serif: var(--font-serif);
+  --sans: var(--font-sans);
+
+  --text-display: 32px;
+  --text-page-title: 28px;
+  --text-frame-title: 20px;
+  --text-card-title: 18px;
+  --text-body: 15px;
+  --text-ui: 14px;
+  --text-meta: 12px;
+  --text-kicker: 12px;
+  --text-mono: 12px;
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-7: 48px;
+  --space-8: 64px;
+
+  --radius-mark: 4px;
+  --radius-control: 8px;
+  --radius-card: 10px;
+  --radius-overlay: 12px;
+  --shadow-surface: 0 2px 8px rgba(45, 38, 28, .06);
+  --shadow-raised: 0 3px 14px rgba(45, 38, 28, .09);
+  --shadow-nav-current: 0 1px 3px rgba(45, 38, 28, .07);
+  --shadow-overlay: 0 13px 34px rgba(45, 38, 28, .17);
+  --shadow-control: 0 1px 3px rgba(45, 38, 28, .25);
+  --focus-ring: 0 0 0 3px rgba(196, 83, 10, .18);
+  --transition-standard: 160ms ease;
+
+  color: var(--ink);
+  background: var(--paper);
+  font-family: var(--font-sans);
+}

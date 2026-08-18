@@ -1,0 +1,35 @@
+# Dependencies and package-manager state
+node_modules/
+.npm/
+.pnpm-store/
+
+# Generated renderer and release artifacts
+/dist/
+/release-rebuild/
+/output/
+*.asar
+*.blockmap
+
+# Local databases, backups, attachments, and runtime state
+*.db
+*.sqlite
+*.sqlite3
+backups/
+attachments/
+workspace/
+
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+agent-config.json
+credentials*.json
+
+# Logs, diagnostics, and OS/editor files
+*.log
+*.tmp
+*.temp
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

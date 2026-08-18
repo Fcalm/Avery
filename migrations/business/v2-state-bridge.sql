@@ -1,0 +1,1 @@
+-- v2 state-bridge：app_state 从业务实体载体转为非敏感设置载体；本迁移无 DDL，仅登记 checksum。

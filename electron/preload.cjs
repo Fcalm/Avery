@@ -1,0 +1,75 @@
+const { contextBridge, ipcRenderer, webUtils } = require('electron');
+
+contextBridge.exposeInMainWorld('offergetAgent', {
+  Configure: (config) => ipcRenderer.invoke('agent:configure', config),
+    TestConnection: (config) => ipcRenderer.invoke('agent:test-connection', config),
+    GetBalance: () => ipcRenderer.invoke('agent:get-balance'),
+    GetModels: () => ipcRenderer.invoke('agent:get-models'),
+  Send: (request) => ipcRenderer.invoke('agent:send', request),
+  Cancel: (requestId) => ipcRenderer.invoke('agent:cancel', requestId),
+  ConfirmResumeEdit: (confirmationId, accepted) => ipcRenderer.invoke('agent:confirm-resume-edit', confirmationId, accepted),
+  AcquireResumeEditLock: (resumeId) => ipcRenderer.invoke('agent:acquire-resume-lock', resumeId),
+  ReleaseResumeEditLock: (resumeId) => ipcRenderer.invoke('agent:release-resume-lock', resumeId),
+  GetStatus: () => ipcRenderer.invoke('agent:status'),
+  GetObservability: () => ipcRenderer.invoke('agent:observability'),
+  GetTraceEvents: (requestId) => ipcRenderer.invoke('agent:trace-events', requestId),
+  DeleteTraces: (sessionIds) => ipcRenderer.invoke('agent:delete-traces', sessionIds),
+  SetTraceRetention: (value) => ipcRenderer.invoke('agent:set-trace-retention', value),
+  ClearObservability: () => ipcRenderer.invoke('agent:clear-observability'),
+  ReloadSession: (sessionId) => ipcRenderer.invoke('agent:reload-session', sessionId),
+  SelectProjectDirectory: () => ipcRenderer.invoke('agent:select-project-directory'),
+  GetSessionAssistantState: (sessionId) => ipcRenderer.invoke('agent:get-session-assistant-state', sessionId),
+  BindProjectEnvironment: (sessionId, projectId) => ipcRenderer.invoke('agent:bind-project-environment', sessionId, projectId),
+  GetModuleConfiguration: () => ipcRenderer.invoke('agent:module-configuration'),
+  SelectModuleDirectory: () => ipcRenderer.invoke('agent:select-module-directory'),
+  ResetModules: () => ipcRenderer.invoke('agent:reset-modules'),
+  OnStream: (listener) => {
+    const handler = (_event, payload) => listener(payload);
+    ipcRenderer.on('agent:stream', handler);
+    return () => ipcRenderer.removeListener('agent:stream', handler);
+  },
+});
+
+contextBridge.exposeInMainWorld('offergetWorkspace', {
+  GetStatus: () => ipcRenderer.invoke('workspace:status'),
+  GetViewModel: () => ipcRenderer.invoke('workspace:get-view-model'),
+  GetSettings: () => ipcRenderer.invoke('workspace:get-settings'),
+  SaveSettings: (settings) => ipcRenderer.invoke('workspace:save-settings', settings),
+  CreateConversation: (conversation) => ipcRenderer.invoke('workspace:conversations-create', conversation),
+  RenameConversation: (id, title, expectedRevision) => ipcRenderer.invoke('workspace:conversations-rename', id, title, expectedRevision),
+  DeleteConversation: (id) => ipcRenderer.invoke('workspace:conversations-delete', id),
+  AppendConversationMessages: (conversationId, messages) => ipcRenderer.invoke('workspace:conversations-append-messages', conversationId, messages),
+  CompleteConversationMessage: (conversationId, messageId, content, thinkingContent) => ipcRenderer.invoke('workspace:conversations-complete-message', conversationId, messageId, content, thinkingContent),
+  RemoveConversationMessage: (conversationId, messageId) => ipcRenderer.invoke('workspace:conversations-remove-message', conversationId, messageId),
+  UpsertResume: (resume, expectedRevision) => ipcRenderer.invoke('workspace:resumes-upsert', resume, expectedRevision),
+  RenameResume: (id, name, expectedRevision) => ipcRenderer.invoke('workspace:resumes-rename', id, name, expectedRevision),
+  DeleteResume: (id) => ipcRenderer.invoke('workspace:resumes-delete', id),
+  UpsertJob: (job, expectedRevision) => ipcRenderer.invoke('workspace:jobs-upsert', job, expectedRevision),
+  SetJobFavorite: (id, favorite, expectedRevision) => ipcRenderer.invoke('workspace:jobs-set-favorite', id, favorite, expectedRevision),
+  DeleteJob: (id) => ipcRenderer.invoke('workspace:jobs-delete', id),
+  UpsertApplication: (application, expectedRevision) => ipcRenderer.invoke('workspace:applications-upsert', application, expectedRevision),
+  MoveApplicationStatus: (id, status, expectedRevision) => ipcRenderer.invoke('workspace:applications-move-status', id, status, expectedRevision),
+  DeleteApplication: (id) => ipcRenderer.invoke('workspace:applications-delete', id),
+  GetProfiles: () => ipcRenderer.invoke('workspace:get-profiles'),
+  SaveProfiles: (items, force) => ipcRenderer.invoke('workspace:profiles-save', items, force),
+  ReloadProfiles: () => ipcRenderer.invoke('workspace:profiles-reload'),
+  ImportAttachment: (file, mimeType) => ipcRenderer.invoke('workspace:import-attachment', webUtils.getPathForFile(file), mimeType),
+  CleanupAttachments: () => ipcRenderer.invoke('workspace:cleanup-attachments'),
+  GetRecoveryStatus: () => ipcRenderer.invoke('workspace:recovery-status'),
+  RecoverOperations: () => ipcRenderer.invoke('workspace:recover-operations'),
+  GetDatabaseRecoveryStatus: () => ipcRenderer.invoke('workspace:database-recovery-status'),
+  RestoreLatestBackup: () => ipcRenderer.invoke('workspace:restore-latest-backup'),
+  RestoreBackup: (backupId) => ipcRenderer.invoke('workspace:restore-backup', backupId),
+  ExportRecoveryDiagnostic: () => ipcRenderer.invoke('workspace:export-recovery-diagnostic'),
+  CreateBackup: () => ipcRenderer.invoke('workspace:create-backup'),
+  GetResumeRevisions: (resumeId) => ipcRenderer.invoke('workspace:get-resume-revisions', resumeId),
+  SetResumeRevisionPinned: (revisionId, pinned) => ipcRenderer.invoke('workspace:set-resume-revision-pinned', revisionId, pinned),
+  ExportResume: (resume, format) => ipcRenderer.invoke('workspace:export-resume', resume, format),
+  Migrate: (destinationPath) => ipcRenderer.invoke('workspace:migrate', destinationPath),
+});
+
+contextBridge.exposeInMainWorld('offergetWindow', {
+  Minimize: () => ipcRenderer.invoke('window:minimize'),
+  ToggleMaximize: () => ipcRenderer.invoke('window:toggle-maximize'),
+  Close: () => ipcRenderer.invoke('window:close'),
+});

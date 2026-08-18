@@ -1,0 +1,10 @@
+{
+  "migrations": [
+    { "version": 1, "name": "v1-initial", "file": "v1-initial.sql", "kind": "sql", "checksumSeed": "business-store-v1-initial" },
+    { "version": 2, "name": "v2-state-bridge", "file": "v2-state-bridge.sql", "kind": "sql", "checksumSeed": "business-store-v1-state-bridge" },
+    { "version": 3, "name": "v3-attachments", "file": "v3-attachments.sql", "kind": "sql", "checksumSeed": "business-store-v1-attachments" },
+    { "version": 4, "name": "v4-entity-revision", "file": "v4-entity-revision.cjs", "kind": "js", "checksumSeed": "business-store-v1-entity-revision" },
+    { "version": 5, "name": "v5-attachment-lifecycle", "file": "v5-attachment-lifecycle.cjs", "kind": "js", "checksumSeed": "business-store-v1-attachment-lifecycle-7-days" },
+    { "version": 6, "name": "v6-workspace-operations", "file": "v6-workspace-operations.sql", "kind": "sql", "checksumSeed": "business-store-v1-workspace-operations" }
+  ]
+}

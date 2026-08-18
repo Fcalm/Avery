@@ -1,0 +1,14 @@
+{
+  "name": "@offerget/backend",
+  "version": "0.1.0",
+  "private": true,
+  "description": "OfferGet Backend 进程编排层 TS 组合根：utility-process 引导、Router、DB Worker 宿主与两个 Store 组合根",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@offerget/contracts": "0.1.0"
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "name": "@offerget/agent-module-host",
+  "version": "0.1.0",
+  "private": true,
+  "description": "OfferGet Agent 模块宿主：模块解析、校验与会话模块快照",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "node ../../node_modules/typescript/bin/tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@offerget/agent-sdk": "0.1.0"
+  }
+}
