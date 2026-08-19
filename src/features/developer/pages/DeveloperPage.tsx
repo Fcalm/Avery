@@ -29,11 +29,11 @@ function DeveloperPage() {
     <section className="developer-console" aria-label="本地运行记录">
       <header className="developer-console-header">
         <div className="tabs" role="tablist" aria-label="开发者记录视图">
-          <button type="button" role="tab" aria-selected={tab === 'trace'} className={tab === 'trace' ? 'selected' : ''} onClick={() => setTab('trace')}><Icon name="trace" size={15} />运行轨迹</button>
-          <button type="button" role="tab" aria-selected={tab === 'logs'} className={tab === 'logs' ? 'selected' : ''} onClick={() => setTab('logs')}><Icon name="logs" size={15} />运行日志</button>
+          <button type="button" role="tab" aria-selected={tab === 'trace'} className={tab === 'trace' ? 'selected' : ''} onClick={() => setTab('trace')}><Icon name="trace" size={16} />运行轨迹</button>
+          <button type="button" role="tab" aria-selected={tab === 'logs'} className={tab === 'logs' ? 'selected' : ''} onClick={() => setTab('logs')}><Icon name="logs" size={16} />运行日志</button>
         </div>
         <div className="developer-console-actions">
-          <Button variant="quiet" onClick={() => void RefreshObservability()}><Icon name="refresh" size={15} />刷新</Button>
+          <Button variant="quiet" onClick={() => void RefreshObservability()}><Icon name="refresh" size={16} />刷新</Button>
         </div>
       </header>
       {tab === 'logs'

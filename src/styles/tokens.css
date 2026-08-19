@@ -15,58 +15,81 @@
 }
 
 :root {
-  --paper: #f7f4ed;
+  /* DESIGN v2 主色：信笺 · 火漆 */
+  --paper: #f5efe1;
   --titlebar-surface: var(--card);
-  --titlebar-control: #fff;
-  --paper-deep: #efebe0;
-  --card: #fcfbf7;
-  --line: #e5dfd1;
-  --ink: #25211b;
-  --ink-soft: #5e574a;
-  --ink-faint: #787065;
-  --accent: #c4530a;
-  --accent-strong: #a84508;
-  --accent-soft: #f6e4d2;
-  --accent-faint: #fbf1e7;
-  --success: #2f7a4d;
-  --success-soft: #e4efe7;
-  --warning: #96660b;
-  --warning-soft: #f7ecd3;
-  --danger: #ae3527;
-  --danger-soft: #f8e3de;
-  --console-surface: #f1eee6;
-  --console-line: #ded8c9;
-  --scrollbar-idle: rgba(94, 87, 74, .1);
-  --scrollbar-active: #5e574a;
+  --titlebar-control: var(--card);
+  --paper-deep: #ede5d2;
+  --card: #fcfaf3;
+  --line: #e2d8c2;
 
-  --surface-hover: color-mix(in srgb, var(--ink) 5%, transparent);
-  --surface-hover-strong: color-mix(in srgb, var(--ink) 8%, transparent);
+  /* 墨色：正文用暖褐墨，标题/主按钮用深咖 Seal */
+  --seal: #2c251c;
+  --umber: #8a6b45;
+  --ink: #3d362b;
+  --ink-soft: #6b5f4c;
+  --ink-faint: #978871;
+
+  /* 强调色：牛皮 Kraft 系列（兼容旧 accent 命名） */
+  --accent: #c9a878;
+  --accent-strong: #8a6b45;
+  --accent-soft: #e9dcc2;
+  --accent-faint: #f4ecdc;
+
+  /* 功能色：仅状态语义 */
+  --success: #4f7a52;
+  --success-soft: #e4ede2;
+  --warning: #9a7422;
+  --warning-soft: #f3ead0;
+  --danger: #a6452f;
+  --danger-soft: #f5e2da;
+
+  /* 控制台/凹陷区 */
+  --console-surface: var(--paper-deep);
+  --console-line: var(--line);
+  --scrollbar-idle: color-mix(in srgb, var(--ink-soft) 12%, transparent);
+  --scrollbar-active: var(--ink-soft);
+
+  --surface-hover: color-mix(in srgb, var(--seal) 5%, transparent);
+  --surface-hover-strong: color-mix(in srgb, var(--seal) 8%, transparent);
   --surface-card-muted: color-mix(in srgb, var(--card) 76%, transparent);
   --surface-menu: color-mix(in srgb, var(--card) 25%, transparent);
   --surface-deep-muted: color-mix(in srgb, var(--paper-deep) 72%, transparent);
   --line-subtle: color-mix(in srgb, var(--line) 72%, transparent);
   --line-thinking: color-mix(in srgb, var(--line) 78%, transparent);
-  --overlay-backdrop: color-mix(in srgb, var(--ink) 18%, transparent);
+  --overlay-backdrop: color-mix(in srgb, var(--seal) 24%, transparent);
   --danger-faint: color-mix(in srgb, var(--danger) 8%, transparent);
   --danger-muted: color-mix(in srgb, var(--danger) 10%, transparent);
 
-  --font-serif: "Noto Serif SC", "Source Han Serif SC", "Songti SC", "SimSun", serif;
-  --font-sans: "Noto Sans SC", "PingFang SC", "Microsoft YaHei", Arial, sans-serif;
-  --font-mono: "JetBrains Mono", "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
+  --font-serif: "Noto Serif SC", "Source Han Serif SC", "Songti SC", serif;
+  --font-sans: "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --font-mono: "JetBrains Mono", "Cascadia Mono", Consolas, monospace;
   --font-developer: "Nunito", var(--font-sans);
   --font-brand: "Playwrite DE LA Guides", cursive;
   --serif: var(--font-serif);
   --sans: var(--font-sans);
 
+  /* DESIGN v2 字阶（9 档） */
   --text-display: 32px;
-  --text-page-title: 28px;
-  --text-frame-title: 20px;
-  --text-card-title: 18px;
-  --text-body: 15px;
+  --text-page-title: 24px;
+  --text-frame-title: 18px;
+  --text-card-title: 16px;
+  --text-body: 14px;
   --text-ui: 14px;
+  --text-compact: 13px;
   --text-meta: 12px;
-  --text-kicker: 12px;
+  --text-kicker: 11px;
   --text-mono: 12px;
+
+  --leading-display: 40px;
+  --leading-page-title: 32px;
+  --leading-frame-title: 26px;
+  --leading-card-title: 24px;
+  --leading-body: 22px;
+  --leading-compact: 20px;
+  --leading-meta: 18px;
+  --leading-kicker: 16px;
+  --leading-mono: 18px;
 
   --space-1: 4px;
   --space-2: 8px;
@@ -79,14 +102,16 @@
 
   --radius-mark: 4px;
   --radius-control: 8px;
-  --radius-card: 10px;
-  --radius-overlay: 12px;
-  --shadow-surface: 0 2px 8px rgba(45, 38, 28, .06);
-  --shadow-raised: 0 3px 14px rgba(45, 38, 28, .09);
-  --shadow-nav-current: 0 1px 3px rgba(45, 38, 28, .07);
-  --shadow-overlay: 0 13px 34px rgba(45, 38, 28, .17);
-  --shadow-control: 0 1px 3px rgba(45, 38, 28, .25);
-  --focus-ring: 0 0 0 3px rgba(196, 83, 10, .18);
+  --radius-card: 12px;
+  --radius-overlay: 16px;
+  --radius-pill: 999px;
+
+  --shadow-surface: 0 2px 8px rgba(44, 37, 28, .06);
+  --shadow-raised: 0 3px 14px rgba(44, 37, 28, .09);
+  --shadow-nav-current: 0 1px 3px rgba(44, 37, 28, .07);
+  --shadow-overlay: 0 13px 34px rgba(44, 37, 28, .17);
+  --shadow-control: 0 1px 3px rgba(44, 37, 28, .25);
+  --focus-ring: 0 0 0 3px rgba(201, 168, 120, .35);
   --transition-standard: 160ms ease;
 
   color: var(--ink);

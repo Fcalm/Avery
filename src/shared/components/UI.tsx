@@ -80,7 +80,7 @@ function Drawer({ open, title, children, onClose }: { open: boolean; title: stri
   return <div className="drawer-layer" role="presentation">
     <button className="drawer-backdrop" aria-label="关闭抽屉" onClick={onClose} />
     <aside ref={drawerRef} className="drawer" role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1}>
-      <div className="drawer-header"><h2 id={titleId}>{title}</h2><Button variant="quiet" className="icon-close" aria-label="关闭" onClick={onClose}><Icon name="close" size={18} /></Button></div>
+      <div className="drawer-header"><h2 id={titleId}>{title}</h2><Button variant="quiet" className="icon-close" aria-label="关闭" onClick={onClose}><Icon name="close" size={20} /></Button></div>
       <div className="drawer-content">{content}</div>
       {footer && <div className="drawer-footer">{footer}</div>}
     </aside>
@@ -95,7 +95,7 @@ function Modal({ open, title, children, onClose }: { open: boolean; title: strin
   return createPortal(<div className="modal-layer" role="presentation">
     <button className="modal-backdrop" aria-label="关闭弹窗" onClick={onClose} />
     <section ref={modalRef} className="modal" role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1}>
-      <div className="modal-header"><h2 id={titleId}>{title}</h2><Button variant="quiet" className="icon-close" aria-label="关闭" onClick={onClose}><Icon name="close" size={18} /></Button></div>
+      <div className="modal-header"><h2 id={titleId}>{title}</h2><Button variant="quiet" className="icon-close" aria-label="关闭" onClick={onClose}><Icon name="close" size={20} /></Button></div>
       {children}
     </section>
   </div>, document.body);

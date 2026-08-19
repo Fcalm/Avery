@@ -12,8 +12,8 @@ import { ASSISTANT_MAIN_MIN_WIDTH } from '../shared/layoutConstants';
 const ChineseDigits = ['〇', '一', '二', '三', '四', '五', '六', '七', '八', '九'];
 const Weekdays = ['日', '一', '二', '三', '四', '五', '六'];
 const MinSidebarWidth = 192;
-const MaxSidebarWidth = 360;
-const MinContentWidth = 800;
+const MaxSidebarWidth = 320;
+const MinContentWidth = 720;
 
 function ToChineseNumber(value: number) {
   if (value < 10) return ChineseDigits[value];
@@ -139,7 +139,7 @@ function AppShell({ page, onNavigate, onRestartOnboarding, children }: { page: P
 
   return <div ref={appShellRef} className={`app-shell ${sidebarCollapsed ? 'is-sidebar-collapsed' : ''}`} style={{ '--main-content-min-width': `${minimumContentWidth}px` } as CSSProperties}>
     <aside className="sidebar" aria-label="主导航">
-      <button className="sidebar-collapse-toggle" type="button" aria-label={sidebarCollapsed ? '展开导航栏' : '隐藏导航栏'} title={sidebarCollapsed ? '展开导航栏' : '隐藏导航栏'} onClick={() => setSidebarCollapsed((value) => !value)}><Icon name="chevron-down" size={15} className={sidebarCollapsed ? 'points-right' : 'points-left'} /></button>
+      <button className="sidebar-collapse-toggle" type="button" aria-label={sidebarCollapsed ? '展开导航栏' : '隐藏导航栏'} title={sidebarCollapsed ? '展开导航栏' : '隐藏导航栏'} onClick={() => setSidebarCollapsed((value) => !value)}><Icon name="chevron-down" size={16} className={sidebarCollapsed ? 'points-right' : 'points-left'} /></button>
       <div className="brand">
         <div><b>OfferGet</b></div>
       </div>
@@ -148,10 +148,10 @@ function AppShell({ page, onNavigate, onRestartOnboarding, children }: { page: P
         <p className="nav-label">场景</p>
         <div className={`assistant-nav ${page === 'assistant' ? 'is-active' : ''}`}>
           <button className="nav-entry" type="button" aria-current={page === 'assistant' ? 'page' : undefined} title="求职助手" onClick={() => onNavigate('assistant')}><i><Icon name="assistant" /></i><span>求职助手</span></button>
-          <button className="new-chat" type="button" onClick={() => void HandleNewConversation()} aria-label="新建会话" title="新建会话"><Icon name="plus" size={18} /></button>
+          <button className="new-chat" type="button" onClick={() => void HandleNewConversation()} aria-label="新建会话" title="新建会话"><Icon name="plus" size={20} /></button>
         </div>
         <div className="conversation-nav" aria-label="历史会话">
-          {conversations.slice(0, 6).map((item) => <div key={item.id} className={`conversation-entry ${item.id === activeConversationId && page === 'assistant' ? 'is-current' : ''}`}><button type="button" onClick={() => { setActiveConversationId(item.id); onNavigate('assistant'); }}><span>{item.title}</span></button><div><button type="button" aria-label="重命名会话" title="重命名会话" onClick={() => BeginRenameConversation(item.id, item.title)}><Icon name="edit" size={15} /></button><button type="button" aria-label="删除会话" title="删除会话" onClick={() => setDeleteConversationId(item.id)}><Icon name="delete" size={15} /></button></div></div>)}
+          {conversations.slice(0, 6).map((item) => <div key={item.id} className={`conversation-entry ${item.id === activeConversationId && page === 'assistant' ? 'is-current' : ''}`}><button type="button" onClick={() => { setActiveConversationId(item.id); onNavigate('assistant'); }}><span>{item.title}</span></button><div><button type="button" aria-label="重命名会话" title="重命名会话" onClick={() => BeginRenameConversation(item.id, item.title)}><Icon name="edit" size={16} /></button><button type="button" aria-label="删除会话" title="删除会话" onClick={() => setDeleteConversationId(item.id)}><Icon name="delete" size={16} /></button></div></div>)}
         </div>
         {MainRoutes.filter((route) => route.group === 'scene' && route.id !== 'assistant').map((route) => <button key={route.id} className={`nav-entry ${page === route.id ? 'is-active' : ''}`} type="button" aria-current={page === route.id ? 'page' : undefined} title={route.label} onClick={() => onNavigate(route.id)}><i><Icon name={route.icon} /></i><span>{route.label}</span></button>)}
         <p className="nav-label mine-label">我的</p>
@@ -165,7 +165,7 @@ function AppShell({ page, onNavigate, onRestartOnboarding, children }: { page: P
           <div className="user-flyout" aria-label="账户菜单">
             <button type="button" onClick={() => onNavigate('settings')}><span className="user-menu-item-label"><Icon name="settings" size={16} /><span>设置</span></span></button>
             <label className="developer-toggle"><span className="user-menu-item-label"><Icon name="developer-mode" size={16} /><span>开发者模式</span></span><input className="switch-control" type="checkbox" role="switch" aria-label="开发者模式" checked={settings.developerMode} onChange={(event) => HandleDeveloperModeChange(event.target.checked)} /></label>
-            <div className="balance-line"><span className="user-menu-item-label"><Icon name="balance" size={16} /><span>账户余额</span></span><div><b>{refreshingBalance && !balance ? '刷新中…' : balance?.map((item) => FormatBalance(item.currency, item.totalBalance)).join(' / ') ?? '未配置'}</b><button className="balance-refresh" type="button" onClick={() => void RefreshBalance(true)} disabled={refreshingBalance} aria-label="刷新余额" title="刷新余额"><Icon name="refresh" size={15} /></button></div></div>
+            <div className="balance-line"><span className="user-menu-item-label"><Icon name="balance" size={16} /><span>账户余额</span></span><div><b>{refreshingBalance && !balance ? '刷新中…' : balance?.map((item) => FormatBalance(item.currency, item.totalBalance)).join(' / ') ?? '未配置'}</b><button className="balance-refresh" type="button" onClick={() => void RefreshBalance(true)} disabled={refreshingBalance} aria-label="刷新余额" title="刷新余额"><Icon name="refresh" size={16} /></button></div></div>
             <button className="sign-out-button" type="button" onClick={() => ShowNotice('退出功能将在 Electron 客户端接入后启用')}><span className="user-menu-item-label"><Icon name="logout" size={16} /><span>退出</span></span></button>
           </div>
         </div>
@@ -174,7 +174,7 @@ function AppShell({ page, onNavigate, onRestartOnboarding, children }: { page: P
       <div className="sidebar-resizer" aria-hidden="true" onPointerDown={StartSidebarResize} />
     </aside>
     <main className="main-frame">
-      <header className="letterhead"><div className="letterhead-context"><strong>{FormatChineseDate().replace(/^.*?年/, '')}</strong><span>当前场景 · {MainRoutes.find((route) => route.id === page)?.label ?? '设置'}</span></div><div className="letterhead-note">{page === 'assistant' && <button className="letterhead-resume-button" type="button" onClick={HandleResumePanel} aria-expanded={resumePanelOpen} aria-label={resumePanelOpen ? '隐藏侧边栏' : '展开侧边栏'} title={resumePanelOpen ? '隐藏侧边栏' : '展开侧边栏'}><Icon name={resumePanelOpen ? 'sidebar-collapse' : 'sidebar-expand'} size={17} /></button>}</div></header>
+      <header className="letterhead"><div className="letterhead-context"><strong>{FormatChineseDate().replace(/^.*?年/, '')}</strong><span>当前场景 · {MainRoutes.find((route) => route.id === page)?.label ?? '设置'}</span></div><div className="letterhead-note">{page === 'assistant' && <button className="letterhead-resume-button" type="button" onClick={HandleResumePanel} aria-expanded={resumePanelOpen} aria-label={resumePanelOpen ? '隐藏侧边栏' : '展开侧边栏'} title={resumePanelOpen ? '隐藏侧边栏' : '展开侧边栏'}><Icon name={resumePanelOpen ? 'sidebar-collapse' : 'sidebar-expand'} size={20} /></button>}</div></header>
       <div className="letter-rule" />
       <div className="page-container">{children}</div>
     </main>

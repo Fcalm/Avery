@@ -32,9 +32,9 @@ function NativeTitlebar() {
   return <div className="native-titlebar">
     <div className="native-titlebar-copy"><img className="native-titlebar-logo" src="./assets/offerget-mark.png" alt="" /><b>OfferGet</b><span>愿每一份认真，都有回音</span></div>
     {controls && <div className="window-controls" aria-label="窗口控制">
-      <button className="window-control window-control-minimize" type="button" aria-label="最小化" onClick={() => void controls.Minimize()}><Icon name="window-minimize" size={14} /></button>
-      <button className="window-control window-control-maximize" type="button" aria-label="最大化或还原" onClick={() => void ToggleMaximize()}><Icon name={isMaximized ? 'window-restore' : 'window-maximize'} size={14} /></button>
-      <button className="window-control window-control-close" type="button" aria-label="关闭窗口" onClick={() => void controls.Close()}><Icon name="close" size={14} /></button>
+      <button className="window-control window-control-minimize" type="button" aria-label="最小化" onClick={() => void controls.Minimize()}><Icon name="window-minimize" size={16} /></button>
+      <button className="window-control window-control-maximize" type="button" aria-label="最大化或还原" onClick={() => void ToggleMaximize()}><Icon name={isMaximized ? 'window-restore' : 'window-maximize'} size={16} /></button>
+      <button className="window-control window-control-close" type="button" aria-label="关闭窗口" onClick={() => void controls.Close()}><Icon name="close" size={16} /></button>
     </div>}
   </div>;
 }
