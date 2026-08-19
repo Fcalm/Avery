@@ -1,13 +1,47 @@
 "use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 Object.defineProperty(exports, "__esModule", { value: true });
-// @ts-nocheck
-const fs = require('node:fs');
-const path = require('node:path');
-const crypto = require('node:crypto');
+exports.AgentFileReader = exports.LocalTesseractOcrEngine = exports.OCR_CACHE_VERSION = void 0;
+exports.DetectImageMime = DetectImageMime;
+const node_crypto_1 = require("node:crypto");
+const node_fs_1 = require("node:fs");
+const path = __importStar(require("node:path"));
 const MAX_FILE_BYTES = 5 * 1024 * 1024;
 const MAX_IMAGE_PIXELS = 40_000_000;
 const OCR_OUTPUT_LIMIT = 5000;
-const OCR_CACHE_VERSION = 'tesseract-7.0.0-chi_sim+eng-v1';
+exports.OCR_CACHE_VERSION = 'tesseract-7.0.0-chi_sim+eng-v1';
 const MAX_OCR_CACHE_BYTES = 1024 * 1024;
 const IMAGE_TYPES = Object.freeze({
     '.png': 'image/png',
@@ -30,31 +64,30 @@ function ValidationError(message) {
 }
 /** Tesseract.js 的离线执行器：语言数据从随包 npm 依赖复制到 userData，绝不回退到 CDN。 */
 class LocalTesseractOcrEngine {
+    runtimeRoot;
+    workerPromise = null;
+    queue = Promise.resolve();
     constructor(runtimeRoot) {
         this.runtimeRoot = runtimeRoot;
-        this.workerPromise = null;
-        this.queue = Promise.resolve();
     }
     PrepareLanguageData() {
         const languagePath = path.join(this.runtimeRoot, 'languages');
         const cachePath = path.join(this.runtimeRoot, 'cache');
-        fs.mkdirSync(languagePath, { recursive: true });
-        fs.mkdirSync(cachePath, { recursive: true });
+        (0, node_fs_1.mkdirSync)(languagePath, { recursive: true });
+        (0, node_fs_1.mkdirSync)(cachePath, { recursive: true });
         for (const packageName of ['@tesseract.js-data/eng', '@tesseract.js-data/chi_sim']) {
             const language = require(packageName);
             const source = path.join(language.langPath, `${language.code}.traineddata.gz`);
             const destination = path.join(languagePath, `${language.code}.traineddata.gz`);
-            const sourceBuffer = fs.readFileSync(source);
-            const sourceHash = crypto.createHash('sha256').update(sourceBuffer).digest('hex');
-            const destinationHash = fs.existsSync(destination)
-                ? crypto.createHash('sha256').update(fs.readFileSync(destination)).digest('hex')
-                : null;
+            const sourceBuffer = (0, node_fs_1.readFileSync)(source);
+            const sourceHash = (0, node_crypto_1.createHash)('sha256').update(sourceBuffer).digest('hex');
+            const destinationHash = (0, node_fs_1.existsSync)(destination) ? (0, node_crypto_1.createHash)('sha256').update((0, node_fs_1.readFileSync)(destination)).digest('hex') : null;
             if (destinationHash !== sourceHash) {
-                const temporary = `${destination}.${process.pid}.${crypto.randomUUID()}.tmp`;
-                fs.writeFileSync(temporary, sourceBuffer, { flag: 'wx' });
-                if (fs.existsSync(destination))
-                    fs.rmSync(destination, { force: true });
-                fs.renameSync(temporary, destination);
+                const temporary = `${destination}.${process.pid}.${(0, node_crypto_1.randomUUID)()}.tmp`;
+                (0, node_fs_1.writeFileSync)(temporary, sourceBuffer, { flag: 'wx' });
+                if ((0, node_fs_1.existsSync)(destination))
+                    (0, node_fs_1.rmSync)(destination, { force: true });
+                renameSyncSafe(temporary, destination);
             }
         }
         return { languagePath, cachePath };
@@ -102,6 +135,10 @@ class LocalTesseractOcrEngine {
             await worker.terminate();
     }
 }
+exports.LocalTesseractOcrEngine = LocalTesseractOcrEngine;
+function renameSyncSafe(from, to) {
+    (0, node_fs_1.renameSync)(from, to);
+}
 /**
  * 宿主侧文件读取端口（FileReadPort 注入默认 tools 模块）：
  * 承载 pdf/docx/txt 解析、物理路径校验与资源边界；默认模块不持有任何 Node 解析能力。
@@ -109,10 +146,12 @@ class LocalTesseractOcrEngine {
  * InstallBrowserPolyfills()（启动即注入），因此首用加载不会破坏 pdf-parse 的浏览器全局依赖。
  */
 class AgentFileReader {
-    /** 注入 attachment:// 虚拟 URI 到物理路径的解析回调（宿主经 business.ResolveAttachmentUri 提供）。 */
+    _resolveAttachment;
+    _authorizedMetadata = new Map();
+    ocrCacheRoot;
+    ocrEngine;
     constructor(ResolveAttachmentUri, options = {}) {
         this._resolveAttachment = ResolveAttachmentUri;
-        this._authorizedMetadata = new Map();
         this.ocrCacheRoot = options.ocrCacheRoot ?? null;
         this.ocrEngine = options.ocrEngine ?? new LocalTesseractOcrEngine(options.ocrRuntimeRoot ?? path.join(process.cwd(), '.offerget-ocr-runtime'));
     }
@@ -124,9 +163,10 @@ class AgentFileReader {
         const resolved = await this._resolveAttachment(uri);
         if (resolved == null)
             return null;
-        const physicalPath = typeof resolved === 'string' ? resolved : (resolved.physicalPath ?? null);
+        const physicalPath = typeof resolved === 'string' ? resolved : resolved.physicalPath ?? null;
         if (physicalPath && typeof resolved === 'object') {
-            this._authorizedMetadata.set(physicalPath, { name: resolved.name ?? null, mimeType: resolved.mimeType ?? null });
+            const meta = resolved;
+            this._authorizedMetadata.set(physicalPath, { name: typeof meta.name === 'string' ? meta.name : null, mimeType: typeof meta.mimeType === 'string' ? meta.mimeType : null });
             if (this._authorizedMetadata.size > 500)
                 this._authorizedMetadata.delete(this._authorizedMetadata.keys().next().value);
         }
@@ -136,12 +176,12 @@ class AgentFileReader {
     ResolveProjectPath(projectRoot, requestedPath) {
         if (!projectRoot)
             throw new Error('No project environment is bound to this session.');
-        const root = fs.realpathSync(projectRoot);
+        const root = (0, node_fs_1.realpathSync)(projectRoot);
         const candidate = path.resolve(root, requestedPath);
         const relative = path.relative(root, candidate);
         if (relative.startsWith('..') || path.isAbsolute(relative))
             throw new Error('Unable to access paths outside the project environment.');
-        const realPath = fs.realpathSync(candidate);
+        const realPath = (0, node_fs_1.realpathSync)(candidate);
         const realRelative = path.relative(root, realPath);
         if (realRelative.startsWith('..') || path.isAbsolute(realRelative))
             throw new Error('Unable to access paths outside the project environment.');
@@ -150,11 +190,11 @@ class AgentFileReader {
     /** 枚举项目环境内的常规文件，跳过依赖缓存、隐藏目录和符号链接，限制扫描规模；返回绝对路径与相对 POSIX 路径。 */
     ListProjectFiles(projectPath, limit = 1000) {
         const files = [];
-        const root = fs.realpathSync(projectPath);
+        const root = (0, node_fs_1.realpathSync)(projectPath);
         const visit = (directory) => {
             if (files.length >= limit)
                 return;
-            for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+            for (const entry of (0, node_fs_1.readdirSync)(directory, { withFileTypes: true })) {
                 if (files.length >= limit || entry.name === 'node_modules' || entry.name === '.git' || entry.name.startsWith('.'))
                     continue;
                 const candidate = path.join(directory, entry.name);
@@ -177,20 +217,19 @@ class AgentFileReader {
     }
     /** 读取受限文本内容：所有文件受 5 MB 物理上限及 5,000 字符上下文上限保护。 */
     ReadTextFile(filePath) {
-        const stat = fs.statSync(filePath);
+        const stat = (0, node_fs_1.statSync)(filePath);
         if (!stat.isFile() || stat.size > MAX_FILE_BYTES)
             throw new Error('The file is unavailable or exceeds the 5 MB reading limit.');
-        const content = fs.readFileSync(filePath, 'utf8');
+        const content = (0, node_fs_1.readFileSync)(filePath, 'utf8');
         if (content.includes('\u0000'))
             throw new Error('This file is not a readable text file.');
         return { content: content.slice(0, 5000), truncated: content.length > 5000 };
     }
     /** 提取受限 DOCX 文本；仅读取段落与表格文本，不执行宏、脚本或外部链接。 */
     async ReadDocxFile(filePath) {
-        const stat = fs.statSync(filePath);
+        const stat = (0, node_fs_1.statSync)(filePath);
         if (!stat.isFile() || stat.size > MAX_FILE_BYTES)
             throw new Error('The file is unavailable or exceeds the 5 MB reading limit.');
-        // mammoth 首用动态加载：不进 Backend 启动路径，加载后缓存复用。
         const mammoth = require('mammoth');
         const result = await mammoth.extractRawText({ path: filePath });
         const content = String(result.value ?? '');
@@ -198,12 +237,11 @@ class AgentFileReader {
     }
     /** 提取不超过十页的 PDF 文本；扫描型或无文本层 PDF 会明确返回空文本。 */
     async ReadPdfFile(filePath) {
-        const stat = fs.statSync(filePath);
+        const stat = (0, node_fs_1.statSync)(filePath);
         if (!stat.isFile() || stat.size > MAX_FILE_BYTES)
             throw new Error('The file is unavailable or exceeds the 5 MB reading limit.');
-        // pdf-parse 首用动态加载：此时 InstallBrowserPolyfills() 必已注入，故其顶层 DOMMatrix 依赖安全。
         const { PDFParse } = require('pdf-parse');
-        const parser = new PDFParse({ data: fs.readFileSync(filePath) });
+        const parser = new PDFParse({ data: (0, node_fs_1.readFileSync)(filePath) });
         try {
             const info = await parser.getInfo();
             if (info.total > 10)
@@ -219,24 +257,24 @@ class AgentFileReader {
     ReadOcrCache(hash) {
         if (!this.ocrCacheRoot)
             return null;
-        const cachePath = path.join(this.ocrCacheRoot, `${hash}-${OCR_CACHE_VERSION}.json`);
+        const cachePath = path.join(this.ocrCacheRoot, `${hash}-${exports.OCR_CACHE_VERSION}.json`);
         try {
-            const stat = fs.statSync(cachePath);
+            const stat = (0, node_fs_1.statSync)(cachePath);
             if (!stat.isFile() || stat.size <= 0 || stat.size > MAX_OCR_CACHE_BYTES)
                 return null;
-            const cached = JSON.parse(fs.readFileSync(cachePath, 'utf8'));
+            const cached = JSON.parse((0, node_fs_1.readFileSync)(cachePath, 'utf8'));
             const result = cached?.result;
             const ocr = result?.ocr;
-            if (cached?.hash !== hash || cached?.version !== OCR_CACHE_VERSION || typeof result?.content !== 'string' || result.content.length > OCR_OUTPUT_LIMIT
+            if (cached?.hash !== hash || cached?.version !== exports.OCR_CACHE_VERSION || typeof result?.content !== 'string' || result.content.length > OCR_OUTPUT_LIMIT
                 || typeof result?.truncated !== 'boolean' || !Array.isArray(result?.warnings) || !ocr || typeof ocr?.confidence !== 'number'
-                || typeof ocr?.lowConfidence !== 'boolean' || ocr?.version !== OCR_CACHE_VERSION || !ocr?.source || !Array.isArray(ocr.source.regions))
+                || typeof ocr?.lowConfidence !== 'boolean' || ocr?.version !== exports.OCR_CACHE_VERSION || !ocr?.source || !Array.isArray(ocr.source.regions))
                 return null;
             return {
                 content: result.content,
                 truncated: result.truncated,
                 warnings: result.warnings.filter((item) => typeof item === 'string').slice(0, 10).map((item) => item.slice(0, 500)),
                 ocr: {
-                    engine: 'tesseract.js', version: OCR_CACHE_VERSION, languages: ['chi_sim', 'eng'],
+                    engine: 'tesseract.js', version: exports.OCR_CACHE_VERSION, languages: ['chi_sim', 'eng'],
                     confidence: Math.max(0, Math.min(100, ocr.confidence)), lowConfidence: ocr.lowConfidence, cacheHit: true,
                     source: { page: 1, regions: ocr.source.regions.slice(0, 20) },
                 },
@@ -249,36 +287,36 @@ class AgentFileReader {
     WriteOcrCache(hash, result) {
         if (!this.ocrCacheRoot)
             return;
-        fs.mkdirSync(this.ocrCacheRoot, { recursive: true });
-        const cachePath = path.join(this.ocrCacheRoot, `${hash}-${OCR_CACHE_VERSION}.json`);
-        const temporary = `${cachePath}.${process.pid}.${crypto.randomUUID()}.tmp`;
-        fs.writeFileSync(temporary, JSON.stringify({ hash, version: OCR_CACHE_VERSION, result }), { encoding: 'utf8', flag: 'wx' });
+        (0, node_fs_1.mkdirSync)(this.ocrCacheRoot, { recursive: true });
+        const cachePath = path.join(this.ocrCacheRoot, `${hash}-${exports.OCR_CACHE_VERSION}.json`);
+        const temporary = `${cachePath}.${process.pid}.${(0, node_crypto_1.randomUUID)()}.tmp`;
+        (0, node_fs_1.writeFileSync)(temporary, JSON.stringify({ hash, version: exports.OCR_CACHE_VERSION, result }), { encoding: 'utf8', flag: 'wx' });
         try {
-            if (fs.existsSync(cachePath))
-                fs.rmSync(cachePath, { force: true });
-            fs.renameSync(temporary, cachePath);
+            if ((0, node_fs_1.existsSync)(cachePath))
+                (0, node_fs_1.rmSync)(cachePath, { force: true });
+            renameSyncSafe(temporary, cachePath);
         }
         finally {
-            if (fs.existsSync(temporary))
-                fs.rmSync(temporary, { force: true });
+            if ((0, node_fs_1.existsSync)(temporary))
+                (0, node_fs_1.rmSync)(temporary, { force: true });
         }
     }
     /** 校验扩展名、声明 MIME 与文件魔数，解码归一化后执行完全离线 OCR。 */
     async ReadImageFile(filePath, sourceName = filePath, declaredMimeType = null) {
-        const stat = fs.statSync(filePath);
+        const stat = (0, node_fs_1.statSync)(filePath);
         if (!stat.isFile() || stat.size <= 0 || stat.size > MAX_FILE_BYTES)
             throw ValidationError('The image is unavailable or exceeds the 5 MB reading limit.');
         const extension = path.extname(sourceName).toLowerCase();
         const expectedMime = IMAGE_TYPES[extension];
         if (!expectedMime)
             throw ValidationError('This image extension is not supported.');
-        const image = fs.readFileSync(filePath);
+        const image = (0, node_fs_1.readFileSync)(filePath);
         const detectedMime = DetectImageMime(image);
         if (!detectedMime || detectedMime !== expectedMime)
             throw ValidationError('The image content does not match its file extension.');
         if (declaredMimeType && String(declaredMimeType).toLowerCase() !== expectedMime)
             throw ValidationError('The image MIME type does not match its file extension.');
-        const hash = crypto.createHash('sha256').update(image).digest('hex');
+        const hash = (0, node_crypto_1.createHash)('sha256').update(image).digest('hex');
         const cached = this.ReadOcrCache(hash);
         if (cached)
             return cached;
@@ -310,7 +348,7 @@ class AgentFileReader {
                 ...(lowConfidence && fullText.length > 0 ? ['OCR confidence is low; confirm the extracted facts with the user before writing.'] : []),
             ],
             ocr: {
-                engine: 'tesseract.js', version: OCR_CACHE_VERSION, languages: ['chi_sim', 'eng'],
+                engine: 'tesseract.js', version: exports.OCR_CACHE_VERSION, languages: ['chi_sim', 'eng'],
                 confidence, lowConfidence, cacheHit: false,
                 source: { page: 1, regions: Array.isArray(recognized.regions) ? recognized.regions.slice(0, 20) : [] },
             },
@@ -329,13 +367,12 @@ class AgentFileReader {
             return this.ReadDocxFile(filePath);
         if (['.txt', '.md', '.json', '.yaml', '.yml', '.csv', '.ts', '.tsx', '.js', '.jsx', '.css', '.html', '.py', '.java', '.go', '.rs'].includes(extension))
             return this.ReadTextFile(filePath);
-        if (Object.hasOwn(IMAGE_TYPES, extension)) {
+        if (Object.hasOwn(IMAGE_TYPES, extension))
             return this.ReadImageFile(filePath, authoritativeName, metadata?.mimeType ?? null);
-        }
         throw new Error('This file type is not supported by the reader.');
     }
     async Close() {
         await this.ocrEngine?.Close?.();
     }
 }
-module.exports = { AgentFileReader, DetectImageMime, LocalTesseractOcrEngine, OCR_CACHE_VERSION };
+exports.AgentFileReader = AgentFileReader;

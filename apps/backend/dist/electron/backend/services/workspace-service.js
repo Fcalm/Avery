@@ -1,19 +1,63 @@
 "use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 Object.defineProperty(exports, "__esModule", { value: true });
-// @ts-nocheck
-const fs = require('node:fs');
-const path = require('node:path');
-const crypto = require('node:crypto');
-const Database = require('better-sqlite3');
-const { GetNow, CreateId } = require('../../repositories/helpers.js');
+exports.WorkspaceService = void 0;
+exports.EnsureWorkspaceDirectories = EnsureWorkspaceDirectories;
+const node_crypto_1 = require("node:crypto");
+const node_fs_1 = require("node:fs");
+const path = __importStar(require("node:path"));
+const helpers_1 = require("../../repositories/helpers");
 /** 原子创建工作空间内需要的目录，避免附件和备份服务各自处理目录初始化。 */
 function EnsureWorkspaceDirectories(workspacePath) {
     for (const directory of ['attachments', 'exports', 'backups', path.join('derived', 'ocr')]) {
-        fs.mkdirSync(path.join(workspacePath, directory), { recursive: true });
+        (0, node_fs_1.mkdirSync)(path.join(workspacePath, directory), { recursive: true });
     }
 }
 /** 工作空间的应用服务：状态、聚合视图、附件导入、备份、迁移与审计，持有业务数据库的唯一写句柄。 */
 class WorkspaceService {
+    db;
+    conversations;
+    resumes;
+    jobs;
+    applications;
+    workspacePath;
+    profilePath;
+    attachmentLifecycle;
+    workspaceOperations;
+    databasePath;
+    integrityCache = null;
     constructor({ db, conversationService, resumeService, jobService, applicationService, workspacePath, profilePath, attachmentLifecycle, workspaceOperations }) {
         this.db = db;
         this.conversations = conversationService;
@@ -25,12 +69,10 @@ class WorkspaceService {
         this.attachmentLifecycle = attachmentLifecycle;
         this.workspaceOperations = workspaceOperations;
         this.databasePath = path.join(workspacePath, 'offerget.db');
-        // integrity_check 全库扫描结果缓存 30 秒，避免每次 GetStatus 触发完整扫描。
-        this.integrityCache = null;
     }
     /** 执行完整 integrity_check 并缓存 30 秒；未过期直接返回缓存结果，避免高频状态查询触发全库扫描。 */
     RunIntegrityCheck() {
-        const now = GetNow();
+        const now = (0, helpers_1.GetNow)();
         if (this.integrityCache && now - this.integrityCache.at < 30000)
             return this.integrityCache.result;
         const result = this.db.pragma('integrity_check', { simple: true });
@@ -56,9 +98,8 @@ class WorkspaceService {
         this.workspaceOperations.RequireWritable();
         const sourcePath = path.resolve(this.workspacePath);
         const targetPath = path.resolve(destinationPath);
-        // 拒绝符号链接与 reparse point（Junction），防止真实目标路径逃逸包含关系判定。
         try {
-            const targetStat = fs.lstatSync(targetPath, { throwIfNoEntry: false });
+            const targetStat = (0, node_fs_1.lstatSync)(targetPath, { throwIfNoEntry: false });
             if (targetStat && (targetStat.isSymbolicLink() || targetStat.isDirectory() === false))
                 throw new Error('The destination workspace must be a real directory, not a symbolic link.');
         }
@@ -68,39 +109,40 @@ class WorkspaceService {
         }
         const relativeTarget = path.relative(sourcePath, targetPath);
         const relativeSource = path.relative(targetPath, sourcePath);
-        if (!relativeTarget || (!relativeTarget.startsWith('..') && !path.isAbsolute(relativeTarget)) || (!relativeSource.startsWith('..') && !path.isAbsolute(relativeSource)))
+        if (!relativeTarget || (!relativeTarget.startsWith('..') && !path.isAbsolute(relativeTarget)) || (!relativeSource.startsWith('..') && !path.isAbsolute(relativeSource))) {
             throw new Error('The destination workspace must not contain or be contained by the current workspace.');
-        if (fs.existsSync(targetPath) && fs.readdirSync(targetPath).length > 0)
+        }
+        if ((0, node_fs_1.existsSync)(targetPath) && (0, node_fs_1.readdirSync)(targetPath).length > 0)
             throw new Error('The destination directory must be empty before migration.');
         const operationId = this.workspaceOperations.Begin('copy_workspace', { destinationPath: targetPath });
         const temporaryPath = `${targetPath}.offerget-migration-${operationId}`;
-        fs.mkdirSync(temporaryPath, { recursive: true });
+        (0, node_fs_1.mkdirSync)(temporaryPath, { recursive: true });
         try {
             EnsureWorkspaceDirectories(temporaryPath);
             const copiedDatabasePath = path.join(temporaryPath, 'offerget.db');
             this.db.exec(`VACUUM INTO '${copiedDatabasePath.replace(/'/g, "''")}'`);
-            if (fs.existsSync(this.profilePath))
-                fs.copyFileSync(this.profilePath, path.join(temporaryPath, 'profile.json'));
+            if ((0, node_fs_1.existsSync)(this.profilePath))
+                (0, node_fs_1.copyFileSync)(this.profilePath, path.join(temporaryPath, 'profile.json'));
             for (const directory of ['attachments', 'exports', 'backups']) {
                 const sourceDirectory = path.join(sourcePath, directory);
-                if (fs.existsSync(sourceDirectory))
-                    fs.cpSync(sourceDirectory, path.join(temporaryPath, directory), { recursive: true, force: true });
+                if ((0, node_fs_1.existsSync)(sourceDirectory))
+                    (0, node_fs_1.cpSync)(sourceDirectory, path.join(temporaryPath, directory), { recursive: true, force: true });
             }
+            const Database = require('better-sqlite3');
             const verification = new Database(copiedDatabasePath);
             const integrity = verification.pragma('integrity_check', { simple: true });
-            // VACUUM 时该操作仍为 prepared；目标库必须在首次启动前明确收口，避免把已成功迁移误判为中断。
-            verification.prepare("UPDATE workspace_operations SET state = 'completed', completed_at = ?, updated_at = ?, error_code = NULL WHERE id = ?").run(GetNow(), GetNow(), operationId);
+            verification.prepare("UPDATE workspace_operations SET state = 'completed', completed_at = ?, updated_at = ?, error_code = NULL WHERE id = ?").run((0, helpers_1.GetNow)(), (0, helpers_1.GetNow)(), operationId);
             verification.close();
             if (integrity !== 'ok')
                 throw new Error('The copied workspace database failed integrity verification.');
-            fs.writeFileSync(path.join(temporaryPath, 'migration-manifest.json'), JSON.stringify({ migratedAt: GetNow(), sourceWorkspace: path.basename(sourcePath), databaseIntegrity: integrity }, null, 2), 'utf8');
-            if (!fs.existsSync(targetPath)) {
-                fs.renameSync(temporaryPath, targetPath);
+            (0, node_fs_1.writeFileSync)(path.join(temporaryPath, 'migration-manifest.json'), JSON.stringify({ migratedAt: (0, helpers_1.GetNow)(), sourceWorkspace: path.basename(sourcePath), databaseIntegrity: integrity }, null, 2), 'utf8');
+            if (!(0, node_fs_1.existsSync)(targetPath)) {
+                (0, node_fs_1.renameSync)(temporaryPath, targetPath);
             }
             else {
-                for (const entry of fs.readdirSync(temporaryPath))
-                    fs.renameSync(path.join(temporaryPath, entry), path.join(targetPath, entry));
-                fs.rmdirSync(temporaryPath);
+                for (const entry of (0, node_fs_1.readdirSync)(temporaryPath))
+                    (0, node_fs_1.renameSync)(path.join(temporaryPath, entry), path.join(targetPath, entry));
+                (0, node_fs_1.rmdirSync)(temporaryPath);
             }
             this.workspaceOperations.Advance(operationId, 'file_written');
             this.workspaceOperations.Advance(operationId, 'db_committed');
@@ -116,24 +158,24 @@ class WorkspaceService {
     /** 复制用户主动选择的附件至工作空间内容寻址目录，并禁止向模型暴露源文件路径。 */
     ImportAttachment(sourcePath, mimeType = 'application/octet-stream') {
         this.workspaceOperations.RequireWritable();
-        const stat = fs.statSync(sourcePath);
+        const stat = (0, node_fs_1.statSync)(sourcePath);
         if (!stat.isFile() || stat.size <= 0 || stat.size > 5 * 1024 * 1024)
             throw new Error('Attachment must be a non-empty file no larger than 5 MB.');
-        const content = fs.readFileSync(sourcePath);
-        const sha256 = crypto.createHash('sha256').update(content).digest('hex');
+        const content = (0, node_fs_1.readFileSync)(sourcePath);
+        const sha256 = (0, node_crypto_1.createHash)('sha256').update(content).digest('hex');
         const storageKey = path.join('attachments', sha256);
         const destination = path.join(this.workspacePath, storageKey);
         const existing = this.db.prepare('SELECT id, original_name, deleted_at FROM attachments WHERE sha256 = ?').get(sha256);
-        const id = existing?.id ?? CreateId();
+        const id = existing?.id ?? (0, helpers_1.CreateId)();
         const name = path.basename(sourcePath);
-        const createdAt = GetNow();
+        const createdAt = (0, helpers_1.GetNow)();
         const normalizedStorageKey = storageKey.replace(/\\/g, '/');
         const operationId = this.workspaceOperations.Begin('import_attachment', { attachmentId: id, sha256, originalName: name, mimeType, byteSize: stat.size, storageKey: normalizedStorageKey, createdAt });
         try {
-            if (!fs.existsSync(destination))
-                fs.writeFileSync(destination, content, { flag: 'wx' });
+            if (!(0, node_fs_1.existsSync)(destination))
+                (0, node_fs_1.writeFileSync)(destination, content, { flag: 'wx' });
             else {
-                const destinationStat = fs.lstatSync(destination);
+                const destinationStat = (0, node_fs_1.lstatSync)(destination);
                 if (!destinationStat.isFile() || destinationStat.isSymbolicLink())
                     throw new Error('Attachment storage entry is unsafe.');
             }
@@ -143,7 +185,6 @@ class WorkspaceService {
                     .run(id, sha256, name, mimeType, stat.size, normalizedStorageKey, createdAt, createdAt);
             }
             else {
-                // 内容寻址命中墓碑时恢复同一逻辑附件，并从本次导入重新计算完整 7 天宽限期。
                 this.db.prepare(`UPDATE attachments SET original_name = ?, mime_type = ?, byte_size = ?, storage_key = ?,
           deleted_at = NULL, orphaned_at = ?, cleanup_attempted_at = NULL, cleanup_error = NULL WHERE id = ?`)
                     .run(name, mimeType, stat.size, normalizedStorageKey, createdAt, id);
@@ -165,12 +206,12 @@ class WorkspaceService {
         const attachment = this.db.prepare('SELECT id, original_name, mime_type, storage_key FROM attachments WHERE id = ? AND deleted_at IS NULL').get(matched[1]);
         if (!attachment)
             throw new Error('The attachment is unavailable.');
-        const attachmentRoot = fs.realpathSync(path.resolve(this.workspacePath, 'attachments'));
+        const attachmentRoot = (0, node_fs_1.realpathSync)(path.resolve(this.workspacePath, 'attachments'));
         const candidatePath = path.resolve(this.workspacePath, attachment.storage_key);
         const lexicalRelative = path.relative(attachmentRoot, candidatePath);
-        if (!lexicalRelative || lexicalRelative.startsWith('..') || path.isAbsolute(lexicalRelative) || !fs.existsSync(candidatePath))
+        if (!lexicalRelative || lexicalRelative.startsWith('..') || path.isAbsolute(lexicalRelative) || !(0, node_fs_1.existsSync)(candidatePath))
             throw new Error('The attachment storage entry is unavailable.');
-        const physicalPath = fs.realpathSync(candidatePath);
+        const physicalPath = (0, node_fs_1.realpathSync)(candidatePath);
         const realRelative = path.relative(attachmentRoot, physicalPath);
         if (!realRelative || realRelative.startsWith('..') || path.isAbsolute(realRelative))
             throw new Error('The attachment storage entry escapes the workspace.');
@@ -184,24 +225,25 @@ class WorkspaceService {
         const operationId = this.workspaceOperations.Begin('create_backup', { directoryName });
         const directory = path.join(this.workspacePath, 'backups', directoryName);
         try {
-            fs.mkdirSync(directory, { recursive: true });
+            (0, node_fs_1.mkdirSync)(directory, { recursive: true });
             const databaseBackupPath = path.join(directory, 'offerget.db');
             const escapedPath = databaseBackupPath.replace(/'/g, "''");
             this.db.exec(`VACUUM INTO '${escapedPath}'`);
+            const Database = require('better-sqlite3');
             const backupDatabase = new Database(databaseBackupPath);
-            backupDatabase.prepare("UPDATE workspace_operations SET state = 'completed', completed_at = ?, updated_at = ?, error_code = NULL WHERE id = ?").run(GetNow(), GetNow(), operationId);
+            backupDatabase.prepare("UPDATE workspace_operations SET state = 'completed', completed_at = ?, updated_at = ?, error_code = NULL WHERE id = ?").run((0, helpers_1.GetNow)(), (0, helpers_1.GetNow)(), operationId);
             backupDatabase.close();
             const profileBackupPath = path.join(directory, 'profile.json');
-            if (fs.existsSync(this.profilePath))
-                fs.copyFileSync(this.profilePath, profileBackupPath);
+            if ((0, node_fs_1.existsSync)(this.profilePath))
+                (0, node_fs_1.copyFileSync)(this.profilePath, profileBackupPath);
             const attachments = this.db.prepare('SELECT sha256, storage_key FROM attachments WHERE deleted_at IS NULL ORDER BY sha256').all();
-            fs.writeFileSync(path.join(directory, 'manifest.json'), JSON.stringify({ createdAt: GetNow(), database: 'offerget.db', profile: fs.existsSync(profileBackupPath) ? 'profile.json' : null, attachments }, null, 2), 'utf8');
+            (0, node_fs_1.writeFileSync)(path.join(directory, 'manifest.json'), JSON.stringify({ createdAt: (0, helpers_1.GetNow)(), database: 'offerget.db', profile: (0, node_fs_1.existsSync)(profileBackupPath) ? 'profile.json' : null, attachments }, null, 2), 'utf8');
             this.workspaceOperations.Advance(operationId, 'file_written');
             this.workspaceOperations.Advance(operationId, 'db_committed');
             this.PruneDailyBackups();
-            const retainedCount = fs.readdirSync(path.join(this.workspacePath, 'backups')).filter((name) => name.startsWith('daily-')).length;
+            const retainedCount = (0, node_fs_1.readdirSync)(path.join(this.workspacePath, 'backups')).filter((name) => name.startsWith('daily-')).length;
             this.workspaceOperations.Advance(operationId, 'completed');
-            return { created: true, timestamp: GetNow(), retainedCount };
+            return { created: true, timestamp: (0, helpers_1.GetNow)(), retainedCount };
         }
         catch (error) {
             this.workspaceOperations.MarkRollback(operationId, 'CREATE_BACKUP_FAILED');
@@ -211,8 +253,8 @@ class WorkspaceService {
     /** 只删除本服务生成且超出 7 份限制的日备份目录。 */
     PruneDailyBackups() {
         const backupRoot = path.join(this.workspacePath, 'backups');
-        const directories = fs.readdirSync(backupRoot, { withFileTypes: true }).filter((entry) => entry.isDirectory() && !entry.isSymbolicLink() && entry.name.startsWith('daily-'))
-            .map((entry) => ({ name: entry.name, path: path.join(backupRoot, entry.name), time: fs.statSync(path.join(backupRoot, entry.name)).mtimeMs }))
+        const directories = (0, node_fs_1.readdirSync)(backupRoot, { withFileTypes: true }).filter((entry) => entry.isDirectory() && !entry.isSymbolicLink() && entry.name.startsWith('daily-'))
+            .map((entry) => ({ name: entry.name, path: path.join(backupRoot, entry.name), time: (0, node_fs_1.statSync)(path.join(backupRoot, entry.name)).mtimeMs }))
             .sort((left, right) => right.time - left.time);
         for (const directory of directories.slice(7))
             this.workspaceOperations.RemoveDirectorySafely(directory.path, backupRoot);
@@ -222,7 +264,9 @@ class WorkspaceService {
         try {
             this.db?.close();
         }
-        catch { /* 退出阶段重复关闭原生句柄无需额外处理。 */ }
+        catch {
+            // 退出阶段重复关闭原生句柄无需额外处理。
+        }
     }
 }
-module.exports = { WorkspaceService, EnsureWorkspaceDirectories };
+exports.WorkspaceService = WorkspaceService;

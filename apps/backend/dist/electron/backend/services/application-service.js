@@ -1,8 +1,9 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-// @ts-nocheck
+exports.ApplicationService = void 0;
 /** 投递看板的应用服务：封装投递 Repository，提供 CRUD 与状态迁移（自动记录事件）。 */
 class ApplicationService {
+    repository;
     constructor({ repository }) {
         this.repository = repository;
     }
@@ -23,4 +24,4 @@ class ApplicationService {
         return this.repository.Delete(id);
     }
 }
-module.exports = { ApplicationService };
+exports.ApplicationService = ApplicationService;

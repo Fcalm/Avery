@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-// @ts-nocheck
+exports.CreateCredentialClient = CreateCredentialClient;
 /** Backend 侧凭据端口：经反向 RPC 把 API Key 移交 Main 侧 safeStorage 加解密，Backend 自身永不落盘。 */
 function CreateCredentialClient(desktopCapability) {
     return {
@@ -15,4 +15,3 @@ function CreateCredentialClient(desktopCapability) {
         },
     };
 }
-module.exports = { CreateCredentialClient };

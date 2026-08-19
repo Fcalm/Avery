@@ -1,10 +1,44 @@
 "use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 Object.defineProperty(exports, "__esModule", { value: true });
-// @ts-nocheck
-const fs = require('node:fs');
-const path = require('node:path');
-const { GetNow, WriteAudit } = require('../../repositories/helpers.js');
-const SevenDaysMs = 7 * 24 * 60 * 60 * 1000;
+exports.AttachmentLifecycleService = exports.SevenDaysMs = void 0;
+exports.ExtractAttachmentIds = ExtractAttachmentIds;
+const node_fs_1 = require("node:fs");
+const path = __importStar(require("node:path"));
+const helpers_1 = require("../../repositories/helpers");
+exports.SevenDaysMs = 7 * 24 * 60 * 60 * 1000;
 const OwnerTypes = new Set(['conversation', 'message', 'profile', 'resume']);
 function ExtractAttachmentIds(value) {
     const ids = new Set();
@@ -21,15 +55,18 @@ function ExtractAttachmentIds(value) {
                 visit(item, depth + 1);
             return;
         }
-        if (typeof current === 'object')
+        if (typeof current === 'object') {
             for (const item of Object.values(current))
                 visit(item, depth + 1);
+        }
     };
     visit(value);
     return [...ids];
 }
 /** attachment_links 是唯一引用事实源；最后引用移除后开始 7 天宽限，清理只触碰工作空间副本与派生缓存。 */
 class AttachmentLifecycleService {
+    db;
+    workspacePath;
     constructor({ db, workspacePath }) {
         this.db = db;
         this.workspacePath = path.resolve(workspacePath);
@@ -50,7 +87,7 @@ class AttachmentLifecycleService {
             }
             this.db.prepare('DELETE FROM attachment_links WHERE owner_type = ? AND owner_id = ?').run(ownerType, ownerId);
             const insert = this.db.prepare('INSERT INTO attachment_links(attachment_id, owner_type, owner_id, created_at) VALUES(?, ?, ?, ?)');
-            const now = GetNow();
+            const now = (0, helpers_1.GetNow)();
             for (const id of ids) {
                 insert.run(id, ownerType, ownerId, now);
                 this.db.prepare('UPDATE attachments SET orphaned_at = NULL, cleanup_error = NULL WHERE id = ?').run(id);
@@ -61,7 +98,9 @@ class AttachmentLifecycleService {
         run();
         return ids;
     }
-    RemoveLinks(ownerType, ownerId) { return this.ReplaceLinks(ownerType, ownerId, null); }
+    RemoveLinks(ownerType, ownerId) {
+        return this.ReplaceLinks(ownerType, ownerId, null);
+    }
     RemoveConversationLinks(conversationId) {
         const messageIds = this.db.prepare('SELECT id FROM conversation_messages WHERE conversation_id = ?').all(conversationId).map((row) => row.id);
         const run = this.db.transaction(() => {
@@ -71,7 +110,7 @@ class AttachmentLifecycleService {
         });
         run();
     }
-    MarkOrphanIfUnreferenced(attachmentId, now = GetNow()) {
+    MarkOrphanIfUnreferenced(attachmentId, now = (0, helpers_1.GetNow)()) {
         const referenced = this.db.prepare('SELECT 1 FROM attachment_links WHERE attachment_id = ? LIMIT 1').get(attachmentId);
         if (!referenced)
             this.db.prepare('UPDATE attachments SET orphaned_at = COALESCE(orphaned_at, ?) WHERE id = ? AND deleted_at IS NULL').run(now, attachmentId);
@@ -80,11 +119,11 @@ class AttachmentLifecycleService {
         if (!/^[a-f0-9]{64}(?:-[A-Za-z0-9._-]+)?$/.test(fileName))
             throw new Error('Unsafe attachment storage key.');
         const root = path.resolve(this.workspacePath, rootName);
-        const rootStat = fs.lstatSync(root, { throwIfNoEntry: false });
+        const rootStat = (0, node_fs_1.lstatSync)(root, { throwIfNoEntry: false });
         if (!rootStat || !rootStat.isDirectory() || rootStat.isSymbolicLink())
             throw new Error('Attachment cleanup root is unsafe.');
-        const workspaceReal = fs.realpathSync(this.workspacePath);
-        const rootReal = fs.realpathSync(root);
+        const workspaceReal = (0, node_fs_1.realpathSync)(this.workspacePath);
+        const rootReal = (0, node_fs_1.realpathSync)(root);
         const rootRelative = path.relative(workspaceReal, rootReal);
         if (!rootRelative || rootRelative.startsWith('..') || path.isAbsolute(rootRelative))
             throw new Error('Attachment cleanup root escapes workspace.');
@@ -95,19 +134,19 @@ class AttachmentLifecycleService {
         return target;
     }
     RemoveRegularFile(target) {
-        const stat = fs.lstatSync(target, { throwIfNoEntry: false });
+        const stat = (0, node_fs_1.lstatSync)(target, { throwIfNoEntry: false });
         if (!stat)
             return false;
         if (!stat.isFile() || stat.isSymbolicLink())
             throw new Error('Attachment cleanup target is not a regular file.');
-        fs.unlinkSync(target);
+        (0, node_fs_1.unlinkSync)(target);
         return true;
     }
-    Cleanup({ now = GetNow(), limit = 50 } = {}) {
+    Cleanup({ now = (0, helpers_1.GetNow)(), limit = 50 } = {}) {
         if (!Number.isFinite(now))
             throw new Error('Attachment cleanup time is invalid.');
         const safeLimit = Math.max(1, Math.min(500, Math.trunc(limit)));
-        const cutoff = now - SevenDaysMs;
+        const cutoff = now - exports.SevenDaysMs;
         const candidates = this.db.prepare(`SELECT id, sha256, storage_key, deleted_at FROM attachments
       WHERE NOT EXISTS (SELECT 1 FROM attachment_links WHERE attachment_id = attachments.id)
         AND ((deleted_at IS NULL AND orphaned_at IS NOT NULL AND orphaned_at <= ?) OR deleted_at IS NOT NULL)
@@ -119,19 +158,20 @@ class AttachmentLifecycleService {
                     this.db.prepare('UPDATE attachments SET deleted_at = ?, cleanup_attempted_at = ?, cleanup_error = NULL WHERE id = ? AND deleted_at IS NULL').run(now, now, item.id);
                     result.logicallyDeleted += 1;
                 }
-                else
+                else {
                     this.db.prepare('UPDATE attachments SET cleanup_attempted_at = ? WHERE id = ?').run(now, item.id);
+                }
                 const expectedStorage = `attachments/${item.sha256}`;
                 if (String(item.storage_key).replace(/\\/g, '/') !== expectedStorage)
                     throw new Error('Attachment storage key does not match content address.');
                 if (this.RemoveRegularFile(this.SafeWorkspaceFile('attachments', item.sha256)))
                     result.filesDeleted += 1;
                 const cacheRoot = path.join(this.workspacePath, 'derived', 'ocr');
-                if (fs.existsSync(cacheRoot)) {
-                    const rootStat = fs.lstatSync(cacheRoot);
+                if ((0, node_fs_1.existsSync)(cacheRoot)) {
+                    const rootStat = (0, node_fs_1.lstatSync)(cacheRoot);
                     if (!rootStat.isDirectory() || rootStat.isSymbolicLink())
                         throw new Error('OCR cache root is unsafe.');
-                    for (const entry of fs.readdirSync(cacheRoot)) {
+                    for (const entry of (0, node_fs_1.readdirSync)(cacheRoot)) {
                         if (!entry.startsWith(`${item.sha256}-`))
                             continue;
                         if (this.RemoveRegularFile(this.SafeWorkspaceFile(path.join('derived', 'ocr'), entry)))
@@ -148,8 +188,8 @@ class AttachmentLifecycleService {
         result.pending = this.db.prepare(`SELECT COUNT(*) AS count FROM attachments WHERE deleted_at IS NOT NULL AND cleanup_error IS NOT NULL
       AND NOT EXISTS (SELECT 1 FROM attachment_links WHERE attachment_id = attachments.id)`).get().count;
         if (candidates.length)
-            WriteAudit(this.db, 'system', 'cleanup', 'attachment', null, result);
+            (0, helpers_1.WriteAudit)(this.db, 'system', 'cleanup', 'attachment', null, result);
         return result;
     }
 }
-module.exports = { AttachmentLifecycleService, ExtractAttachmentIds, SevenDaysMs };
+exports.AttachmentLifecycleService = AttachmentLifecycleService;

@@ -14,7 +14,7 @@
   "scripts": {
     "dev": "node node_modules/vite/bin/vite.js --host 127.0.0.1",
     "start": "node node_modules/electron/cli.js .",
-    "build:packages": "npm run build --workspace @offerget/contracts && npm run build --workspace @offerget/agent-sdk && npm run build --workspace @offerget/agent-core && npm run build --workspace @offerget/agent-module-host && npm run build --workspace @offerget/agent-modules-defaults",
+    "build:packages": "npm run build --workspace @offerget/contracts && npm run build --workspace @offerget/agent-sdk && npm run build --workspace @offerget/agent-core && npm run build --workspace @offerget/agent-module-host && npm run build --workspace @offerget/agent-modules-defaults && npm run build --workspace @offerget/backend",
     "build:renderer": "node node_modules/vite/bin/vite.js build",
     "build": "npm run build:packages && npm run build:renderer",
     "pack:dir": "npm run build && node node_modules/electron-builder/out/cli/cli.js --dir"

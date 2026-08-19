@@ -3,7 +3,6 @@ Object.defineProperty(exports, "__esModule", { value: true });
 const node_worker_threads_1 = require("node:worker_threads");
 const observability_store_1 = require("../observability-store");
 const contracts_1 = require("@offerget/contracts");
-// Worker 主线程的父端口恒存在；防御性判空后以不可变别名使用，闭包内保持非空类型。
 if (!node_worker_threads_1.parentPort)
     throw new Error('parentPort is unavailable in this worker.');
 const port = node_worker_threads_1.parentPort;
@@ -29,7 +28,6 @@ function Dispatch(method, args) {
     const callable = activeStore[method];
     if (typeof callable !== 'function')
         throw Object.assign(new Error(`Observability worker method ${method} is not supported.`), { code: 'INTERNAL_ERROR' });
-    // 以方法调用语义保留 this 绑定（原型方法依赖实例字段），与直接 store[method](...) 一致。
     return callable.call(activeStore, ...args);
 }
 if (store === null) {

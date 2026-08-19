@@ -9,6 +9,11 @@
     "build": "tsc -p tsconfig.json"
   },
   "dependencies": {
-    "@offerget/contracts": "0.1.0"
+    "@offerget/agent-core": "0.1.0",
+    "@offerget/agent-module-host": "0.1.0",
+    "@offerget/agent-modules-defaults": "0.1.0",
+    "@offerget/contracts": "0.1.0",
+    "better-sqlite3": "13.0.3",
+    "zod": "^4.1.12"
   }
 }

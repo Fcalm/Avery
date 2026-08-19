@@ -1,20 +1,20 @@
 "use strict";
-// @ts-nocheck
 /**
  * 为纯 Node 的 Backend Utility Process 提供 pdf-parse 依赖的浏览器几何全局。
  * Electron 主进程由 Chromium 注入 DOMMatrix/ImageData，utilityProcess 缺失；这里提供最小但数学正确的 2D 仿射实现。
  */
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.InstallBrowserPolyfills = InstallBrowserPolyfills;
 /** 构造一个标准 2D 仿射矩阵类；pdf-parse 内部仅使用文本提取相关的矩阵运算。 */
 function CreateDOMMatrixPolyfill() {
     class DOMMatrixPolyfill {
+        a = 1;
+        b = 0;
+        c = 0;
+        d = 1;
+        e = 0;
+        f = 0;
         constructor(init) {
-            this.a = 1;
-            this.b = 0;
-            this.c = 0;
-            this.d = 1;
-            this.e = 0;
-            this.f = 0;
             if (init === undefined || init === null)
                 return;
             if (Array.isArray(init)) {
@@ -63,7 +63,6 @@ function CreateDOMMatrixPolyfill() {
         get m44() { return 1; }
         get is2D() { return true; }
         get isIdentity() { return this.a === 1 && this.b === 0 && this.c === 0 && this.d === 1 && this.e === 0 && this.f === 0; }
-        /** 返回 后乘 后的新矩阵：result = this × other。 */
         multiply(other) {
             return new DOMMatrixPolyfill([
                 this.a * other.a + this.c * other.b,
@@ -84,7 +83,6 @@ function CreateDOMMatrixPolyfill() {
             this.f = result.f;
             return this;
         }
-        /** 返回平移后的新矩阵：result = this × translate(tx, ty)。 */
         translate(tx, ty = 0) {
             return this.multiply(new DOMMatrixPolyfill([1, 0, 0, 1, tx, ty]));
         }
@@ -98,7 +96,6 @@ function CreateDOMMatrixPolyfill() {
             this.f = result.f;
             return this;
         }
-        /** 返回缩放后的新矩阵：result = this × scale(sx, sy)。 */
         scale(sx, sy = sx) {
             return this.multiply(new DOMMatrixPolyfill([sx, 0, 0, sy, 0, 0]));
         }
@@ -112,7 +109,6 @@ function CreateDOMMatrixPolyfill() {
             this.f = result.f;
             return this;
         }
-        /** 返回绕原点旋转后的新矩阵：result = this × rotate(angleDeg)。 */
         rotate(angleDeg) {
             const radians = (angleDeg * Math.PI) / 180;
             const cos = Math.cos(radians);
@@ -129,7 +125,6 @@ function CreateDOMMatrixPolyfill() {
             this.f = result.f;
             return this;
         }
-        /** 返回 X 轴倾斜后的新矩阵：result = this × skewX(angleDeg)。 */
         skewX(angleDeg) {
             const tangent = Math.tan((angleDeg * Math.PI) / 180);
             return this.multiply(new DOMMatrixPolyfill([1, 0, tangent, 1, 0, 0]));
@@ -144,7 +139,6 @@ function CreateDOMMatrixPolyfill() {
             this.f = result.f;
             return this;
         }
-        /** 返回 Y 轴倾斜后的新矩阵：result = this × skewY(angleDeg)。 */
         skewY(angleDeg) {
             const tangent = Math.tan((angleDeg * Math.PI) / 180);
             return this.multiply(new DOMMatrixPolyfill([1, tangent, 0, 1, 0, 0]));
@@ -159,7 +153,6 @@ function CreateDOMMatrixPolyfill() {
             this.f = result.f;
             return this;
         }
-        /** 返回当前矩阵的逆；退化矩阵抛错，供 pdf-parse 检测几何无效。 */
         inverse() {
             const det = this.a * this.d - this.b * this.c;
             if (det === 0)
@@ -181,13 +174,11 @@ function CreateDOMMatrixPolyfill() {
             this.f = result.f;
             return this;
         }
-        /** 把点经当前矩阵变换后返回；仅处理 2D 平面。 */
         transformPoint(point) {
             const x = typeof point?.x === 'number' ? point.x : 0;
             const y = typeof point?.y === 'number' ? point.y : 0;
             return { x: this.a * x + this.c * y + this.e, y: this.b * x + this.d * y + this.f, z: 0, w: 1 };
         }
-        /** 解析 matrix(a,b,c,d,e,f) 字符串；其它函数形式解析失败时忽略，保持当前值。 */
         setMatrixValue(value) {
             const matched = /^matrix\(\s*([-\d.]+)\s*,\s*([-\d.]+)\s*,\s*([-\d.]+)\s*,\s*([-\d.]+)\s*,\s*([-\d.]+)\s*,\s*([-\d.]+)\s*\)$/i.exec(String(value));
             if (matched) {
@@ -205,7 +196,10 @@ function CreateDOMMatrixPolyfill() {
 /** 构造一个最小 ImageData 全局；pdf-parse 仅在渲染路径使用，文本提取不依赖像素数据。 */
 function CreateImageDataPolyfill() {
     return class ImageDataPolyfill {
-        constructor(width, height) {
+        width;
+        height;
+        data;
+        constructor(width, height, data) {
             if (typeof width === 'object' && width !== null) {
                 const source = width;
                 this.width = source.width;
@@ -213,15 +207,15 @@ function CreateImageDataPolyfill() {
                 this.data = source.data;
                 return;
             }
-            if (arguments.length >= 3 && arguments[2]) {
-                this.data = new Uint8ClampedArray(arguments[2]);
+            if (arguments.length >= 3 && data) {
+                this.data = data;
                 this.width = width;
                 this.height = height;
                 return;
             }
             this.width = width;
             this.height = height;
-            this.data = new Uint8ClampedArray((width * height * 4) | 0);
+            this.data = new Uint8ClampedArray((this.width * this.height * 4) | 0);
         }
     };
 }
@@ -232,4 +226,3 @@ function InstallBrowserPolyfills() {
     if (typeof globalThis.ImageData !== 'function')
         globalThis.ImageData = CreateImageDataPolyfill();
 }
-module.exports = { InstallBrowserPolyfills };

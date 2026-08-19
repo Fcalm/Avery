@@ -1,21 +1,57 @@
 "use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 Object.defineProperty(exports, "__esModule", { value: true });
-// @ts-nocheck
-const crypto = require('node:crypto');
-const fs = require('node:fs');
-const path = require('node:path');
-const Database = require('better-sqlite3');
-const { GetNow, CreateId, WriteAudit } = require('../../repositories/helpers.js');
+exports.ActiveStates = exports.KnownTypes = exports.WorkspaceOperationService = void 0;
+const node_crypto_1 = require("node:crypto");
+const node_fs_1 = require("node:fs");
+const path = __importStar(require("node:path"));
+const helpers_1 = require("../../repositories/helpers");
 const KnownTypes = new Set(['import_attachment', 'save_profiles', 'create_backup', 'copy_workspace']);
+exports.KnownTypes = KnownTypes;
 const ActiveStates = new Set(['prepared', 'file_written', 'db_committed', 'rollback_required']);
+exports.ActiveStates = ActiveStates;
 /** 持久化本地 Saga 状态并在启动时串行恢复；未知类型/高版本操作会阻止写入而非猜测处理。 */
 class WorkspaceOperationService {
+    db;
+    workspacePath;
+    recovering = false;
+    blocked = false;
+    lastRecovery = { recovered: 0, failed: 0, blocked: 0 };
     constructor({ db, workspacePath }) {
         this.db = db;
         this.workspacePath = path.resolve(workspacePath);
-        this.recovering = false;
-        this.blocked = false;
-        this.lastRecovery = { recovered: 0, failed: 0, blocked: 0 };
     }
     Begin(operationType, payload) {
         if (!KnownTypes.has(operationType))
@@ -23,8 +59,8 @@ class WorkspaceOperationService {
         const serialized = JSON.stringify(payload ?? {});
         if (serialized.length > 100000)
             throw new Error('Workspace operation payload is too large.');
-        const id = CreateId();
-        const now = GetNow();
+        const id = (0, helpers_1.CreateId)();
+        const now = (0, helpers_1.GetNow)();
         this.db.prepare(`INSERT INTO workspace_operations(id, operation_type, operation_version, state, payload_json, created_at, updated_at)
       VALUES(?, ?, 1, 'prepared', ?, ?, ?)`).run(id, operationType, serialized, now, now);
         return id;
@@ -32,7 +68,7 @@ class WorkspaceOperationService {
     Advance(id, state) {
         if (!['file_written', 'db_committed', 'completed'].includes(state))
             throw new Error('Workspace operation state is invalid.');
-        const now = GetNow();
+        const now = (0, helpers_1.GetNow)();
         this.db.prepare('UPDATE workspace_operations SET state = ?, error_code = NULL, updated_at = ?, completed_at = ? WHERE id = ?')
             .run(state, now, state === 'completed' ? now : null, id);
     }
@@ -42,11 +78,11 @@ class WorkspaceOperationService {
     }
     MarkRollback(id, code = 'OPERATION_FAILED') {
         this.db.prepare("UPDATE workspace_operations SET state = 'rollback_required', error_code = ?, updated_at = ? WHERE id = ? AND state != 'completed'")
-            .run(String(code).slice(0, 100), GetNow(), id);
+            .run(String(code).slice(0, 100), (0, helpers_1.GetNow)(), id);
     }
     MarkFailed(id, code) {
         this.db.prepare("UPDATE workspace_operations SET state = 'failed', error_code = ?, updated_at = ?, completed_at = ? WHERE id = ?")
-            .run(String(code).slice(0, 100), GetNow(), GetNow(), id);
+            .run(String(code).slice(0, 100), (0, helpers_1.GetNow)(), (0, helpers_1.GetNow)(), id);
     }
     Parse(row) {
         try {
@@ -66,23 +102,23 @@ class WorkspaceOperationService {
         return target;
     }
     VerifyFileHash(filePath, expected) {
-        const stat = fs.lstatSync(filePath, { throwIfNoEntry: false });
+        const stat = (0, node_fs_1.lstatSync)(filePath, { throwIfNoEntry: false });
         if (!stat || !stat.isFile() || stat.isSymbolicLink())
             return false;
-        const actual = crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex');
+        const actual = (0, node_crypto_1.createHash)('sha256').update((0, node_fs_1.readFileSync)(filePath)).digest('hex');
         return actual === expected;
     }
     RemoveDirectorySafely(target, expectedParent) {
-        const stat = fs.lstatSync(target, { throwIfNoEntry: false });
+        const stat = (0, node_fs_1.lstatSync)(target, { throwIfNoEntry: false });
         if (!stat)
             return;
         if (!stat.isDirectory() || stat.isSymbolicLink())
             throw new Error('Workspace operation cleanup target is unsafe.');
-        const parentReal = fs.realpathSync(expectedParent);
-        const targetReal = fs.realpathSync(target);
+        const parentReal = (0, node_fs_1.realpathSync)(expectedParent);
+        const targetReal = (0, node_fs_1.realpathSync)(target);
         if (path.dirname(targetReal) !== parentReal)
             throw new Error('Workspace operation cleanup target escapes its parent.');
-        fs.rmSync(target, { recursive: true, force: true });
+        (0, node_fs_1.rmSync)(target, { recursive: true, force: true });
     }
     Recover({ synchronizeProfiles } = {}) {
         this.recovering = true;
@@ -107,7 +143,7 @@ class WorkspaceOperationService {
             }
             this.lastRecovery = summary;
             if (rows.length)
-                WriteAudit(this.db, 'system', 'recover', 'workspace_operation', null, summary);
+                (0, helpers_1.WriteAudit)(this.db, 'system', 'recover', 'workspace_operation', null, summary);
             return { ...summary, writable: !this.blocked };
         }
         finally {
@@ -117,7 +153,6 @@ class WorkspaceOperationService {
     RecoverOne(row, { synchronizeProfiles } = {}) {
         const payload = this.Parse(row);
         if (row.state === 'prepared') {
-            // 写文件与推进状态之间也可能崩溃：先检查确定性落盘结果，存在则前滚，不存在才补偿。
             if (row.operation_type === 'import_attachment') {
                 const filePath = this.ResolveWorkspaceRelative(payload.storageKey);
                 if (this.VerifyFileHash(filePath, payload.sha256))
@@ -129,7 +164,7 @@ class WorkspaceOperationService {
             }
             else if (row.operation_type === 'save_profiles') {
                 const profilePath = this.ResolveWorkspaceRelative('profile.json');
-                if (!fs.existsSync(profilePath)) {
+                if (!(0, node_fs_1.existsSync)(profilePath)) {
                     this.MarkFailed(row.id, 'INTERRUPTED_BEFORE_FILE_WRITE');
                     return;
                 }
@@ -137,10 +172,10 @@ class WorkspaceOperationService {
             }
             else if (row.operation_type === 'create_backup') {
                 const directory = this.ResolveWorkspaceRelative(path.join('backups', payload.directoryName));
-                if (fs.existsSync(path.join(directory, 'manifest.json')) && fs.existsSync(path.join(directory, 'offerget.db')))
+                if ((0, node_fs_1.existsSync)(path.join(directory, 'manifest.json')) && (0, node_fs_1.existsSync)(path.join(directory, 'offerget.db')))
                     row.state = 'file_written';
                 else {
-                    if (fs.existsSync(directory))
+                    if ((0, node_fs_1.existsSync)(directory))
                         this.RemoveDirectorySafely(directory, path.join(this.workspacePath, 'backups'));
                     this.MarkFailed(row.id, 'INTERRUPTED_BEFORE_FILE_WRITE');
                     return;
@@ -148,11 +183,11 @@ class WorkspaceOperationService {
             }
             else if (row.operation_type === 'copy_workspace') {
                 const target = path.resolve(payload.destinationPath);
-                if (fs.existsSync(path.join(target, 'migration-manifest.json')) && fs.existsSync(path.join(target, 'offerget.db')))
+                if ((0, node_fs_1.existsSync)(path.join(target, 'migration-manifest.json')) && (0, node_fs_1.existsSync)(path.join(target, 'offerget.db')))
                     row.state = 'file_written';
                 else {
                     const temporary = `${target}.offerget-migration-${row.id}`;
-                    if (fs.existsSync(temporary))
+                    if ((0, node_fs_1.existsSync)(temporary))
                         this.RemoveDirectorySafely(temporary, path.dirname(target));
                     this.MarkFailed(row.id, 'INTERRUPTED_BEFORE_FILE_WRITE');
                     return;
@@ -172,7 +207,7 @@ class WorkspaceOperationService {
         }
         if (row.operation_type === 'save_profiles') {
             const profilePath = this.ResolveWorkspaceRelative('profile.json');
-            const parsed = JSON.parse(fs.readFileSync(profilePath, 'utf8'));
+            const parsed = JSON.parse((0, node_fs_1.readFileSync)(profilePath, 'utf8'));
             if (!Array.isArray(parsed.items))
                 throw new Error('Recovered profile is invalid.');
             if (typeof synchronizeProfiles === 'function')
@@ -185,8 +220,9 @@ class WorkspaceOperationService {
             const directory = this.ResolveWorkspaceRelative(path.join('backups', payload.directoryName));
             const backupDb = path.join(directory, 'offerget.db');
             const manifest = path.join(directory, 'manifest.json');
-            if (!fs.existsSync(manifest))
+            if (!(0, node_fs_1.existsSync)(manifest))
                 throw new Error('Recovered backup manifest is unavailable.');
+            const Database = require('better-sqlite3');
             const verification = new Database(backupDb, { readonly: true });
             const integrity = verification.pragma('integrity_check', { simple: true });
             verification.close();
@@ -198,8 +234,9 @@ class WorkspaceOperationService {
         if (row.operation_type === 'copy_workspace') {
             const target = path.resolve(payload.destinationPath);
             const manifest = path.join(target, 'migration-manifest.json');
-            if (!fs.existsSync(manifest))
+            if (!(0, node_fs_1.existsSync)(manifest))
                 throw new Error('Recovered workspace copy is incomplete.');
+            const Database = require('better-sqlite3');
             const verification = new Database(path.join(target, 'offerget.db'), { readonly: true });
             const integrity = verification.pragma('integrity_check', { simple: true });
             verification.close();
@@ -212,4 +249,4 @@ class WorkspaceOperationService {
         return { recovering: this.recovering, blocked: this.blocked, recovered: this.lastRecovery.recovered, failed: this.lastRecovery.failed, blockedCount: this.lastRecovery.blocked };
     }
 }
-module.exports = { WorkspaceOperationService, KnownTypes, ActiveStates };
+exports.WorkspaceOperationService = WorkspaceOperationService;

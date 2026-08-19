@@ -1,15 +1,17 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-// @ts-nocheck
-const { ResumeLockStore } = require('./resume-lock-store.js');
+exports.AgentResumePort = void 0;
+const resume_lock_store_1 = require("./resume-lock-store");
 /**
  * Agent 简历端口（完整方案）：用户与 Agent 共用同一后端锁与乐观锁校验。
  * 读经 business LoadViewModel 获取带 revision 的当前简历；写经 business.UpsertResume，
  * 版本冲突统一映射为 RESUME_REVISION_CONFLICT（Agent 工具层据此决定重试语义）。
  */
 class AgentResumePort {
+    lockStore;
+    business;
     constructor({ lockStore, business }) {
-        this.lockStore = lockStore ?? new ResumeLockStore();
+        this.lockStore = lockStore ?? new resume_lock_store_1.ResumeLockStore();
         this.business = business;
     }
     /** 读取当前简历只读快照（含 revision），供会话级缓存与工具校验。 */
@@ -27,7 +29,6 @@ class AgentResumePort {
     /** 释放指定 owner 持有的简历锁。 */
     async ReleaseLock(resumeId, ownerId) {
         this.lockStore.Release(resumeId, ownerId);
-        return { released: true };
     }
     /** 判断用户当前是否持有该简历锁（供会话工具上下文推导 resumeEditing）。 */
     IsUserEditing(resumeId) {
@@ -41,10 +42,16 @@ class AgentResumePort {
         }
         catch (error) {
             if (error && error.code === 'REVISION_CONFLICT') {
-                throw Object.assign(new Error('简历已被其他人修改，请刷新后重试。'), { code: 'RESUME_REVISION_CONFLICT', ...(error.entityType ? { entityType: error.entityType } : {}), ...(error.entityId ? { entityId: error.entityId } : {}), ...(error.expectedRevision != null ? { expectedRevision: error.expectedRevision } : {}), ...(error.actualRevision != null ? { actualRevision: error.actualRevision } : {}) });
+                throw Object.assign(new Error('简历已被其他人修改，请刷新后重试。'), {
+                    code: 'RESUME_REVISION_CONFLICT',
+                    ...(error.entityType ? { entityType: error.entityType } : {}),
+                    ...(error.entityId ? { entityId: error.entityId } : {}),
+                    ...(error.expectedRevision != null ? { expectedRevision: error.expectedRevision } : {}),
+                    ...(error.actualRevision != null ? { actualRevision: error.actualRevision } : {}),
+                });
             }
             throw error;
         }
     }
 }
-module.exports = { AgentResumePort };
+exports.AgentResumePort = AgentResumePort;

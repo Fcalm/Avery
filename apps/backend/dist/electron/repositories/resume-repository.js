@@ -1,8 +1,8 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-// @ts-nocheck
-const { GetNow, CreateId, WriteAudit, AssertRevision } = require('./helpers.js');
-const { NormalizeEpochMs } = require('./enum-map.js');
+exports.ResumeRepository = void 0;
+const helpers_1 = require("./helpers");
+const enum_map_1 = require("./enum-map");
 /** 生成排除展示时间字段的正文键，用于识别真实内容变化，避免每次落库因 updatedAt 不同而虚增版本。 */
 function ContentKey(resume) {
     const { updatedAt, ...content } = resume;
@@ -10,6 +10,8 @@ function ContentKey(resume) {
 }
 /** 简历及其版本快照的独立事实源；正文变动提升 revision 并追加版本，删除走逻辑墓碑。 */
 class ResumeRepository {
+    db;
+    attachmentLifecycle;
     constructor({ db, attachmentLifecycle }) {
         this.db = db;
         this.attachmentLifecycle = attachmentLifecycle;
@@ -35,28 +37,28 @@ class ResumeRepository {
             throw new Error('Resume id is invalid.');
         if (typeof resume.name !== 'string' || resume.name.length === 0 || resume.name.length > 200)
             throw new Error('Resume name is invalid.');
-        const now = GetNow();
-        const normalizedResume = { ...resume, updatedAt: NormalizeEpochMs(resume.updatedAt, now) };
+        const now = (0, helpers_1.GetNow)();
+        const normalizedResume = { ...resume, updatedAt: (0, enum_map_1.NormalizeEpochMs)(resume.updatedAt, now) };
         const document = JSON.stringify(normalizedResume);
         const documentKey = ContentKey(normalizedResume);
         const existing = this.db.prepare('SELECT revision, document_json FROM resumes WHERE id = ?').get(resume.id);
         if (!existing) {
             this.db.prepare('INSERT INTO resumes(id, name, document_json, revision, created_at, updated_at) VALUES(?, ?, ?, 1, ?, ?)').run(resume.id, resume.name, document, now, now);
-            this.db.prepare('INSERT INTO resume_revisions(id, resume_id, revision, document_json, source, created_at) VALUES(?, ?, 1, ?, ?, ?)').run(CreateId(), resume.id, document, 'user', now);
-            WriteAudit(this.db, 'user', 'save', 'resume', resume.id, {});
+            this.db.prepare('INSERT INTO resume_revisions(id, resume_id, revision, document_json, source, created_at) VALUES(?, ?, 1, ?, ?, ?)').run((0, helpers_1.CreateId)(), resume.id, document, 'user', now);
+            (0, helpers_1.WriteAudit)(this.db, 'user', 'save', 'resume', resume.id, {});
             return { id: resume.id, revision: 1 };
         }
-        AssertRevision(existing, expectedRevision, 'resume', resume.id);
+        (0, helpers_1.AssertRevision)(existing, expectedRevision, 'resume', resume.id);
         if (ContentKey(JSON.parse(existing.document_json)) !== documentKey) {
             const nextRevision = existing.revision + 1;
             this.db.prepare('UPDATE resumes SET name = ?, document_json = ?, revision = ?, updated_at = ?, deleted_at = NULL WHERE id = ?').run(resume.name, document, nextRevision, now, resume.id);
-            this.db.prepare('INSERT INTO resume_revisions(id, resume_id, revision, document_json, source, created_at) VALUES(?, ?, ?, ?, ?, ?)').run(CreateId(), resume.id, nextRevision, document, 'user', now);
+            this.db.prepare('INSERT INTO resume_revisions(id, resume_id, revision, document_json, source, created_at) VALUES(?, ?, ?, ?, ?, ?)').run((0, helpers_1.CreateId)(), resume.id, nextRevision, document, 'user', now);
             this.PruneRevisions(resume.id);
-            WriteAudit(this.db, 'user', 'save', 'resume', resume.id, {});
+            (0, helpers_1.WriteAudit)(this.db, 'user', 'save', 'resume', resume.id, {});
             return { id: resume.id, revision: nextRevision };
         }
         this.db.prepare('UPDATE resumes SET name = ?, updated_at = ?, deleted_at = NULL WHERE id = ?').run(resume.name, now, resume.id);
-        WriteAudit(this.db, 'user', 'save', 'resume', resume.id, {});
+        (0, helpers_1.WriteAudit)(this.db, 'user', 'save', 'resume', resume.id, {});
         return { id: resume.id, revision: existing.revision };
     }
     /** 仅更新简历名称与最近更新时间；校验期望版本但不产生内容版本快照。 */
@@ -68,11 +70,11 @@ class ResumeRepository {
         const existing = this.db.prepare('SELECT revision FROM resumes WHERE id = ?').get(id);
         if (!existing)
             throw new Error('Resume was not found.');
-        AssertRevision(existing, expectedRevision, 'resume', id);
-        const result = this.db.prepare('UPDATE resumes SET name = ?, updated_at = ? WHERE id = ?').run(name, GetNow(), id);
+        (0, helpers_1.AssertRevision)(existing, expectedRevision, 'resume', id);
+        const result = this.db.prepare('UPDATE resumes SET name = ?, updated_at = ? WHERE id = ?').run(name, (0, helpers_1.GetNow)(), id);
         if (!result.changes)
             throw new Error('Resume was not found.');
-        WriteAudit(this.db, 'user', 'rename', 'resume', id, {});
+        (0, helpers_1.WriteAudit)(this.db, 'user', 'rename', 'resume', id, {});
         return { id, name, revision: existing.revision };
     }
     /** 逻辑删除简历；被投递引用时保留墓碑以维持历史快照。 */
@@ -80,9 +82,9 @@ class ResumeRepository {
         if (typeof id !== 'string' || id.length === 0 || id.length > 200)
             throw new Error('Resume id is invalid.');
         const run = this.db.transaction(() => {
-            this.db.prepare('UPDATE resumes SET deleted_at = ?, updated_at = ? WHERE id = ?').run(GetNow(), GetNow(), id);
+            this.db.prepare('UPDATE resumes SET deleted_at = ?, updated_at = ? WHERE id = ?').run((0, helpers_1.GetNow)(), (0, helpers_1.GetNow)(), id);
             this.attachmentLifecycle.RemoveLinks('resume', id);
-            WriteAudit(this.db, 'user', 'delete', 'resume', id, {});
+            (0, helpers_1.WriteAudit)(this.db, 'user', 'delete', 'resume', id, {});
         });
         run();
         return { id };
@@ -101,7 +103,7 @@ class ResumeRepository {
         const result = this.db.prepare('UPDATE resume_revisions SET is_pinned = ? WHERE id = ?').run(pinned ? 1 : 0, revisionId);
         if (!result.changes)
             throw new Error('Resume revision was not found.');
-        WriteAudit(this.db, 'user', pinned ? 'pin' : 'unpin', 'resume_revision', revisionId, {});
+        (0, helpers_1.WriteAudit)(this.db, 'user', pinned ? 'pin' : 'unpin', 'resume_revision', revisionId, {});
         return { id: revisionId, isPinned: Boolean(pinned) };
     }
     /** 仅清理超出上限且未被标记重要/投递保护的普通简历修订。 */
@@ -113,4 +115,4 @@ class ResumeRepository {
         this.db.prepare(`DELETE FROM resume_revisions WHERE id IN (${placeholders})`).run(...removable.map((revision) => revision.id));
     }
 }
-module.exports = { ResumeRepository };
+exports.ResumeRepository = ResumeRepository;

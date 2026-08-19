@@ -1,8 +1,9 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-// @ts-nocheck
+exports.JobService = void 0;
 /** 岗位库的应用服务：封装岗位 Repository，提供 CRUD 与收藏管理。 */
 class JobService {
+    repository;
     constructor({ repository }) {
         this.repository = repository;
     }
@@ -23,4 +24,4 @@ class JobService {
         return this.repository.Delete(id);
     }
 }
-module.exports = { JobService };
+exports.JobService = JobService;

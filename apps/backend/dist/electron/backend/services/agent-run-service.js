@@ -1,8 +1,10 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-// @ts-nocheck
+exports.AgentRunService = void 0;
 /** Agent 运行的应用服务门面：封装 AgentHost，向 Router 暴露启动/取消/确认/重载命令；Send 由 Kernel 与六槽模块执行。 */
 class AgentRunService {
+    agent;
+    selectModuleDirectory;
     constructor({ agentHost, selectModuleDirectory }) {
         this.agent = agentHost;
         this.selectModuleDirectory = selectModuleDirectory;
@@ -41,4 +43,4 @@ class AgentRunService {
     }
     ResetModules() { return this.agent.ResetUserModules(); }
 }
-module.exports = { AgentRunService };
+exports.AgentRunService = AgentRunService;

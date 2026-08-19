@@ -1,15 +1,48 @@
 "use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 Object.defineProperty(exports, "__esModule", { value: true });
-// @ts-nocheck
-const fs = require('node:fs');
-const path = require('node:path');
-const crypto = require('node:crypto');
-const { RunAgentLoop, ScrubTraceContent } = require('@offerget/agent-core');
-const { ResolveModules } = require('@offerget/agent-module-host');
-const { CreateDefaultModules } = require('@offerget/agent-modules-defaults');
-const { AgentFileReader } = require('./agent-file-reader.js');
-const { AgentResumePort } = require('./agent-resume-port.js');
-const { ResumeLockStore } = require('./resume-lock-store.js');
+exports.AgentHost = void 0;
+const node_crypto_1 = require("node:crypto");
+const node_fs_1 = require("node:fs");
+const path = __importStar(require("node:path"));
+const agent_core_1 = require("@offerget/agent-core");
+const agent_module_host_1 = require("@offerget/agent-module-host");
+const agent_modules_defaults_1 = require("@offerget/agent-modules-defaults");
+const agent_file_reader_1 = require("./agent-file-reader");
+const agent_resume_port_1 = require("./agent-resume-port");
+const resume_lock_store_1 = require("./resume-lock-store");
 /** 用户编辑锁的稳定 ownerId；前端经 bridge 加解锁都以此为准。 */
 const UserLockOwnerId = 'user-main';
 function NormalizeProjectBinding(value) {
@@ -17,21 +50,23 @@ function NormalizeProjectBinding(value) {
         return { rootPath: value, projectId: null, name: path.basename(value) };
     if (!value || typeof value !== 'object')
         return null;
-    const rootPath = typeof value.rootPath === 'string' ? value.rootPath : typeof value.path === 'string' ? value.path : '';
+    const objectValue = value;
+    const rootPath = typeof objectValue.rootPath === 'string' ? objectValue.rootPath : typeof objectValue.path === 'string' ? objectValue.path : '';
     if (!rootPath)
         return null;
     return {
         rootPath,
-        projectId: typeof value.projectId === 'string' ? value.projectId : null,
-        name: typeof value.name === 'string' && value.name ? value.name.slice(0, 200) : path.basename(rootPath),
+        projectId: typeof objectValue.projectId === 'string' ? objectValue.projectId : null,
+        name: typeof objectValue.name === 'string' && objectValue.name ? objectValue.name.slice(0, 200) : path.basename(rootPath),
     };
 }
 /** 读取持久化 usage 时只保留已校验的会话事实；旧估算数据绝不标记为真实。 */
 function NormalizeSessionUsage(value) {
     if (!value || typeof value !== 'object')
         return null;
-    const number = (field) => Number.isSafeInteger(value[field]) && value[field] >= 0 ? value[field] : 0;
-    const source = ['actual', 'unavailable', 'legacy_estimate'].includes(value.source) ? value.source : 'legacy_estimate';
+    const objectValue = value;
+    const number = (field) => Number.isSafeInteger(objectValue[field]) && objectValue[field] >= 0 ? objectValue[field] : 0;
+    const source = ['actual', 'unavailable', 'legacy_estimate'].includes(objectValue.source) ? objectValue.source : 'legacy_estimate';
     return {
         source,
         inputTokens: number('inputTokens'), contextLimit: number('contextLimit'), compressionCount: number('compressionCount'), compressionThreshold: number('compressionThreshold'),
@@ -60,31 +95,45 @@ function EstimateTraceTokens(value) {
  * 六槽默认实现由 defaults 包提供、经 module-host ResolveModules 校验装配。
  */
 class AgentHost {
-    constructor({ userDataPath, workspacePath, Emit, business, observability, credentialPort, resolveProjectEnvironment, resumeLockStore }) {
-        this.statePath = path.join(userDataPath, 'agent-state.json');
-        this.moduleConfigPath = path.join(userDataPath, 'agent-modules.json');
-        this.Emit = Emit;
-        this.business = business;
-        this.observabilityPort = observability;
-        this.credentialPort = credentialPort;
-        this.resolveProjectEnvironment = resolveProjectEnvironment ?? (() => null);
-        this.controllers = new Map();
-        this.histories = new Map();
-        this.tasks = new Map();
-        this.pendingQuestions = new Map();
-        this.pendingEdits = new Map();
-        this.projectEnvironments = new Map();
-        this.sessionSnapshots = new Map();
-        this.sessionReloadNotices = new Map();
-        this.sessionUsage = new Map();
-        this.lastContextUsage = { inputTokens: 0, contextLimit: 64000 };
-        this.compressionCount = 0;
-        this.fileReader = new AgentFileReader((uri) => this.business?.ResolveAttachmentUri?.(uri) ?? Promise.resolve(null), {
-            ocrRuntimeRoot: path.join(userDataPath, 'ocr-runtime'),
-            ocrCacheRoot: workspacePath ? path.join(workspacePath, 'derived', 'ocr') : null,
+    statePath;
+    moduleConfigPath;
+    Emit;
+    business;
+    observabilityPort;
+    credentialPort;
+    resolveProjectEnvironment;
+    controllers = new Map();
+    histories = new Map();
+    tasks = new Map();
+    pendingQuestions = new Map();
+    pendingEdits = new Map();
+    projectEnvironments = new Map();
+    sessionSnapshots = new Map();
+    sessionReloadNotices = new Map();
+    sessionUsage = new Map();
+    lastContextUsage = { inputTokens: 0, contextLimit: 64000 };
+    compressionCount = 0;
+    fileReader;
+    resumePort;
+    resumeReadPort;
+    resumeWritePort;
+    moduleError = null;
+    moduleConfiguration = { enabled: false, trusted: false, status: 'default', directoryName: null, modules: [] };
+    moduleSnapshot = null;
+    modules;
+    constructor(options) {
+        this.statePath = path.join(options.userDataPath, 'agent-state.json');
+        this.moduleConfigPath = path.join(options.userDataPath, 'agent-modules.json');
+        this.Emit = options.Emit;
+        this.business = options.business;
+        this.observabilityPort = options.observability;
+        this.credentialPort = options.credentialPort;
+        this.resolveProjectEnvironment = options.resolveProjectEnvironment ?? (() => null);
+        this.fileReader = new agent_file_reader_1.AgentFileReader((uri) => this.business?.ResolveAttachmentUri?.(uri) ?? Promise.resolve(null), {
+            ocrRuntimeRoot: path.join(options.userDataPath, 'ocr-runtime'),
+            ocrCacheRoot: options.workspacePath ? path.join(options.workspacePath, 'derived', 'ocr') : null,
         });
-        // 简历端口：用户与 Agent 共用同一后端锁与乐观锁校验；宿主传入 lockStore 以在工作空间写路径共享锁判断。
-        this.resumePort = new AgentResumePort({ lockStore: resumeLockStore ?? new ResumeLockStore(), business });
+        this.resumePort = new agent_resume_port_1.AgentResumePort({ lockStore: options.resumeLockStore ?? new resume_lock_store_1.ResumeLockStore(), business: this.business });
         this.resumeReadPort = this.resumePort;
         this.resumeWritePort = this.resumePort;
         this.moduleError = null;
@@ -100,7 +149,7 @@ class AgentHost {
     }
     /** 构造官方默认六槽；端口全部由宿主持有。 */
     CreateDefaults() {
-        const defaults = CreateDefaultModules({
+        const defaults = (0, agent_modules_defaults_1.CreateDefaultModules)({
             getConfig: async () => (await this.credentialPort?.Load?.()) ?? null,
             saveConfig: async (config) => { await this.credentialPort?.Save?.(config); },
             getStoredSettings: async () => (await this.business?.GetStoredSettings?.()) ?? {},
@@ -113,9 +162,9 @@ class AgentHost {
     }
     /** 从受信任目录读取 offerget-modules.json，并把入口约束在该目录真实路径内。 */
     LoadModuleOverrides(directoryPath, defaults) {
-        const base = fs.realpathSync(directoryPath);
+        const base = (0, node_fs_1.realpathSync)(directoryPath);
         const manifestPath = path.join(base, 'offerget-modules.json');
-        const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+        const manifest = JSON.parse((0, node_fs_1.readFileSync)(manifestPath, 'utf8'));
         if (!manifest || typeof manifest !== 'object' || !manifest.modules || typeof manifest.modules !== 'object')
             throw new Error('offerget-modules.json modules is missing.');
         const overrides = {};
@@ -124,7 +173,7 @@ class AgentHost {
                 throw new Error(`Unknown module slot: ${slot}.`);
             if (!descriptor || typeof descriptor !== 'object' || typeof descriptor.entry !== 'string')
                 throw new Error(`Module ${slot} entry is invalid.`);
-            const entry = fs.realpathSync(path.resolve(base, descriptor.entry));
+            const entry = (0, node_fs_1.realpathSync)(path.resolve(base, descriptor.entry));
             if (!(entry === base || entry.startsWith(`${base}${path.sep}`)))
                 throw new Error(`Module ${slot} entry escapes the trusted directory.`);
             if (!['.cjs', '.js'].includes(path.extname(entry).toLowerCase()))
@@ -158,13 +207,13 @@ class AgentHost {
         const defaults = this.CreateDefaults();
         let stored = null;
         try {
-            stored = JSON.parse(fs.readFileSync(this.moduleConfigPath, 'utf8'));
+            stored = JSON.parse((0, node_fs_1.readFileSync)(this.moduleConfigPath, 'utf8'));
         }
         catch {
             stored = null;
         }
         if (!stored?.enabled) {
-            const resolved = ResolveModules({ sessionId: 'host', sessionRevision: 0, defaults, createId: () => crypto.randomUUID() });
+            const resolved = (0, agent_module_host_1.ResolveModules)({ sessionId: 'host', sessionRevision: 0, defaults, createId: () => (0, node_crypto_1.randomUUID)() });
             this.moduleSnapshot = resolved.snapshot;
             this.moduleError = null;
             this.moduleConfiguration = { enabled: false, trusted: false, status: 'default', directoryName: null, modules: resolved.snapshot.modules };
@@ -174,17 +223,17 @@ class AgentHost {
             if (stored.trusted !== true || typeof stored.directoryPath !== 'string')
                 throw new Error('User module directory is not trusted.');
             const overrides = this.LoadModuleOverrides(stored.directoryPath, defaults);
-            const resolved = ResolveModules({ sessionId: 'host', sessionRevision: 0, defaults, overrides, createId: () => crypto.randomUUID() });
+            const resolved = (0, agent_module_host_1.ResolveModules)({ sessionId: 'host', sessionRevision: 0, defaults, overrides, createId: () => (0, node_crypto_1.randomUUID)() });
             this.moduleSnapshot = resolved.snapshot;
             this.moduleError = null;
             this.moduleConfiguration = { enabled: true, trusted: true, status: 'active', directoryName: path.basename(stored.directoryPath), modules: resolved.snapshot.modules };
             return resolved.modules;
         }
         catch (error) {
-            const fallback = ResolveModules({ sessionId: 'blocked', sessionRevision: 0, defaults, createId: () => crypto.randomUUID() });
+            const fallback = (0, agent_module_host_1.ResolveModules)({ sessionId: 'blocked', sessionRevision: 0, defaults, createId: () => (0, node_crypto_1.randomUUID)() });
             this.moduleSnapshot = fallback.snapshot;
             this.moduleError = error instanceof Error ? error.message : String(error);
-            this.moduleConfiguration = { enabled: true, trusted: true, status: 'blocked', directoryName: path.basename(String(stored.directoryPath || '')), error: this.moduleError, modules: [] };
+            this.moduleConfiguration = { enabled: true, trusted: true, status: 'blocked', directoryName: path.basename(String(stored?.directoryPath || '')), error: this.moduleError, modules: [] };
             return fallback.modules;
         }
     }
@@ -197,8 +246,8 @@ class AgentHost {
     ConfigureUserModules(directoryPath) {
         if (this.IsBusy())
             throw Object.assign(new Error('Stop the current Agent run before changing modules.'), { code: 'AGENT_BUSY' });
-        const base = fs.realpathSync(directoryPath);
-        fs.writeFileSync(this.moduleConfigPath, JSON.stringify({ enabled: true, trusted: true, directoryPath: base }, null, 2), { encoding: 'utf8', mode: 0o600 });
+        const base = (0, node_fs_1.realpathSync)(directoryPath);
+        (0, node_fs_1.writeFileSync)(this.moduleConfigPath, JSON.stringify({ enabled: true, trusted: true, directoryPath: base }, null, 2), { encoding: 'utf8', mode: 0o600 });
         this.modules = this.BuildModules();
         return this.GetModuleConfiguration();
     }
@@ -206,7 +255,7 @@ class AgentHost {
         if (this.IsBusy())
             throw Object.assign(new Error('Stop the current Agent run before resetting modules.'), { code: 'AGENT_BUSY' });
         try {
-            fs.unlinkSync(this.moduleConfigPath);
+            (0, node_fs_1.unlinkSync)(this.moduleConfigPath);
         }
         catch (error) {
             if (error?.code !== 'ENOENT')
@@ -220,7 +269,7 @@ class AgentHost {
     /** 读取不含密钥的会话与任务状态；损坏文件只会回退为空状态。 */
     LoadState() {
         try {
-            const state = JSON.parse(fs.readFileSync(this.statePath, 'utf8'));
+            const state = JSON.parse((0, node_fs_1.readFileSync)(this.statePath, 'utf8'));
             this.histories = new Map(Array.isArray(state.histories) ? state.histories : []);
             this.tasks = new Map((Array.isArray(state.tasks) ? state.tasks : []).map(([sessionId, tasks]) => [sessionId, new Map(Array.isArray(tasks) ? tasks : [])]));
             this.projectEnvironments = new Map((Array.isArray(state.projectEnvironments) ? state.projectEnvironments : [])
@@ -230,7 +279,9 @@ class AgentHost {
                 .map(([sessionId, value]) => [sessionId, NormalizeSessionUsage(value)])
                 .filter(([sessionId, value]) => typeof sessionId === 'string' && value));
         }
-        catch { /* First launch or corrupted state starts with empty runtime data. */ }
+        catch {
+            // First launch or corrupted state starts with empty runtime data.
+        }
     }
     /** 原子写入不含 API Key 的受保护运行状态。 */
     SaveState() {
@@ -241,9 +292,9 @@ class AgentHost {
             sessionUsage: [...this.sessionUsage.entries()],
         };
         const temporaryPath = `${this.statePath}.tmp`;
-        fs.mkdirSync(path.dirname(this.statePath), { recursive: true });
-        fs.writeFileSync(temporaryPath, JSON.stringify(payload), 'utf8');
-        fs.renameSync(temporaryPath, this.statePath);
+        (0, node_fs_1.mkdirSync)(path.dirname(this.statePath), { recursive: true });
+        (0, node_fs_1.writeFileSync)(temporaryPath, JSON.stringify(payload), 'utf8');
+        (0, node_fs_1.renameSync)(temporaryPath, this.statePath);
     }
     /** 保存经校验的模型配置，API Key 经端口移交主进程 safeStorage 加密落盘。 */
     Configure(input) { this.EnsureModulesReady(); return this.modules.modelProvider.Configure(input); }
@@ -265,7 +316,11 @@ class AgentHost {
     }
     /** 应用或丢弃待确认的简历补丁：接受时经简历写端口落库并释放 Agent 锁。 */
     ConfirmResumeEdit(confirmationId, accepted) {
-        return this.modules.interaction.ConfirmResumeEdit(confirmationId, accepted, { pendingEdits: this.pendingEdits, ports: { resumeWrite: this.resumeWritePort }, emit: (event) => this.Emit(event) });
+        return this.modules.interaction.ConfirmResumeEdit(confirmationId, accepted, {
+            pendingEdits: this.pendingEdits,
+            ports: { resumeWrite: this.resumeWritePort },
+            emit: (event) => this.Emit(event),
+        });
     }
     /** 用户开始编辑简历前获取互斥锁；Agent 占用时返回未获取及原因。 */
     async AcquireResumeEditLock(resumeId) {
@@ -274,7 +329,6 @@ class AgentHost {
             throw new Error('Resume id is invalid.');
         const result = await this.resumePort.AcquireLock({ resumeId: normalizedId, owner: 'user', ownerId: UserLockOwnerId });
         if (!result.acquired) {
-            // 用户路径只有 Agent 或同用户可能占用（同用户重复获取会刷新租约返回成功），被占用必是 Agent 持锁。
             const lock = this.resumePort.lockStore.GetLock(normalizedId);
             return { acquired: false, reason: lock?.owner === 'agent' ? 'Agent 正在编辑这份简历，请稍后再试' : '简历正被其他操作占用' };
         }
@@ -301,7 +355,7 @@ class AgentHost {
             throw new Error('A project environment is already bound to this session. Create a new conversation to switch projects.');
         const project = existing && requestedBinding && existing.rootPath === requestedBinding.rootPath ? { ...existing, ...requestedBinding } : existing ?? requestedBinding;
         if (project) {
-            const stat = fs.statSync(project.rootPath);
+            const stat = (0, node_fs_1.statSync)(project.rootPath);
             if (!stat.isDirectory())
                 throw new Error('The selected project environment is unavailable.');
             this.projectEnvironments.set(sessionId, project);
@@ -360,10 +414,10 @@ class AgentHost {
     BuildToolSnapshot(sessionId, sessionRevision) {
         const builtInTools = this.modules.tools.GetToolDefinitions();
         const orderedToolNames = builtInTools.map((tool) => tool.definition.function.name);
-        return { snapshotId: crypto.randomUUID(), sessionId, sessionRevision, builtInTools, mcpTools: [], orderedToolNames, toolsetHash: crypto.createHash('sha256').update(JSON.stringify(orderedToolNames)).digest('hex') };
+        return { snapshotId: (0, node_crypto_1.randomUUID)(), sessionId, sessionRevision, builtInTools, mcpTools: [], orderedToolNames, toolsetHash: (0, node_crypto_1.createHash)('sha256').update(JSON.stringify(orderedToolNames)).digest('hex') };
     }
     BuildModuleSnapshot(sessionId, sessionRevision) {
-        return { ...this.moduleSnapshot, snapshotId: crypto.randomUUID(), sessionId, sessionRevision };
+        return { ...this.moduleSnapshot, snapshotId: (0, node_crypto_1.randomUUID)(), sessionId, sessionRevision };
     }
     /** 创建两份快照并原子写入会话表；供首次发送与原子重载使用。 */
     async CreateAndPersistSnapshots(sessionId, sessionRevision) {
@@ -443,7 +497,6 @@ class AgentHost {
         const model = this.modules.modelProvider.ResolveRequestModel(input?.model);
         if (this.controllers.has(requestId))
             throw new Error('The request is already running.');
-        // 请求级显式窄字段：确认模式、附件、项目 ID 与简历 ID；业务只读快照由后端按 ID 读取。
         const confirmationMode = input?.confirmationMode === '无需确认' ? '无需确认' : '需要确认';
         const attachments = Array.isArray(input?.attachments) ? input.attachments.slice(0, 10).map((attachment) => ({
             name: String(attachment?.name ?? '').slice(0, 200), path: String(attachment?.path ?? '').slice(0, 1000),
@@ -452,7 +505,6 @@ class AgentHost {
         const projectId = typeof input?.projectId === 'string' ? input.projectId.slice(0, 200) : '';
         const projectRoot = await this.BindProjectEnvironment(sessionId, projectId);
         const profiles = (await this.business?.GetProfiles?.())?.items ?? [];
-        // 简历只读快照经简历端口读取（含 revision），供工具乐观锁与整份保存使用。
         const resumeSnapshot = resumeId ? (await this.resumeReadPort.ReadCurrent(resumeId)) ?? null : null;
         const resumeEditing = resumeId ? this.resumePort.IsUserEditing(resumeId) : false;
         const runtimeContext = { confirmationMode, resumeEditing, resume: resumeSnapshot, profiles, attachments, projectId };
@@ -471,8 +523,8 @@ class AgentHost {
             contextContent += `<system-reminder type="snapshot-replaced" replaces-snapshot-id="${reloadNotice}" snapshot-id="${snapshots.session.snapshotId}" session-revision="${snapshots.session.sessionRevision}">Session context and tool snapshots were atomically reloaded.</system-reminder>`;
             this.sessionReloadNotices.delete(sessionId);
         }
-        const systemPrompt = ScrubTraceContent(contextContent);
-        const userMessage = ScrubTraceContent(userContent);
+        const systemPrompt = (0, agent_core_1.ScrubTraceContent)(contextContent);
+        const userMessage = (0, agent_core_1.ScrubTraceContent)(userContent);
         this.modules.observability.AppendTraceEvent(requestId, 'system_prompt', { content: systemPrompt }, EstimateTraceTokens(systemPrompt));
         this.modules.observability.AppendTraceEvent(requestId, 'user_message', { content: userMessage }, EstimateTraceTokens(userMessage));
         const sessionTasks = this.tasks.get(sessionId) ?? new Map();
@@ -497,7 +549,7 @@ class AgentHost {
         try {
             const { contextLimit, threshold } = this.modules.modelProvider.GetRuntimeLimits();
             let modelRequestCompleted = false;
-            const result = await RunAgentLoop({
+            const result = await (0, agent_core_1.RunAgentLoop)({
                 requestId, sessionId, model,
                 systemContext: contextContent, requestHistory, userContent,
                 histories: this.histories,
@@ -506,7 +558,7 @@ class AgentHost {
                 emit: (event) => this.Emit(event),
                 signal: controller.signal, maxTurns: 8,
                 contextLimit, thresholdPercent: threshold,
-                createId: () => crypto.randomUUID(),
+                createId: () => (0, node_crypto_1.randomUUID)(),
                 onModelUsage: (usage) => { modelRequestCompleted = true; this.RecordSessionUsage(sessionId, usage, contextLimit, threshold); },
             });
             this.compressionCount += result.compressionCount;
@@ -519,7 +571,6 @@ class AgentHost {
                 this.lastContextUsage = { inputTokens: currentUsage.inputTokens, contextLimit };
             }
             else if (!modelRequestCompleted) {
-                // 取消、网络失败或非兼容 Provider 未返回 usage 时必须明确标记未知，不能倒退为本地估算。
                 this.sessionUsage.set(sessionId, {
                     source: 'unavailable', inputTokens: 0, contextLimit, compressionCount: result.compressionCount, compressionThreshold: threshold,
                     promptTokens: 0, completionTokens: 0, totalTokens: 0, reportedRequestCount: 0, unreportedRequestCount: 1, updatedAt: Date.now(),
@@ -553,4 +604,4 @@ class AgentHost {
     /** 清空开发者模式可见的日志与 Trace，不影响会话、任务和 API 配置。 */
     ClearObservability() { return this.modules.observability.ClearObservability(); }
 }
-module.exports = { AgentHost, ScrubTraceContent };
+exports.AgentHost = AgentHost;
