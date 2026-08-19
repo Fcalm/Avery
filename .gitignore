@@ -16,7 +16,7 @@ node_modules/
 *.sqlite3
 backups/
 attachments/
-workspace/
+/workspace/
 
 # Secrets and local configuration
 .env
