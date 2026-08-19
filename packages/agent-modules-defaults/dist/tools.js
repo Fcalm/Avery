@@ -12,31 +12,165 @@ function CreateDefinition(name, description, parameters) {
     return { type: 'function', function: { name, description, parameters } };
 }
 const EmptyParameters = { type: 'object', properties: {}, additionalProperties: false };
-/** 内置 12 工具注册表：只读工具默认可并行；写工具（简历/任务/提问）标记为不可并发。 */
+/** 旧工具名 → 新工具名兼容映射；新 Run 不再向模型暴露旧名，旧快照重放时仍可安全执行。 */
+const ToolAliases = {
+    EditResume: 'UpdateResume',
+    TaskCreate: 'CreateTodo',
+    TaskUpdate: 'UpdateTodo',
+    TaskList: 'ReadTodo',
+    TaskGet: 'ReadTodo',
+};
+/** 内置工具注册表：按 Agent-design 03-tools 的 MVP 白名单组织，写工具带幂等/资源键。 */
 function BuildRegistry() {
     const registry = [
-        { definition: CreateDefinition('Read', 'Read a user-authorized text attachment or a text file inside the session-bound project environment. Paths outside that environment are blocked.', { type: 'object', properties: { path: { type: 'string' } }, required: ['path'], additionalProperties: false }), timeoutMs: 20000 },
-        { definition: CreateDefinition('Glob', 'Match names among user-authorized attachments and files inside the session-bound project environment. This tool is read-only.', { type: 'object', properties: { pattern: { type: 'string' } }, required: ['pattern'], additionalProperties: false }), timeoutMs: 20000 },
-        { definition: CreateDefinition('Grep', 'Search text in user-authorized attachments and the session-bound project environment with a regular expression. This tool is read-only.', { type: 'object', properties: { pattern: { type: 'string' } }, required: ['pattern'], additionalProperties: false }), timeoutMs: 20000 },
-        { definition: CreateDefinition('ReadProfile', 'Read the current user profile snapshot. This tool is read-only.', EmptyParameters), timeoutMs: 10000 },
-        { definition: CreateDefinition('ReadResume', 'Read the current resume draft and its revision metadata. This tool is read-only.', EmptyParameters), timeoutMs: 10000 },
-        { definition: CreateDefinition('CreateResume', 'Create a new resume from user-provided facts. Only use after the user has clearly requested a new resume.', { type: 'object', properties: { name: { type: 'string' }, content: { type: 'string' }, reason: { type: 'string' } }, required: ['name', 'content', 'reason'], additionalProperties: false }), timeoutMs: 10000 },
-        { definition: CreateDefinition('EditResume', 'Replace the complete content of the current resume. Only use after the user has clearly requested a resume edit.', { type: 'object', properties: { resumeId: { type: 'string' }, content: { type: 'string' }, reason: { type: 'string' } }, required: ['resumeId', 'content', 'reason'], additionalProperties: false }), timeoutMs: 10000 },
-        { definition: CreateDefinition('AskUserQuestion', 'Ask up to three structured questions when essential information is missing. The final option must be Other.', { type: 'object', properties: { questions: { type: 'array', minItems: 1, maxItems: 3, items: { type: 'object', properties: { id: { type: 'string' }, question: { type: 'string' }, options: { type: 'array', minItems: 1, maxItems: 4, items: { type: 'string' } } }, required: ['id', 'question', 'options'], additionalProperties: false } } }, required: ['questions'], additionalProperties: false }), timeoutMs: 10000 },
-        { definition: CreateDefinition('TaskCreate', 'Create a structured task for the current conversation.', { type: 'object', properties: { title: { type: 'string' }, description: { type: 'string' } }, required: ['title'], additionalProperties: false }), timeoutMs: 10000 },
-        { definition: CreateDefinition('TaskUpdate', 'Update a structured task in the current conversation.', { type: 'object', properties: { taskId: { type: 'string' }, status: { type: 'string', enum: ['pending', 'in_progress', 'completed', 'blocked', 'cancelled'] }, title: { type: 'string' }, description: { type: 'string' } }, required: ['taskId'], additionalProperties: false }), timeoutMs: 10000 },
-        { definition: CreateDefinition('TaskList', 'List structured tasks in the current conversation.', EmptyParameters), timeoutMs: 10000 },
-        { definition: CreateDefinition('TaskGet', 'Read one structured task in the current conversation.', { type: 'object', properties: { taskId: { type: 'string' } }, required: ['taskId'], additionalProperties: false }), timeoutMs: 10000 },
+        {
+            definition: CreateDefinition('Read', 'Read a user-authorized text attachment or a text file inside the session-bound project environment. Paths outside that environment are blocked.', { type: 'object', properties: { path: { type: 'string' } }, required: ['path'], additionalProperties: false }),
+            timeoutMs: 20000,
+            isConcurrencySafe: true,
+            sideEffect: 'none',
+            risk: 'low',
+            idempotency: 'not_needed',
+            resourceKeys: (input) => [`file:${String(input?.path ?? '')}`],
+        },
+        {
+            definition: CreateDefinition('Glob', 'Match names among user-authorized attachments and files inside the session-bound project environment. This tool is read-only.', { type: 'object', properties: { pattern: { type: 'string' } }, required: ['pattern'], additionalProperties: false }),
+            timeoutMs: 20000,
+            isConcurrencySafe: true,
+            sideEffect: 'none',
+            risk: 'low',
+            idempotency: 'not_needed',
+            resourceKeys: () => ['workspace:glob'],
+        },
+        {
+            definition: CreateDefinition('Grep', 'Search text in user-authorized attachments and the session-bound project environment with a regular expression. This tool is read-only.', { type: 'object', properties: { pattern: { type: 'string' } }, required: ['pattern'], additionalProperties: false }),
+            timeoutMs: 20000,
+            isConcurrencySafe: true,
+            sideEffect: 'none',
+            risk: 'low',
+            idempotency: 'not_needed',
+            resourceKeys: () => ['workspace:grep'],
+        },
+        {
+            definition: CreateDefinition('ReadProfile', 'Read the current user profile snapshot. This tool is read-only.', EmptyParameters),
+            timeoutMs: 10000,
+            isConcurrencySafe: true,
+            sideEffect: 'none',
+            risk: 'low',
+            idempotency: 'not_needed',
+            resourceKeys: () => ['profile'],
+        },
+        {
+            definition: CreateDefinition('ReadResume', 'Read the current resume draft and its revision metadata. This tool is read-only.', EmptyParameters),
+            timeoutMs: 10000,
+            isConcurrencySafe: true,
+            sideEffect: 'none',
+            risk: 'low',
+            idempotency: 'not_needed',
+            resourceKeys: () => ['resume'],
+        },
+        {
+            definition: CreateDefinition('CreateResume', 'Create a new resume from user-provided facts. Only use after the user has clearly requested a new resume.', { type: 'object', properties: { name: { type: 'string' }, content: { type: 'string' }, reason: { type: 'string' } }, required: ['name', 'content', 'reason'], additionalProperties: false }),
+            timeoutMs: 10000,
+            isConcurrencySafe: false,
+            sideEffect: 'local_write',
+            risk: 'medium',
+            confirmation: 'scenario_policy',
+            idempotency: 'required',
+            resourceKeys: () => ['resume:new'],
+        },
+        {
+            definition: CreateDefinition('UpdateResume', 'Apply a structured patch to the current resume. Only use after the user has clearly requested a resume edit.', { type: 'object', properties: { resumeId: { type: 'string' }, content: { type: 'string' }, reason: { type: 'string' } }, required: ['resumeId', 'content', 'reason'], additionalProperties: false }),
+            timeoutMs: 10000,
+            isConcurrencySafe: false,
+            sideEffect: 'local_write',
+            risk: 'medium',
+            confirmation: 'scenario_policy',
+            idempotency: 'required',
+            resourceKeys: (input) => [`resume:${String(input?.resumeId ?? '')}`],
+        },
+        {
+            definition: CreateDefinition('UpdateProfile', 'Update the user profile snapshot with a structured patch.', { type: 'object', properties: { items: { type: 'array', minItems: 1, maxItems: 100, items: { type: 'object', properties: { id: { type: 'string' }, category: { type: 'string' }, title: { type: 'string' }, content: { type: 'string' } }, required: ['id', 'category', 'title', 'content'], additionalProperties: false } } }, required: ['items'], additionalProperties: false }),
+            timeoutMs: 10000,
+            isConcurrencySafe: false,
+            sideEffect: 'local_write',
+            risk: 'medium',
+            confirmation: 'scenario_policy',
+            idempotency: 'required',
+            resourceKeys: () => ['profile'],
+        },
+        {
+            definition: CreateDefinition('AskUserQuestion', 'Ask up to three structured questions when essential information is missing. The final option must be Other.', { type: 'object', properties: { questions: { type: 'array', minItems: 1, maxItems: 3, items: { type: 'object', properties: { id: { type: 'string' }, question: { type: 'string' }, options: { type: 'array', minItems: 1, maxItems: 4, items: { type: 'string' } } }, required: ['id', 'question', 'options'], additionalProperties: false } } }, required: ['questions'], additionalProperties: false }),
+            timeoutMs: 10000,
+            isConcurrencySafe: false,
+            sideEffect: 'none',
+            risk: 'low',
+            idempotency: 'not_needed',
+            resourceKeys: () => ['run:interaction'],
+        },
+        {
+            definition: CreateDefinition('CreateTodo', 'Create todos for the current Run. Use only when the user goal, expected deliverable, and necessary scope are already clear; ask first when key ambiguity exists, and do not create todos for a simple single-step task.', { type: 'object', properties: { todos: { type: 'array', minItems: 1, maxItems: 10, items: { type: 'object', properties: { title: { type: 'string' }, description: { type: 'string' } }, required: ['title'], additionalProperties: false } } }, required: ['todos'], additionalProperties: false }),
+            timeoutMs: 10000,
+            isConcurrencySafe: false,
+            sideEffect: 'local_write',
+            risk: 'low',
+            confirmation: 'scenario_policy',
+            idempotency: 'required',
+            resourceKeys: () => ['run:todos'],
+        },
+        {
+            definition: CreateDefinition('UpdateTodo', 'Update a todo in the current Run.', { type: 'object', properties: { todoId: { type: 'string' }, status: { type: 'string', enum: ['pending', 'inProgress', 'in_progress', 'completed', 'cancelled'] }, title: { type: 'string' }, description: { type: 'string' } }, required: ['todoId'], additionalProperties: false }),
+            timeoutMs: 10000,
+            isConcurrencySafe: false,
+            sideEffect: 'local_write',
+            risk: 'low',
+            confirmation: 'scenario_policy',
+            idempotency: 'required',
+            resourceKeys: (input) => [`run:todos:${String(input?.todoId ?? '')}`],
+        },
+        {
+            definition: CreateDefinition('ReadTodo', 'Read the full todo list of the current Run.', EmptyParameters),
+            timeoutMs: 10000,
+            isConcurrencySafe: true,
+            sideEffect: 'none',
+            risk: 'low',
+            idempotency: 'not_needed',
+            resourceKeys: () => ['run:todos'],
+        },
+        {
+            definition: CreateDefinition('SearchJobs', 'Search job openings from registered sources. Results are Run-scoped temporary data and are never written to the job library.', { type: 'object', properties: { query: { type: 'string' }, page: { type: 'integer', minimum: 1 } }, required: ['query'], additionalProperties: false }),
+            timeoutMs: 20000,
+            isConcurrencySafe: true,
+            sideEffect: 'none',
+            risk: 'low',
+            idempotency: 'not_needed',
+            resourceKeys: () => ['jobs:search'],
+        },
+        {
+            definition: CreateDefinition('ReadUrl', 'Read a public http/https URL selected from job search results. Localhost, intranet, file URLs, and credentialed redirects are blocked by the host port.', { type: 'object', properties: { url: { type: 'string' } }, required: ['url'], additionalProperties: false }),
+            timeoutMs: 20000,
+            isConcurrencySafe: true,
+            sideEffect: 'none',
+            risk: 'low',
+            idempotency: 'not_needed',
+            resourceKeys: (input) => [`url:${String(input?.url ?? '')}`],
+        },
     ];
-    const unsafe = new Set(['CreateResume', 'EditResume', 'AskUserQuestion', 'TaskCreate', 'TaskUpdate']);
-    return registry.map((tool) => ({ ...tool, isConcurrencySafe: !unsafe.has(tool.definition.function.name) }));
+    return registry;
 }
-/** 工具模块：统一执行管道（Schema 校验/一次修复/幂等/超时/结构化错误码）；文件与路径边界由宿主注入窄端口约束。 */
+/** 工具模块：统一执行管道（Schema 校验/一次修复/幂等账本/超时/结构化错误码/统一 disposition）。 */
 function CreateToolsModule(ports) {
     const registry = BuildRegistry();
-    const writeTools = new Set(['CreateResume', 'EditResume', 'TaskCreate', 'TaskUpdate']);
+    const byName = new Map(registry.map((tool) => [tool.definition.function.name, tool]));
+    const writeTools = new Set(registry.filter((tool) => tool.sideEffect === 'local_write' || tool.sideEffect === 'external_action').map((tool) => tool.definition.function.name));
+    const fallbackLedger = new Map();
     const executedToolCalls = new Map();
     let toolValidators = null;
+    function NormalizeToolName(name) {
+        return ToolAliases[name] ?? name;
+    }
+    function GetToolMeta(name) {
+        return byName.get(NormalizeToolName(name));
+    }
     /** 惰性编译各工具参数 JSON Schema；Ajv 实例为每个管道共享。 */
     function EnsureToolValidators() {
         if (toolValidators)
@@ -81,6 +215,51 @@ function CreateToolsModule(ports) {
             if (oldestKey !== undefined)
                 executedToolCalls.delete(oldestKey);
         }
+    }
+    function HashArguments(value) {
+        return (0, node_crypto_1.createHash)('sha256').update(JSON.stringify(value ?? {})).digest('hex');
+    }
+    function CreateIdempotencyKey(context, toolName, proposalHash) {
+        return `session:${context.sessionId}:run:${context.runId ?? 'session'}:tool:${toolName}:proposal:${proposalHash}`;
+    }
+    function GetLedger(context) {
+        return context.ledger ?? {
+            Start(entry) {
+                fallbackLedger.set(entry.ledgerId, { ...entry, status: 'started', startedAt: entry.startedAt });
+            },
+            Finish(ledgerId, status, extra) {
+                const current = fallbackLedger.get(ledgerId);
+                if (!current)
+                    return;
+                fallbackLedger.set(ledgerId, { ...current, status, ...(extra?.receipt ? { receipt: extra.receipt } : {}), ...(extra?.errorCode ? { errorCode: extra.errorCode } : {}), finishedAt: extra?.finishedAt ?? Date.now() });
+            },
+            FindByIdempotencyKey(idempotencyKey) {
+                for (const entry of fallbackLedger.values()) {
+                    if (entry.idempotencyKey === idempotencyKey && entry.status !== 'started')
+                        return entry;
+                }
+                return undefined;
+            },
+        };
+    }
+    async function StartLedger(context, toolName, args, idempotencyKey) {
+        const ledgerId = `ledger-${(0, node_crypto_1.randomUUID)()}`;
+        const entry = {
+            ledgerId,
+            runId: context.runId,
+            toolCallId: context.requestId,
+            toolName,
+            idempotencyKey,
+            argumentsHash: HashArguments(args),
+            actor: `agent:${context.requestId}`,
+            resourceIds: GetToolMeta(toolName)?.resourceKeys?.(args) ?? [],
+            startedAt: Date.now(),
+        };
+        await GetLedger(context).Start(entry);
+        return { ...entry, status: 'started' };
+    }
+    async function FinishLedger(context, ledger, status, extra) {
+        await GetLedger(context).Finish(ledger.ledgerId, status, { ...extra, finishedAt: Date.now() });
     }
     /** 读取用户附件或会话绑定项目中的文本文件；项目外路径一律被拒绝。 */
     async function Read(context, callId, args) {
@@ -133,7 +312,7 @@ function CreateToolsModule(ports) {
         }
         return (0, helpers_1.CreateToolResult)(callId, { ok: true, matches });
     }
-    /** 创建一份新简历：获取 Agent 锁，确认模式持锁等待确认，否则直接经后端落库并释放锁。 */
+    /** 创建一份新简历：先生成冻结提案；确认模式不持锁等待，确认时由 Interaction 重新加锁。 */
     async function CreateResume(context, callId, args) {
         if (context.resumeEditing)
             throw new Error('The user is editing a resume. Do not create another resume until the user saves or exits edit mode.');
@@ -141,30 +320,46 @@ function CreateToolsModule(ports) {
         const name = (0, helpers_1.RequireString)(args.name, 'name', 200);
         const content = (0, helpers_1.RequireString)(args.content, 'content', 100000);
         const reason = (0, helpers_1.RequireString)(args.reason, 'reason', 1000);
-        const ownerId = `agent-${context.requestId}`;
-        const lockResult = await context.ports.resumeWrite.AcquireLock({ resumeId, owner: 'agent', ownerId });
-        if (!lockResult.acquired)
-            throw Object.assign(new Error('User is editing this resume.'), { code: lockResult.code });
-        const pending = { kind: 'create', resumeId, name, content, reason, baseRevision: undefined, ownerId };
+        const canonical = { kind: 'create', resumeId, name, content, reason };
+        const proposalHash = HashArguments(canonical);
+        const idempotencyKey = CreateIdempotencyKey(context, 'CreateResume', proposalHash);
+        const ledger = GetLedger(context);
+        const previous = await ledger.FindByIdempotencyKey(idempotencyKey);
+        if (previous?.status === 'succeeded' && previous.receipt) {
+            return (0, helpers_1.CreateToolResult)(callId, { ok: true, saved: true, resumeId, revision: previous.receipt.revisions?.resume ?? 0, replayed: true }, { disposition: 'continue', receipt: previous.receipt });
+        }
         if (context.confirmationMode === '需要确认') {
+            const pending = { kind: 'create', resumeId, name, content, reason, baseRevision: undefined, ownerId: `agent-${context.requestId}`, proposalHash, canonicalArguments: canonical, idempotencyKey };
             const confirmationId = `resume-confirmation-${(0, node_crypto_1.randomUUID)()}`;
             context.pendingEdits.set(confirmationId, pending);
             context.emit({ type: 'resume_confirmation', requestId: context.requestId, confirmationId, resumeId, resumeName: name, content, reason });
-            return (0, helpers_1.CreateToolResult)(callId, { ok: false, code: 'CONFIRMATION_REQUIRED', message: 'A user confirmation card has been shown. Do not repeat this creation. Wait for a new user message after confirmation or rejection.', confirmationId });
+            return (0, helpers_1.CreateToolResult)(callId, { ok: false, code: 'CONFIRMATION_REQUIRED', message: 'A user confirmation card has been shown. Do not repeat this creation. Wait for a new user message after confirmation or rejection.', confirmationId, proposalHash }, { disposition: 'wait_confirmation' });
         }
-        // 落库失败也必须释放锁（否则残留至租约过期，阻塞用户编辑与后续 Agent 编辑）。
+        const ownerId = `agent-${context.requestId}`;
+        const ledgerEntry = await StartLedger(context, 'CreateResume', canonical, idempotencyKey);
+        const lockResult = await context.ports.resumeWrite.AcquireLock({ resumeId, owner: 'agent', ownerId });
+        if (!lockResult.acquired) {
+            await FinishLedger(context, ledgerEntry, 'failed', { errorCode: lockResult.code });
+            throw Object.assign(new Error('User is editing this resume.'), { code: lockResult.code });
+        }
         let saved;
         try {
             saved = await context.ports.resumeWrite.Save({ resume: { id: resumeId, name, content, updatedAt: '', targetRoles: [], summary: content.slice(0, 120) } });
         }
+        catch (error) {
+            await FinishLedger(context, ledgerEntry, 'failed', { errorCode: 'SAVE_FAILED' });
+            throw error;
+        }
         finally {
             await context.ports.resumeWrite.ReleaseLock(resumeId, ownerId);
         }
+        const receipt = { receiptId: `receipt-${(0, node_crypto_1.randomUUID)()}`, toolDefinitionId: 'CreateResume', resourceIds: [resumeId], revisions: { resume: saved.revision }, idempotencyKey };
+        await FinishLedger(context, ledgerEntry, 'succeeded', { receipt });
         context.emit({ type: 'resume_created', requestId: context.requestId, resumeId, resumeName: name, content, reason, revision: saved.revision });
-        return (0, helpers_1.CreateToolResult)(callId, { ok: true, saved: true, resumeId, revision: saved.revision });
+        return (0, helpers_1.CreateToolResult)(callId, { ok: true, saved: true, resumeId, revision: saved.revision }, { disposition: 'continue', receipt });
     }
-    /** 用当前会话的只读快照校验并整份保存 Agent 简历编辑：获取锁、确认模式持锁、成功落库释放锁。 */
-    async function EditResume(context, callId, args) {
+    /** 用当前会话的只读快照校验并整份保存 Agent 简历编辑；确认模式不持锁，确认时由 Interaction 重新加锁并校验 revision。 */
+    async function UpdateResume(context, callId, args) {
         if (!context.resumeSnapshot || args.resumeId !== context.resumeSnapshot.id)
             throw new Error('The selected resume is unavailable or does not match resumeId.');
         if (context.resumeEditing)
@@ -172,27 +367,63 @@ function CreateToolsModule(ports) {
         const content = (0, helpers_1.RequireString)(args.content, 'content', 100000);
         const reason = (0, helpers_1.RequireString)(args.reason, 'reason', 1000);
         const baseRevision = context.resumeSnapshot.revision;
-        const ownerId = `agent-${context.requestId}`;
-        const lockResult = await context.ports.resumeWrite.AcquireLock({ resumeId: args.resumeId, owner: 'agent', ownerId, baseRevision });
-        if (!lockResult.acquired)
-            throw Object.assign(new Error('User is editing this resume.'), { code: lockResult.code });
-        const pending = { kind: 'edit', resumeId: args.resumeId, content, reason, baseRevision, ownerId, resume: { ...context.resumeSnapshot } };
+        const canonical = { kind: 'edit', resumeId: args.resumeId, content, reason, baseRevision };
+        const proposalHash = HashArguments(canonical);
+        const idempotencyKey = CreateIdempotencyKey(context, 'UpdateResume', proposalHash);
+        const ledger = GetLedger(context);
+        const previous = await ledger.FindByIdempotencyKey(idempotencyKey);
+        if (previous?.status === 'succeeded' && previous.receipt) {
+            return (0, helpers_1.CreateToolResult)(callId, { ok: true, saved: true, resumeId: args.resumeId, revision: previous.receipt.revisions?.resume ?? baseRevision ?? 0, replayed: true }, { disposition: 'continue', receipt: previous.receipt });
+        }
         if (context.confirmationMode === '需要确认') {
+            const pending = { kind: 'edit', resumeId: args.resumeId, content, reason, baseRevision, ownerId: `agent-${context.requestId}`, resume: { ...context.resumeSnapshot }, proposalHash, canonicalArguments: canonical, idempotencyKey };
             const confirmationId = `resume-confirmation-${(0, node_crypto_1.randomUUID)()}`;
             context.pendingEdits.set(confirmationId, pending);
             context.emit({ type: 'resume_confirmation', requestId: context.requestId, confirmationId, resumeId: args.resumeId, content, reason });
-            return (0, helpers_1.CreateToolResult)(callId, { ok: false, code: 'CONFIRMATION_REQUIRED', message: 'A user confirmation card has been shown. Do not repeat this edit. Wait for a new user message after confirmation or rejection.', confirmationId });
+            return (0, helpers_1.CreateToolResult)(callId, { ok: false, code: 'CONFIRMATION_REQUIRED', message: 'A user confirmation card has been shown. Do not repeat this edit. Wait for a new user message after confirmation or rejection.', confirmationId, proposalHash }, { disposition: 'wait_confirmation' });
         }
-        // 落库失败也必须释放锁（否则残留至租约过期，阻塞用户编辑与后续 Agent 编辑）。
+        const ownerId = `agent-${context.requestId}`;
+        const ledgerEntry = await StartLedger(context, 'UpdateResume', canonical, idempotencyKey);
+        const lockResult = await context.ports.resumeWrite.AcquireLock({ resumeId: args.resumeId, owner: 'agent', ownerId, baseRevision });
+        if (!lockResult.acquired) {
+            await FinishLedger(context, ledgerEntry, 'failed', { errorCode: lockResult.code });
+            throw Object.assign(new Error('User is editing this resume.'), { code: lockResult.code });
+        }
         let saved;
         try {
             saved = await context.ports.resumeWrite.Save({ resume: { ...context.resumeSnapshot, content }, baseRevision });
         }
+        catch (error) {
+            await FinishLedger(context, ledgerEntry, 'failed', { errorCode: 'SAVE_FAILED' });
+            throw error;
+        }
         finally {
             await context.ports.resumeWrite.ReleaseLock(args.resumeId, ownerId);
         }
+        const receipt = { receiptId: `receipt-${(0, node_crypto_1.randomUUID)()}`, toolDefinitionId: 'UpdateResume', resourceIds: [args.resumeId], revisions: { resume: saved.revision }, idempotencyKey };
+        await FinishLedger(context, ledgerEntry, 'succeeded', { receipt });
         context.emit({ type: 'resume_updated', requestId: context.requestId, resumeId: args.resumeId, content, reason, revision: saved.revision });
-        return (0, helpers_1.CreateToolResult)(callId, { ok: true, saved: true, resumeId: args.resumeId, revision: saved.revision });
+        return (0, helpers_1.CreateToolResult)(callId, { ok: true, saved: true, resumeId: args.resumeId, revision: saved.revision }, { disposition: 'continue', receipt });
+    }
+    /** 更新档案：仅在宿主注入 profileWrite 端口时可用，否则安全拒绝。 */
+    async function UpdateProfile(context, callId, args) {
+        if (!context.ports.profileWrite)
+            return (0, helpers_1.CreateToolResult)(callId, { ok: false, code: 'RESOURCE_NOT_AUTHORIZED', message: 'Profile update is not available in the current host capability set.' });
+        if (!Array.isArray(args.items) || args.items.length < 1 || args.items.length > 100)
+            throw new Error('UpdateProfile requires one to one hundred items.');
+        const idempotencyKey = CreateIdempotencyKey(context, 'UpdateProfile', HashArguments(args));
+        const ledger = GetLedger(context);
+        const previous = await ledger.FindByIdempotencyKey(idempotencyKey);
+        if (previous?.status === 'succeeded')
+            return (0, helpers_1.CreateToolResult)(callId, { ok: true, saved: true, replayed: true }, { disposition: 'continue', receipt: previous.receipt });
+        if (context.confirmationMode === '需要确认') {
+            // 当前宿主尚未提供 Profile 提案确认通道；不能伪造等待卡，安全拒绝写入。
+            return (0, helpers_1.CreateToolResult)(callId, { ok: false, code: 'RESOURCE_NOT_AUTHORIZED', message: 'Profile confirmation is not yet supported by the host; no profile was changed.', proposalHash: HashArguments(args) });
+        }
+        const result = await context.ports.profileWrite.Save({ profiles: args.items, actor: `agent:${context.requestId}`, idempotencyKey });
+        const receipt = { receiptId: `receipt-${(0, node_crypto_1.randomUUID)()}`, toolDefinitionId: 'UpdateProfile', resourceIds: ['profile'], revisions: result.revision ? { profile: result.revision } : undefined, idempotencyKey };
+        await FinishLedger(context, await StartLedger(context, 'UpdateProfile', args, idempotencyKey), 'succeeded', { receipt });
+        return (0, helpers_1.CreateToolResult)(callId, { ok: true, saved: true, count: result.count }, { disposition: 'continue', receipt });
     }
     /** 展示结构化澄清问题；运行循环在问题卡展示后停止，等待用户下一条真实消息。 */
     function AskUserQuestion(context, callId, args) {
@@ -213,32 +444,124 @@ function CreateToolsModule(ports) {
         });
         context.pendingQuestions.set(context.sessionId, questions);
         context.emit({ type: 'question_requested', requestId: context.requestId, sessionId: context.sessionId, questions });
-        return (0, helpers_1.CreateToolResult)(callId, { ok: true, awaitingUser: true, message: 'The questions are shown to the user. Stop this turn and wait for the next user message.' });
+        return (0, helpers_1.CreateToolResult)(callId, { ok: true, awaitingUser: true, message: 'The questions are shown to the user. Stop this turn and wait for the next user message.' }, { disposition: 'wait_user_input' });
     }
-    /** 创建会话内任务，并同步任务卡所需的结构化事件。 */
-    function CreateTask(context, callId, args) {
-        const task = { id: `task-${(0, node_crypto_1.randomUUID)()}`, title: (0, helpers_1.RequireString)(args.title, 'title', 300), description: typeof args.description === 'string' ? args.description.slice(0, 2000) : '', status: 'in_progress' };
-        context.tasks.set(task.id, task);
-        context.emit({ type: 'task_created', sessionId: context.sessionId, task });
+    /** 创建当前 Run 的 Todo；初始状态为 pending，单次 1–10 条，Run 上限 20 条；写操作计入业务幂等账本。 */
+    async function CreateTodo(context, callId, args) {
+        if (!Array.isArray(args.todos) || args.todos.length < 1 || args.todos.length > 10)
+            throw new Error('CreateTodo requires one to ten todos.');
+        if (context.tasks.size + args.todos.length > 20)
+            throw new Error('This Run already has 20 todos; update or cancel existing todos before creating more.');
+        const normalizedTodos = args.todos.map((item) => {
+            const record = item;
+            return {
+                title: (0, helpers_1.RequireString)(record?.title, 'todo.title', 300),
+                description: typeof record?.description === 'string' ? record.description.slice(0, 2000) : '',
+            };
+        });
+        const idempotencyKey = CreateIdempotencyKey(context, 'CreateTodo', HashArguments(args));
+        const ledger = GetLedger(context);
+        const previous = await ledger.FindByIdempotencyKey(idempotencyKey);
+        if (previous?.status === 'succeeded')
+            return (0, helpers_1.CreateToolResult)(callId, { ok: true, replayed: true, todos: [...context.tasks.values()] });
+        const ledgerEntry = await StartLedger(context, 'CreateTodo', args, idempotencyKey);
+        const created = normalizedTodos.map((item) => {
+            const todo = { id: `todo-${(0, node_crypto_1.randomUUID)()}`, title: item.title, description: item.description, status: 'pending' };
+            context.tasks.set(todo.id, todo);
+            context.emit({ type: 'task_created', sessionId: context.sessionId, task: todo });
+            return todo;
+        });
         context.persistSessionState();
-        return (0, helpers_1.CreateToolResult)(callId, { ok: true, task });
+        const receipt = { receiptId: `receipt-${(0, node_crypto_1.randomUUID)()}`, toolDefinitionId: 'CreateTodo', resourceIds: ['run:todos'], idempotencyKey };
+        await FinishLedger(context, ledgerEntry, 'succeeded', { receipt });
+        return (0, helpers_1.CreateToolResult)(callId, { ok: true, todos: created, tasks: [...context.tasks.values()] }, { receipt });
     }
-    /** 更新会话内任务，拒绝不存在的任务标识。 */
-    function UpdateTask(context, callId, args) {
-        const task = context.tasks.get(args.taskId);
+    /** 更新当前 Run 的 Todo；completed/cancelled 为终态，不允许 blocked；写操作计入业务幂等账本。 */
+    async function UpdateTodo(context, callId, args) {
+        const task = context.tasks.get(args.todoId);
         if (!task)
-            throw new Error('Task not found in this session.');
-        if (args.status && !['pending', 'in_progress', 'completed', 'blocked', 'cancelled'].includes(args.status))
-            throw new Error('Task status is invalid.');
-        if (typeof args.title === 'string')
-            task.title = (0, helpers_1.RequireString)(args.title, 'title', 300);
-        if (typeof args.description === 'string')
-            task.description = args.description.slice(0, 2000);
-        if (args.status)
-            task.status = args.status;
+            throw new Error('Todo not found in this Run.');
+        if (args.status && !['pending', 'inProgress', 'in_progress', 'completed', 'cancelled'].includes(args.status))
+            throw new Error('Todo status is invalid; blocked is not allowed.');
+        const nextTitle = typeof args.title === 'string' ? (0, helpers_1.RequireString)(args.title, 'title', 300) : task.title;
+        const nextDescription = typeof args.description === 'string' ? args.description.slice(0, 2000) : task.description;
+        const nextStatus = args.status ? (args.status === 'in_progress' ? 'inProgress' : args.status) : task.status;
+        const idempotencyKey = CreateIdempotencyKey(context, 'UpdateTodo', HashArguments(args));
+        const ledger = GetLedger(context);
+        const previous = await ledger.FindByIdempotencyKey(idempotencyKey);
+        if (previous?.status === 'succeeded')
+            return (0, helpers_1.CreateToolResult)(callId, { ok: true, replayed: true, todo: task, tasks: [...context.tasks.values()] });
+        const ledgerEntry = await StartLedger(context, 'UpdateTodo', args, idempotencyKey);
+        task.title = nextTitle;
+        task.description = nextDescription;
+        task.status = nextStatus;
         context.persistSessionState();
         context.emit({ type: 'task_updated', sessionId: context.sessionId, task });
-        return (0, helpers_1.CreateToolResult)(callId, { ok: true, task });
+        const receipt = { receiptId: `receipt-${(0, node_crypto_1.randomUUID)()}`, toolDefinitionId: 'UpdateTodo', resourceIds: ['run:todos'], idempotencyKey };
+        await FinishLedger(context, ledgerEntry, 'succeeded', { receipt });
+        return (0, helpers_1.CreateToolResult)(callId, { ok: true, todo: task, tasks: [...context.tasks.values()] }, { receipt });
+    }
+    /** 读取当前 Run 的完整 Todo 列表。 */
+    function ReadTodo(context, callId) {
+        const tasks = [...context.tasks.values()];
+        return (0, helpers_1.CreateToolResult)(callId, { ok: true, todos: tasks, tasks, counts: {
+                pending: tasks.filter((task) => task.status === 'pending').length,
+                inProgress: tasks.filter((task) => task.status === 'inProgress').length,
+                completed: tasks.filter((task) => task.status === 'completed').length,
+                cancelled: tasks.filter((task) => task.status === 'cancelled').length,
+            } });
+    }
+    /** 岗位搜索：仅在宿主注入 jobSearch 端口时可用，否则安全拒绝；结果仅作为 Run 临时数据。 */
+    async function SearchJobs(context, callId, args) {
+        if (!context.ports.jobSearch)
+            return (0, helpers_1.CreateToolResult)(callId, { ok: false, code: 'RESOURCE_NOT_AUTHORIZED', message: 'Job search is not available in the current host capability set.' });
+        const query = (0, helpers_1.RequireString)(args.query, 'query', 500);
+        const result = await context.ports.jobSearch.Search({ query, page: typeof args.page === 'number' ? args.page : 1, signal: context.signal, deadline: context.deadline });
+        return (0, helpers_1.CreateToolResult)(callId, { ok: true, items: result.items, hasMore: result.hasMore, cursor: result.cursor });
+    }
+    /** 读取选中岗位 URL：仅在宿主注入 urlRead 端口时可用，否则安全拒绝。 */
+    async function ReadUrl(context, callId, args) {
+        if (!context.ports.urlRead)
+            return (0, helpers_1.CreateToolResult)(callId, { ok: false, code: 'RESOURCE_NOT_AUTHORIZED', message: 'URL reading is not available in the current host capability set.' });
+        const url = (0, helpers_1.RequireString)(args.url, 'url', 2000);
+        const result = await context.ports.urlRead.Read({ url, signal: context.signal, deadline: context.deadline });
+        return (0, helpers_1.CreateToolResult)(callId, { ok: true, content: result.content, truncated: result.truncated, finalUrl: result.finalUrl, fetchedAt: result.fetchedAt });
+    }
+    /** 执行单个工具调用并应用统一超时/取消；写工具超时标记 STATUS_UNKNOWN，不自动重试。 */
+    async function ExecuteWithTimeout(context, callId, toolName, args, execution) {
+        const meta = GetToolMeta(toolName);
+        const timeoutMs = meta?.timeoutMs ?? 10000;
+        const isWrite = writeTools.has(NormalizeToolName(toolName));
+        return await new Promise((resolve) => {
+            let timer;
+            const timeout = new Promise((resolveTimeout) => {
+                timer = setTimeout(() => {
+                    if (isWrite) {
+                        resolveTimeout((0, helpers_1.CreateToolResult)(callId, { ok: false, code: 'STATUS_UNKNOWN', message: 'Tool execution timed out; the write outcome is unknown and will not be retried without reconciliation.', retryable: false }, { disposition: 'pause' }));
+                    }
+                    else {
+                        resolveTimeout((0, helpers_1.CreateToolResult)(callId, { ok: false, code: 'TIMEOUT', message: 'Tool execution timed out.' }));
+                    }
+                }, timeoutMs);
+            });
+            const abort = () => {
+                clearTimeout(timer);
+                resolve((0, helpers_1.CreateToolResult)(callId, { ok: false, code: 'CANCELLED', message: 'Tool execution was cancelled.' }));
+            };
+            context.signal?.addEventListener('abort', abort, { once: true });
+            Promise.race([execution(), timeout]).then((result) => {
+                clearTimeout(timer);
+                context.signal?.removeEventListener('abort', abort);
+                resolve(result);
+            }).catch((error) => {
+                clearTimeout(timer);
+                context.signal?.removeEventListener('abort', abort);
+                const message = error instanceof Error ? error.message : 'Tool validation failed.';
+                const isAuthorization = /outside|unavailable|not authorized|not accessible/i.test(message);
+                const code = isAuthorization ? 'RESOURCE_NOT_AUTHORIZED' : 'VALIDATION_ERROR';
+                resolve((0, helpers_1.CreateToolResult)(callId, { ok: false, code, message }));
+            });
+        });
     }
     return {
         packageName: '@offerget/agent-modules-defaults',
@@ -246,11 +569,13 @@ function CreateToolsModule(ports) {
         version: '0.1.0',
         sdkVersion: '0.1.0',
         slot: 'tools',
-        capabilities: ['tools:12'],
-        /** 返回内置 12 工具注册表。 */
+        capabilities: ['tools:14'],
+        /** 返回设计文档 MVP 白名单工具；旧名仅兼容旧快照，不再向新模型暴露。 */
         GetToolDefinitions() { return registry; },
-        /** 统一执行管道：Schema 校验与一次修复、写工具幂等、按工具超时、结构化错误码。 */
+        /** 统一执行管道：Schema 校验与一次修复、写工具幂等账本、按工具超时、结构化错误码、统一 disposition。 */
         async ExecuteToolCall(call, context) {
+            const rawName = call.function.name;
+            const toolName = NormalizeToolName(rawName);
             let args;
             try {
                 args = JSON.parse(call.function.arguments || '{}');
@@ -258,10 +583,9 @@ function CreateToolsModule(ports) {
             catch {
                 return (0, helpers_1.CreateToolResult)(call.id, { ok: false, code: 'INVALID_JSON', message: 'Tool arguments are invalid JSON. Please correct the call once.' });
             }
-            const toolName = call.function.name;
             const validator = EnsureToolValidators().get(toolName);
             if (validator && !validator(args)) {
-                const schema = registry.find((tool) => tool.definition.function.name === toolName)?.definition?.function?.parameters;
+                const schema = GetToolMeta(toolName)?.definition?.function?.parameters;
                 const fixed = FixArguments(args, schema ?? {});
                 if (JSON.stringify(fixed) !== JSON.stringify(args) && validator(fixed))
                     args = fixed;
@@ -273,41 +597,29 @@ function CreateToolsModule(ports) {
                 if (cached)
                     return (0, helpers_1.CreateToolResult)(call.id, cached);
             }
-            const meta = registry.find((tool) => tool.definition.function.name === toolName);
-            const timeoutMs = meta?.timeoutMs ?? 10000;
-            try {
-                const execution = (async () => {
-                    switch (toolName) {
-                        case 'Read': return await Read(context, call.id, args);
-                        case 'Glob': return Glob(context, call.id, args);
-                        case 'Grep': return await Grep(context, call.id, args);
-                        case 'ReadProfile': return (0, helpers_1.CreateToolResult)(call.id, { ok: true, profiles: context.profileSnapshot });
-                        case 'ReadResume': return (0, helpers_1.CreateToolResult)(call.id, { ok: true, resume: context.resumeSnapshot });
-                        case 'CreateResume': return CreateResume(context, call.id, args);
-                        case 'EditResume': return EditResume(context, call.id, args);
-                        case 'AskUserQuestion': return AskUserQuestion(context, call.id, args);
-                        case 'TaskCreate': return CreateTask(context, call.id, args);
-                        case 'TaskUpdate': return UpdateTask(context, call.id, args);
-                        case 'TaskList': return (0, helpers_1.CreateToolResult)(call.id, { ok: true, tasks: [...context.tasks.values()] });
-                        case 'TaskGet': return (0, helpers_1.CreateToolResult)(call.id, { ok: true, task: context.tasks.get(args.taskId) ?? null });
-                        default: return (0, helpers_1.CreateToolResult)(call.id, { ok: false, code: 'TOOL_NOT_ALLOWED', message: 'This tool is not available in the resume-copilot scenario.' });
-                    }
-                })();
-                let timer;
-                const timeout = new Promise((resolve) => {
-                    timer = setTimeout(() => resolve((0, helpers_1.CreateToolResult)(call.id, { ok: false, code: 'TIMEOUT', message: 'Tool execution timed out.' })), timeoutMs);
-                });
-                const result = await Promise.race([execution, timeout]);
-                clearTimeout(timer);
-                if (writeTools.has(toolName))
-                    CacheToolResult(context.sessionId, call.id, result);
-                return result;
-            }
-            catch (error) {
-                const message = error instanceof Error ? error.message : 'Tool validation failed.';
-                const isAuthorization = /outside|unavailable|not authorized|not accessible/i.test(message);
-                return (0, helpers_1.CreateToolResult)(call.id, { ok: false, code: isAuthorization ? 'RESOURCE_NOT_AUTHORIZED' : 'VALIDATION_ERROR', message });
-            }
+            const execution = async () => {
+                switch (toolName) {
+                    case 'Read': return await Read(context, call.id, args);
+                    case 'Glob': return Glob(context, call.id, args);
+                    case 'Grep': return await Grep(context, call.id, args);
+                    case 'ReadProfile': return (0, helpers_1.CreateToolResult)(call.id, { ok: true, profiles: context.profileSnapshot });
+                    case 'ReadResume': return (0, helpers_1.CreateToolResult)(call.id, { ok: true, resume: context.resumeSnapshot });
+                    case 'CreateResume': return await CreateResume(context, call.id, args);
+                    case 'UpdateResume': return await UpdateResume(context, call.id, args);
+                    case 'UpdateProfile': return await UpdateProfile(context, call.id, args);
+                    case 'AskUserQuestion': return AskUserQuestion(context, call.id, args);
+                    case 'CreateTodo': return CreateTodo(context, call.id, args);
+                    case 'UpdateTodo': return UpdateTodo(context, call.id, args);
+                    case 'ReadTodo': return ReadTodo(context, call.id);
+                    case 'SearchJobs': return await SearchJobs(context, call.id, args);
+                    case 'ReadUrl': return await ReadUrl(context, call.id, args);
+                    default: return (0, helpers_1.CreateToolResult)(call.id, { ok: false, code: 'TOOL_NOT_ALLOWED', message: 'This tool is not available in the current scenario.' });
+                }
+            };
+            const result = await ExecuteWithTimeout(context, call.id, toolName, args, execution);
+            if (writeTools.has(toolName))
+                CacheToolResult(context.sessionId, call.id, result);
+            return result;
         },
     };
 }

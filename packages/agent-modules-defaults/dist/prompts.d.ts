@@ -1,8 +1,14 @@
-/**
- * OfferGet 的系统与场景提示词集中定义。
- *
- * 模型 Provider 与上下文压缩都从这里读取，便于独立审查和迭代提示词，避免提示词散落在业务实现中。
- */
+import type { CompiledInstructions, PromptFragment, ScenarioSnapshot } from '@offerget/agent-sdk';
+/** 默认场景快照：第一阶段唯一启用场景；投递场景保持禁用占位。 */
+export declare const DefaultScenario: ScenarioSnapshot;
+/** 投递场景第一阶段仅保留禁用占位，不创建 Run、不注册工具。 */
+export declare const ApplicationScenarioPlaceholder: ScenarioSnapshot;
+/** 默认场景的稳定 Prompt 片段；正文集中在此文件，便于 lint 与版本化。 */
+export declare function BuildDefaultPromptFragments(): PromptFragment[];
+/** 编译 Prompt Manifest 与最终指令文本；Provider 只做角色映射，不拥有业务 Prompt。 */
+export declare function CompilePrompt(fragments: PromptFragment[], scenarioId: string, toolPolicyHash: string, compilerVersion?: string): CompiledInstructions;
+/** 默认场景的完整编译指令；宿主可替换 fragments 实现场景化 Prompt。 */
+export declare function BuildDefaultCompiledInstructions(toolPolicyHash?: string): CompiledInstructions;
 /**
  * 求职助手的默认系统与场景约束。
  *

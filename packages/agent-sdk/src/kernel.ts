@@ -1,7 +1,7 @@
 import type { AgentStreamEvent } from './events';
 import type { AgentModules } from './modules';
 import type { RegisteredAgentTool, ToolContext } from './tools';
-import type { AgentMessage, ModelUsage } from './types';
+import type { AgentMessage, CompiledInstructions, ModelUsage, RunDisposition, ScenarioSnapshot } from './types';
 
 /** Kernel 单轮运行输入：全部业务态（历史、任务、交互）经参数与上下文注入，Kernel 自身不持持久化。 */
 export interface KernelRunInput {
@@ -29,11 +29,17 @@ export interface KernelRunInput {
   thresholdPercent: number;
   /** 生成摘要消息标识的注入函数：宿主提供 crypto.randomUUID，保持 Kernel 无 Node 依赖。 */
   createId: () => string;
+  /** 当前 Run 场景快照；缺省由 Kernel 使用宽松默认值，宿主接入场景后必须提供。 */
+  scenario?: ScenarioSnapshot;
+  /** 运行前编译的 Prompt 指令；Provider 不再自行选择业务 Prompt。 */
+  instructions?: CompiledInstructions;
 }
 
 /** Kernel 单轮运行结果：宿主据 outcome 决定事件与错误传播语义。 */
 export interface KernelRunResult {
-  outcome: 'completed' | 'cancelled' | 'circuit_open';
+  outcome: 'completed' | 'cancelled' | 'circuit_open' | 'waiting_user_input' | 'waiting_confirmation' | 'paused';
+  /** 统一运行去向；与 outcome 对齐，宿主可据此驱动 Run 状态机。 */
+  disposition: RunDisposition;
   /** 不含 system 消息的最新 transcript 副本（供宿主持久化）。 */
   transcript: AgentMessage[];
   /** circuit_open 原因：iteration_limit 或压缩失败消息。 */

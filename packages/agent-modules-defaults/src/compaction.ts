@@ -1,9 +1,5 @@
 import type { AgentMessage, CompactionModule } from '@offerget/agent-sdk';
-
-/** 判定真实用户轮次：排除运行时上下文与既有摘要消息。 */
-function IsUserTurn(message: AgentMessage): boolean {
-  return message.role === 'user' && !String(message.content).startsWith('<runtime-context>') && !String(message.content).startsWith('<summary');
-}
+import { DropOldestTurnGroups, IsUserTurn, KeepRecentTurnGroups, SplitTurnGroups } from '@offerget/agent-sdk';
 
 /** 压缩模块：判定、切分与降级原语；摘要生成由 model-provider 承担，重试循环在 Kernel。 */
 export function CreateCompactionModule(): CompactionModule {
@@ -18,25 +14,25 @@ export function CreateCompactionModule(): CompactionModule {
     ShouldCompact(estimate, contextLimit, threshold) {
       return estimate / contextLimit * 100 >= threshold;
     },
-    /** 按真实用户消息切分历史，保留最近五个完整用户轮次及其后续工具链。 */
+    /** 按完整 TurnGroup 切分历史，保留最近五个完整用户轮次及其后续工具链。 */
     SplitRecentTurns(history) {
-      const userIndexes = history.reduce((indexes: number[], message, index) => {
-        if (IsUserTurn(message)) indexes.push(index);
-        return indexes;
-      }, []);
-      if (userIndexes.length <= 5) return { earlier: [], recent: history };
-      const start = userIndexes[userIndexes.length - 5];
-      return { earlier: history.slice(0, start), recent: history.slice(start) };
+      const groups = SplitTurnGroups(history);
+      if (groups.length <= 5) return { earlier: [], recent: history };
+      const recentGroups = groups.slice(-5);
+      return {
+        earlier: groups.slice(0, -5).flatMap((group) => [group.userMessage, ...group.messages]),
+        recent: recentGroups.flatMap((group) => [group.userMessage, ...group.messages]),
+      };
     },
-    /** 从最早的完整轮次开始截断，单次最多移除五轮以供压缩重试。 */
+    /** 从最早的完整 TurnGroup 开始截断，单次最多移除五组；不会拆开工具链。 */
     DropOldestTurns(history, count) {
-      const userIndexes = history.reduce((indexes: number[], message, index) => {
-        if (IsUserTurn(message)) indexes.push(index);
-        return indexes;
-      }, []);
-      if (!userIndexes.length) return history.slice(Math.min(5, history.length));
-      const cutoff = userIndexes[Math.min(count, userIndexes.length - 1)] ?? history.length;
-      return history.slice(cutoff);
+      return DropOldestTurnGroups(history, count);
+    },
+    /** 保留最近 count 个完整用户轮次（供 Kernel 历史快照使用）。 */
+    KeepRecentTurnGroups(history: AgentMessage[], count: number): AgentMessage[] {
+      return KeepRecentTurnGroups(history, count);
     },
   };
 }
+
+export { IsUserTurn, SplitTurnGroups };

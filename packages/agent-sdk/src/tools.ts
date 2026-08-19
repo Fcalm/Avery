@@ -1,11 +1,61 @@
 import type { AgentStreamEvent } from './events';
-import type { AttachmentDescriptor, ProfileSnapshotItem, ResumeSnapshot, TaskItem, ToolExecutionResult } from './types';
+import type { AttachmentDescriptor, ProfileSnapshotItem, ResumeSnapshot, TaskItem, ToolExecutionResult, ToolLedgerEntry, ToolReceipt } from './types';
 
-/** 已注册工具：定义 + 超时 + 并发安全标记；并发屏障由 Kernel 调度。 */
+/** 已注册工具：定义 + 超时 + 并发安全标记 + 设计文档要求的副作用/风险/确认/幂等/资源键/限额/场景白名单；并发屏障由 Kernel 调度。 */
 export interface RegisteredAgentTool {
   definition: { type: 'function'; function: { name: string; description: string; parameters: Record<string, unknown> } };
   timeoutMs: number;
   isConcurrencySafe: boolean;
+  /** 副作用等级；`none` 才可能并行。 */
+  sideEffect?: 'none' | 'local_write' | 'external_action';
+  /** 风险等级；确认策略与最终授权由 Harness/Policy 决定。 */
+  risk?: 'low' | 'medium' | 'high';
+  /** 确认策略：never 不要求确认；scenario_policy 由场景策略决定；always 始终要求提案。 */
+  confirmation?: 'never' | 'scenario_policy' | 'always';
+  /** 幂等要求；required 的写工具必须使用业务幂等键。 */
+  idempotency?: 'not_needed' | 'required';
+  /** 调度器内部资源键；返回资源标识用于只读并行与写屏障。 */
+  resourceKeys?: (input: Record<string, unknown>) => string[];
+  /** 工具限额；缺省时由调用方使用 timeoutMs 与通用默认值。 */
+  limits?: {
+    timeoutMs?: number;
+    maxInputBytes?: number;
+    maxOutputBytes?: number;
+    maxRecords?: number;
+  };
+  /** 允许使用该工具的场景 ID 白名单；缺省表示仅默认场景。 */
+  allowedScenarios?: string[];
+}
+
+/** 业务幂等键与工具账本端口：写工具在执行前落 started，完成后落 succeeded/failed/status_unknown。 */
+export interface ToolLedgerPort {
+  Start(entry: Omit<ToolLedgerEntry, 'status' | 'receipt' | 'errorCode' | 'finishedAt'>): Promise<void> | void;
+  Finish(ledgerId: string, status: ToolLedgerEntry['status'], extra?: { receipt?: ToolReceipt; errorCode?: string; finishedAt?: number }): Promise<void> | void;
+  FindByIdempotencyKey(idempotencyKey: string): Promise<ToolLedgerEntry | undefined> | ToolLedgerEntry | undefined;
+}
+
+/** Profile 写端口：宿主未提供时 UpdateProfile 安全拒绝，不扩大权限。 */
+export interface ProfileWritePort {
+  Save(input: { profiles: ProfileSnapshotItem[]; baseRevision?: number; actor: string; idempotencyKey?: string }): Promise<{ count: number; revision?: number }>;
+}
+
+/** 岗位搜索端口：MVP 阶段宿主未注入时工具安全拒绝，不允许任意网络能力。 */
+export interface JobSearchPort {
+  Search(input: { query: string; page?: number; signal?: AbortSignal; deadline?: number }): Promise<{
+    items: Array<{ id: string; title: string; company?: string; url?: string; summary?: string; source?: string }>;
+    hasMore: boolean;
+    cursor?: string;
+  }>;
+}
+
+/** ReadUrl 端口：只允许 http/https，宿主负责 SSRF、来源与预算限制。 */
+export interface UrlReadPort {
+  Read(input: { url: string; signal?: AbortSignal; deadline?: number }): Promise<{
+    content: string;
+    truncated: boolean;
+    finalUrl: string;
+    fetchedAt: string;
+  }>;
 }
 
 /** 文件读取端口：由宿主注入（agent-file-reader）；路径校验与资源边界由宿主持有，模块不可绕过。 */
@@ -60,11 +110,14 @@ export interface ResumeWritePort {
   Save(input: { resume: ResumeSnapshot; baseRevision?: number }): Promise<{ id: string; revision: number }>;
 }
 
-/** Agent 权限上限内的窄端口集合：无岗位/投递/导出/浏览器/Shell/任意网络能力。 */
+/** Agent 权限上限内的窄端口集合：默认只含文件/简历；岗位与 Profile 端口由宿主按场景注入，缺省安全拒绝。 */
 export interface ToolPorts {
   file: FileReadPort;
   resumeRead: ResumeReadPort;
   resumeWrite: ResumeWritePort;
+  profileWrite?: ProfileWritePort;
+  jobSearch?: JobSearchPort;
+  urlRead?: UrlReadPort;
 }
 
 /** 宿主逐会话构造的工具执行上下文：承载只读快照、交互态、持久化回调与事件出口。 */
@@ -88,4 +141,14 @@ export interface ToolContext {
   emit: (event: AgentStreamEvent) => void;
   /** 工具改动会话状态后回调宿主持久化（如任务保存）。 */
   persistSessionState: () => void;
+  /** 当前 Run 标识；Todo 等 Run 级实体优先使用该标识作用域。 */
+  runId?: string;
+  /** 当前 Execution 的取消信号；所有可取消异步调用必须接收。 */
+  signal?: AbortSignal;
+  /** 绝对截止时间（epoch ms）；超时与取消共用。 */
+  deadline?: number;
+  /** 写工具账本端口；宿主未注入时模块使用内存兜底，重启后不能保证跨进程幂等。 */
+  ledger?: ToolLedgerPort;
+  /** 当前 Run 的场景快照 ID；用于工具白名单校验与审计。 */
+  scenarioSnapshotId?: string;
 }

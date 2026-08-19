@@ -1,4 +1,4 @@
-﻿import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type CSSProperties, type KeyboardEvent, type MouseEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type CSSProperties, type KeyboardEvent, type MouseEvent } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useLayoutEffect } from 'react';
 import type { AgentStreamEvent } from '@offerget/contracts';
@@ -255,6 +255,18 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
     }
     if ((event.type === 'task_created' || event.type === 'task_updated') && event.task) { setAgentTask(event.task); setIsTaskActive(true); return; }
     if (event.type === 'question_requested' && event.questions) { setPendingQuestions(event.questions); setQuestionAnswers(Object.fromEntries(event.questions.map((question) => [question.id, question.options[0] ?? '其他']))); setOtherAnswers({}); return; }
+    if (event.type === 'waiting_user_input' || event.type === 'waiting_confirmation' || event.type === 'paused') {
+      const waitingRequestId = activeRequestRef.current;
+      if (!waitingRequestId || event.requestId !== waitingRequestId) return;
+      const placeholder = activePlaceholderRef.current;
+      const waitingSessionId = placeholder?.conversationId ?? null;
+      if (placeholder) completeMessageRef.current.mutate({ conversationId: placeholder.conversationId, messageId: `reply-${placeholder.requestId}`, content: placeholder.content, thinkingContent: placeholder.thinkingContent });
+      activePlaceholderRef.current = null;
+      activeRequestRef.current = null;
+      if (event.type === 'paused') ShowNotice('Agent 运行已暂停');
+      if (waitingSessionId) void RefreshSessionAssistantState(waitingSessionId);
+      return;
+    }
     const requestId = activeRequestRef.current;
     if (!requestId || event.requestId !== requestId) return;
     const completedSessionId = activePlaceholderRef.current?.conversationId ?? null;

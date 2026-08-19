@@ -1,4 +1,5 @@
-import type { AgentMessage, KernelRunInput, KernelRunResult, ToolCallFragment } from '@offerget/agent-sdk';
+import type { AgentMessage, KernelRunInput, KernelRunResult, RunDisposition, ToolCallFragment, ToolDisposition, ToolExecutionResult } from '@offerget/agent-sdk';
+import { KeepRecentTurnGroups } from '@offerget/agent-sdk';
 
 /** 从 Trace 正文中移除常见密钥、Bearer 凭据与超长内容；纯函数，供内核事件脱敏。 */
 export function ScrubTraceContent(value: unknown): string {
@@ -14,9 +15,30 @@ function EstimateTraceTokens(value: unknown): number {
   return Math.max(1, Math.ceil(units));
 }
 
-/** 提取不含 system 消息的 transcript 副本，供宿主持久化会话历史。 */
+/** 提取不含 system 消息的 transcript，并按完整 TurnGroup 保留最近 5 轮，避免拆开工具链。 */
 function HistorySnapshot(transcript: AgentMessage[]): AgentMessage[] {
-  return transcript.filter((message) => message.role !== 'system').slice(-40);
+  return KeepRecentTurnGroups(transcript.filter((message) => message.role !== 'system'), 5);
+}
+
+/** 从工具结果解析统一 disposition；优先读取结构化字段，其次兼容旧 payload 标记。 */
+function ParseToolDisposition(result: ToolExecutionResult): ToolDisposition {
+  if (result.disposition && result.disposition !== 'continue') return result.disposition;
+  try {
+    const payload = JSON.parse(result.content) as { awaitingUser?: unknown; code?: unknown };
+    if (payload.awaitingUser === true) return 'wait_user_input';
+    if (payload.code === 'CONFIRMATION_REQUIRED') return 'wait_confirmation';
+    if (payload.code === 'STATUS_UNKNOWN' || payload.code === 'PAUSED') return 'pause';
+  } catch { /* 非 JSON 工具结果按 continue 处理。 */ }
+  return 'continue';
+}
+
+/** 构造屏障后未执行工具的结果；不得产生副作用。 */
+function CreateSkippedResult(call: ToolCallFragment): ToolExecutionResult {
+  return {
+    role: 'tool',
+    tool_call_id: call.id,
+    content: JSON.stringify({ ok: false, code: 'SKIPPED_AFTER_WAIT', message: 'Skipped because an earlier tool in this batch is waiting for user input or confirmation.' }),
+  };
 }
 
 /** 按真实用户轮次压缩早期历史；重试循环内置 3 次熔断，全部失败抛出压缩错误（宿主据此传播）。 */
@@ -24,7 +46,7 @@ async function CompressIfNeeded(input: KernelRunInput, history: AgentMessage[], 
   const { modules, toolArray } = input;
   const { contextLimit, threshold } = modules.modelProvider.GetRuntimeLimits();
   const estimate = modules.modelProvider.EstimateTokens({
-    system: modules.modelProvider.SystemPrompt(),
+    system: input.instructions?.compiled ?? modules.modelProvider.SystemPrompt(),
     tools: toolArray,
     messages: [...history, { role: 'user', content: input.userContent }],
   });
@@ -59,22 +81,79 @@ async function CompressIfNeeded(input: KernelRunInput, history: AgentMessage[], 
   throw new Error('Context compression failed after three retries. Start a new conversation or shorten the request.');
 }
 
-/** 按 tool_call 顺序执行工具；并发屏障由 isConcurrencySafe 标记区分，当前默认串行以严格保持工具结果与宿主副作用顺序。 */
-async function RunToolCalls(input: KernelRunInput, calls: ToolCallFragment[]): Promise<AgentMessage[]> {
-  const results: AgentMessage[] = [];
+/** 按 tool_call 顺序执行工具批次；只读并行、写/交互屏障，等待后跳过未执行节点。 */
+async function RunToolBatch(input: KernelRunInput, calls: ToolCallFragment[]): Promise<{ results: AgentMessage[]; disposition: RunDisposition }> {
+  const results: AgentMessage[] = new Array(calls.length);
+  const phases: ToolCallFragment[][] = [];
+  let currentPhase: ToolCallFragment[] = [];
+  const activeResourceKeys = new Set<string>();
+
   for (const call of calls) {
-    const argumentsText = ScrubTraceContent(call.function.arguments);
-    input.modules.observability.AppendTraceEvent(input.requestId, 'tool_call', { name: call.function.name, arguments: argumentsText }, EstimateTraceTokens(argumentsText));
-    const result = await input.modules.tools.ExecuteToolCall(call, input.toolContext);
-    results.push(result);
-    let resultState: { ok: boolean; code: string; message: string } = { ok: false, code: 'UNPARSEABLE', message: '' };
-    try {
-      const parsed = JSON.parse(result.content);
-      resultState = { ok: parsed.ok === true, code: parsed.code, message: ScrubTraceContent(String(parsed.message ?? '').slice(0, 200)) };
-    } catch { /* 工具结果无法解析时保留默认失败标记。 */ }
-    input.modules.observability.AppendTraceEvent(input.requestId, 'tool_result', { name: call.function.name, ...resultState }, EstimateTraceTokens(resultState.message));
+    const meta = input.toolArray.find((tool) => tool.definition.function.name === call.function.name);
+    let args: Record<string, unknown> = {};
+    try { args = JSON.parse(call.function.arguments || '{}'); } catch { /* 参数由工具模块负责校验。 */ }
+    const keys = meta?.resourceKeys?.(args) ?? [];
+    const canParallel = meta
+      ? meta.sideEffect === 'none' && meta.isConcurrencySafe !== false
+      : false;
+    const conflicts = keys.some((key) => activeResourceKeys.has(key));
+    if (!canParallel) {
+      // 写操作、交互和未知工具都是屏障：独立成阶段，不能与后续调用并行。
+      if (currentPhase.length) phases.push(currentPhase);
+      phases.push([call]);
+      currentPhase = [];
+      activeResourceKeys.clear();
+    } else if (conflicts) {
+      if (currentPhase.length) phases.push(currentPhase);
+      currentPhase = [call];
+      activeResourceKeys.clear();
+      keys.forEach((key) => activeResourceKeys.add(key));
+    } else {
+      currentPhase.push(call);
+      keys.forEach((key) => activeResourceKeys.add(key));
+    }
   }
-  return results;
+  if (currentPhase.length) phases.push(currentPhase);
+
+  let disposition: RunDisposition = 'continue';
+  let executedCount = 0;
+  for (const phase of phases) {
+    if (disposition !== 'continue') break;
+    const phaseResults = await Promise.all(phase.map(async (call) => {
+      const argumentsText = ScrubTraceContent(call.function.arguments);
+      input.modules.observability.AppendTraceEvent(input.requestId, 'tool_call', { name: call.function.name, arguments: argumentsText }, EstimateTraceTokens(argumentsText));
+      const result = await input.modules.tools.ExecuteToolCall(call, input.toolContext);
+      let resultState: { ok: boolean; code: string; message: string } = { ok: false, code: 'UNPARSEABLE', message: '' };
+      try {
+        const parsed = JSON.parse(result.content) as { ok?: unknown; code?: unknown; message?: unknown };
+        resultState = { ok: parsed.ok === true, code: String(parsed.code ?? ''), message: ScrubTraceContent(String(parsed.message ?? '').slice(0, 200)) };
+      } catch { /* 工具结果无法解析时保留默认失败标记。 */ }
+      input.modules.observability.AppendTraceEvent(input.requestId, 'tool_result', { name: call.function.name, ...resultState }, EstimateTraceTokens(resultState.message));
+      return { call, result };
+    }));
+    for (const { call, result } of phaseResults) {
+      const index = calls.findIndex((item) => item.id === call.id);
+      if (index >= 0) results[index] = result;
+      const callDisposition = ParseToolDisposition(result);
+      if (disposition === 'continue') {
+        if (callDisposition === 'wait_user_input') disposition = 'waiting_user_input';
+        else if (callDisposition === 'wait_confirmation') disposition = 'waiting_confirmation';
+        else if (callDisposition === 'pause') disposition = 'paused';
+      }
+    }
+    executedCount += phase.length;
+    if (disposition !== 'continue') {
+      for (const call of calls.slice(executedCount)) {
+        const index = calls.findIndex((item) => item.id === call.id);
+        if (index >= 0) results[index] = CreateSkippedResult(call);
+      }
+    }
+  }
+
+  for (let index = 0; index < calls.length; index += 1) {
+    if (!results[index]) results[index] = CreateSkippedResult(calls[index]);
+  }
+  return { results, disposition };
 }
 
 /** 纯 Agent 内核：Send 的 while 状态机。宿主负责配置、快照、持久化与事件出口；Kernel 不持有 config/凭据/业务态。 */
@@ -87,21 +166,23 @@ export async function RunAgentLoop(input: KernelRunInput): Promise<KernelRunResu
   let assistantContent = '';
   let reasoningContent = '';
   let turn = 0;
+  let toolCallCount = 0;
+  const maxTurns = input.scenario?.budgets?.maxModelTurns ?? input.maxTurns;
+  const maxToolCalls = input.scenario?.budgets?.maxToolCalls ?? 12;
 
   try {
     // 压缩熔断错误进入 catch，统一 FinishTrace/emit error（旧实现压缩在 try 外，抛错会跳过 Trace 收尾导致 running 幽灵 Trace）。
     requestHistory = await CompressIfNeeded(input, input.requestHistory, () => { compressionCount += 1; });
     transcript = [{ role: 'system', content: input.systemContext }, ...requestHistory, { role: 'user', content: input.userContent }];
-    inputTokens = modules.modelProvider.EstimateTokens({ system: modules.modelProvider.SystemPrompt(), tools: input.toolArray, messages: transcript });
+    inputTokens = modules.modelProvider.EstimateTokens({ system: input.instructions?.compiled ?? modules.modelProvider.SystemPrompt(), tools: input.toolArray, messages: transcript });
     while (true) {
       // 取消不经循环顶部轮询：模型流经 signal 中止抛错，由 catch 统一 FinishTrace 并 emit cancelled。
-      if (turn >= input.maxTurns) {
-        // 熔断时仍落库当前 transcript（与原运行时一致），宿主据此持久化恢复。
+      if (turn >= maxTurns) {
         input.histories.set(input.sessionId, HistorySnapshot(transcript));
         modules.observability.RecordLog('WARN', 'conversation.circuit_open', 'iteration_limit');
         modules.observability.FinishTrace(requestId, 'circuit_open', 'Circuit opened: iteration_limit. Transcript preserved for automatic recovery.');
         emit({ type: 'error', requestId, message: '本轮迭代达到上限，已暂停；会话上下文与历史已保留，可继续提问' });
-        return { outcome: 'circuit_open', reason: 'iteration_limit', transcript: HistorySnapshot(transcript), inputTokens, compressionCount };
+        return { outcome: 'circuit_open', disposition: 'paused', reason: 'iteration_limit', transcript: HistorySnapshot(transcript), inputTokens, compressionCount };
       }
       turn += 1;
       modules.observability.AppendTraceEvent(requestId, 'loop_turn', { turn });
@@ -111,6 +192,7 @@ export async function RunAgentLoop(input: KernelRunInput): Promise<KernelRunResu
         history: transcript,
         tools: input.toolArray,
         signal,
+        instructions: input.instructions,
         onDelta: (delta) => {
           if (delta.reasoning) { reasoningContent += delta.reasoning; emit({ type: 'thinking_delta', requestId, delta: delta.reasoning }); }
           if (delta.content) { assistantContent += delta.content; emit({ type: 'content_delta', requestId, delta: delta.content }); }
@@ -125,12 +207,24 @@ export async function RunAgentLoop(input: KernelRunInput): Promise<KernelRunResu
       };
       transcript = [...transcript, assistantMessage];
       if (!completion.toolCalls.length) break;
-      const results = await RunToolCalls(input, completion.toolCalls);
+      toolCallCount += completion.toolCalls.length;
+      if (toolCallCount > maxToolCalls) {
+        input.histories.set(input.sessionId, HistorySnapshot(transcript));
+        modules.observability.RecordLog('WARN', 'conversation.circuit_open', 'tool_call_limit');
+        modules.observability.FinishTrace(requestId, 'circuit_open', 'Circuit opened: tool_call_limit.');
+        emit({ type: 'error', requestId, message: '本轮工具调用达到上限，已暂停；可继续提问或缩小目标' });
+        return { outcome: 'circuit_open', disposition: 'paused', reason: 'tool_call_limit', transcript: HistorySnapshot(transcript), inputTokens, compressionCount };
+      }
+      const { results, disposition } = await RunToolBatch(input, completion.toolCalls);
       transcript = [...transcript, ...results];
-      const awaitingUser = results.some((result) => {
-        try { return JSON.parse(result.content).awaitingUser === true; } catch { return false; }
-      });
-      if (awaitingUser) break;
+      if (disposition !== 'continue') {
+        const waitOutcome = disposition === 'waiting_user_input' ? 'waiting_user_input' : disposition === 'waiting_confirmation' ? 'waiting_confirmation' : 'paused';
+        input.histories.set(input.sessionId, HistorySnapshot(transcript));
+        modules.observability.RecordLog('INFO', `conversation.${waitOutcome}`, `turns=${turn}`);
+        modules.observability.FinishTrace(requestId, waitOutcome, `Waiting or paused after ${turn} loop turn(s).`);
+        emit({ type: waitOutcome, requestId, message: waitOutcome === 'waiting_user_input' ? '等待用户回答问题' : waitOutcome === 'waiting_confirmation' ? '等待用户确认提案' : '运行已暂停' });
+        return { outcome: waitOutcome, disposition: waitOutcome, transcript: HistorySnapshot(transcript), inputTokens, compressionCount };
+      }
     }
     input.histories.set(input.sessionId, HistorySnapshot(transcript));
     modules.observability.RecordLog('INFO', 'conversation.completed', `turns=${turn}`);
@@ -139,12 +233,12 @@ export async function RunAgentLoop(input: KernelRunInput): Promise<KernelRunResu
     modules.observability.AppendTraceEvent(requestId, 'assistant_message', { content: responseText, reasoning: reasoningText }, EstimateTraceTokens(`${responseText}\n${reasoningText}`));
     modules.observability.FinishTrace(requestId, 'completed', `Completed in ${turn} loop turn(s).`);
     emit({ type: 'completed', requestId, content: assistantContent, thinkingContent: reasoningContent });
-    return { outcome: 'completed', transcript: HistorySnapshot(transcript), inputTokens, compressionCount };
+    return { outcome: 'completed', disposition: 'completed', transcript: HistorySnapshot(transcript), inputTokens, compressionCount };
   } catch (error) {
     if (signal.aborted) {
       modules.observability.FinishTrace(requestId, 'cancelled', 'Cancelled by user.');
       emit({ type: 'cancelled', requestId });
-      return { outcome: 'cancelled', transcript: HistorySnapshot(transcript), inputTokens, compressionCount };
+      return { outcome: 'cancelled', disposition: 'cancelled', transcript: HistorySnapshot(transcript), inputTokens, compressionCount };
     }
     const message = error instanceof Error ? error.message : 'Agent request failed.';
     const compressionExhausted = /compression/i.test(message);

@@ -180,14 +180,15 @@ function CreateProviderModule(ports) {
             const available = [...new Set(models)].sort((left, right) => left.localeCompare(right));
             return { models: available.length ? available : DefaultDeepSeekModels };
         },
-        /** 调用兼容 OpenAI Chat Completions 的流式接口并转发思考与正文增量。 */
+        /** 调用兼容 OpenAI Chat Completions 的流式接口并转发思考与正文增量；畸形 SSE 直接失败，不静默忽略。 */
         async StreamCompletion(request) {
             await EnsureConfig();
+            const systemContent = request.instructions?.compiled ?? prompts_1.SystemPrompt;
             const response = await providerFetch(`${config.baseUrl}/chat/completions`, {
                 method: 'POST',
                 signal: request.signal,
                 headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${config.apiKey}` },
-                body: JSON.stringify({ model: request.model, stream: true, ...(config.provider === 'DeepSeek' ? { stream_options: { include_usage: true } } : {}), messages: [{ role: 'system', content: prompts_1.SystemPrompt }, ...request.history], tools: request.tools.map((tool) => tool.definition), tool_choice: 'auto' }),
+                body: JSON.stringify({ model: request.model, stream: true, ...(config.provider === 'DeepSeek' ? { stream_options: { include_usage: true } } : {}), messages: [{ role: 'system', content: systemContent }, ...request.history], tools: request.tools.map((tool) => tool.definition), tool_choice: 'auto' }),
             });
             if (!response.ok || !response.body)
                 throw new Error(`Model request failed (${response.status}).`);
@@ -197,30 +198,45 @@ function CreateProviderModule(ports) {
             let reasoningContent = '';
             let usage;
             const parse = CreateSseParser((data) => {
+                let payload;
                 try {
-                    const payload = JSON.parse(data);
-                    const reportedUsage = NormalizeModelUsage(payload?.usage);
-                    if (reportedUsage)
-                        usage = reportedUsage;
-                    const choice = payload?.choices?.[0]?.delta || {};
-                    const reasoning = typeof choice.reasoning_content === 'string' ? choice.reasoning_content : '';
-                    const deltaContent = typeof choice.content === 'string' ? choice.content : '';
-                    for (const deltaCall of choice.tool_calls ?? []) {
-                        const index = Number(deltaCall.index ?? 0);
-                        const call = toolCalls[index] ?? { id: '', type: 'function', function: { name: '', arguments: '' } };
-                        call.id += typeof deltaCall.id === 'string' ? deltaCall.id : '';
-                        call.function.name += typeof deltaCall.function?.name === 'string' ? deltaCall.function.name : '';
-                        call.function.arguments += typeof deltaCall.function?.arguments === 'string' ? deltaCall.function.arguments : '';
-                        toolCalls[index] = call;
-                    }
-                    if (reasoning)
-                        request.onDelta({ reasoning, content: '' });
-                    if (deltaContent)
-                        request.onDelta({ reasoning: '', content: deltaContent });
-                    reasoningContent += reasoning;
-                    content += deltaContent;
+                    payload = JSON.parse(data);
                 }
-                catch { /* Ignore malformed provider chunks. */ }
+                catch {
+                    throw new Error('PROTOCOL_INVALID_SSE_JSON: Provider sent a malformed SSE data block.');
+                }
+                const record = payload && typeof payload === 'object' ? payload : null;
+                if (!record)
+                    throw new Error('PROTOCOL_INVALID_SSE_JSON: Provider SSE data is not an object.');
+                const reportedUsage = NormalizeModelUsage(record?.usage);
+                if (reportedUsage)
+                    usage = reportedUsage;
+                const choices = Array.isArray(record?.choices) ? record.choices : null;
+                if (record?.choices !== undefined && !Array.isArray(record?.choices))
+                    throw new Error('PROTOCOL_INVALID_SSE_SHAPE: Provider delta shape is invalid.');
+                const choice = choices?.[0] && typeof choices[0] === 'object' ? choices[0].delta : undefined;
+                const reasoning = typeof choice?.reasoning_content === 'string' ? choice.reasoning_content : '';
+                const deltaContent = typeof choice?.content === 'string' ? choice.content : '';
+                for (const deltaCall of Array.isArray(choice?.tool_calls) ? choice.tool_calls : []) {
+                    const deltaRecord = deltaCall && typeof deltaCall === 'object' ? deltaCall : null;
+                    if (!deltaRecord)
+                        throw new Error('PROTOCOL_INVALID_SSE_SHAPE: Tool call delta is not an object.');
+                    const index = Number(deltaRecord.index ?? 0);
+                    if (!Number.isSafeInteger(index) || index < 0 || index > 127)
+                        throw new Error('PROTOCOL_INVALID_SSE_SHAPE: Tool call index is invalid.');
+                    const call = toolCalls[index] ?? { id: '', type: 'function', function: { name: '', arguments: '' } };
+                    const fn = deltaRecord.function && typeof deltaRecord.function === 'object' ? deltaRecord.function : null;
+                    call.id += typeof deltaRecord.id === 'string' ? deltaRecord.id : '';
+                    call.function.name += typeof fn?.name === 'string' ? fn.name : '';
+                    call.function.arguments += typeof fn?.arguments === 'string' ? fn.arguments : '';
+                    toolCalls[index] = call;
+                }
+                if (reasoning)
+                    request.onDelta({ reasoning, content: '' });
+                if (deltaContent)
+                    request.onDelta({ reasoning: '', content: deltaContent });
+                reasoningContent += reasoning;
+                content += deltaContent;
             });
             const reader = response.body.getReader();
             while (true) {
@@ -229,7 +245,12 @@ function CreateProviderModule(ports) {
                     break;
                 parse(decoder.decode(value, { stream: true }));
             }
-            return { content, reasoningContent, toolCalls: toolCalls.filter((call) => call.id && call.function.name), ...(usage ? { usage } : {}) };
+            const completedCalls = toolCalls.filter((call) => call.id && call.function.name);
+            const incomplete = toolCalls.find((call) => call.id || call.function.name || call.function.arguments);
+            if (incomplete && !completedCalls.some((call) => call.id === incomplete.id)) {
+                throw new Error('PROTOCOL_INCOMPLETE_TOOL_CALL: Provider finished without completing a tool call.');
+            }
+            return { content, reasoningContent, toolCalls: completedCalls, ...(usage ? { usage } : {}) };
         },
         /** 通过不带工具的非流式模型调用生成可替换历史的应用摘要。 */
         async CreateSummary(model, messages) {

@@ -2,7 +2,7 @@ import type { TaskItem } from './types';
 
 /** Kernel 发给宿主的流式事件：与 contracts AgentStreamEvent 结构保持一致，agent-sdk 保持零运行时依赖。 */
 export interface AgentStreamEvent {
-  type: 'thinking_delta' | 'content_delta' | 'completed' | 'cancelled' | 'error' | 'resume_updated' | 'resume_created' | 'resume_confirmation' | 'task_created' | 'task_updated' | 'question_requested';
+  type: 'thinking_delta' | 'content_delta' | 'completed' | 'cancelled' | 'error' | 'resume_updated' | 'resume_created' | 'resume_confirmation' | 'task_created' | 'task_updated' | 'question_requested' | 'waiting_user_input' | 'waiting_confirmation' | 'paused';
   requestId?: string;
   sessionId?: string;
   delta?: string;
