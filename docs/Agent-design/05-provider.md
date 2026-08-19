@@ -1,4 +1,4 @@
-# Provider：多供应商协议适配
+# Provider：DeepSeek 与 OpenAI 协议适配
 
 ## 1. 目标边界
 
@@ -46,7 +46,7 @@ type ModelStreamEvent =
   | { type: 'error'; error: ProviderError };
 ```
 
-Loop 只消费这些事件，不解析 SSE/JSONL，也不判断 `choices[0].delta`、content block 或 candidate。
+Loop 只消费这些事件，不解析 SSE/JSONL，也不判断 DeepSeek 的 `choices[0].delta` 或 OpenAI Responses 的具体事件结构。
 
 ## 3. Adapter 接口
 
@@ -84,17 +84,47 @@ interface ModelCapabilities {
 
 模型列表接口返回“存在”不代表支持当前 Agent 场景。运行前 Harness 必须检查所需能力，例如工具调用、上下文长度和流式 Usage。
 
-## 4. 首批供应商安排
+## 4. 供应商范围
 
-| Adapter | 建议协议 | 首期定位 | 关键差异 |
+### 4.1 首批正式支持
+
+| Adapter | 协议 | 首期定位 | 关键差异 |
 | --- | --- | --- | --- |
-| DeepSeek | 原生 OpenAI-style Chat Completions | V1 默认 | 多轮由客户端带历史；thinking + tool calls 可能要求回传 provider-specific reasoning state |
-| Custom OpenAI-compatible | Chat Completions 兼容子集 | V1 支持 | 不能假设 models、stream usage、reasoning 或 strict schema 均兼容 |
-| OpenAI | Responses API | 接口预留，后续启用 | 事件类型、response item、function call/output 与 Chat Completions 不同 |
-| Anthropic | Messages API | 接口预留，后续启用 | tool use/result 是 content block；system 和 stop reason 语义不同 |
-| Gemini | Interactions 或 GenerateContent Adapter | 接口预留，视觉服务可独立启用 | contents/parts、functionCall/functionResponse、角色和 Usage 映射不同 |
+| DeepSeek | 官方 Chat Completions API | V1 默认 | 多轮历史由客户端维护；thinking + tool calls 可能要求回传 Provider-specific reasoning state |
+| OpenAI | 官方 Responses API | V1 支持 | 使用 Responses 事件、response item 和 function call/output 语义，不能按 Chat Completions 解析 |
 
-不能用一个 `baseUrl + /chat/completions` 类覆盖所有 Provider。OpenAI-compatible 只能是一个明确声明能力有限的 Adapter 类型。
+“正式支持”意味着必须同时具备：
+
+- 产品配置入口和凭据存储。
+- 模型发现或受控模型清单。
+- 流式文本、工具调用、Usage、取消和错误映射。
+- Prompt、工具 Schema 和 Provider Continuation 的契约测试。
+- Mock/fixture、真实联调开关和发布回归门禁。
+
+DeepSeek 与 OpenAI 必须使用独立 Adapter。不能因为 DeepSeek 采用 OpenAI 风格的部分结构，就让二者共享一套未经区分的流解析和消息映射。
+
+首批不支持自定义 OpenAI-compatible Endpoint，不提供自定义 Base URL、任意 Header 或第三方兼容服务配置。
+
+### 4.2 MiMo 候选扩展
+
+MiMo 只作为候选 Provider，不属于首批支持范围：
+
+```ts
+{
+  id: 'mimo',
+  status: 'candidate',
+  userConfigEnabled: false
+}
+```
+
+在完成官方 API 稳定性、工具调用、流式 Usage、上下文长度、推理状态和错误语义验证前：
+
+- 不在用户设置中展示 MiMo。
+- 不把 MiMo 模型加入正式模型列表。
+- 不承诺 Prompt、工具或 Continuation 与现有 Adapter 兼容。
+- 不通过“OpenAI-compatible”名义直接复用 DeepSeek/OpenAI Adapter。
+
+如果后续验证通过，应新增独立 MiMo Adapter、fixture 和能力快照，并通过与 DeepSeek/OpenAI 相同的发布门禁。
 
 ## 5. 消息与工具映射
 
@@ -171,9 +201,9 @@ interface ProviderError {
 
 - API Key 只以 Credential Reference 出现在 Provider 配置，实际值由 Desktop 安全存储端口按请求读取。
 - Renderer、业务数据库、导出、Prompt、工具结果和 Trace 不保存 Key。
-- 自定义 Base URL 默认要求 HTTPS；localhost 开发服务需显式开启本地模式。
-- 禁止 URL 中携带凭据，禁止任意自定义 Authorization 模板，额外 Header 使用允许列表。
-- 校验重定向目标，防止从允许 Endpoint 跳转到本地或非预期域。
+- DeepSeek 和 OpenAI 使用产品内置的官方 Endpoint，不接受用户自定义 Base URL、Authorization 模板或额外 Header。
+- 联调 Mock Endpoint 只允许测试构建通过显式环境配置启用，不进入正式设置或持久化配置。
+- Provider 请求默认拒绝跨域重定向，避免凭据被带到非预期 Endpoint。
 - 文本与视觉 Provider 分开配置、授权和凭据引用，不默认共享 Key。
 
 ## 11. Provider 快照与切换
@@ -207,12 +237,9 @@ interface ProviderError {
 
 - [OpenAI Function calling](https://developers.openai.com/api/docs/guides/function-calling)
 - [OpenAI Streaming responses](https://developers.openai.com/api/docs/guides/streaming-responses)
-- [Anthropic Tool use](https://platform.claude.com/docs/en/agents-and-tools/tool-use/define-tools)
-- [Anthropic Streaming Messages](https://platform.claude.com/docs/en/build-with-claude/streaming)
-- [Gemini Function calling](https://ai.google.dev/gemini-api/docs/function-calling)
 - [DeepSeek Tool Calls](https://api-docs.deepseek.com/guides/tool_calls)
 - [DeepSeek Thinking Mode](https://api-docs.deepseek.com/guides/thinking_mode/)
 
 ## 14. 总结
 
-Provider Adapter 是协议反腐层。它把不同供应商的角色、流事件、工具块、推理状态和 Usage 转成内部契约，但不拥有业务 Prompt、权限和 Loop 策略。首期可以先实现 DeepSeek 与受限 OpenAI-compatible，内核从一开始就不能依赖它们的具体 JSON 形状。
+Provider Adapter 是协议反腐层。它把 DeepSeek 和 OpenAI 的角色、流事件、工具调用、推理状态和 Usage 转成内部契约，但不拥有业务 Prompt、权限和 Loop 策略。首批只正式支持 DeepSeek 与 OpenAI；MiMo 保持候选状态，完成独立协议验证后再决定是否扩展。

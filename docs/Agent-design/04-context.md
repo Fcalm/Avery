@@ -154,13 +154,17 @@ interface SessionMemory {
   confirmedFacts: Array<{ key: string; value: unknown; sourceRefs: string[] }>;
   decisions: Array<{ decision: string; rationale?: string; sourceEventIds: string[] }>;
   constraints: Array<{ text: string; source: 'user' | 'policy' | 'business' }>;
-  pendingWork: Array<{ text: string; taskId?: string }>;
+  pendingWork: Array<{ text: string; sourceEventIds: string[] }>;
   pendingInteractions: string[];
   toolOutcomes: Array<{ receiptId: string; summary: string }>;
 }
 ```
 
 记忆不是让模型随意改写的事实表。模型可提出候选，Harness 根据消息、业务仓储和 Tool Receipt 验证后提交。个人事实若来源冲突，保留冲突和来源，不自动选择“较新说法”。
+
+第一阶段不把 Run Todo 快照自动注入 Context，也不在结构化记忆中复制 Todo Store。模型只能从既有工具结果或主动调用 `ReadTodo` 获取进度；Trace 记录其主动读取率、进度遗漏率和提前完成率，再决定是否需要自动注入。
+
+Run 存在待确认简历草稿时，Context 必须保留 `draftId`、`contentHash`、`baseRevision`、带 `【待确认】` 的原始条目和用户已经确认/修改/删除的选择。压缩不得移除标签、合并不同待确认项或把未确认内容写成已确认事实。
 
 ## 9. 压缩触发与流程
 

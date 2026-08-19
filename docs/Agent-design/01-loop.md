@@ -92,23 +92,23 @@ interface RunLease {
 
 ## 4. 状态转换
 
-| 当前状态 | 事件 | 下一状态 | 必要动作 |
-| --- | --- | --- | --- |
-| `created` | `run.start` | `preparing` | 冻结场景、Provider、Prompt 和权限快照 |
-| `preparing` | context ready | `model_streaming` | 预算检查并持久化 request manifest |
-| `model_streaming` | final text | `completed` | Harness 验证最终声明后提交终态 |
-| `model_streaming` | tool calls | `tool_validating` | 聚合完整调用，不执行半截参数 |
-| `tool_validating` | valid batch | `tools_running` | 生成调度计划与工具账本 |
-| `tool_validating` | need repair | `model_streaming` | 返回结构化错误，最多纠正一次 |
-| `tools_running` | continue | `model_streaming` | 追加按原调用顺序排列的结果 |
-| `tools_running` | ask user | `waiting_user_input` | checkpoint 后发送问题事件 |
-| `tools_running` | need approval | `waiting_confirmation` | 固定提案哈希，checkpoint 后发确认卡 |
-| 任意活动态 | budget/policy/conflict | `paused` | 保存可恢复原因与建议动作 |
-| 任意非终态 | user cancel | `cancelled` | abort、取消未启动工具、对账已启动副作用 |
-| `waiting_user_input` | valid answer | `preparing` | 追加回答事件，清除 pending interaction |
-| `waiting_confirmation` | accept | `tools_running` | 校验提案哈希和 revision，只执行已冻结的确认命令 |
-| `waiting_confirmation` | reject | `preparing` 或 `cancelled` | 记录拒绝；是否继续由提案策略决定 |
-| `paused` | explicit resume | `preparing` | 验证阻断条件已变化后恢复 |
+| 当前状态                   | 事件                     | 下一状态                      | 必要动作                          |
+| ---------------------- | ---------------------- | ------------------------- | ----------------------------- |
+| `created`              | `run.start`            | `preparing`               | 冻结场景、Provider、Prompt 和权限快照    |
+| `preparing`            | context ready          | `model_streaming`         | 预算检查并持久化 request manifest     |
+| `model_streaming`      | final text             | `completed`               | Harness 验证最终声明后提交终态           |
+| `model_streaming`      | tool calls             | `tool_validating`         | 聚合完整调用，不执行半截参数                |
+| `tool_validating`      | valid batch            | `tools_running`           | 生成调度计划与工具账本                   |
+| `tool_validating`      | need repair            | `model_streaming`         | 返回结构化错误，最多纠正一次                |
+| `tools_running`        | continue               | `model_streaming`         | 追加按原调用顺序排列的结果                 |
+| `tools_running`        | ask user               | `waiting_user_input`      | checkpoint 后发送问题事件            |
+| `tools_running`        | need approval          | `waiting_confirmation`    | 固定提案哈希，checkpoint 后发确认卡       |
+| 任意活动态                  | budget/policy/conflict | `paused`                  | 保存可恢复原因与建议动作                  |
+| 任意非终态                  | user cancel            | `cancelled`               | abort、取消未启动工具、对账已启动副作用        |
+| `waiting_user_input`   | valid answer           | `preparing`               | 追加回答事件，清除 pending interaction |
+| `waiting_confirmation` | accept                 | `tools_running`           | 校验提案哈希和 revision，只执行已冻结的确认命令  |
+| `waiting_confirmation` | reject                 | `preparing` 或 `cancelled` | 记录拒绝；是否继续由提案策略决定              |
+| `paused`               | explicit resume        | `preparing`               | 验证阻断条件已变化后恢复                  |
 
 终态不允许转出。需要“继续”时创建新 Run，并通过 `parentRunId` 关联，而不是篡改已完成记录。
 
@@ -240,8 +240,8 @@ interface PendingConfirmation {
 
 至少限制：
 
-- 模型子轮数：默认 12。
-- 工具调用总数：默认 32，场景可降低。
+- 模型子轮数：默认 80。
+- 工具调用总数：默认 12，场景可降低。
 - 相同错误指纹：最多纠正 1 次。
 - 相同工具名 + 规范化参数：读工具最多自动重试 1 次，写工具不得无业务幂等键重试。
 - 单次 Execution 墙钟时间：默认 5 分钟；进入用户等待后不累计。

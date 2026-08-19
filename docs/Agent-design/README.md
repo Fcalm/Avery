@@ -2,7 +2,7 @@
 
 > 状态：讨论稿 v0.1
 > 更新时间：2026-08-19
-> 适用范围：OfferGet 求职助手 Agent，不包含自动化投递执行器
+> 适用范围：OfferGet 默认场景；投递场景当前仅保留禁用占位
 
 ## 1. 文档目标
 
@@ -12,14 +12,14 @@
 2. [System Prompt](./02-system-prompt.md)：提示词由哪些可信层组成，如何版本化。
 3. [Tools](./03-tools.md)：场景白名单、Schema、权限、幂等、超时与并发调度。
 4. [Context](./04-context.md)：上下文组成、预算、工具结果限长和压缩。
-5. [Provider](./05-provider.md)：如何适配 DeepSeek、OpenAI、Anthropic、Gemini 与自定义服务。
+5. [Provider](./05-provider.md)：如何适配首批支持的 DeepSeek 与 OpenAI，并管理 MiMo 候选扩展。
 6. [Harness](./06-harness.md)：如何用模型之外的机制约束、验证和纠正 Agent。
 
 对应产品与总体架构依据：
 
-- [PRD](../docs/PRD.md)
-- [ARCHITECTURE](../docs/ARCHITECTURE.md)
-- [项目重建计划](../docs/PROJECT-RECONSTRUCTION-PLAN.md)
+- [PRD](../PRD.md)
+- [ARCHITECTURE](../ARCHITECTURE.md)
+- [项目重建计划](../PROJECT-RECONSTRUCTION-PLAN.md)
 
 ## 2. 核心结论
 
@@ -31,6 +31,19 @@
 - Context 是按 token 预算构建的派生视图；完整会话、工具回执和业务事实分别持久化，不能只保存发给模型的截断消息。
 - Provider Adapter 负责协议差异，Loop 只消费统一事件；不得把所有供应商强行当作 OpenAI Chat Completions。
 - Harness 是独立于模型的控制层。确定性规则优先，模型自检只能补充语义判断，不能授予权限。
+
+### 2.1 两个顶层场景
+
+产品只设置两个权限场景，简历优化、岗位定制、项目提炼和岗位搜索等属于场景内意图，不再各自成为权限场景：
+
+| 场景 | 核心能力 | 强制禁止 |
+| --- | --- | --- |
+| 默认场景 `default` | 读写简历与档案；通过通用 UTF-8 文件工具读取授权文件；自主搜索岗位并读取搜索结果 URL | 填写申请表、上传投递材料、操作登录态、提交申请 |
+| 投递场景 `application` | 仅保留 `enabled: false` 的产品占位，第一阶段不创建 Run、不注册工具 | 复用默认场景权限或提前暴露浏览器能力 |
+
+默认场景的岗位搜索不要求用户逐个提供 URL。Agent 在用户目标涉及岗位发现时，可以自主生成搜索条件、检索多个来源、翻页、去重并打开候选岗位；网络能力只通过 `SearchJobs` 和 `ReadUrl` 窄工具提供，不等于任意 HTTP、登录态或浏览器控制。搜索结果第一阶段只作为 Run 内临时数据，不提供岗位库保存工具。
+
+投递场景暂不实现。用户尝试进入时由应用层直接返回“投递场景暂未开放”，不能创建空能力 Run，也不能临时继承默认场景工具。
 
 ## 3. 边界与数据流
 
@@ -61,8 +74,8 @@ Infrastructure → Backend-owned narrow ports
 
 | 对象 | 生命周期 | 保存内容 | 说明 |
 | --- | --- | --- | --- |
-| `Session` | 多轮长期存在 | 可见消息、场景选择、Usage、项目绑定、任务 | 用户看到的会话 |
-| `Run` | 一次用户目标，可暂停恢复 | 状态机、预算、待交互、工具账本、结果 | 等待确认时仍是同一个逻辑 Run |
+| `Session` | 多轮长期存在 | 可见消息、场景选择、Usage、项目绑定 | 用户看到的会话 |
+| `Run` | 一次用户目标，可暂停恢复 | 状态机、Todo、预算、待交互、工具账本、结果 | 等待确认时仍是同一个逻辑 Run |
 | `Execution` | 一段实际进程执行 | lease、abort signal、stream cursor、attempt | 应用重启或恢复会产生新的 Execution |
 
 不能用“请求 Promise 是否还在”表示 Run 是否运行。等待用户数小时、进程崩溃或应用重启后，Run 仍必须能从 checkpoint 恢复。
@@ -104,15 +117,18 @@ Infrastructure → Backend-owned narrow ports
 任何实现均不得破坏以下规则：
 
 1. 未进入场景白名单的工具，即使模型请求也不得执行。
-2. 用户确认只能批准确认卡中固定展示的提案哈希，不能批准随后被替换的参数。
-3. Tool Result、附件、网页或项目文件都是不可信数据，不能提升为系统指令。
-4. 写操作必须带 actor、资源 ID、expected revision、业务幂等键和授权依据。
-5. `completed`、`failed`、`cancelled` 为互斥终态；`waiting_*`、`paused` 是可恢复非终态。
-6. 模型输出不能作为“已保存、已发送、已提交”的证据；只有工具回执和业务仓储状态可以。
-7. Provider 未返回 Usage 时记为 `unavailable`；本地估算只用于预算预判。
-8. 压缩不能改变工具权限、用户确认、事实来源、未完成任务或资源 revision。
-9. 自动化投递是独立状态机；普通 Agent 工具不得拥有浏览器提交或任意网络能力。
-10. 错误必须结构化、可追踪；不得通过静默忽略、无界重试或扩大容错掩盖根因。
+2. 用户确认只能批准已经冻结且哈希匹配的提案或简历草稿，不能批准随后被替换的参数或内容。
+3. 简历不得补造公司/组织、证书/职业资格、学校/学历或身份信息；其他推测性补全必须带 `【待确认】`，通过明确文本确认后才能写入正式简历。
+4. Tool Result、附件、网页或项目文件都是不可信数据，不能提升为系统指令。
+5. 写操作必须带 actor、资源 ID、expected revision、业务幂等键和授权依据。
+6. `completed`、`failed`、`cancelled` 为互斥终态；`waiting_*`、`paused` 是可恢复非终态。
+7. 模型输出不能作为“已保存、已发送、已提交”的证据；只有工具回执和业务仓储状态可以。
+8. Provider 未返回 Usage 时记为 `unavailable`；本地估算只用于预算预判。
+9. 压缩不能改变工具权限、用户确认、`【待确认】` 标签、未完成工作或资源 revision。
+10. 默认场景只能通过 `SearchJobs`、`ReadUrl` 访问外部岗位信息；投递场景在启用前没有工具、不能创建 Run，也不能继承默认场景权限。
+11. 错误必须结构化、可追踪；不得通过静默忽略、无界重试或扩大容错掩盖根因。
+
+当前 [PRD](../PRD.md) 仍包含“不自动扫描全网岗位、以用户提供 URL 为主”的旧范围，和这里的自主岗位搜索设计冲突。实现前必须更新 PRD，使其明确区分“有界的按需岗位发现”与“无界的持续全网爬取”；在 PRD 修订前，本节视为待上游确认的新设计决策。
 
 ## 8. 第一版待共同确认的决策
 
@@ -125,7 +141,7 @@ Infrastructure → Backend-owned narrow ports
 | 单 Run 模型子轮上限 | 默认 12，可由场景降至 6–8 | 防止工具循环；不允许场景无限放宽 |
 | Schema 方言 | 内部受限 JSON Schema 2020-12 子集 | 可下编译到主要 Provider，避免依赖复杂关键字 |
 | 等待确认的锁策略 | 不持锁，确认时重加锁 | 避免长事务和租约泄漏 |
-| 首批 Provider | DeepSeek 原生 + 自定义 OpenAI-compatible；预留 OpenAI/Anthropic/Gemini Adapter | 先满足产品现状，同时避免内核绑定 |
+| 首批 Provider | DeepSeek + OpenAI；MiMo 仅为候选扩展 | 首批范围明确，不支持自定义兼容 Endpoint；MiMo 验证通过后再增加独立 Adapter |
 | 纠正重试 | 同类错误最多 1 次；Provider 瞬时错误有界退避 | 防止“反复试到成功”掩盖权限或数据问题 |
 
 ## 9. 文档验收标准
