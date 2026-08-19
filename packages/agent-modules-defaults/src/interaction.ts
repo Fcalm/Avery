@@ -1,8 +1,30 @@
-import type { InteractionModule, ToolContext } from '@offerget/agent-sdk';
+import { randomUUID } from 'node:crypto';
+import type { InteractionModule, ToolContext, ToolLedgerEntry, ToolReceipt } from '@offerget/agent-sdk';
 import { RequireString, type PendingResumeEdit } from './helpers';
 
 /** 交互模块：澄清提问与简历确认的宿主侧状态与事件；AskUserQuestion 作为内置工具由 tools 槽实现。 */
 export function CreateInteractionModule(): InteractionModule {
+  const fallbackLedger = new Map<string, ToolLedgerEntry>();
+
+  function GetLedger(context: ToolContext) {
+    return context.ledger ?? {
+      Start(entry: Omit<ToolLedgerEntry, 'status' | 'receipt' | 'errorCode' | 'finishedAt'>) {
+        fallbackLedger.set(entry.ledgerId, { ...entry, status: 'started' as const, startedAt: entry.startedAt });
+      },
+      Finish(ledgerId: string, status: ToolLedgerEntry['status'], extra?: { receipt?: ToolReceipt; errorCode?: string; finishedAt?: number }) {
+        const current = fallbackLedger.get(ledgerId);
+        if (!current) return;
+        fallbackLedger.set(ledgerId, { ...current, status, ...(extra?.receipt ? { receipt: extra.receipt } : {}), ...(extra?.errorCode ? { errorCode: extra.errorCode } : {}), finishedAt: extra?.finishedAt ?? Date.now() });
+      },
+      FindByIdempotencyKey(idempotencyKey: string) {
+        for (const entry of fallbackLedger.values()) {
+          if (entry.idempotencyKey === idempotencyKey && entry.status !== 'started') return entry;
+        }
+        return undefined;
+      },
+    };
+  }
+
   return {
     packageName: '@offerget/agent-modules-defaults',
     name: 'offerget.agent-defaults',
@@ -10,16 +32,45 @@ export function CreateInteractionModule(): InteractionModule {
     sdkVersion: '0.1.0',
     slot: 'interaction',
     capabilities: ['interaction'],
-    /** 应用或丢弃待确认简历补丁：接受时经写端口整份落库并释放锁，确认标识只能使用一次。 */
+    /** 应用或丢弃待确认简历补丁：接受时重新获取锁并校验 revision，确认标识只能使用一次；等待期间不持有锁。 */
     async ConfirmResumeEdit(confirmationId, accepted, context: ToolContext) {
       const pending = context.pendingEdits.get(RequireString(confirmationId, 'confirmationId', 300)) as PendingResumeEdit | undefined;
       if (!pending) throw new Error('The resume confirmation is unavailable or has expired.');
+      // 确认标识只能使用一次；拒绝/接受/冲突后均不可复用。
       context.pendingEdits.delete(confirmationId);
       if (!accepted) {
-        await context.ports.resumeWrite.ReleaseLock(pending.resumeId, pending.ownerId);
         return { applied: false };
       }
-      // 落库失败也必须释放锁（否则残留至租约过期，阻塞用户编辑与后续 Agent 编辑）。
+      const toolName = pending.kind === 'create' ? 'CreateResume' : 'UpdateResume';
+      const ledger = GetLedger(context);
+      const previous = await ledger.FindByIdempotencyKey(pending.idempotencyKey);
+      if (previous?.status === 'succeeded' && previous.receipt) {
+        return { applied: true };
+      }
+      const ledgerEntry: ToolLedgerEntry = {
+        ledgerId: `ledger-${randomUUID()}`,
+        runId: context.runId,
+        toolCallId: context.requestId,
+        toolName,
+        idempotencyKey: pending.idempotencyKey,
+        argumentsHash: pending.proposalHash,
+        actor: `agent:${context.requestId}`,
+        resourceIds: [pending.resumeId],
+        status: 'started',
+        startedAt: Date.now(),
+      };
+      await ledger.Start(ledgerEntry);
+      // 等待期间不持有锁；确认时重新获取 Agent 锁，并用提案冻结的 baseRevision 校验资源未被并发修改。
+      const lockResult = await context.ports.resumeWrite.AcquireLock({
+        resumeId: pending.resumeId,
+        owner: 'agent',
+        ownerId: pending.ownerId,
+        baseRevision: pending.baseRevision,
+      });
+      if (!lockResult.acquired) {
+        await ledger.Finish(ledgerEntry.ledgerId, 'failed', { errorCode: lockResult.code });
+        throw Object.assign(new Error('User is editing this resume.'), { code: lockResult.code });
+      }
       let saved;
       try {
         saved = await context.ports.resumeWrite.Save({
@@ -28,9 +79,20 @@ export function CreateInteractionModule(): InteractionModule {
             : { id: pending.resumeId, name: pending.resume?.name ?? '', content: pending.content, updatedAt: '', targetRoles: pending.resume?.targetRoles, summary: pending.resume?.summary },
           baseRevision: pending.baseRevision,
         });
+      } catch (error) {
+        await ledger.Finish(ledgerEntry.ledgerId, 'failed', { errorCode: 'SAVE_FAILED' });
+        throw error;
       } finally {
         await context.ports.resumeWrite.ReleaseLock(pending.resumeId, pending.ownerId);
       }
+      const receipt: ToolReceipt = {
+        receiptId: `receipt-${randomUUID()}`,
+        toolDefinitionId: toolName,
+        resourceIds: [pending.resumeId],
+        revisions: { resume: saved.revision },
+        idempotencyKey: pending.idempotencyKey,
+      };
+      await ledger.Finish(ledgerEntry.ledgerId, 'succeeded', { receipt });
       context.emit(pending.kind === 'create'
         ? { type: 'resume_created', requestId: context.requestId, resumeId: pending.resumeId, resumeName: pending.name, content: pending.content, reason: pending.reason, revision: saved.revision }
         : { type: 'resume_updated', requestId: context.requestId, resumeId: pending.resumeId, content: pending.content, reason: pending.reason, revision: saved.revision });

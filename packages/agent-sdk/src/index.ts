@@ -5,9 +5,16 @@ export { SlotToModuleKey } from './modules';
 export type { AgentModules, CompactionModule, ContextBuilderModule, InteractionModule, ModelProviderModule, ObservabilityModule, SessionContextSnapshot, SessionContextSource, ToolsModule } from './modules';
 export type { AgentStreamEvent } from './events';
 export type { KernelRunFunction, KernelRunInput, KernelRunResult } from './kernel';
-export type { FileReadPort, RegisteredAgentTool, ResumeReadPort, ResumeWritePort, ToolContext, ToolPorts } from './tools';
+export { DropOldestTurnGroups, IsUserTurn, KeepRecentTurnGroups, SplitTurnGroups } from './turn-group';
 export type {
-  AgentMessage, AgentRole, AttachmentDescriptor, LogEntry, ModelCompletion, ModelDelta, ModelSummary, ModelUsage,
-  ProfileSnapshotItem, ResumeSnapshot, RuntimeContext, TaskItem, ToolCallFragment,
-  ToolExecutionResult, TraceEntry, TraceEventEntry,
+  FileReadPort, JobSearchPort, ProfileWritePort, RegisteredAgentTool, ResumeReadPort, ResumeWritePort,
+  ToolContext, ToolLedgerPort, ToolPorts, UrlReadPort,
+} from './tools';
+export type {
+  AgentMessage, AgentRole, AttachmentDescriptor, CompiledInstructions, LogEntry, ModelCapabilities,
+  ModelCompletion, ModelDelta, ModelStreamEvent, ModelSummary, ModelUsage, NormalizedUsage, PendingConfirmation,
+  PendingInteraction, PendingQuestionInteraction, ProfileSnapshotItem, PromptFragment, PromptManifest,
+  ProviderError, ResumeSnapshot, RunDisposition, RunState, RuntimeContext, ScenarioSnapshot, StructuredRunError,
+  TaskItem, ToolCallFragment, ToolDisposition, ToolExecutionResult, ToolLedgerEntry, ToolReceipt, TraceEntry,
+  TraceEventEntry, TurnGroup,
 } from './types';

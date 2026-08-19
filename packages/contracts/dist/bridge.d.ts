@@ -16,7 +16,7 @@ export interface AgentSendRequest {
 }
 /** Agent 流式事件：preload 单通道 `agent:stream` 的全部事件类型。 */
 export interface AgentStreamEvent {
-    type: 'thinking_delta' | 'content_delta' | 'completed' | 'cancelled' | 'error' | 'resume_updated' | 'resume_created' | 'resume_confirmation' | 'task_created' | 'task_updated' | 'question_requested';
+    type: 'thinking_delta' | 'content_delta' | 'completed' | 'cancelled' | 'error' | 'resume_updated' | 'resume_created' | 'resume_confirmation' | 'task_created' | 'task_updated' | 'question_requested' | 'waiting_user_input' | 'waiting_confirmation' | 'paused';
     requestId?: string;
     delta?: string;
     content?: string;

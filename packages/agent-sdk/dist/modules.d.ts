@@ -1,6 +1,6 @@
 import type { ModuleManifest } from './manifest';
 import type { RegisteredAgentTool, ToolContext } from './tools';
-import type { AgentMessage, LogEntry, ModelCompletion, ModelDelta, ModelSummary, RuntimeContext, ToolCallFragment, ToolExecutionResult, TraceEntry, TraceEventEntry } from './types';
+import type { AgentMessage, CompiledInstructions, LogEntry, ModelCompletion, ModelDelta, ModelSummary, RuntimeContext, ToolCallFragment, ToolExecutionResult, TraceEntry, TraceEventEntry } from './types';
 /** 会话上下文快照来源：如用户自定义上下文。 */
 export interface SessionContextSource {
     type: string;
@@ -51,6 +51,8 @@ export interface ModelProviderModule extends ModuleManifest {
         tools: RegisteredAgentTool[];
         signal: AbortSignal;
         onDelta: (delta: ModelDelta) => void;
+        /** 运行前由 Prompt Compiler 编译的指令；Provider 不再持有业务 System Prompt 所有权。 */
+        instructions?: CompiledInstructions;
     }): Promise<ModelCompletion>;
     CreateSummary(model: string, messages: AgentMessage[]): Promise<ModelSummary>;
     EstimateTokens(value: unknown): number;
@@ -84,6 +86,8 @@ export interface CompactionModule extends ModuleManifest {
         recent: AgentMessage[];
     };
     DropOldestTurns(history: AgentMessage[], count: number): AgentMessage[];
+    /** 按完整 TurnGroup 保留最近 count 组；供 Kernel 保存历史快照。 */
+    KeepRecentTurnGroups?(history: AgentMessage[], count: number): AgentMessage[];
 }
 /** 工具槽：统一执行管道（Schema 校验/一次修复/幂等/超时/结构化错误码）；权限由宿主注入窄端口约束。 */
 export interface ToolsModule extends ModuleManifest {
