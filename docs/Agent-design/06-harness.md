@@ -7,7 +7,7 @@ Harness 是包围 Loop 的可信控制层，负责把产品规则变成可执行
 ```text
 请求进入 → 前置约束 → Loop → 运行时监控 → 后置验证 → 结果/纠正
               │          │             │
-              └── Policy └── Ledger    └── Evidence/Receipts
+              └── Policy └── Ledger    └── Checks/Receipts
 ```
 
 Harness 必须独立于被执行的模型。模型可以协助生成候选计划或语义评审，但不能决定自己是否合规，也不能给自己增加权限。
@@ -19,7 +19,7 @@ Harness 必须独立于被执行的模型。模型可以协助生成候选计划
 | 请求下一次模型输出 | 决定本次请求是否满足能力、预算和策略 |
 | 编排工具批次 | 校验白名单、风险、确认、幂等和资源范围 |
 | 推进候选状态 | 验证状态转换并以 CAS 提交 |
-| 收集最终文本 | 检查执行声明、事实来源和完成条件 |
+| 收集最终文本 | 检查执行状态、待确认标签和完成条件 |
 | 捕获运行错误 | 分类为纠正、暂停、失败、取消或对账 |
 
 状态写入由 Harness 暴露的受限 API 完成，Loop 不直接修改任意 `state` 字段。
@@ -62,8 +62,9 @@ Harness 必须独立于被执行的模型。模型可以协助生成候选计划
 ### 3.5 后置约束
 
 - Tool Output Schema、receipt 和仓储 revision。
-- 最终回复中的执行声明是否有证据。
-- 简历事实和变更是否可定位到来源。
+- 最终回复中的执行声明是否与 Run 状态和 Tool Receipt 一致。
+- 新增公司、证书、学校/学历或身份信息是否触发纠正。
+- 推测性补全是否在所属条目末尾保留 `【待确认】`。
 - 完成条件是否满足，是否仍有强制 pending interaction。
 - Trace 是否脱敏，Usage 是否来自 Provider。
 
@@ -91,7 +92,8 @@ Policy 规则使用代码和数据表实现，不从 Prompt 或模型文本解�
 
 - `confirmationMode = 无需确认` 只影响场景声明的低风险写入。
 - 删除、不可逆覆盖、扩大文件范围、外部发送图片、自动提交始终单独授权。
-- 普通 Agent 场景永远拒绝 Shell、任意网络和浏览器提交。
+- 默认场景永远拒绝 Shell、任意网络和浏览器投递，只允许经过 SSRF、来源和预算策略约束的 `SearchJobs`、`ReadUrl`。
+- 投递场景第一阶段为禁用占位：没有工具白名单，不创建 Agent Run，也不能复用默认场景权限。
 - 用户正在编辑简历或 revision 冲突时，不允许 Agent 静默覆盖。
 - 确认只对 `proposalHash` 对应的参数生效一次。
 
@@ -111,37 +113,16 @@ Policy 规则使用代码和数据表实现，不从 Prompt 或模型文本解�
 
 这些规则失败时不能让模型“自我反思后决定是否忽略”。
 
-### 5.2 语义验证
+### 5.2 简历内容的轻量验证
 
-适合模型或规则+模型辅助的内容：
+简历目标是在用户已有经历边界内进行有竞争力的包装，不做逐句事实审计，也不要求每句话携带 evidence reference。
 
-- 简历 bullet 是否忠于来源。
-- 结论是否把推断写成事实。
-- 最终答复是否遗漏明显未完成项。
-- 摘要是否丢失否定、数字、日期和约束。
+运行时只区分两类新增内容：
 
-语义验证器只返回 finding 和置信度，不授予工具权限。高风险写入仍需确定性证据和用户确认。
+1. **禁止补造项**：公司或组织名称、证书或职业资格、学校或学历、姓名和联系方式等身份信息。检测到现有资料中没有的新值时，让模型删除或恢复原内容，最多纠正一次。
+2. **推测性补全项**：成果数字、性能比例、职责强度、项目规模、团队人数、使用时长、业务影响和具体职责细节。允许在合理范围内生成，但必须在所属条目末尾添加 `【待确认】`。
 
-### 5.3 证据与声明账本
-
-Harness 从最终回复抽取或要求模型同时生成结构化声明：
-
-```ts
-interface CompletionClaim {
-  type: 'fact' | 'action_completed' | 'artifact_created' | 'recommendation';
-  text: string;
-  evidenceRefs: string[];
-}
-```
-
-验证规则：
-
-- `action_completed` 必须引用成功 Tool Receipt。
-- `artifact_created` 必须引用业务实体 ID、revision 或 artifact hash。
-- 外部事实必须引用允许的数据源或显式标注为推断。
-- `recommendation` 可以无外部证据，但不能伪装成已经发生的结果。
-
-UI 不一定展示结构化声明，但 Trace 保存验证结果。
+Harness 不判断推测数字是否“绝对真实”，只检查禁止补造项和标签是否存在。包装质量、说服力和岗位相关性放到 Scenario Eval，不在每个 Run 中调用独立语义验证模型。
 
 ## 6. 纠正分类
 
@@ -149,7 +130,10 @@ UI 不一定展示结构化声明，但 Trace 保存验证结果。
 | --- | --- | --- |
 | JSON/Schema 参数错误 | 返回精确 issue 给模型修正 | 同指纹 1 次，之后暂停 |
 | 工具不在白名单 | 拒绝，不给模型试探替代越权工具 | 立即结束该分支 |
-| 缺少用户事实 | `interaction.ask` | 等待用户，不猜测 |
+| 目标、交付物或必要范围不明确 | `AskUserQuestion` | 等待用户，不创建 Todo、不继续写入 |
+| 新增公司、证书、学校/学历或身份信息 | 指出新增值并让模型删除或恢复原内容 | 最多纠正 1 次 |
+| 推测性硬事实缺少 `【待确认】` | 要求模型在所属条目末尾补标签 | 最多纠正 1 次 |
+| 简历含 `【待确认】` | 保存 Run 内待确认草稿，以文本列出条目 | 进入 `waiting_user_input` |
 | 需要确认 | 固定 proposal 并等待 | 接受/拒绝/过期 |
 | revision 冲突 | 重新读取并展示冲突 | 不自动重放写入 |
 | Provider 瞬时错误 | 输出前有界退避 | 默认 1 次，遵守 Retry-After |
@@ -157,27 +141,86 @@ UI 不一定展示结构化声明，但 Trace 保存验证结果。
 | 工具 timeout 且状态未知 | 对账 | 明确前禁止重试 |
 | 工具结果 Output Schema 失败 | 隔离结果并报实现错误 | 不交给模型当事实 |
 | 摘要不变量漂移 | 拒绝摘要并重试一次 | 再失败则确定性收缩或暂停 |
-| 最终回复无依据声称已执行 | 带 evidence packet 重新生成 | 1 次；再失败用 Harness 安全模板回复 |
+| 最终回复的执行状态与 receipt 不一致 | 按 Run 状态替换为正确的简短说明 | 不调用额外验证模型 |
 | 达到轮次/工具/token 预算 | checkpoint + paused | 用户显式继续或缩小目标 |
 
 “纠正”不是无限重试。每次纠正必须记录错误指纹、输入变化和为什么仍安全。
 
-## 7. 最终回复纠正
+## 7. 简历草稿与最终回复纠正
 
-推荐流程：
+### 7.1 处理流程
 
-1. 模型产生候选最终回复与可选 Completion Claims。
-2. Harness 从 Tool Ledger、Business Store 和当前 Run 构造 Evidence Packet。
-3. 确定性检查执行动词、实体 ID、receipt、pending 状态和敏感信息。
-4. 若只有表述问题，允许模型基于 Evidence Packet 重写一次。
-5. 若重写仍失败，Harness 使用安全模板返回已验证结果、失败原因和下一步，不继续让模型尝试。
+```text
+模型生成简历草稿
+    ↓
+是否新增公司、证书、学校/学历或身份信息？
+    ├─ 是 → 指出新增值并让模型删除，最多纠正一次
+    └─ 否
+         ↓
+推测性补全是否都带【待确认】？
+    ├─ 否 → 要求补标签，最多纠正一次
+    └─ 是
+         ↓
+是否存在【待确认】？
+    ├─ 否 → 按普通确认策略调用 UpdateResume
+    └─ 是 → 保存待确认草稿并进入 waiting_user_input
+```
 
-安全模板不是隐藏错误，而是明确区分：
+待确认草稿保存在 Run 内，不在用户确认前调用 `UpdateResume` 写入正式简历：
 
-- 已完成且有回执的动作。
-- 未完成或状态未知的动作。
-- 需要用户回答/确认的事项。
-- 可选建议。
+```ts
+interface PendingResumeDraft {
+  draftId: string;
+  runId: string;
+  resumeId: string;
+  baseRevision: number;
+  content: string;
+  uncertainItems: Array<{
+    id: string;
+    text: string;
+  }>;
+  contentHash: string;
+}
+```
+
+即使会话使用“无需确认”模式，存在 `【待确认】` 时也必须等待用户，因为免除的是普通编辑确认，不是对推测事实的授权。
+
+### 7.2 文本确认
+
+最终回复直接列出所有推测性补全，并告诉用户可以用文本确认或修改：
+
+```text
+简历优化稿已经生成，其中有 3 项推测性补全：
+
+1. “将接口响应时间降低约 30%”
+2. “独立负责缓存模块设计”
+3. “支撑日均百万级请求”
+
+这些条目已标记为【待确认】。你可以回复：
+- “全部确认”
+- “确认第 1、3 条，删除第 2 条”
+- “第 1 条改为降低约 15%”
+```
+
+确认解析保持简单、明确：
+
+- `全部确认`：接受全部待确认项。
+- `确认第 1、3 条`：只接受指定项，未确认项继续保留等待。
+- `删除第 2 条`：从草稿中删除对应补全。
+- `第 1 条改为……`：使用用户提供的新文本替换该项并视为已确认。
+- “好”“继续”“可以”等模糊回复不自动解释为全部确认，应继续询问具体选择。
+
+应用确认时必须校验 `draftId`、`contentHash` 和 `baseRevision`。确认或修改完成后移除相应 `【待确认】` 标签，再调用 `UpdateResume`；若 revision 已变化，则停止写入并展示冲突。
+
+### 7.3 最终动作状态
+
+最终聊天回复只校验动作是否真实发生，不验证简历每句话：
+
+- 有成功 `UpdateResume` receipt 才能说“简历已更新”。
+- 草稿含待确认项时只能说“已生成待确认草稿”。
+- 写入失败或状态未知时明确说明未完成，不能通过重新措辞伪装成功。
+
+这部分只读取 Run 状态和 Tool Receipt，不生成额外的事实声明或证据包，也不调用独立验证模型。
 
 ## 8. 副作用验证与对账
 
@@ -210,6 +253,7 @@ tool.batch.planned
 tool.started|succeeded|failed|status_unknown
 policy.allowed|denied|confirmation_required
 interaction.waiting|answered|expired
+resume.draft_waiting_confirmation|confirmed|modified
 context.compacted|compaction_rejected
 response.validation_failed|corrected
 run.paused|completed|failed|cancelled
@@ -221,12 +265,12 @@ run.paused|completed|failed|cancelled
 
 | 层级 | 必测内容 |
 | --- | --- |
-| Unit | Policy、状态机、预算、Schema、资源键、错误分类、声明验证 |
+| Unit | Policy、状态机、预算、Schema、资源键、错误分类、禁止补造项与标签检查 |
 | Contract | Prompt/Tool/Provider/Context manifest，一致的错误码与事件联合 |
 | Integration | Provider mock、工具 timeout、事务崩溃、幂等对账、压缩失败、重启恢复 |
 | Security | Prompt injection、路径逃逸、越权工具、敏感文件、SSRF、Trace 泄密 |
-| Scenario Eval | 事实忠实度、必要提问率、无依据执行声明率、工具选择和完成率 |
-| E2E | 等待问题、确认接受/拒绝/过期、取消、冲突、离线恢复 |
+| Scenario Eval | 简历包装质量、禁止补造项新增率、待确认标签覆盖率、工具选择和完成率 |
+| E2E | 文本确认/修改/删除、普通确认接受/拒绝/过期、取消、冲突、离线恢复 |
 | Fault Injection | 每个 checkpoint 后崩溃、SSE 任意断点、Worker 退出、数据库忙、磁盘满 |
 
 关键指标建议：
@@ -234,6 +278,8 @@ run.paused|completed|failed|cancelled
 - 未授权副作用率必须为 0。
 - 重复写入率必须为 0。
 - 无 receipt 的完成声明率必须为 0。
+- 禁止补造项进入正式简历的比例必须为 0。
+- 未确认且未带标签的推测性补全进入正式简历的比例必须为 0。
 - Prompt injection 导致能力扩张率必须为 0。
 - 等待/重启后的交互恢复成功率应为 100%。
 - 语义质量指标不能用来抵消安全不变量失败。
@@ -267,4 +313,4 @@ run.paused|completed|failed|cancelled
 
 ## 13. 总结
 
-Harness 是 Agent 可靠性的主要来源：它在模型之外执行权限、状态、预算、Schema、幂等和证据规则。纠正必须有界、可解释、可审计；无法确认副作用或事实时应暂停并请求用户，而不是反复调用模型直到看起来成功。
+Harness 是 Agent 可靠性的主要来源：它在模型之外执行权限、状态、预算、Schema、幂等和动作回执规则。简历内容只做轻量纠正：禁止补造公司、证书、学校/学历和身份信息，其他合理推测必须标记 `【待确认】` 并通过文本让用户确认或修改。纠正保持有界，不做逐句证据审计或多模型验证。
