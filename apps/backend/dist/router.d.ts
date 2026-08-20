@@ -40,12 +40,13 @@ interface CommandLogEntry {
     ok: boolean;
     at: number;
     agentRequestId?: string;
+    idempotencyKey?: string;
 }
 /**
  * 组装后端命令分发器：container 提供命名服务，functionRoutes 覆盖编排型通道（如迁移热替换）。
  */
 export declare function CreateBackend(options: CreateBackendOptions): {
-    HandleCommand(channel: string, requestId: unknown, ...args: unknown[]): Promise<{
+    HandleCommand(channel: string, requestId: unknown, idempotencyKey: unknown, ...args: unknown[]): Promise<{
         ok: boolean;
         data?: unknown;
         error?: {

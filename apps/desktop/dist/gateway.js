@@ -69,7 +69,7 @@ function RegisterGateway({ backendHost, webContentsGetter }) {
                 return { ok: false, error: { code: 'VALIDATION_ERROR', message: 'IPC payload is too large.', retryable: false } };
             }
             try {
-                return await backendHost.Command(channel, ...args);
+                return await backendHost.Command(channel, undefined, ...args);
             }
             catch (error) {
                 return { ok: false, error: { code: 'INTERNAL_ERROR', message: error?.message || 'Backend is unavailable.', retryable: true, details: { backendState: backendHost.state() } } };

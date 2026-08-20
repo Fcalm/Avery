@@ -151,7 +151,7 @@ export function CreateBackendHost({ appContext, desktopCapabilities = {}, onEven
     state: (): string => state,
     HandleChannels(): string[] { return [...channels]; },
     OnEvent(listener: (payload: unknown) => void): void { eventListener = listener; },
-    async Command(channel: string, ...args: unknown[]): Promise<unknown> {
+    async Command(channel: string, idempotencyKey: string | undefined, ...args: unknown[]): Promise<unknown> {
       if (state !== 'ready') throw Object.assign(new Error(`Backend is ${state}.`), { code: 'INTERNAL_ERROR', retryable: true, details: { backendState: state } });
       if (!channels.includes(channel)) throw Object.assign(new Error(`Unknown IPC channel: ${channel}.`), { code: 'INTERNAL_ERROR' });
       const requestId = `req-${commandSessionId}-${nextRequestId++}`;
@@ -166,7 +166,7 @@ export function CreateBackendHost({ appContext, desktopCapabilities = {}, onEven
           }
         }, timeout);
         pending.set(requestId, { resolve, reject, timer });
-        child?.postMessage({ kind: 'command', requestId, channel, payload: args });
+        child?.postMessage({ kind: 'command', requestId, idempotencyKey, channel, payload: args });
       });
     },
     Shutdown(): void {

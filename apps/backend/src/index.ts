@@ -166,7 +166,7 @@ async function Bootstrap(): Promise<void> {
           return;
         }
         const args = Array.isArray(typed.payload) ? typed.payload : [typed.payload];
-        const result = await backend.HandleCommand(typed.channel, typed.requestId, ...args);
+        const result = await backend.HandleCommand(typed.channel, typed.requestId, typed.idempotencyKey, ...args);
         PostMessage({ kind: 'result', requestId: typed.requestId, result });
       } catch (error) {
         PostMessage({ kind: 'result', requestId: typed.requestId, result: { ok: false, error: { code: 'INTERNAL_ERROR', message: (error as Error)?.message || 'Backend command failed.', retryable: true } } });

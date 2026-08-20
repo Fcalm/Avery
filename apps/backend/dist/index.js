@@ -160,7 +160,7 @@ async function Bootstrap() {
                     return;
                 }
                 const args = Array.isArray(typed.payload) ? typed.payload : [typed.payload];
-                const result = await backend.HandleCommand(typed.channel, typed.requestId, ...args);
+                const result = await backend.HandleCommand(typed.channel, typed.requestId, typed.idempotencyKey, ...args);
                 PostMessage({ kind: 'result', requestId: typed.requestId, result });
             }
             catch (error) {

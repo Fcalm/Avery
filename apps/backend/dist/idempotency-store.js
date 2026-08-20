@@ -43,10 +43,16 @@ class IdempotencyStore {
         this.records.clear();
         for (const [entryKey, value] of entries)
             this.records.set(entryKey, value);
-        (0, node_fs_1.mkdirSync)((0, node_path_1.dirname)(this.filePath), { recursive: true });
-        const temporaryPath = `${this.filePath}.tmp`;
-        (0, node_fs_1.writeFileSync)(temporaryPath, JSON.stringify(Object.fromEntries(this.records)), { encoding: 'utf8', mode: 0o600 });
-        (0, node_fs_1.renameSync)(temporaryPath, this.filePath);
+        try {
+            (0, node_fs_1.mkdirSync)((0, node_path_1.dirname)(this.filePath), { recursive: true });
+            const temporaryPath = `${this.filePath}.tmp`;
+            (0, node_fs_1.writeFileSync)(temporaryPath, JSON.stringify(Object.fromEntries(this.records)), { encoding: 'utf8', mode: 0o600 });
+            (0, node_fs_1.renameSync)(temporaryPath, this.filePath);
+        }
+        catch {
+            // 内存记录已先行更新；落盘失败不改变业务已成功的响应语义。
+            // 跨进程重启后该键可能丢失，但调用方不会收到“可重试失败”后盲目重试。
+        }
     }
 }
 exports.IdempotencyStore = IdempotencyStore;

@@ -143,7 +143,7 @@ function CreateBackendHost({ appContext, desktopCapabilities = {}, onEvent }) {
         state: () => state,
         HandleChannels() { return [...channels]; },
         OnEvent(listener) { eventListener = listener; },
-        async Command(channel, ...args) {
+        async Command(channel, idempotencyKey, ...args) {
             if (state !== 'ready')
                 throw Object.assign(new Error(`Backend is ${state}.`), { code: 'INTERNAL_ERROR', retryable: true, details: { backendState: state } });
             if (!channels.includes(channel))
@@ -160,7 +160,7 @@ function CreateBackendHost({ appContext, desktopCapabilities = {}, onEvent }) {
                     }
                 }, timeout);
                 pending.set(requestId, { resolve, reject, timer });
-                child?.postMessage({ kind: 'command', requestId, channel, payload: args });
+                child?.postMessage({ kind: 'command', requestId, idempotencyKey, channel, payload: args });
             });
         },
         Shutdown() {
