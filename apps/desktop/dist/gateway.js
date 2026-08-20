@@ -1,19 +1,22 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-// @ts-nocheck
-const { ipcMain } = require('electron');
-const { MethodRoutes, FunctionRouteChannels, WriteCommandChannels } = require('../../backend/dist/router.js');
-const { WriteCommandEnvelopeSchema } = require('../../../packages/contracts/dist/envelope.js');
-const MaxGatewayPayloadBytes = 10 * 1024 * 1024;
-const WindowControlChannels = ['window:minimize', 'window:toggle-maximize', 'window:close'];
-/** 单窗口/通道令牌桶：允许短时突发 30 次，随后以每秒 20 次恢复；长期超限返回结构化限流错误。 */
+exports.WindowControlChannels = exports.MaxGatewayPayloadBytes = void 0;
+exports.CreateGatewayLimiter = CreateGatewayLimiter;
+exports.ValidateSender = ValidateSender;
+exports.RegisterGateway = RegisterGateway;
+exports.RegisterWindowControls = RegisterWindowControls;
+const electron_1 = require("electron");
+const router_1 = require("@offerget/backend/dist/router");
+const contracts_1 = require("@offerget/contracts");
+exports.MaxGatewayPayloadBytes = 10 * 1024 * 1024;
+exports.WindowControlChannels = ['window:minimize', 'window:toggle-maximize', 'window:close'];
+/** 单窗口/通道令牌桶：允许短时突发，避免 Renderer 错误循环压垮 Backend。 */
 function CreateGatewayLimiter({ burst = 30, refillPerSecond = 20 } = {}) {
     const buckets = new Map();
     return {
         Allow(key, now = Date.now()) {
             const previous = buckets.get(key) ?? { tokens: burst, at: now };
-            const elapsed = Math.max(0, now - previous.at);
-            const tokens = Math.min(burst, previous.tokens + elapsed / 1000 * refillPerSecond);
+            const tokens = Math.min(burst, previous.tokens + Math.max(0, now - previous.at) / 1000 * refillPerSecond);
             if (tokens < 1) {
                 buckets.set(key, { tokens, at: now });
                 return false;
@@ -23,19 +26,12 @@ function CreateGatewayLimiter({ burst = 30, refillPerSecond = 20 } = {}) {
         },
     };
 }
-/**
- * 校验 IPC 消息来源：必须来自受信任主窗口的 webContents，且发送帧与主窗口当前加载页同源。
- * 打包模式两端均为 file://，开发模式均为 Vite dev server origin；异源 iframe 或窗口被跳转到恶意站点时帧 URL origin 不同而拒绝。
- * 注意：不依赖 VITE_DEV_SERVER_URL 环境变量——dev:desktop 未设置该变量，旧的「file:// 或 devServer 前缀」判定会让开发模式所有 IPC 返回 PERMISSION_DENIED。
- */
-function ValidateSender(event, webContentsGetter) {
-    const window = webContentsGetter();
-    if (!window || window.isDestroyed() || event.sender !== window.webContents)
+/** 只接受主窗口当前页面：file 生产页或与已加载页面同源的开发页。 */
+function ValidateSender(event, getWindow) {
+    const window = getWindow();
+    if (!window || window.isDestroyed() || event.sender !== window.webContents || !event.senderFrame)
         return false;
-    const frame = event.senderFrame;
-    if (!frame)
-        return false;
-    const frameUrl = String(frame.url || '');
+    const frameUrl = String(event.senderFrame.url || '');
     const loadedUrl = String(window.webContents.getURL() || '');
     if (frameUrl.startsWith('file://') && loadedUrl.startsWith('file://'))
         return true;
@@ -46,19 +42,15 @@ function ValidateSender(event, webContentsGetter) {
         return false;
     }
 }
-/** 按后端命令路由表注册渲染进程可调用的受限 IPC；所有 handler 先校验来源窗口，再统一结果信封出口。 */
-function RegisterGateway({ backendHost, webContentsGetter, ipcMainApi = ipcMain }) {
-    const channels = [...Object.keys(MethodRoutes), ...FunctionRouteChannels];
+/** 所有命令先通过来源、频率、大小和写信封校验，再进入 Backend Utility Process。 */
+function RegisterGateway({ backendHost, webContentsGetter, ipcMainApi = electron_1.ipcMain }) {
     const limiter = CreateGatewayLimiter();
-    for (const channel of channels) {
+    for (const channel of [...Object.keys(router_1.MethodRoutes), ...router_1.FunctionRouteChannels]) {
         ipcMainApi.handle(channel, async (event, ...args) => {
-            if (!ValidateSender(event, webContentsGetter)) {
+            if (!ValidateSender(event, webContentsGetter))
                 return { ok: false, error: { code: 'PERMISSION_DENIED', message: 'IPC sender is invalid.', retryable: false } };
-            }
-            const senderId = String(event.sender?.id ?? 'unknown');
-            if (!limiter.Allow(`${senderId}:${channel}`)) {
+            if (!limiter.Allow(`${event.sender.id}:${channel}`))
                 return { ok: false, error: { code: 'WORKSPACE_BUSY', message: '请求过于频繁，请稍后重试。', retryable: true } };
-            }
             let serialized;
             try {
                 serialized = JSON.stringify(args);
@@ -66,27 +58,27 @@ function RegisterGateway({ backendHost, webContentsGetter, ipcMainApi = ipcMain 
             catch {
                 return { ok: false, error: { code: 'VALIDATION_ERROR', message: 'IPC payload is not serializable.', retryable: false } };
             }
-            if (serialized && Buffer.byteLength(serialized, 'utf8') > MaxGatewayPayloadBytes) {
+            if (serialized && Buffer.byteLength(serialized, 'utf8') > exports.MaxGatewayPayloadBytes)
                 return { ok: false, error: { code: 'VALIDATION_ERROR', message: 'IPC payload is too large.', retryable: false } };
-            }
             let commandArgs = args;
             let idempotencyKey;
-            if (WriteCommandChannels.has(channel)) {
-                if (args.length !== 1) {
+            if (router_1.WriteCommandChannels.has(channel)) {
+                if (args.length !== 1)
                     return { ok: false, error: { code: 'VALIDATION_ERROR', message: 'IPC write command envelope is invalid.', retryable: false } };
-                }
-                const parsedEnvelope = WriteCommandEnvelopeSchema.safeParse(args[0]);
-                if (!parsedEnvelope.success) {
+                const parsed = contracts_1.WriteCommandEnvelopeSchema.safeParse(args[0]);
+                if (!parsed.success)
                     return { ok: false, error: { code: 'VALIDATION_ERROR', message: 'IPC write command envelope is invalid.', retryable: false } };
-                }
-                commandArgs = parsedEnvelope.data.payload;
-                idempotencyKey = parsedEnvelope.data.idempotencyKey;
+                commandArgs = parsed.data.payload;
+                idempotencyKey = parsed.data.idempotencyKey;
             }
             try {
-                return await backendHost.Command(channel, idempotencyKey, ...commandArgs);
+                const result = await backendHost.Command(channel, idempotencyKey, ...commandArgs);
+                if (result && typeof result === 'object' && typeof result.ok === 'boolean')
+                    return result;
+                return { ok: false, error: { code: 'INTERNAL_ERROR', message: 'Backend returned an invalid result.', retryable: true } };
             }
             catch (error) {
-                return { ok: false, error: { code: 'INTERNAL_ERROR', message: error?.message || 'Backend is unavailable.', retryable: true, details: { backendState: backendHost.state() } } };
+                return { ok: false, error: { code: 'INTERNAL_ERROR', message: error instanceof Error ? error.message : 'Backend is unavailable.', retryable: true, details: { backendState: backendHost.state() } } };
             }
         });
     }
@@ -96,26 +88,22 @@ function RegisterGateway({ backendHost, webContentsGetter, ipcMainApi = ipcMain 
             window.webContents.send('agent:stream', event);
     });
 }
-/** 窗口控制同样只接受当前受信任渲染进程的请求，避免 frameless 窗口把 Electron 能力直接暴露给页面。 */
-function RegisterWindowControls({ webContentsGetter }) {
+/** 无边框窗口控制也必须经过相同来源验证，绝不把 BrowserWindow 暴露给 Renderer。 */
+function RegisterWindowControls({ webContentsGetter, ipcMainApi = electron_1.ipcMain }) {
     const actions = {
         'window:minimize': (window) => { window.minimize(); return true; },
-        'window:toggle-maximize': (window) => {
-            if (window.isMaximized())
-                window.unmaximize();
-            else
-                window.maximize();
-            return window.isMaximized();
-        },
+        'window:toggle-maximize': (window) => { if (window.isMaximized())
+            window.unmaximize();
+        else
+            window.maximize(); return window.isMaximized(); },
         'window:close': (window) => { window.close(); return true; },
     };
-    for (const channel of WindowControlChannels) {
-        ipcMain.handle(channel, (event) => {
+    for (const channel of exports.WindowControlChannels) {
+        ipcMainApi.handle(channel, (event) => {
             if (!ValidateSender(event, webContentsGetter))
                 return false;
             const window = webContentsGetter();
-            return window && !window.isDestroyed() ? actions[channel](window) : false;
+            return Boolean(window && !window.isDestroyed() && actions[channel](window));
         });
     }
 }
-module.exports = { CreateGatewayLimiter, MaxGatewayPayloadBytes, RegisterGateway, RegisterWindowControls, ValidateSender, WindowControlChannels };
