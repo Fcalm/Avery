@@ -17,7 +17,10 @@
     "build:packages": "npm run build --workspace @offerget/contracts && npm run build --workspace @offerget/agent-sdk && npm run build --workspace @offerget/agent-core && npm run build --workspace @offerget/agent-module-host && npm run build --workspace @offerget/agent-modules-defaults && npm run build --workspace @offerget/backend",
     "build:renderer": "node node_modules/vite/bin/vite.js build",
     "build": "npm run build:packages && npm run build:renderer",
-    "pack:dir": "npm run build && node node_modules/electron-builder/out/cli/cli.js --dir"
+    "test": "npm run test --workspaces --if-present",
+    "smoke": "node scripts/smoke-packaged-app.mjs",
+    "pack:dir": "npm run build && node node_modules/electron-builder/out/cli/cli.js --dir",
+    "pack:win": "npm run build && node node_modules/electron-builder/out/cli/cli.js --win"
   },
   "dependencies": {
     "@offerget/agent-core": "0.1.0",

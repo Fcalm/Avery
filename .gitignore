@@ -10,6 +10,10 @@ node_modules/
 *.asar
 *.blockmap
 
+# 可由 workspace 构建重建的模块产物；Desktop dist 暂作为 B-04 的恢复基线保留跟踪。
+/apps/backend/dist/
+/packages/*/dist/
+
 # Local databases, backups, attachments, and runtime state
 *.db
 *.sqlite
