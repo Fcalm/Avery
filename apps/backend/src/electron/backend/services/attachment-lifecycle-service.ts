@@ -2,7 +2,8 @@ import { existsSync, lstatSync, readdirSync, realpathSync, unlinkSync } from 'no
 import * as path from 'node:path';
 import { GetNow, WriteAudit } from '../../repositories/helpers';
 
-export const SevenDaysMs = 7 * 24 * 60 * 60 * 1000;
+/** 无引用附件默认保留 30 天，符合产品数据保护约束。 */
+export const ThirtyDaysMs = 30 * 24 * 60 * 60 * 1000;
 const OwnerTypes = new Set(['conversation', 'message', 'profile', 'resume']);
 
 export function ExtractAttachmentIds(value: unknown): string[] {
@@ -25,7 +26,7 @@ export function ExtractAttachmentIds(value: unknown): string[] {
   return [...ids];
 }
 
-/** attachment_links 是唯一引用事实源；最后引用移除后开始 7 天宽限，清理只触碰工作空间副本与派生缓存。 */
+/** attachment_links 是唯一引用事实源；最后引用移除后开始 30 天宽限，清理只触碰工作空间副本与派生缓存。 */
 export class AttachmentLifecycleService {
   private db: any;
   private workspacePath: string;
@@ -103,7 +104,7 @@ export class AttachmentLifecycleService {
   Cleanup({ now = GetNow(), limit = 50 }: { now?: number; limit?: number } = {}): any {
     if (!Number.isFinite(now)) throw new Error('Attachment cleanup time is invalid.');
     const safeLimit = Math.max(1, Math.min(500, Math.trunc(limit)));
-    const cutoff = now - SevenDaysMs;
+    const cutoff = now - ThirtyDaysMs;
     const candidates = this.db.prepare(`SELECT id, sha256, storage_key, deleted_at FROM attachments
       WHERE NOT EXISTS (SELECT 1 FROM attachment_links WHERE attachment_id = attachments.id)
         AND ((deleted_at IS NULL AND orphaned_at IS NOT NULL AND orphaned_at <= ?) OR deleted_at IS NOT NULL)
