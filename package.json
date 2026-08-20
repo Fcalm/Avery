@@ -17,7 +17,8 @@
     "build:packages": "npm run build --workspace @offerget/contracts && npm run build --workspace @offerget/agent-sdk && npm run build --workspace @offerget/agent-core && npm run build --workspace @offerget/agent-module-host && npm run build --workspace @offerget/agent-modules-defaults && npm run build --workspace @offerget/backend",
     "build:renderer": "node node_modules/vite/bin/vite.js build",
     "build": "npm run build:packages && npm run build:renderer",
-    "test": "npm run test --workspaces --if-present",
+    "test": "npm run test:vitest && npm run test --workspaces --if-present",
+    "test:vitest": "node node_modules/vitest/vitest.mjs run --config vitest.config.ts",
     "smoke": "node scripts/smoke-packaged-app.mjs",
     "pack:dir": "npm run build && node node_modules/electron-builder/out/cli/cli.js --dir",
     "pack:win": "npm run build && node node_modules/electron-builder/out/cli/cli.js --win"
@@ -53,7 +54,8 @@
     "electron": "43.3.0",
     "electron-builder": "26.15.3",
     "typescript": "7.0.2",
-    "vite": "8.2.0"
+    "vite": "8.2.0",
+    "vitest": "4.1.11"
   },
   "build": {
     "appId": "com.offerget.app",
