@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.BridgeNamespaces = exports.ProfileCategoryValues = exports.JobScoreValues = exports.EmploymentTypeValues = exports.ChannelValues = exports.ApplicationStatusValues = exports.SettingsSubmitSchema = exports.ResumeUpsertSchema = exports.ProfileItemsSchema = exports.ProfileItemSchema = exports.JobUpsertSchema = exports.ConversationCreateSchema = exports.ChatMessagesSchema = exports.ChatMessageInputSchema = exports.ApplicationUpsertSchema = exports.NormalizeError = exports.ExtractDetails = exports.CreateResultFailure = exports.CreateResultSuccess = exports.ResultEnvelopeSchema = exports.RequestEnvelopeSchema = exports.ErrorInfoSchema = exports.ErrorCode = void 0;
+exports.BridgeNamespaces = exports.ProfileCategoryValues = exports.JobScoreValues = exports.EmploymentTypeValues = exports.ChannelValues = exports.ApplicationStatusValues = exports.SettingsSubmitSchema = exports.ResumeUpsertSchema = exports.ProfileItemsSchema = exports.ProfileItemSchema = exports.JobUpsertSchema = exports.ConversationCreateSchema = exports.ChatMessagesSchema = exports.ChatMessageInputSchema = exports.ApplicationUpsertSchema = exports.NormalizeError = exports.ExtractDetails = exports.CreateWriteIntentKeyStore = exports.CreateResultFailure = exports.CreateResultSuccess = exports.WriteCommandEnvelopeSchema = exports.ResultEnvelopeSchema = exports.RequestEnvelopeSchema = exports.ErrorInfoSchema = exports.ErrorCode = void 0;
 /** OfferGet 跨进程契约包：错误码、信封、DTO 与 Bridge 类型的唯一来源。 */
 var error_codes_1 = require("./error-codes");
 Object.defineProperty(exports, "ErrorCode", { enumerable: true, get: function () { return error_codes_1.ErrorCode; } });
@@ -8,8 +8,11 @@ var envelope_1 = require("./envelope");
 Object.defineProperty(exports, "ErrorInfoSchema", { enumerable: true, get: function () { return envelope_1.ErrorInfoSchema; } });
 Object.defineProperty(exports, "RequestEnvelopeSchema", { enumerable: true, get: function () { return envelope_1.RequestEnvelopeSchema; } });
 Object.defineProperty(exports, "ResultEnvelopeSchema", { enumerable: true, get: function () { return envelope_1.ResultEnvelopeSchema; } });
+Object.defineProperty(exports, "WriteCommandEnvelopeSchema", { enumerable: true, get: function () { return envelope_1.WriteCommandEnvelopeSchema; } });
 Object.defineProperty(exports, "CreateResultSuccess", { enumerable: true, get: function () { return envelope_1.CreateResultSuccess; } });
 Object.defineProperty(exports, "CreateResultFailure", { enumerable: true, get: function () { return envelope_1.CreateResultFailure; } });
+var write_intent_1 = require("./write-intent");
+Object.defineProperty(exports, "CreateWriteIntentKeyStore", { enumerable: true, get: function () { return write_intent_1.CreateWriteIntentKeyStore; } });
 var error_normalizer_1 = require("./error-normalizer");
 Object.defineProperty(exports, "ExtractDetails", { enumerable: true, get: function () { return error_normalizer_1.ExtractDetails; } });
 Object.defineProperty(exports, "NormalizeError", { enumerable: true, get: function () { return error_normalizer_1.NormalizeError; } });

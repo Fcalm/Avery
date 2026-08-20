@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.EventChannels = exports.FunctionRouteChannels = exports.MethodRoutes = exports.ReadOnlyChannels = exports.MaxCommandPayloadBytes = void 0;
+exports.WriteCommandChannels = exports.EventChannels = exports.FunctionRouteChannels = exports.MethodRoutes = exports.ReadOnlyChannels = exports.MaxCommandPayloadBytes = void 0;
 exports.ExtractRequestId = ExtractRequestId;
 exports.CreateBackend = CreateBackend;
 const node_crypto_1 = require("node:crypto");
@@ -121,6 +121,8 @@ const WriteArgsSchemas = {
     'workspace:restore-backup': zod_1.z.tuple([EntityId]),
     'workspace:export-recovery-diagnostic': zod_1.z.tuple([]),
 };
+/** 可重放写命令通道：Gateway 仅为这些通道接受 WriteCommandEnvelope，避免读取命令协议漂移。 */
+exports.WriteCommandChannels = new Set(Object.keys(WriteArgsSchemas));
 /**
  * 组装后端命令分发器：container 提供命名服务，functionRoutes 覆盖编排型通道（如迁移热替换）。
  */
@@ -141,8 +143,29 @@ function CreateBackend(options) {
         return (...args) => service[route.method](...args);
     }
     const commandLog = [];
+    /** 同幂等键在进程内的串行队列：保证并发重试在首个请求完成前不会穿透幂等检查。 */
+    const idempotencyLocks = new Map();
+    /** 进程内幂等回放缓存：即使外部存储 Put 失败，当前进程内的同键重试仍可去重。 */
+    const idempotencyMemory = new Map();
+    async function WithIdempotencyLock(key, fn) {
+        const previous = idempotencyLocks.get(key) ?? Promise.resolve();
+        let release;
+        const current = new Promise((resolve) => { release = resolve; });
+        const tail = previous.then(() => current);
+        idempotencyLocks.set(key, tail);
+        await previous;
+        try {
+            return await fn();
+        }
+        finally {
+            release();
+            if (idempotencyLocks.get(key) === tail) {
+                idempotencyLocks.delete(key);
+            }
+        }
+    }
     return {
-        async HandleCommand(channel, requestId, ...args) {
+        async HandleCommand(channel, requestId, idempotencyKey, ...args) {
             let resolvedRequestId;
             let invalidRequestId = null;
             try {
@@ -152,9 +175,21 @@ function CreateBackend(options) {
                 invalidRequestId = error;
                 resolvedRequestId = typeof requestId === 'string' ? requestId.slice(0, 200) : 'req-missing';
             }
+            let resolvedIdempotencyKey;
+            let invalidIdempotencyKey = null;
+            if (idempotencyKey !== undefined && idempotencyKey !== null) {
+                if (typeof idempotencyKey === 'string' && idempotencyKey.length > 0 && idempotencyKey.length <= 200) {
+                    resolvedIdempotencyKey = idempotencyKey;
+                }
+                else {
+                    invalidIdempotencyKey = Object.assign(new Error('idempotencyKey is invalid.'), { code: 'VALIDATION_ERROR' });
+                }
+            }
             const startedAt = Date.now();
             const record = (ok) => {
                 const entry = { requestId: resolvedRequestId, channel, ok, at: startedAt };
+                if (resolvedIdempotencyKey)
+                    entry.idempotencyKey = resolvedIdempotencyKey;
                 if (channel === 'agent:send' && args[0] && typeof args[0] === 'object' && typeof args[0].requestId === 'string') {
                     entry.agentRequestId = args[0].requestId;
                 }
@@ -165,6 +200,8 @@ function CreateBackend(options) {
             try {
                 if (invalidRequestId)
                     throw invalidRequestId;
+                if (invalidIdempotencyKey)
+                    throw invalidIdempotencyKey;
                 const serialized = JSON.stringify(args);
                 if (serialized && serialized.length > exports.MaxCommandPayloadBytes) {
                     throw Object.assign(new Error('Command payload is too large.'), { code: 'VALIDATION_ERROR' });
@@ -176,24 +213,48 @@ function CreateBackend(options) {
                         throw Object.assign(new Error('Command payload does not match the expected shape.'), { code: 'VALIDATION_ERROR' });
                     }
                 }
-                const replayable = Boolean(writeSchema) && channel !== 'agent:configure' && Boolean(idempotencyStore);
-                const payloadHash = (0, node_crypto_1.createHash)('sha256').update(`${channel}\n${serialized ?? ''}`).digest('hex');
-                if (replayable && idempotencyStore) {
-                    const replay = idempotencyStore.Get(resolvedRequestId, payloadHash);
-                    if (replay.conflict) {
-                        throw Object.assign(new Error('The idempotency key was already used with a different payload.'), { code: 'REVISION_CONFLICT' });
-                    }
-                    if (replay.hit) {
+                const replayable = Boolean(writeSchema) && channel !== 'agent:configure' && Boolean(idempotencyStore) && typeof resolvedIdempotencyKey === 'string';
+                if (replayable && idempotencyStore && resolvedIdempotencyKey) {
+                    return await WithIdempotencyLock(resolvedIdempotencyKey, async () => {
+                        const payloadHash = (0, node_crypto_1.createHash)('sha256').update(`${channel}\n${serialized ?? ''}`).digest('hex');
+                        const memoryRecord = idempotencyMemory.get(resolvedIdempotencyKey);
+                        if (memoryRecord) {
+                            if (memoryRecord.payloadHash !== payloadHash) {
+                                throw Object.assign(new Error('The idempotency key was already used with a different payload.'), { code: 'REVISION_CONFLICT' });
+                            }
+                            record(true);
+                            return memoryRecord.result;
+                        }
+                        const replay = idempotencyStore.Get(resolvedIdempotencyKey, payloadHash);
+                        if (replay.conflict) {
+                            throw Object.assign(new Error('The idempotency key was already used with a different payload.'), { code: 'REVISION_CONFLICT' });
+                        }
+                        if (replay.hit) {
+                            record(true);
+                            return replay.result;
+                        }
+                        const result = await Resolve(channel)(...args);
                         record(true);
-                        return replay.result;
-                    }
+                        const envelope = (0, contracts_1.CreateResultSuccess)(result);
+                        idempotencyMemory.set(resolvedIdempotencyKey, { payloadHash, result: envelope });
+                        if (idempotencyMemory.size > 500) {
+                            const oldestKey = idempotencyMemory.keys().next().value;
+                            if (oldestKey)
+                                idempotencyMemory.delete(oldestKey);
+                        }
+                        try {
+                            await idempotencyStore.Put(resolvedIdempotencyKey, payloadHash, envelope);
+                        }
+                        catch {
+                            // 业务已成功；幂等记录落盘失败不应把成功响应改写成可重试失败。
+                            // 进程内缓存已先行写入，当前进程内同键重试仍可去重。
+                        }
+                        return envelope;
+                    });
                 }
                 const result = await Resolve(channel)(...args);
                 record(true);
-                const envelope = (0, contracts_1.CreateResultSuccess)(result);
-                if (replayable && idempotencyStore)
-                    idempotencyStore.Put(resolvedRequestId, payloadHash, envelope);
-                return envelope;
+                return (0, contracts_1.CreateResultSuccess)(result);
             }
             catch (error) {
                 record(false);

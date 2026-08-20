@@ -1,4 +1,5 @@
 import type { ApplicationDto, AttachmentDto, ChatMessageInput, ConversationDto, JobDto, ProfileItemDto, ResumeDto, ResumeRevisionDto, SettingsDto, WorkspaceStatusDto, WorkspaceViewModel } from './dto';
+import type { WriteCommandOptions } from './envelope';
 /** Agent 请求的显式窄字段：确认模式、附件、项目 ID 与简历 ID；业务只读快照（简历/档案）由后端按 ID 读取，不再整包透传前端组合态。 */
 export interface AgentSendRequest {
     requestId: string;
@@ -196,67 +197,67 @@ export interface WorkspaceBridge {
     GetStatus: () => Promise<WorkspaceStatusDto>;
     GetViewModel: () => Promise<WorkspaceViewModel>;
     GetSettings: () => Promise<Partial<SettingsDto>>;
-    SaveSettings: (settings: Partial<SettingsDto>) => Promise<{
+    SaveSettings: (settings: Partial<SettingsDto>, options?: WriteCommandOptions) => Promise<{
         saved: boolean;
     }>;
     CreateConversation: (conversation: {
         id: string;
         title: string;
-    }) => Promise<ConversationDto>;
-    RenameConversation: (id: string, title: string, expectedRevision?: number) => Promise<{
+    }, options?: WriteCommandOptions) => Promise<ConversationDto>;
+    RenameConversation: (id: string, title: string, expectedRevision?: number, options?: WriteCommandOptions) => Promise<{
         id: string;
         title: string;
         revision: number;
     }>;
-    DeleteConversation: (id: string) => Promise<{
+    DeleteConversation: (id: string, options?: WriteCommandOptions) => Promise<{
         id: string;
     }>;
-    AppendConversationMessages: (conversationId: string, messages: ChatMessageInput[]) => Promise<{
+    AppendConversationMessages: (conversationId: string, messages: ChatMessageInput[], options?: WriteCommandOptions) => Promise<{
         conversationId: string;
         count: number;
     }>;
-    CompleteConversationMessage: (conversationId: string, messageId: string, content: string, thinkingContent?: string) => Promise<{
+    CompleteConversationMessage: (conversationId: string, messageId: string, content: string, thinkingContent?: string, options?: WriteCommandOptions) => Promise<{
         conversationId: string;
         messageId: string;
     }>;
-    RemoveConversationMessage: (conversationId: string, messageId: string) => Promise<{
+    RemoveConversationMessage: (conversationId: string, messageId: string, options?: WriteCommandOptions) => Promise<{
         conversationId: string;
         messageId: string;
     }>;
-    UpsertResume: (resume: ResumeDto, expectedRevision?: number) => Promise<{
+    UpsertResume: (resume: ResumeDto, expectedRevision?: number, options?: WriteCommandOptions) => Promise<{
         id: string;
         revision: number;
     }>;
-    RenameResume: (id: string, name: string, expectedRevision?: number) => Promise<{
+    RenameResume: (id: string, name: string, expectedRevision?: number, options?: WriteCommandOptions) => Promise<{
         id: string;
         name: string;
         revision: number;
     }>;
-    DeleteResume: (id: string) => Promise<{
+    DeleteResume: (id: string, options?: WriteCommandOptions) => Promise<{
         id: string;
     }>;
-    UpsertJob: (job: JobDto, expectedRevision?: number) => Promise<{
+    UpsertJob: (job: JobDto, expectedRevision?: number, options?: WriteCommandOptions) => Promise<{
         id: string;
         revision: number;
     }>;
-    SetJobFavorite: (id: string, favorite: boolean, expectedRevision?: number) => Promise<{
+    SetJobFavorite: (id: string, favorite: boolean, expectedRevision?: number, options?: WriteCommandOptions) => Promise<{
         id: string;
         isFavorite: boolean;
         revision: number;
     }>;
-    DeleteJob: (id: string) => Promise<{
+    DeleteJob: (id: string, options?: WriteCommandOptions) => Promise<{
         id: string;
     }>;
-    UpsertApplication: (application: ApplicationDto, expectedRevision?: number) => Promise<{
+    UpsertApplication: (application: ApplicationDto, expectedRevision?: number, options?: WriteCommandOptions) => Promise<{
         id: string;
         revision: number;
     }>;
-    MoveApplicationStatus: (id: string, status: string, expectedRevision?: number) => Promise<{
+    MoveApplicationStatus: (id: string, status: string, expectedRevision?: number, options?: WriteCommandOptions) => Promise<{
         id: string;
         status: string;
         revision: number;
     }>;
-    DeleteApplication: (id: string) => Promise<{
+    DeleteApplication: (id: string, options?: WriteCommandOptions) => Promise<{
         id: string;
     }>;
     GetProfiles: () => Promise<{
@@ -264,7 +265,7 @@ export interface WorkspaceBridge {
         hash: string | null;
         modified: boolean;
     }>;
-    SaveProfiles: (items: ProfileItemDto[], force?: boolean) => Promise<{
+    SaveProfiles: (items: ProfileItemDto[], force?: boolean, options?: WriteCommandOptions) => Promise<{
         count: number;
         hash: string;
     }>;
@@ -272,8 +273,8 @@ export interface WorkspaceBridge {
         items: ProfileItemDto[];
         hash: string | null;
     }>;
-    ImportAttachment: (file: File, mimeType: string) => Promise<AttachmentDto>;
-    CleanupAttachments: () => Promise<{
+    ImportAttachment: (file: File, mimeType: string, options?: WriteCommandOptions) => Promise<AttachmentDto>;
+    CleanupAttachments: (options?: WriteCommandOptions) => Promise<{
         scanned: number;
         logicallyDeleted: number;
         filesDeleted: number;
@@ -288,7 +289,7 @@ export interface WorkspaceBridge {
         failed: number;
         blockedCount?: number;
     }>;
-    RecoverOperations: () => Promise<{
+    RecoverOperations: (options?: WriteCommandOptions) => Promise<{
         recovered: number;
         failed: number;
         blocked: number;
@@ -306,27 +307,27 @@ export interface WorkspaceBridge {
         }>;
         canRestore: boolean;
     }>;
-    RestoreLatestBackup: () => Promise<{
+    RestoreLatestBackup: (options?: WriteCommandOptions) => Promise<{
         restored: boolean;
         backupId: string;
         sceneId: string;
     }>;
-    RestoreBackup: (backupId: string) => Promise<{
+    RestoreBackup: (backupId: string, options?: WriteCommandOptions) => Promise<{
         restored: boolean;
         backupId: string;
         sceneId: string;
     }>;
-    ExportRecoveryDiagnostic: () => Promise<{
+    ExportRecoveryDiagnostic: (options?: WriteCommandOptions) => Promise<{
         exported: boolean;
         fileName: string;
     }>;
-    CreateBackup: () => Promise<{
+    CreateBackup: (options?: WriteCommandOptions) => Promise<{
         created: boolean;
         timestamp: number;
         retainedCount: number;
     }>;
     GetResumeRevisions: (resumeId: string) => Promise<ResumeRevisionDto[]>;
-    SetResumeRevisionPinned: (revisionId: string, pinned: boolean) => Promise<{
+    SetResumeRevisionPinned: (revisionId: string, pinned: boolean, options?: WriteCommandOptions) => Promise<{
         id: string;
         isPinned: boolean;
     }>;

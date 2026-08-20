@@ -12,7 +12,7 @@ export function useResumes() {
 /** 创建或更新简历；成功后按服务器 revision 写回并置顶。 */
 export function useUpsertResume(handlers?: WorkspaceMutationHandlers) {
   return useWorkspaceMutation<{ resume: Resume; expectedRevision?: number }, { id: string; revision: number }>({
-    mutationFn: ({ resume, expectedRevision }) => Unwrap(platformClient.workspace.UpsertResume(resume, expectedRevision)),
+    mutationFn: ({ resume, expectedRevision }, options) => Unwrap(platformClient.workspace.UpsertResume(resume, expectedRevision, options)),
     applyServer: (data, vars, result) => {
       const next = { ...vars.resume, revision: result.revision };
       return { ...data, resumes: data.resumes.some((item) => item.id === next.id) ? data.resumes.map((item) => (item.id === next.id ? next : item)) : [next, ...data.resumes] };
@@ -25,7 +25,7 @@ export function useUpsertResume(handlers?: WorkspaceMutationHandlers) {
 /** 重命名简历；成功后写回服务器确认的 revision。 */
 export function useRenameResume(handlers?: WorkspaceMutationHandlers) {
   return useWorkspaceMutation<{ id: string; name: string; expectedRevision?: number }, { id: string; name: string; revision: number }>({
-    mutationFn: ({ id, name, expectedRevision }) => Unwrap(platformClient.workspace.RenameResume(id, name, expectedRevision)),
+    mutationFn: ({ id, name, expectedRevision }, options) => Unwrap(platformClient.workspace.RenameResume(id, name, expectedRevision, options)),
     applyServer: (data, vars, result) => ({
       ...data,
       resumes: data.resumes.map((item) => (item.id === vars.id ? { ...item, name: vars.name, updatedAt: Date.now(), revision: result.revision } : item)),
@@ -38,7 +38,7 @@ export function useRenameResume(handlers?: WorkspaceMutationHandlers) {
 /** 逻辑删除简历；成功后从缓存移除。 */
 export function useDeleteResume(handlers?: WorkspaceMutationHandlers) {
   return useWorkspaceMutation<{ id: string }, { id: string }>({
-    mutationFn: ({ id }) => Unwrap(platformClient.workspace.DeleteResume(id)),
+    mutationFn: ({ id }, options) => Unwrap(platformClient.workspace.DeleteResume(id, options)),
     applyServer: (data, vars) => ({ ...data, resumes: data.resumes.filter((item) => item.id !== vars.id) }),
     ...handlers,
   });

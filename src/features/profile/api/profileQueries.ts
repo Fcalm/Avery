@@ -13,7 +13,7 @@ export function useProfiles() {
 /** 新增或更新档案并整体写回 profile.json；检测到外部修改时进入冲突状态。 */
 export function useSaveProfiles(handlers?: WorkspaceMutationHandlers) {
   return useWorkspaceMutation<{ items: ProfileItem[] }, { count: number; hash: string }>({
-    mutationFn: ({ items }) => Unwrap(platformClient.workspace.SaveProfiles(items)),
+    mutationFn: ({ items }, options) => Unwrap(platformClient.workspace.SaveProfiles(items, undefined, options)),
     applyServer: (data, vars) => ({ ...data, profiles: vars.items }),
     conflictCode: 'PROFILE_CONFLICT',
     ...handlers,
@@ -23,7 +23,7 @@ export function useSaveProfiles(handlers?: WorkspaceMutationHandlers) {
 /** 强制保留应用版本并覆盖外部修改；用于冲突界面「保留应用版本」。 */
 export function useKeepProfiles(handlers?: WorkspaceMutationHandlers) {
   return useWorkspaceMutation<{ items: ProfileItem[] }, { count: number; hash: string }>({
-    mutationFn: ({ items }) => Unwrap(platformClient.workspace.SaveProfiles(items, true)),
+    mutationFn: ({ items }, options) => Unwrap(platformClient.workspace.SaveProfiles(items, true, options)),
     applyServer: (data, vars) => ({ ...data, profiles: vars.items }),
     ...handlers,
   });

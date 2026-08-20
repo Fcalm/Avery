@@ -100,7 +100,7 @@ async function RunLifecycleScenario(mode, userDataPath, workspacePath) {
         LifecycleStep = channel;
         let result;
         try {
-            result = await BackendHost.Command(channel, ...args);
+            result = await BackendHost.Command(channel, undefined, ...args);
         }
         catch (error) {
             const detail = error instanceof Error ? error.message : 'unknown execution error';

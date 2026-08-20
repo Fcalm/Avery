@@ -10,7 +10,7 @@ export declare function CreateBackendHost({ appContext, desktopCapabilities, onE
     state: () => string;
     HandleChannels(): string[];
     OnEvent(listener: (payload: unknown) => void): void;
-    Command(channel: string, ...args: unknown[]): Promise<unknown>;
+    Command(channel: string, idempotencyKey: string | undefined, ...args: unknown[]): Promise<unknown>;
     Shutdown(): void;
     GetChild(): Electron.UtilityProcess | null;
 };

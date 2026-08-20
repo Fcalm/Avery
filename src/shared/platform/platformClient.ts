@@ -1,5 +1,5 @@
 import {
-  ErrorCode, type ErrorCodeValue, type ResultEnvelope, type DesktopAgentBridge, type WorkspaceBridge, type SettingsDto,
+  ErrorCode, type ErrorCodeValue, type ResultEnvelope, type DesktopAgentBridge, type WorkspaceBridge, type SettingsDto, type WriteCommandOptions,
 } from '@offerget/contracts';
 
 /** 统一业务错误：携带稳定错误码与可选诊断明细，页面只消费 code，不再解析异常字符串。 */
@@ -52,6 +52,14 @@ function RequireWorkspace(): WorkspaceBridge {
   return window.offergetWorkspace;
 }
 
+/**
+ * 未经 Mutation 协调的单次写调用仍必须携带键，防止生产链路退回“无幂等”模式。
+ * 自动重试路径由 useWorkspaceMutation 传入同一键；此兜底只适用于一次性调用。
+ */
+function ResolveWriteOptions(options?: WriteCommandOptions): WriteCommandOptions {
+  return options?.idempotencyKey ? options : { idempotencyKey: crypto.randomUUID() };
+}
+
 /** 统一平台客户端：页面与 feature api 层访问桌面 Bridge 的唯一入口，全部返回统一结果信封。 */
 export const platformClient = {
   agent: {
@@ -83,29 +91,29 @@ export const platformClient = {
     GetStatus: () => CallBridge(() => RequireWorkspace().GetStatus()),
     GetViewModel: () => CallBridge(() => RequireWorkspace().GetViewModel()),
     GetSettings: () => CallBridge(() => RequireWorkspace().GetSettings()),
-    SaveSettings: (settings: Partial<SettingsDto>) => CallBridge(() => RequireWorkspace().SaveSettings(settings)),
-    CreateConversation: (conversation: { id: string; title: string }) => CallBridge(() => RequireWorkspace().CreateConversation(conversation)),
-    RenameConversation: (id: string, title: string, expectedRevision?: number) => CallBridge(() => RequireWorkspace().RenameConversation(id, title, expectedRevision)),
-    DeleteConversation: (id: string) => CallBridge(() => RequireWorkspace().DeleteConversation(id)),
-    AppendConversationMessages: (conversationId: string, messages: Parameters<WorkspaceBridge['AppendConversationMessages']>[1]) => CallBridge(() => RequireWorkspace().AppendConversationMessages(conversationId, messages)),
-    CompleteConversationMessage: (conversationId: string, messageId: string, content: string, thinkingContent?: string) => CallBridge(() => RequireWorkspace().CompleteConversationMessage(conversationId, messageId, content, thinkingContent)),
-    RemoveConversationMessage: (conversationId: string, messageId: string) => CallBridge(() => RequireWorkspace().RemoveConversationMessage(conversationId, messageId)),
-    UpsertResume: (resume: Parameters<WorkspaceBridge['UpsertResume']>[0], expectedRevision?: number) => CallBridge(() => RequireWorkspace().UpsertResume(resume, expectedRevision)),
-    RenameResume: (id: string, name: string, expectedRevision?: number) => CallBridge(() => RequireWorkspace().RenameResume(id, name, expectedRevision)),
-    DeleteResume: (id: string) => CallBridge(() => RequireWorkspace().DeleteResume(id)),
-    UpsertJob: (job: Parameters<WorkspaceBridge['UpsertJob']>[0], expectedRevision?: number) => CallBridge(() => RequireWorkspace().UpsertJob(job, expectedRevision)),
-    SetJobFavorite: (id: string, favorite: boolean, expectedRevision?: number) => CallBridge(() => RequireWorkspace().SetJobFavorite(id, favorite, expectedRevision)),
-    DeleteJob: (id: string) => CallBridge(() => RequireWorkspace().DeleteJob(id)),
-    UpsertApplication: (application: Parameters<WorkspaceBridge['UpsertApplication']>[0], expectedRevision?: number) => CallBridge(() => RequireWorkspace().UpsertApplication(application, expectedRevision)),
-    MoveApplicationStatus: (id: string, status: string, expectedRevision?: number) => CallBridge(() => RequireWorkspace().MoveApplicationStatus(id, status, expectedRevision)),
-    DeleteApplication: (id: string) => CallBridge(() => RequireWorkspace().DeleteApplication(id)),
+    SaveSettings: (settings: Partial<SettingsDto>, options?: WriteCommandOptions) => CallBridge(() => RequireWorkspace().SaveSettings(settings, ResolveWriteOptions(options))),
+    CreateConversation: (conversation: { id: string; title: string }, options?: WriteCommandOptions) => CallBridge(() => RequireWorkspace().CreateConversation(conversation, ResolveWriteOptions(options))),
+    RenameConversation: (id: string, title: string, expectedRevision?: number, options?: WriteCommandOptions) => CallBridge(() => RequireWorkspace().RenameConversation(id, title, expectedRevision, ResolveWriteOptions(options))),
+    DeleteConversation: (id: string, options?: WriteCommandOptions) => CallBridge(() => RequireWorkspace().DeleteConversation(id, ResolveWriteOptions(options))),
+    AppendConversationMessages: (conversationId: string, messages: Parameters<WorkspaceBridge['AppendConversationMessages']>[1], options?: WriteCommandOptions) => CallBridge(() => RequireWorkspace().AppendConversationMessages(conversationId, messages, ResolveWriteOptions(options))),
+    CompleteConversationMessage: (conversationId: string, messageId: string, content: string, thinkingContent?: string, options?: WriteCommandOptions) => CallBridge(() => RequireWorkspace().CompleteConversationMessage(conversationId, messageId, content, thinkingContent, ResolveWriteOptions(options))),
+    RemoveConversationMessage: (conversationId: string, messageId: string, options?: WriteCommandOptions) => CallBridge(() => RequireWorkspace().RemoveConversationMessage(conversationId, messageId, ResolveWriteOptions(options))),
+    UpsertResume: (resume: Parameters<WorkspaceBridge['UpsertResume']>[0], expectedRevision?: number, options?: WriteCommandOptions) => CallBridge(() => RequireWorkspace().UpsertResume(resume, expectedRevision, ResolveWriteOptions(options))),
+    RenameResume: (id: string, name: string, expectedRevision?: number, options?: WriteCommandOptions) => CallBridge(() => RequireWorkspace().RenameResume(id, name, expectedRevision, ResolveWriteOptions(options))),
+    DeleteResume: (id: string, options?: WriteCommandOptions) => CallBridge(() => RequireWorkspace().DeleteResume(id, ResolveWriteOptions(options))),
+    UpsertJob: (job: Parameters<WorkspaceBridge['UpsertJob']>[0], expectedRevision?: number, options?: WriteCommandOptions) => CallBridge(() => RequireWorkspace().UpsertJob(job, expectedRevision, ResolveWriteOptions(options))),
+    SetJobFavorite: (id: string, favorite: boolean, expectedRevision?: number, options?: WriteCommandOptions) => CallBridge(() => RequireWorkspace().SetJobFavorite(id, favorite, expectedRevision, ResolveWriteOptions(options))),
+    DeleteJob: (id: string, options?: WriteCommandOptions) => CallBridge(() => RequireWorkspace().DeleteJob(id, ResolveWriteOptions(options))),
+    UpsertApplication: (application: Parameters<WorkspaceBridge['UpsertApplication']>[0], expectedRevision?: number, options?: WriteCommandOptions) => CallBridge(() => RequireWorkspace().UpsertApplication(application, expectedRevision, ResolveWriteOptions(options))),
+    MoveApplicationStatus: (id: string, status: string, expectedRevision?: number, options?: WriteCommandOptions) => CallBridge(() => RequireWorkspace().MoveApplicationStatus(id, status, expectedRevision, ResolveWriteOptions(options))),
+    DeleteApplication: (id: string, options?: WriteCommandOptions) => CallBridge(() => RequireWorkspace().DeleteApplication(id, ResolveWriteOptions(options))),
     GetProfiles: () => CallBridge(() => RequireWorkspace().GetProfiles()),
-    SaveProfiles: (items: Parameters<WorkspaceBridge['SaveProfiles']>[0], force?: boolean) => CallBridge(() => RequireWorkspace().SaveProfiles(items, force)),
+    SaveProfiles: (items: Parameters<WorkspaceBridge['SaveProfiles']>[0], force?: boolean, options?: WriteCommandOptions) => CallBridge(() => RequireWorkspace().SaveProfiles(items, force, ResolveWriteOptions(options))),
     ReloadProfiles: () => CallBridge(() => RequireWorkspace().ReloadProfiles()),
-    ImportAttachment: (file: File, mimeType: string) => CallBridge(() => RequireWorkspace().ImportAttachment(file, mimeType)),
-    CreateBackup: () => CallBridge(() => RequireWorkspace().CreateBackup()),
+    ImportAttachment: (file: File, mimeType: string, options?: WriteCommandOptions) => CallBridge(() => RequireWorkspace().ImportAttachment(file, mimeType, ResolveWriteOptions(options))),
+    CreateBackup: (options?: WriteCommandOptions) => CallBridge(() => RequireWorkspace().CreateBackup(ResolveWriteOptions(options))),
     GetResumeRevisions: (resumeId: string) => CallBridge(() => RequireWorkspace().GetResumeRevisions(resumeId)),
-    SetResumeRevisionPinned: (revisionId: string, pinned: boolean) => CallBridge(() => RequireWorkspace().SetResumeRevisionPinned(revisionId, pinned)),
+    SetResumeRevisionPinned: (revisionId: string, pinned: boolean, options?: WriteCommandOptions) => CallBridge(() => RequireWorkspace().SetResumeRevisionPinned(revisionId, pinned, ResolveWriteOptions(options))),
     ExportResume: (resume: { name: string; summary: string; content: string }, format: 'pdf' | 'docx' | 'png') => CallBridge(() => RequireWorkspace().ExportResume(resume, format)),
     Migrate: () => CallBridge(() => RequireWorkspace().Migrate()),
   },

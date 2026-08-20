@@ -2,6 +2,7 @@ import type {
   ApplicationDto, AttachmentDto, ChatMessageInput, ConversationDto, JobDto, ProfileItemDto,
   ResumeDto, ResumeRevisionDto, SettingsDto, WorkspaceStatusDto, WorkspaceViewModel,
 } from './dto';
+import type { WriteCommandOptions } from './envelope';
 
 /** Agent 请求的显式窄字段：确认模式、附件、项目 ID 与简历 ID；业务只读快照（简历/档案）由后端按 ID 读取，不再整包透传前端组合态。 */
 export interface AgentSendRequest {
@@ -128,36 +129,36 @@ export interface WorkspaceBridge {
   GetStatus: () => Promise<WorkspaceStatusDto>;
   GetViewModel: () => Promise<WorkspaceViewModel>;
   GetSettings: () => Promise<Partial<SettingsDto>>;
-  SaveSettings: (settings: Partial<SettingsDto>) => Promise<{ saved: boolean }>;
-  CreateConversation: (conversation: { id: string; title: string }) => Promise<ConversationDto>;
-  RenameConversation: (id: string, title: string, expectedRevision?: number) => Promise<{ id: string; title: string; revision: number }>;
-  DeleteConversation: (id: string) => Promise<{ id: string }>;
-  AppendConversationMessages: (conversationId: string, messages: ChatMessageInput[]) => Promise<{ conversationId: string; count: number }>;
-  CompleteConversationMessage: (conversationId: string, messageId: string, content: string, thinkingContent?: string) => Promise<{ conversationId: string; messageId: string }>;
-  RemoveConversationMessage: (conversationId: string, messageId: string) => Promise<{ conversationId: string; messageId: string }>;
-  UpsertResume: (resume: ResumeDto, expectedRevision?: number) => Promise<{ id: string; revision: number }>;
-  RenameResume: (id: string, name: string, expectedRevision?: number) => Promise<{ id: string; name: string; revision: number }>;
-  DeleteResume: (id: string) => Promise<{ id: string }>;
-  UpsertJob: (job: JobDto, expectedRevision?: number) => Promise<{ id: string; revision: number }>;
-  SetJobFavorite: (id: string, favorite: boolean, expectedRevision?: number) => Promise<{ id: string; isFavorite: boolean; revision: number }>;
-  DeleteJob: (id: string) => Promise<{ id: string }>;
-  UpsertApplication: (application: ApplicationDto, expectedRevision?: number) => Promise<{ id: string; revision: number }>;
-  MoveApplicationStatus: (id: string, status: string, expectedRevision?: number) => Promise<{ id: string; status: string; revision: number }>;
-  DeleteApplication: (id: string) => Promise<{ id: string }>;
+  SaveSettings: (settings: Partial<SettingsDto>, options?: WriteCommandOptions) => Promise<{ saved: boolean }>;
+  CreateConversation: (conversation: { id: string; title: string }, options?: WriteCommandOptions) => Promise<ConversationDto>;
+  RenameConversation: (id: string, title: string, expectedRevision?: number, options?: WriteCommandOptions) => Promise<{ id: string; title: string; revision: number }>;
+  DeleteConversation: (id: string, options?: WriteCommandOptions) => Promise<{ id: string }>;
+  AppendConversationMessages: (conversationId: string, messages: ChatMessageInput[], options?: WriteCommandOptions) => Promise<{ conversationId: string; count: number }>;
+  CompleteConversationMessage: (conversationId: string, messageId: string, content: string, thinkingContent?: string, options?: WriteCommandOptions) => Promise<{ conversationId: string; messageId: string }>;
+  RemoveConversationMessage: (conversationId: string, messageId: string, options?: WriteCommandOptions) => Promise<{ conversationId: string; messageId: string }>;
+  UpsertResume: (resume: ResumeDto, expectedRevision?: number, options?: WriteCommandOptions) => Promise<{ id: string; revision: number }>;
+  RenameResume: (id: string, name: string, expectedRevision?: number, options?: WriteCommandOptions) => Promise<{ id: string; name: string; revision: number }>;
+  DeleteResume: (id: string, options?: WriteCommandOptions) => Promise<{ id: string }>;
+  UpsertJob: (job: JobDto, expectedRevision?: number, options?: WriteCommandOptions) => Promise<{ id: string; revision: number }>;
+  SetJobFavorite: (id: string, favorite: boolean, expectedRevision?: number, options?: WriteCommandOptions) => Promise<{ id: string; isFavorite: boolean; revision: number }>;
+  DeleteJob: (id: string, options?: WriteCommandOptions) => Promise<{ id: string }>;
+  UpsertApplication: (application: ApplicationDto, expectedRevision?: number, options?: WriteCommandOptions) => Promise<{ id: string; revision: number }>;
+  MoveApplicationStatus: (id: string, status: string, expectedRevision?: number, options?: WriteCommandOptions) => Promise<{ id: string; status: string; revision: number }>;
+  DeleteApplication: (id: string, options?: WriteCommandOptions) => Promise<{ id: string }>;
   GetProfiles: () => Promise<{ items: ProfileItemDto[]; hash: string | null; modified: boolean }>;
-  SaveProfiles: (items: ProfileItemDto[], force?: boolean) => Promise<{ count: number; hash: string }>;
+  SaveProfiles: (items: ProfileItemDto[], force?: boolean, options?: WriteCommandOptions) => Promise<{ count: number; hash: string }>;
   ReloadProfiles: () => Promise<{ items: ProfileItemDto[]; hash: string | null }>;
-  ImportAttachment: (file: File, mimeType: string) => Promise<AttachmentDto>;
-  CleanupAttachments: () => Promise<{ scanned: number; logicallyDeleted: number; filesDeleted: number; cacheFilesDeleted: number; failed: number; pending: number }>;
+  ImportAttachment: (file: File, mimeType: string, options?: WriteCommandOptions) => Promise<AttachmentDto>;
+  CleanupAttachments: (options?: WriteCommandOptions) => Promise<{ scanned: number; logicallyDeleted: number; filesDeleted: number; cacheFilesDeleted: number; failed: number; pending: number }>;
   GetRecoveryStatus: () => Promise<{ recovering: boolean; blocked: boolean; recovered: number; failed: number; blockedCount?: number }>;
-  RecoverOperations: () => Promise<{ recovered: number; failed: number; blocked: number; writable: boolean }>;
+  RecoverOperations: (options?: WriteCommandOptions) => Promise<{ recovered: number; failed: number; blocked: number; writable: boolean }>;
   GetDatabaseRecoveryStatus: () => Promise<{ mode: 'healthy' | 'recovery'; readOnly: boolean; reason: string | null; backups: Array<{ id: string; valid: boolean; schemaVersion: number | null; createdAt: number }>; canRestore: boolean }>;
-  RestoreLatestBackup: () => Promise<{ restored: boolean; backupId: string; sceneId: string }>;
-  RestoreBackup: (backupId: string) => Promise<{ restored: boolean; backupId: string; sceneId: string }>;
-  ExportRecoveryDiagnostic: () => Promise<{ exported: boolean; fileName: string }>;
-  CreateBackup: () => Promise<{ created: boolean; timestamp: number; retainedCount: number }>;
+  RestoreLatestBackup: (options?: WriteCommandOptions) => Promise<{ restored: boolean; backupId: string; sceneId: string }>;
+  RestoreBackup: (backupId: string, options?: WriteCommandOptions) => Promise<{ restored: boolean; backupId: string; sceneId: string }>;
+  ExportRecoveryDiagnostic: (options?: WriteCommandOptions) => Promise<{ exported: boolean; fileName: string }>;
+  CreateBackup: (options?: WriteCommandOptions) => Promise<{ created: boolean; timestamp: number; retainedCount: number }>;
   GetResumeRevisions: (resumeId: string) => Promise<ResumeRevisionDto[]>;
-  SetResumeRevisionPinned: (revisionId: string, pinned: boolean) => Promise<{ id: string; isPinned: boolean }>;
+  SetResumeRevisionPinned: (revisionId: string, pinned: boolean, options?: WriteCommandOptions) => Promise<{ id: string; isPinned: boolean }>;
   ExportResume: (resume: { name: string; summary: string; content: string }, format: 'pdf' | 'docx' | 'png') => Promise<{ fileName: string; exported: boolean }>;
   Migrate: () => Promise<WorkspaceStatusDto & { migration: unknown }>;
 }
