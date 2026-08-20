@@ -1,9 +1,15 @@
 import type { AgentMessage, KernelRunInput, KernelRunResult, RunDisposition, ToolCallFragment, ToolDisposition, ToolExecutionResult } from '@offerget/agent-sdk';
 import { KeepRecentTurnGroups } from '@offerget/agent-sdk';
 
-/** 从 Trace 正文中移除常见密钥、Bearer 凭据与超长内容；纯函数，供内核事件脱敏。 */
+/** 从 Trace 正文中移除常见密钥、Authorization 凭据和绝对路径；纯函数，供内核事件脱敏。 */
 export function ScrubTraceContent(value: unknown): string {
-  return String(value ?? '').replace(/Bearer\s+[^\s]+/gi, 'Bearer [REDACTED]').replace(/\bsk-[A-Za-z0-9_-]+\b/g, '[REDACTED_API_KEY]').slice(0, 20000);
+  return String(value ?? '')
+    .replace(/Bearer\s+[^\s]+/gi, 'Bearer [REDACTED]')
+    .replace(/\b(?:api[_-]?key|x-api-key|authorization|token)\s*[:=]\s*[^\s,;"'}]+/gi, (match) => `${match.split(/[:=]/, 1)[0]}=[REDACTED]`)
+    .replace(/\bsk-[A-Za-z0-9_-]+\b/g, '[REDACTED_API_KEY]')
+    .replace(/\b[A-Za-z]:\\[^\s"'<>]*/g, '[REDACTED_PATH]')
+    .replace(/(?<![:\w])\/(?:[^\s"'<>]+)/g, '[REDACTED_PATH]')
+    .slice(0, 20000);
 }
 
 /** Trace 没有逐事件的 Provider usage 时，以中英文字符密度给出稳定的本地估算值。 */
