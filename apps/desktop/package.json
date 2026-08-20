@@ -5,7 +5,7 @@
   "description": "OfferGet Electron Main、Gateway 与桌面适配器 TypeScript 组合根",
   "main": "dist/main.js",
   "scripts": {
-    "build": "tsc -p tsconfig.json"
+    "build": "node ../../node_modules/typescript/bin/tsc -p tsconfig.json && node ../../node_modules/typescript/bin/tsc -p tsconfig.preload.json"
   },
   "dependencies": {
     "@offerget/backend": "0.1.0"
