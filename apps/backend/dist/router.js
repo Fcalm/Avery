@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.EventChannels = exports.FunctionRouteChannels = exports.MethodRoutes = exports.ReadOnlyChannels = exports.MaxCommandPayloadBytes = void 0;
+exports.WriteCommandChannels = exports.EventChannels = exports.FunctionRouteChannels = exports.MethodRoutes = exports.ReadOnlyChannels = exports.MaxCommandPayloadBytes = void 0;
 exports.ExtractRequestId = ExtractRequestId;
 exports.CreateBackend = CreateBackend;
 const node_crypto_1 = require("node:crypto");
@@ -121,6 +121,8 @@ const WriteArgsSchemas = {
     'workspace:restore-backup': zod_1.z.tuple([EntityId]),
     'workspace:export-recovery-diagnostic': zod_1.z.tuple([]),
 };
+/** 可重放写命令通道：Gateway 仅为这些通道接受 WriteCommandEnvelope，避免读取命令协议漂移。 */
+exports.WriteCommandChannels = new Set(Object.keys(WriteArgsSchemas));
 /**
  * 组装后端命令分发器：container 提供命名服务，functionRoutes 覆盖编排型通道（如迁移热替换）。
  */

@@ -141,6 +141,9 @@ const WriteArgsSchemas: Record<string, z.ZodTuple> = {
   'workspace:export-recovery-diagnostic': z.tuple([]),
 };
 
+/** 可重放写命令通道：Gateway 仅为这些通道接受 WriteCommandEnvelope，避免读取命令协议漂移。 */
+export const WriteCommandChannels = new Set<string>(Object.keys(WriteArgsSchemas));
+
 export interface BackendContainer {
   [service: string]: any;
 }

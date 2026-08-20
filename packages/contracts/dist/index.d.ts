@@ -1,8 +1,9 @@
 /** OfferGet 跨进程契约包：错误码、信封、DTO 与 Bridge 类型的唯一来源。 */
 export { ErrorCode } from './error-codes';
 export type { ErrorCodeValue } from './error-codes';
-export { ErrorInfoSchema, RequestEnvelopeSchema, ResultEnvelopeSchema, CreateResultSuccess, CreateResultFailure } from './envelope';
-export type { FailureResult, RequestEnvelope, ResultEnvelope, SuccessResult } from './envelope';
+export { ErrorInfoSchema, RequestEnvelopeSchema, ResultEnvelopeSchema, WriteCommandEnvelopeSchema, CreateResultSuccess, CreateResultFailure } from './envelope';
+export type { FailureResult, RequestEnvelope, ResultEnvelope, SuccessResult, WriteCommandEnvelope, WriteCommandOptions } from './envelope';
+export { CreateWriteIntentKeyStore } from './write-intent';
 export { ExtractDetails, NormalizeError } from './error-normalizer';
 export type { NormalizedError } from './error-normalizer';
 export { ApplicationUpsertSchema, ChatMessageInputSchema, ChatMessagesSchema, ConversationCreateSchema, JobUpsertSchema, ProfileItemSchema, ProfileItemsSchema, ResumeUpsertSchema, SettingsSubmitSchema, } from './write-schemas';

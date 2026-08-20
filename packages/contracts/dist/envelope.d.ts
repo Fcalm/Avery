@@ -30,6 +30,14 @@ export declare const RequestEnvelopeSchema: z.ZodObject<{
     expectedRevision: z.ZodOptional<z.ZodNumber>;
     payload: z.ZodUnknown;
 }, z.core.$strip>;
+/**
+ * Renderer 发往 Gateway 的写命令信封。内部 requestId 只用于 Main 与 Backend 的传输配对，
+ * 不允许 Renderer 伪造；稳定幂等键则在一次用户写意图及其自动重试中复用。
+ */
+export declare const WriteCommandEnvelopeSchema: z.ZodObject<{
+    idempotencyKey: z.ZodString;
+    payload: z.ZodArray<z.ZodUnknown>;
+}, z.core.$strip>;
 /** 统一结果信封 Schema：成功携带 data/meta，失败携带稳定错误码，禁止前端解析异常字符串。 */
 export declare const ResultEnvelopeSchema: z.ZodDiscriminatedUnion<[z.ZodObject<{
     ok: z.ZodLiteral<true>;
@@ -68,6 +76,15 @@ export interface RequestEnvelope<T> {
     idempotencyKey?: string;
     expectedRevision?: number;
     payload: T;
+}
+/** Renderer 写命令信封类型；字段语义与 RequestEnvelope 保持一致，但不暴露内部 requestId。 */
+export interface WriteCommandEnvelope<T> {
+    idempotencyKey: NonNullable<RequestEnvelope<T>['idempotencyKey']>;
+    payload: T[];
+}
+/** 由调用意图创建的稳定写命令选项；调用方重试时必须复用同一对象中的键。 */
+export interface WriteCommandOptions {
+    idempotencyKey: string;
 }
 /** 成功结果信封。 */
 export interface SuccessResult<T> {

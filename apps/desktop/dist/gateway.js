@@ -2,7 +2,8 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 // @ts-nocheck
 const { ipcMain } = require('electron');
-const { MethodRoutes, FunctionRouteChannels } = require('../../backend/dist/router.js');
+const { MethodRoutes, FunctionRouteChannels, WriteCommandChannels } = require('../../backend/dist/router.js');
+const { WriteCommandEnvelopeSchema } = require('../../../packages/contracts/dist/envelope.js');
 const MaxGatewayPayloadBytes = 10 * 1024 * 1024;
 const WindowControlChannels = ['window:minimize', 'window:toggle-maximize', 'window:close'];
 /** 单窗口/通道令牌桶：允许短时突发 30 次，随后以每秒 20 次恢复；长期超限返回结构化限流错误。 */
@@ -46,11 +47,11 @@ function ValidateSender(event, webContentsGetter) {
     }
 }
 /** 按后端命令路由表注册渲染进程可调用的受限 IPC；所有 handler 先校验来源窗口，再统一结果信封出口。 */
-function RegisterGateway({ backendHost, webContentsGetter }) {
+function RegisterGateway({ backendHost, webContentsGetter, ipcMainApi = ipcMain }) {
     const channels = [...Object.keys(MethodRoutes), ...FunctionRouteChannels];
     const limiter = CreateGatewayLimiter();
     for (const channel of channels) {
-        ipcMain.handle(channel, async (event, ...args) => {
+        ipcMainApi.handle(channel, async (event, ...args) => {
             if (!ValidateSender(event, webContentsGetter)) {
                 return { ok: false, error: { code: 'PERMISSION_DENIED', message: 'IPC sender is invalid.', retryable: false } };
             }
@@ -68,8 +69,21 @@ function RegisterGateway({ backendHost, webContentsGetter }) {
             if (serialized && Buffer.byteLength(serialized, 'utf8') > MaxGatewayPayloadBytes) {
                 return { ok: false, error: { code: 'VALIDATION_ERROR', message: 'IPC payload is too large.', retryable: false } };
             }
+            let commandArgs = args;
+            let idempotencyKey;
+            if (WriteCommandChannels.has(channel)) {
+                if (args.length !== 1) {
+                    return { ok: false, error: { code: 'VALIDATION_ERROR', message: 'IPC write command envelope is invalid.', retryable: false } };
+                }
+                const parsedEnvelope = WriteCommandEnvelopeSchema.safeParse(args[0]);
+                if (!parsedEnvelope.success) {
+                    return { ok: false, error: { code: 'VALIDATION_ERROR', message: 'IPC write command envelope is invalid.', retryable: false } };
+                }
+                commandArgs = parsedEnvelope.data.payload;
+                idempotencyKey = parsedEnvelope.data.idempotencyKey;
+            }
             try {
-                return await backendHost.Command(channel, undefined, ...args);
+                return await backendHost.Command(channel, idempotencyKey, ...commandArgs);
             }
             catch (error) {
                 return { ok: false, error: { code: 'INTERNAL_ERROR', message: error?.message || 'Backend is unavailable.', retryable: true, details: { backendState: backendHost.state() } } };

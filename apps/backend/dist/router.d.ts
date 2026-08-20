@@ -18,6 +18,8 @@ export declare const MethodRoutes: Record<string, MethodRoute>;
 export declare const FunctionRouteChannels: string[];
 /** 事件发送通道：preload 用 ipcRenderer.on 订阅，不经 HandleCommand 分发。 */
 export declare const EventChannels: string[];
+/** 可重放写命令通道：Gateway 仅为这些通道接受 WriteCommandEnvelope，避免读取命令协议漂移。 */
+export declare const WriteCommandChannels: Set<string>;
 export interface BackendContainer {
     [service: string]: any;
 }
