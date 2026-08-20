@@ -386,12 +386,25 @@ export class AgentHost {
     };
   }
 
+  /** 为旧版自定义观测模块保留兼容降级，但无论哪条路径都写入同一 Provider usage 事实。 */
+  private RecordProviderUsageFact(requestId: string, fact: { source: 'provider' | 'unavailable'; promptTokens: number; completionTokens: number; totalTokens: number }): void {
+    const observability = this.modules.observability as {
+      RecordTraceUsage?: (id: string, usage: typeof fact) => void;
+      AppendTraceEvent: (id: string, eventType: string, payload: unknown, tokenCount?: number) => void;
+    };
+    if (typeof observability.RecordTraceUsage === 'function') {
+      observability.RecordTraceUsage(requestId, fact);
+      return;
+    }
+    observability.AppendTraceEvent(requestId, 'provider_usage', fact, 0);
+  }
+
   /** 将每次已完成模型请求的 usage 合并到单会话账本；缺失值仅记未上报，绝不估算。 */
   private RecordSessionUsage(requestId: string, sessionId: string, usage: any, contextLimit: number, threshold: number): void {
     const previous = this.sessionUsage.get(sessionId);
     const base = previous?.source === 'actual' ? previous : { promptTokens: 0, completionTokens: 0, totalTokens: 0, reportedRequestCount: 0, unreportedRequestCount: 0, compressionCount: 0 };
     if (!usage || ![usage.promptTokens, usage.completionTokens, usage.totalTokens].every((value: unknown) => Number.isSafeInteger(value) && (value as number) >= 0) || usage.totalTokens < usage.promptTokens || usage.totalTokens < usage.completionTokens) {
-      this.modules.observability.RecordTraceUsage?.(requestId, { source: 'unavailable', promptTokens: 0, completionTokens: 0, totalTokens: 0 });
+      this.RecordProviderUsageFact(requestId, { source: 'unavailable', promptTokens: 0, completionTokens: 0, totalTokens: 0 });
       const next = previous?.source === 'actual'
         ? { ...previous, contextLimit, compressionThreshold: threshold, unreportedRequestCount: previous.unreportedRequestCount + 1, updatedAt: Date.now() }
         : {
@@ -402,7 +415,7 @@ export class AgentHost {
       this.SaveState();
       return;
     }
-    this.modules.observability.RecordTraceUsage?.(requestId, {
+    this.RecordProviderUsageFact(requestId, {
       source: 'provider', promptTokens: usage.promptTokens, completionTokens: usage.completionTokens, totalTokens: usage.totalTokens,
     });
     const next = {
