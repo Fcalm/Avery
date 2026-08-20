@@ -27,6 +27,7 @@ const { CreateBackend, ReadOnlyChannels } = require('./router.js') as any;
 
 // 领域层同属本包 TS 构建产物；require 仅用于维持启动加载顺序。
 const { CreateDesktopCapabilityClient } = require('./electron/backend/desktop-capability-client.js') as any;
+const { IdempotencyStore } = require('./idempotency-store.js') as any;
 const { CreateCredentialClient } = require('./electron/backend/credential-client.js') as any;
 const { AgentRunService } = require('./electron/backend/services/agent-run-service.js') as any;
 const { DeveloperService } = require('./electron/backend/services/developer-service.js') as any;
@@ -139,7 +140,7 @@ async function Bootstrap(): Promise<void> {
       },
     },
     functionRoutes: { 'workspace:migrate': MigrateWorkspace },
-    idempotencyStore: new (require('./idempotency-store.js') as any).IdempotencyStore(join(userDataPath, 'idempotency-replay.json')),
+    idempotencyStore: new IdempotencyStore(join(userDataPath, 'idempotency-replay.json')),
   });
 
   PostMessage({ kind: 'ready', pid: process.pid });
