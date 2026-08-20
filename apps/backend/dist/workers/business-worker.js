@@ -3,8 +3,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 const node_worker_threads_1 = require("node:worker_threads");
 const business_store_1 = require("../business-store");
 const contracts_1 = require("@offerget/contracts");
-const { DatabaseRecoveryStore } = require('../electron/backend/services/database-recovery-service.js');
-// Worker 主线程的父端口恒存在；防御性判空后以不可变别名使用，闭包内保持非空类型。
+const database_recovery_service_1 = require("../electron/backend/services/database-recovery-service");
 if (!node_worker_threads_1.parentPort)
     throw new Error('parentPort is unavailable in this worker.');
 const port = node_worker_threads_1.parentPort;
@@ -37,8 +36,7 @@ try {
     store = new business_store_1.BusinessStore(node_worker_threads_1.workerData.workspacePath, { upgradeFailure: UpgradeFailure });
 }
 catch (error) {
-    // 现有库启动失败时进入只读恢复门面，仍完成握手让 Renderer 能展示恢复选项；绝不创建空库覆盖现场。
-    store = new DatabaseRecoveryStore({ workspacePath: node_worker_threads_1.workerData.workspacePath, cause: error });
+    store = new database_recovery_service_1.DatabaseRecoveryStore({ workspacePath: node_worker_threads_1.workerData.workspacePath, cause: error });
 }
 /** 按方法名派发到生命周期逻辑或 Store 实例方法；未知方法以 INTERNAL_ERROR 拒绝。仅构造成功后注册监听器，因此 store 恒非空。 */
 function Dispatch(method, args) {
@@ -68,7 +66,6 @@ function Dispatch(method, args) {
     const callable = activeStore[method];
     if (typeof callable !== 'function')
         throw Object.assign(new Error(`Business worker method ${method} is not supported.`), { code: 'INTERNAL_ERROR' });
-    // 以方法调用语义保留 this 绑定（原型方法依赖实例字段），与直接 store[method](...) 一致。
     const result = callable.call(activeStore, ...args);
     if ((method === 'RestoreLatestBackup' || method === 'RestoreBackup') && result?.restored === true) {
         store = new business_store_1.BusinessStore(node_worker_threads_1.workerData.workspacePath);

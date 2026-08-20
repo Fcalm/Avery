@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-// @ts-nocheck
+exports.CreateDesktopCapabilityClient = CreateDesktopCapabilityClient;
 /** Backend → Main 的反向 RPC 客户端：请求桌面能力（对话框/导出/凭据）并等待 Main 适配器返回结果。 */
 function CreateDesktopCapabilityClient(postMessage) {
     const pending = new Map();
@@ -29,4 +29,3 @@ function CreateDesktopCapabilityClient(postMessage) {
         },
     };
 }
-module.exports = { CreateDesktopCapabilityClient };

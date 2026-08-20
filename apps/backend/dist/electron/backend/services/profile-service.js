@@ -1,15 +1,19 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-// @ts-nocheck
-const { WriteAudit } = require('../../repositories/helpers.js');
+exports.ProfileService = void 0;
+const helpers_1 = require("../../repositories/helpers");
 /** 档案的应用服务：封装 profile.json Repository，维护哈希基线并编排外部修改冲突的审计。 */
 class ProfileService {
+    repository;
+    db;
+    attachmentLifecycle;
+    workspaceOperations;
+    profileHash = null;
     constructor({ repository, db, attachmentLifecycle, workspaceOperations }) {
         this.repository = repository;
         this.db = db;
         this.attachmentLifecycle = attachmentLifecycle;
         this.workspaceOperations = workspaceOperations;
-        this.profileHash = null;
     }
     /** 读取档案唯一事实源；缺失或损坏时返回安全回退值，并认可磁盘内容为哈希基线。 */
     Load(fallback) {
@@ -37,7 +41,7 @@ class ProfileService {
             this.SynchronizeAttachmentLinks(items);
             this.workspaceOperations.Advance(operationId, 'db_committed');
             if (force)
-                WriteAudit(this.db, 'user', 'profile_keep', 'profile', 'profile.json', { from: before, to: result.hash });
+                (0, helpers_1.WriteAudit)(this.db, 'user', 'profile_keep', 'profile', 'profile.json', { from: before, to: result.hash });
             this.workspaceOperations.Advance(operationId, 'completed');
             return result;
         }
@@ -52,7 +56,7 @@ class ProfileService {
         const result = this.repository.Reload(fallback);
         this.profileHash = this.repository.GetHash();
         this.SynchronizeAttachmentLinks(result.items);
-        WriteAudit(this.db, 'user', 'profile_reload', 'profile', 'profile.json', { from: before, to: result.hash });
+        (0, helpers_1.WriteAudit)(this.db, 'user', 'profile_reload', 'profile', 'profile.json', { from: before, to: result.hash });
         return { items: result.items, hash: result.hash };
     }
     /** 返回档案最近一次读写维护的哈希基线，供外部修改检测使用。 */
@@ -72,4 +76,4 @@ class ProfileService {
         run();
     }
 }
-module.exports = { ProfileService };
+exports.ProfileService = ProfileService;

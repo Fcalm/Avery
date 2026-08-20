@@ -1,23 +1,24 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-// @ts-nocheck
-const fs = require('node:fs');
-const crypto = require('node:crypto');
-const { GetNow } = require('./helpers.js');
-const { ProfileItemToStorage, ProfileItemToDisplay } = require('./enum-map.js');
+exports.ProfileRepository = void 0;
+const node_crypto_1 = require("node:crypto");
+const node_fs_1 = require("node:fs");
+const helpers_1 = require("./helpers");
+const enum_map_1 = require("./enum-map");
 /** 档案的唯一事实源 profile.json；以临时文件写入后 fsync 原子替换，并维护哈希基线供外部修改检测。 */
 class ProfileRepository {
+    profilePath;
+    profileHash = null;
     constructor({ profilePath }) {
         this.profilePath = profilePath;
-        this.profileHash = null;
     }
     /** 读取档案并认可当前磁盘内容为哈希基线；缺失或损坏时返回安全回退值。 */
     Load(fallback) {
         try {
-            const raw = fs.readFileSync(this.profilePath, 'utf8');
+            const raw = (0, node_fs_1.readFileSync)(this.profilePath, 'utf8');
             const parsed = JSON.parse(raw);
-            const hash = crypto.createHash('sha256').update(raw).digest('hex');
-            const items = Array.isArray(parsed?.items) ? parsed.items.map(ProfileItemToDisplay) : fallback;
+            const hash = (0, node_crypto_1.createHash)('sha256').update(raw).digest('hex');
+            const items = Array.isArray(parsed?.items) ? parsed.items.map(enum_map_1.ProfileItemToDisplay) : fallback;
             this.profileHash = hash;
             return { items, hash };
         }
@@ -31,8 +32,8 @@ class ProfileRepository {
         if (this.profileHash == null)
             return false;
         try {
-            const raw = fs.readFileSync(this.profilePath, 'utf8');
-            return crypto.createHash('sha256').update(raw).digest('hex') !== this.profileHash;
+            const raw = (0, node_fs_1.readFileSync)(this.profilePath, 'utf8');
+            return (0, node_crypto_1.createHash)('sha256').update(raw).digest('hex') !== this.profileHash;
         }
         catch {
             return false;
@@ -47,20 +48,19 @@ class ProfileRepository {
             conflict.code = 'PROFILE_CONFLICT';
             throw conflict;
         }
-        // 契约英文分类映射为存储中文，保持存量 profile.json 兼容外部工具读取。
-        const payload = { schemaVersion: 1, updatedAt: GetNow(), items: items.map(ProfileItemToStorage) };
+        const payload = { schemaVersion: 1, updatedAt: (0, helpers_1.GetNow)(), items: items.map(enum_map_1.ProfileItemToStorage) };
         const temporaryPath = `${this.profilePath}.tmp`;
         const raw = JSON.stringify(payload, null, 2);
-        const descriptor = fs.openSync(temporaryPath, 'w');
+        const descriptor = (0, node_fs_1.openSync)(temporaryPath, 'w');
         try {
-            fs.writeFileSync(descriptor, raw, 'utf8');
-            fs.fsyncSync(descriptor);
+            (0, node_fs_1.writeFileSync)(descriptor, raw, 'utf8');
+            (0, node_fs_1.fsyncSync)(descriptor);
         }
         finally {
-            fs.closeSync(descriptor);
+            (0, node_fs_1.closeSync)(descriptor);
         }
-        fs.renameSync(temporaryPath, this.profilePath);
-        this.profileHash = crypto.createHash('sha256').update(raw).digest('hex');
+        (0, node_fs_1.renameSync)(temporaryPath, this.profilePath);
+        this.profileHash = (0, node_crypto_1.createHash)('sha256').update(raw).digest('hex');
         return { count: items.length, hash: this.profileHash };
     }
     /** 重新读取磁盘档案并更新哈希基线，供冲突界面「重新加载磁盘版本」使用。 */
@@ -72,4 +72,4 @@ class ProfileRepository {
         return this.profileHash;
     }
 }
-module.exports = { ProfileRepository };
+exports.ProfileRepository = ProfileRepository;

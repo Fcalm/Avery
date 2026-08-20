@@ -1,8 +1,9 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-// @ts-nocheck
+exports.ResumeService = void 0;
 /** 简历及其版本的应用服务：封装简历 Repository，提供创建、编辑、重命名、删除与版本留存管理。 */
 class ResumeService {
+    repository;
     constructor({ repository }) {
         this.repository = repository;
     }
@@ -31,4 +32,4 @@ class ResumeService {
         return this.repository.SetRevisionPinned(revisionId, pinned);
     }
 }
-module.exports = { ResumeService };
+exports.ResumeService = ResumeService;

@@ -121,9 +121,13 @@ const WriteArgsSchemas = {
     'workspace:restore-backup': zod_1.z.tuple([EntityId]),
     'workspace:export-recovery-diagnostic': zod_1.z.tuple([]),
 };
-/** 组装后端命令分发器：container 提供命名服务，functionRoutes 覆盖编排型通道（如迁移热替换）。 */
-function CreateBackend({ container, functionRoutes = {}, idempotencyStore }) {
-    /** 解析通道对应的可调用函数；未知通道抛错。 */
+/**
+ * 组装后端命令分发器：container 提供命名服务，functionRoutes 覆盖编排型通道（如迁移热替换）。
+ */
+function CreateBackend(options) {
+    const container = options.container;
+    const functionRoutes = options.functionRoutes ?? {};
+    const idempotencyStore = options.idempotencyStore;
     function Resolve(channel) {
         const fn = functionRoutes[channel];
         if (fn)
@@ -138,7 +142,6 @@ function CreateBackend({ container, functionRoutes = {}, idempotencyStore }) {
     }
     const commandLog = [];
     return {
-        /** 按通道分发到方法路由或函数路由；requestId 为信封级显式参数，命令日志统一记录，出口包装为结果信封。 */
         async HandleCommand(channel, requestId, ...args) {
             let resolvedRequestId;
             let invalidRequestId = null;
@@ -152,7 +155,6 @@ function CreateBackend({ container, functionRoutes = {}, idempotencyStore }) {
             const startedAt = Date.now();
             const record = (ok) => {
                 const entry = { requestId: resolvedRequestId, channel, ok, at: startedAt };
-                // agent:send 的 Trace/Cancel 依赖前端自带 id，命令日志额外记录以便与 Main 侧信封 id 关联。
                 if (channel === 'agent:send' && args[0] && typeof args[0] === 'object' && typeof args[0].requestId === 'string') {
                     entry.agentRequestId = args[0].requestId;
                 }
@@ -167,7 +169,6 @@ function CreateBackend({ container, functionRoutes = {}, idempotencyStore }) {
                 if (serialized && serialized.length > exports.MaxCommandPayloadBytes) {
                     throw Object.assign(new Error('Command payload is too large.'), { code: 'VALIDATION_ERROR' });
                 }
-                // 写通道负载形状校验：在进入业务服务前拦截畸形负载；非写通道不校验（只读/事件由领域只读校验）。
                 const writeSchema = WriteArgsSchemas[channel];
                 if (writeSchema) {
                     const parsed = writeSchema.safeParse(args);
@@ -175,14 +176,13 @@ function CreateBackend({ container, functionRoutes = {}, idempotencyStore }) {
                         throw Object.assign(new Error('Command payload does not match the expected shape.'), { code: 'VALIDATION_ERROR' });
                     }
                 }
-                // requestId 同时是默认幂等键：Main 对同一传输请求重放时返回首次结果；同键不同负载按冲突拒绝。
-                // 敏感配置与只读通道不进入回放表，避免凭据结果或无意义查询持久化。
                 const replayable = Boolean(writeSchema) && channel !== 'agent:configure' && Boolean(idempotencyStore);
                 const payloadHash = (0, node_crypto_1.createHash)('sha256').update(`${channel}\n${serialized ?? ''}`).digest('hex');
-                if (replayable) {
+                if (replayable && idempotencyStore) {
                     const replay = idempotencyStore.Get(resolvedRequestId, payloadHash);
-                    if (replay.conflict)
+                    if (replay.conflict) {
                         throw Object.assign(new Error('The idempotency key was already used with a different payload.'), { code: 'REVISION_CONFLICT' });
+                    }
                     if (replay.hit) {
                         record(true);
                         return replay.result;
@@ -191,7 +191,7 @@ function CreateBackend({ container, functionRoutes = {}, idempotencyStore }) {
                 const result = await Resolve(channel)(...args);
                 record(true);
                 const envelope = (0, contracts_1.CreateResultSuccess)(result);
-                if (replayable)
+                if (replayable && idempotencyStore)
                     idempotencyStore.Put(resolvedRequestId, payloadHash, envelope);
                 return envelope;
             }
@@ -206,15 +206,12 @@ function CreateBackend({ container, functionRoutes = {}, idempotencyStore }) {
                 return (0, contracts_1.CreateResultFailure)(normalized.code, normalized.message, extra);
             }
         },
-        /** 返回仅需 ipcMain.handle 注册的通道（不含事件发送通道），供 Main 注册 IPC。 */
         HandleChannels() {
             return [...Object.keys(exports.MethodRoutes), ...Object.keys(functionRoutes)];
         },
-        /** 返回全部通道清单（含事件通道），供契约一致性校验。 */
         Channels() {
             return [...this.HandleChannels(), ...exports.EventChannels];
         },
-        /** 返回最近命令日志（requestId → 通道 → 结果），供诊断与幂等追踪；含调用方透传的 requestId。 */
         GetCommandLog() {
             return [...commandLog];
         },

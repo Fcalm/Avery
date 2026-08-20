@@ -22,12 +22,9 @@ function CreateBackendHost({ appContext, desktopCapabilities = {}, onEvent }) {
     let eventListener = onEvent;
     let pingTimer = null;
     let missedPongs = 0;
-    // 幂等记录会跨应用启动持久化；不能在每次启动后从 req-1 重新计数，否则新的写命令会
-    // 被误判为旧请求的冲突重放。启动实例 ID 只用于传输幂等键，不包含用户数据。
     const commandSessionId = (0, node_crypto_1.randomUUID)();
     let nextRequestId = 1;
     const pending = new Map();
-    /** 以稳定错误码拒绝全部在途请求，供崩溃与关闭场景使用。 */
     function FailAll(code, message) {
         const error = Object.assign(new Error(message), { code, retryable: true });
         for (const entry of pending.values()) {
@@ -36,7 +33,6 @@ function CreateBackendHost({ appContext, desktopCapabilities = {}, onEvent }) {
         }
         pending.clear();
     }
-    /** 每 15 秒发送健康检查；连续 3 次未收到 pong 判定崩溃并强制重启。 */
     function StartPing() {
         pingTimer = setInterval(() => {
             if (state !== 'ready' || !child)
@@ -62,7 +58,6 @@ function CreateBackendHost({ appContext, desktopCapabilities = {}, onEvent }) {
             pingTimer = null;
         }
     }
-    /** 派生并监听 Backend 子进程；ready 握手成功后接受命令，崩溃时按指数退避自动重启。 */
     function Spawn() {
         state = 'starting';
         const backendPath = (0, node_path_1.join)(__dirname, 'index.js');
@@ -79,9 +74,8 @@ function CreateBackendHost({ appContext, desktopCapabilities = {}, onEvent }) {
                 console.error(`[backend-error] code=${typed.code} message=${typed.message}`);
                 return;
             }
-            if (typed.kind === 'debug') {
+            if (typed.kind === 'debug')
                 return;
-            }
             if (typed.kind === 'ready') {
                 state = 'ready';
                 restartAttempt = 0;
@@ -146,13 +140,9 @@ function CreateBackendHost({ appContext, desktopCapabilities = {}, onEvent }) {
     }
     Spawn();
     return {
-        /** 返回当前后端状态：starting | ready | restarting | stopped。 */
         state: () => state,
-        /** 返回仅需 ipcMain.handle 注册的命令通道，供 Main Gateway 遍历。 */
         HandleChannels() { return [...channels]; },
-        /** 绑定事件回调（agent:stream 回流 Renderer）。 */
         OnEvent(listener) { eventListener = listener; },
-        /** 向 Backend 发送一条命令并等待统一结果信封；后端不可用或超时以 INTERNAL_ERROR 拒绝。 */
         async Command(channel, ...args) {
             if (state !== 'ready')
                 throw Object.assign(new Error(`Backend is ${state}.`), { code: 'INTERNAL_ERROR', retryable: true, details: { backendState: state } });
@@ -173,7 +163,6 @@ function CreateBackendHost({ appContext, desktopCapabilities = {}, onEvent }) {
                 child?.postMessage({ kind: 'command', requestId, channel, payload: args });
             });
         },
-        /** 优雅关闭 Backend：发 shutdown 并延迟兜底 kill，阻止自动重启。 */
         Shutdown() {
             stopped = true;
             StopPing();
@@ -184,12 +173,13 @@ function CreateBackendHost({ appContext, desktopCapabilities = {}, onEvent }) {
                 child?.postMessage({ kind: 'shutdown' });
             }
             catch { /* 子进程已退出时忽略。 */ }
-            setTimeout(() => { try {
-                child?.kill();
-            }
-            catch { /* 终止阶段无需额外处理。 */ } }, 800);
+            setTimeout(() => {
+                try {
+                    child?.kill();
+                }
+                catch { /* 终止阶段无需额外处理。 */ }
+            }, 800);
         },
-        /** 返回当前子进程实例，供冒烟测试模拟崩溃。 */
         GetChild() { return child; },
     };
 }

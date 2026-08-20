@@ -1,14 +1,18 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-// @ts-nocheck
-const crypto = require('node:crypto');
+exports.GetNow = GetNow;
+exports.CreateId = CreateId;
+exports.WriteAudit = WriteAudit;
+exports.CreateRevisionConflict = CreateRevisionConflict;
+exports.AssertRevision = AssertRevision;
+const node_crypto_1 = require("node:crypto");
 /** 返回 UTC 毫秒时间戳，供所有本地业务记录统一使用。 */
 function GetNow() {
     return Date.now();
 }
 /** 创建供本地记录使用的随机标识；后续迁移阶段替换为 UUIDv7 生成器。 */
 function CreateId() {
-    return crypto.randomUUID();
+    return (0, node_crypto_1.randomUUID)();
 }
 /** 记录不含业务正文的本地审计事件，供保留策略与故障排查使用。 */
 function WriteAudit(db, actorType, action, entityType, entityId, metadata) {
@@ -31,4 +35,3 @@ function AssertRevision(existing, expectedRevision, entityType, entityId) {
         throw CreateRevisionConflict(entityType, entityId, expectedRevision, existing.revision);
     }
 }
-module.exports = { GetNow, CreateId, WriteAudit, CreateRevisionConflict, AssertRevision };

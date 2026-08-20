@@ -4,7 +4,8 @@ exports.IdempotencyStore = void 0;
 const node_fs_1 = require("node:fs");
 const node_path_1 = require("node:path");
 /**
- * 跨 Backend 重启保留的有限请求回放表。只保存统一结果信封和负载哈希，不保存凭据类通道；
+ * 跨 Backend 重启保留的有限请求回放表。
+ * 只保存统一结果信封和负载哈希，不保存凭据类通道；
  * 原子替换文件避免进程退出时留下半写 JSON，按时间仅保留最近 maxEntries 条。
  */
 class IdempotencyStore {
@@ -17,11 +18,14 @@ class IdempotencyStore {
         try {
             const parsed = JSON.parse((0, node_fs_1.readFileSync)(filePath, 'utf8'));
             for (const [key, value] of Object.entries(parsed)) {
-                if (value && typeof value.payloadHash === 'string' && typeof value.createdAt === 'number')
+                if (value && typeof value.payloadHash === 'string' && typeof value.createdAt === 'number') {
                     this.records.set(key, value);
+                }
             }
         }
-        catch { /* 首次启动或损坏缓存按空表处理；业务事实源不依赖本文件。 */ }
+        catch {
+            // 首次启动或损坏缓存按空表处理；业务事实源不依赖本文件。
+        }
     }
     Get(key, payloadHash) {
         const record = this.records.get(key);
@@ -33,7 +37,9 @@ class IdempotencyStore {
     }
     Put(key, payloadHash, result) {
         this.records.set(key, { payloadHash, result, createdAt: Date.now() });
-        const entries = [...this.records.entries()].sort((left, right) => right[1].createdAt - left[1].createdAt).slice(0, this.maxEntries);
+        const entries = [...this.records.entries()]
+            .sort((left, right) => right[1].createdAt - left[1].createdAt)
+            .slice(0, this.maxEntries);
         this.records.clear();
         for (const [entryKey, value] of entries)
             this.records.set(entryKey, value);

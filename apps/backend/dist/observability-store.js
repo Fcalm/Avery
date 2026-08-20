@@ -1,10 +1,9 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.ObservabilityStore = void 0;
+const node_crypto_1 = require("node:crypto");
 const node_fs_1 = require("node:fs");
 const node_path_1 = require("node:path");
-const node_crypto_1 = require("node:crypto");
-// better-sqlite3 为原生模块，仅 Worker 进程加载（组合根不持有连接）；require 形态返回 any。
 const Database = require('better-sqlite3');
 /** 返回统一 UTC 时间戳，避免日志清理受本地时区影响。 */
 function GetNow() {
@@ -57,7 +56,9 @@ class ObservabilityStore {
         try {
             this.db.exec('ALTER TABLE agent_trace_events ADD COLUMN token_count INTEGER NOT NULL DEFAULT 0');
         }
-        catch { /* Existing databases already include the column. */ }
+        catch {
+            // Existing databases already include the column.
+        }
     }
     /** 追加已由调用方脱敏的结构化运行日志，并执行数量与时间双重留存限制。 */
     RecordLog(level, event, detail) {
@@ -128,8 +129,7 @@ class ObservabilityStore {
         const ids = [...new Set(sessionIds)];
         const placeholders = ids.map(() => '?').join(', ');
         const remove = this.db.transaction(() => {
-            const requestIds = this.db.prepare(`SELECT request_id FROM agent_traces WHERE session_id IN (${placeholders})`).all(...ids)
-                .map((row) => row.request_id);
+            const requestIds = this.db.prepare(`SELECT request_id FROM agent_traces WHERE session_id IN (${placeholders})`).all(...ids).map((row) => row.request_id);
             if (requestIds.length) {
                 const requestPlaceholders = requestIds.map(() => '?').join(', ');
                 this.db.prepare(`DELETE FROM agent_trace_events WHERE request_id IN (${requestPlaceholders})`).run(...requestIds);
@@ -162,7 +162,9 @@ class ObservabilityStore {
         try {
             this.db?.close();
         }
-        catch { /* 退出阶段重复关闭原生句柄无需额外处理。 */ }
+        catch {
+            // 退出阶段重复关闭原生句柄无需额外处理。
+        }
     }
 }
 exports.ObservabilityStore = ObservabilityStore;

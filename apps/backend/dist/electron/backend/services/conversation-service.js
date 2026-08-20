@@ -1,8 +1,9 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-// @ts-nocheck
+exports.ConversationService = void 0;
 /** 会话与消息的应用服务：封装会话 Repository，同时组合会话上下文与 Tool Array 快照的读写。 */
 class ConversationService {
+    repository;
     constructor({ repository }) {
         this.repository = repository;
     }
@@ -35,8 +36,8 @@ class ConversationService {
         return this.repository.RemoveMessage(conversationId, messageId);
     }
     /** 在单次事务内同时写入会话上下文与 Tool Array 两类快照，供 /reload-session 原子更新。 */
-    SetSnapshots(conversationId, { sessionSnapshotJson, toolSnapshotJson }) {
-        return this.repository.SetSnapshots(conversationId, { sessionSnapshotJson, toolSnapshotJson });
+    SetSnapshots(conversationId, snapshots) {
+        return this.repository.SetSnapshots(conversationId, snapshots);
     }
     /** 读取会话上下文与 Tool Array 快照，供重启后恢复与原子重载基线。 */
     GetSnapshots(conversationId) {
@@ -46,4 +47,4 @@ class ConversationService {
         };
     }
 }
-module.exports = { ConversationService };
+exports.ConversationService = ConversationService;

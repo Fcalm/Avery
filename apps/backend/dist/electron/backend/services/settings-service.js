@@ -1,9 +1,10 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-// @ts-nocheck
-const { GetNow, WriteAudit } = require('../../repositories/helpers.js');
+exports.SettingsService = void 0;
+const helpers_1 = require("../../repositories/helpers");
 /** 设置的应用服务：app_state 仅作为非敏感设置载体，不再承载业务实体；持久化前剔除传输与动态注入字段。 */
 class SettingsService {
+    db;
     constructor({ db }) {
         this.db = db;
     }
@@ -30,7 +31,7 @@ class SettingsService {
         if (!settings || typeof settings !== 'object')
             throw new Error('Settings payload is invalid.');
         const safe = this.Sanitize(settings);
-        const now = GetNow();
+        const now = (0, helpers_1.GetNow)();
         const existing = this.db.prepare("SELECT id FROM app_state WHERE id = 'current'").get();
         if (existing) {
             this.db.prepare("UPDATE app_state SET payload_json = ?, revision = revision + 1, updated_at = ? WHERE id = 'current'").run(JSON.stringify({ settings: safe }), now);
@@ -38,8 +39,8 @@ class SettingsService {
         else {
             this.db.prepare("INSERT INTO app_state(id, payload_json, revision, updated_at) VALUES('current', ?, 1, ?)").run(JSON.stringify({ settings: safe }), now);
         }
-        WriteAudit(this.db, 'user', 'save', 'settings', 'current', {});
+        (0, helpers_1.WriteAudit)(this.db, 'user', 'save', 'settings', 'current', {});
         return { saved: true };
     }
 }
-module.exports = { SettingsService };
+exports.SettingsService = SettingsService;

@@ -1,11 +1,12 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-// @ts-nocheck
+exports.ResumeLockStore = void 0;
 /** 简历互斥锁租约；超时后其他方（用户或 Agent）可重新获取。 */
 class ResumeLockStore {
+    locks = new Map();
+    leaseMs;
     /** @param leaseMs 锁租约时长（毫秒）；默认 5 分钟。 */
     constructor({ leaseMs = 5 * 60 * 1000 } = {}) {
-        this.locks = new Map();
         this.leaseMs = leaseMs;
     }
     /** 清理所有已过租约的锁；每次操作前惰性调用，避免定时器泄漏。 */
@@ -42,4 +43,4 @@ class ResumeLockStore {
         return this.locks.get(resumeId) ?? null;
     }
 }
-module.exports = { ResumeLockStore };
+exports.ResumeLockStore = ResumeLockStore;
