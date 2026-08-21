@@ -233,6 +233,32 @@ export function CreateToolsModule(ports: AgentDefaultPorts): ToolsModule {
     await GetLedger(context).Finish(ledger.ledgerId, status, { ...extra, finishedAt: Date.now() });
   }
 
+  /** 提取含待确认标签的条目；按非空行展示，避免把整份简历正文塞进交互事件。 */
+  function ExtractUncertainItems(content: string): Array<{ id: string; text: string }> {
+    return content.split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => line.includes('【待确认】'))
+      .slice(0, 20)
+      .map((text, index) => ({ id: String(index + 1), text: text.slice(0, 1000) }));
+  }
+
+  /** 保存 Run 内待确认草稿并通过文本交互等待；不获取简历锁，也不写入正式简历。 */
+  function WaitForDraftTextConfirmation(context: ToolContext, callId: string, pending: PendingResumeEdit): ToolExecutionResult {
+    const draftId = `resume-draft-${randomUUID()}`;
+    const items = pending.uncertainItems ?? [];
+    context.pendingEdits.set(draftId, pending);
+    const itemText = items.map((item) => `${item.id}. ${item.text}`).join('\n');
+    const question = `以下推测性补全已标记为【待确认】，尚未写入正式简历：\n${itemText}\n请明确回复“全部确认”，或说明要删除/修改的条目。`;
+    const questions = [{ id: draftId, question, options: ['全部确认', '我要修改', '其他'] }];
+    context.pendingQuestions.set(context.sessionId, questions);
+    context.emit({ type: 'question_requested', requestId: context.requestId, sessionId: context.sessionId, questions });
+    return CreateToolResult(callId, {
+      ok: false, code: 'CONFIRMATION_REQUIRED', awaitingUser: true, draftId,
+      message: 'The draft contains 【待确认】 items and has not been written. Wait for explicit text confirmation or modification.',
+      uncertainItems: items,
+    }, { disposition: 'wait_user_input' });
+  }
+
   /** 读取用户附件或会话绑定项目中的文本文件；项目外路径一律被拒绝。 */
   async function Read(context: ToolContext, callId: string, args: Record<string, unknown>): Promise<ToolExecutionResult> {
     const filePath = RequireString(args.path, 'path', 1000);
@@ -294,6 +320,13 @@ export function CreateToolsModule(ports: AgentDefaultPorts): ToolsModule {
     if (previous?.status === 'succeeded' && previous.receipt) {
       return CreateToolResult(callId, { ok: true, saved: true, resumeId, revision: previous.receipt.revisions?.resume ?? 0, replayed: true }, { disposition: 'continue', receipt: previous.receipt });
     }
+    const uncertainItems = ExtractUncertainItems(content);
+    if (uncertainItems.length) {
+      return WaitForDraftTextConfirmation(context, callId, {
+        kind: 'create', resumeId, name, content, reason, baseRevision: undefined,
+        ownerId: `agent-${context.requestId}`, proposalHash, canonicalArguments: canonical, idempotencyKey, uncertainItems,
+      });
+    }
     if (context.confirmationMode === '需要确认') {
       const pending: PendingResumeEdit = { kind: 'create', resumeId, name, content, reason, baseRevision: undefined, ownerId: `agent-${context.requestId}`, proposalHash, canonicalArguments: canonical, idempotencyKey };
       const confirmationId = `resume-confirmation-${randomUUID()}`;
@@ -337,6 +370,14 @@ export function CreateToolsModule(ports: AgentDefaultPorts): ToolsModule {
     const previous = await ledger.FindByIdempotencyKey(idempotencyKey);
     if (previous?.status === 'succeeded' && previous.receipt) {
       return CreateToolResult(callId, { ok: true, saved: true, resumeId: args.resumeId, revision: previous.receipt.revisions?.resume ?? baseRevision ?? 0, replayed: true }, { disposition: 'continue', receipt: previous.receipt });
+    }
+    const uncertainItems = ExtractUncertainItems(content);
+    if (uncertainItems.length) {
+      return WaitForDraftTextConfirmation(context, callId, {
+        kind: 'edit', resumeId: args.resumeId as string, content, reason, baseRevision,
+        ownerId: `agent-${context.requestId}`, resume: { ...context.resumeSnapshot }, proposalHash,
+        canonicalArguments: canonical, idempotencyKey, uncertainItems,
+      });
     }
     if (context.confirmationMode === '需要确认') {
       const pending: PendingResumeEdit = { kind: 'edit', resumeId: args.resumeId, content, reason, baseRevision, ownerId: `agent-${context.requestId}`, resume: { ...context.resumeSnapshot }, proposalHash, canonicalArguments: canonical, idempotencyKey };
