@@ -61,7 +61,7 @@ async function CompressIfNeeded(input: KernelRunInput, history: AgentMessage[], 
   const { modules, toolArray } = input;
   const { contextLimit, threshold } = modules.modelProvider.GetRuntimeLimits();
   const estimate = modules.modelProvider.EstimateTokens({
-    system: input.instructions?.compiled ?? modules.modelProvider.SystemPrompt(),
+    system: input.instructions.compiled,
     tools: toolArray,
     messages: [...history, { role: 'user', content: input.userContent }],
   });
@@ -193,7 +193,7 @@ export async function RunAgentLoop(input: KernelRunInput): Promise<KernelRunResu
     // 压缩熔断错误进入 catch，统一 FinishTrace/emit error（旧实现压缩在 try 外，抛错会跳过 Trace 收尾导致 running 幽灵 Trace）。
     requestHistory = await CompressIfNeeded(input, input.requestHistory, () => { compressionCount += 1; });
     transcript = [{ role: 'system', content: input.systemContext }, ...requestHistory, { role: 'user', content: input.userContent }];
-    inputTokens = modules.modelProvider.EstimateTokens({ system: input.instructions?.compiled ?? modules.modelProvider.SystemPrompt(), tools: input.toolArray, messages: transcript });
+    inputTokens = modules.modelProvider.EstimateTokens({ system: input.instructions.compiled, tools: input.toolArray, messages: transcript });
     while (true) {
       // 取消不经循环顶部轮询：模型流经 signal 中止抛错，由 catch 统一 FinishTrace 并 emit cancelled。
       if (turn >= maxTurns) {

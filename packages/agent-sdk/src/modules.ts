@@ -36,7 +36,7 @@ export interface ModelProviderModule extends ModuleManifest {
     signal: AbortSignal;
     onDelta: (delta: ModelDelta) => void;
     /** 运行前由 Prompt Compiler 编译的指令；Provider 不再持有业务 System Prompt 所有权。 */
-    instructions?: CompiledInstructions;
+    instructions: CompiledInstructions;
   }): Promise<ModelCompletion>;
   CreateSummary(model: string, messages: AgentMessage[]): Promise<ModelSummary>;
   EstimateTokens(value: unknown): number;
@@ -44,8 +44,6 @@ export interface ModelProviderModule extends ModuleManifest {
   GetRuntimeLimits(): { contextLimit: number; threshold: number };
   /** 返回当前 BaseUrl，供连通性等只读展示（不含密钥）。 */
   BaseUrl(): string;
-  /** 返回模块拥有的场景系统提示；Kernel 估算与请求共用，保证估算口径与实际请求一致。 */
-  SystemPrompt(): string;
 }
 
 /** 上下文构建槽：读取业务只读快照并序列化为会话上下文。 */

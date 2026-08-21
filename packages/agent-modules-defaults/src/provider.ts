@@ -1,10 +1,10 @@
 import type { AgentMessage, ModelCompletion, ModelDelta, ModelProviderModule, ModelUsage, RegisteredAgentTool } from '@offerget/agent-sdk';
 import { AgentDefaultPorts, ProviderConfig } from './ports';
 import { RequireString } from './helpers';
-import { SummaryPrompt, SystemPrompt } from './prompts';
+import { SummaryPrompt } from './prompts';
 
 // 保留既有导出，供扩展模块和既有调用方兼容；实际定义集中在 prompts.ts。
-export { SummaryPrompt, SystemPrompt } from './prompts';
+export { SummaryPrompt } from './prompts';
 
 /** DeepSeek 官方 API 根地址；自定义 Provider 使用用户配置的 BaseUrl。 */
 export const DefaultBaseUrl = 'https://api.deepseek.com';
@@ -166,7 +166,7 @@ export function CreateProviderModule(ports: AgentDefaultPorts): ModelProviderMod
     /** 调用兼容 OpenAI Chat Completions 的流式接口并转发思考与正文增量；畸形 SSE 直接失败，不静默忽略。 */
     async StreamCompletion(request) {
       await EnsureConfig();
-      const systemContent = request.instructions?.compiled ?? SystemPrompt;
+      const systemContent = RequireString(request.instructions?.compiled, 'compiled instructions', 200000);
       const response = await providerFetch(`${config.baseUrl}/chat/completions`, {
         method: 'POST',
         signal: request.signal,
@@ -245,7 +245,5 @@ export function CreateProviderModule(ports: AgentDefaultPorts): ModelProviderMod
     GetRuntimeLimits() { return { contextLimit: config.contextLimit, threshold: config.compressionThreshold }; },
     /** 返回当前 BaseUrl，供连通性等只读展示（不含密钥）。 */
     BaseUrl() { return config.baseUrl; },
-    /** 返回模块拥有的场景系统提示。 */
-    SystemPrompt() { return SystemPrompt; },
   };
 }
