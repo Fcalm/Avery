@@ -311,7 +311,8 @@ export class AgentFileReader {
   }
 
   /** 按受限文件类型分派解析器，所有输出均受 5,000 字符上下文上限约束。 */
-  async ReadAuthorizedFile(filePath: string, sourceName: string = filePath): Promise<any> {
+  async ReadAuthorizedFile(filePath: string, sourceName: string = filePath, execution?: { signal?: AbortSignal; deadline?: number }): Promise<any> {
+    if (execution?.signal?.aborted || (execution?.deadline !== undefined && Date.now() >= execution.deadline)) throw new Error('File read was cancelled.');
     const metadata = this._authorizedMetadata.get(filePath);
     const authoritativeName = metadata?.name || sourceName;
     const extension = path.extname(authoritativeName).toLowerCase();

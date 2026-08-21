@@ -60,7 +60,7 @@ export interface UrlReadPort {
 
 /** 文件读取端口：由宿主注入（agent-file-reader）；路径校验与资源边界由宿主持有，模块不可绕过。 */
 export interface FileReadPort {
-  ReadAuthorizedFile(filePath: string, sourceName?: string): Promise<{
+  ReadAuthorizedFile(filePath: string, sourceName?: string, execution?: { signal?: AbortSignal; deadline?: number }): Promise<{
     content: string;
     truncated: boolean;
     warnings?: string[];

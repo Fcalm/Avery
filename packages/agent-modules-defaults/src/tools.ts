@@ -266,10 +266,10 @@ export function CreateToolsModule(ports: AgentDefaultPorts): ToolsModule {
     if (attachment) {
       const resolved = await ports.file.ResolveAttachmentUri(filePath);
       if (!resolved) throw new Error('The attachment store is unavailable.');
-      return CreateToolResult(callId, { ok: true, path: filePath, ...await ports.file.ReadAuthorizedFile(resolved, attachment.name) });
+      return CreateToolResult(callId, { ok: true, path: filePath, ...await ports.file.ReadAuthorizedFile(resolved, attachment.name, { signal: context.signal, deadline: context.deadline }) });
     }
     const resolvedPath = ports.file.ResolveProjectPath(context.projectRoot, filePath);
-    return CreateToolResult(callId, { ok: true, path: resolvedPath, ...await ports.file.ReadAuthorizedFile(resolvedPath) });
+    return CreateToolResult(callId, { ok: true, path: resolvedPath, ...await ports.file.ReadAuthorizedFile(resolvedPath, undefined, { signal: context.signal, deadline: context.deadline }) });
   }
 
   /** 在授权附件清单与项目环境中完成文件名匹配，不遍历用户未授权目录。 */
@@ -531,33 +531,69 @@ export function CreateToolsModule(ports: AgentDefaultPorts): ToolsModule {
   }
 
   /** 执行单个工具调用并应用统一超时/取消；写工具超时标记 STATUS_UNKNOWN，不自动重试。 */
-  async function ExecuteWithTimeout(context: ToolContext, callId: string, toolName: string, args: Record<string, unknown>, execution: () => Promise<ToolExecutionResult>): Promise<ToolExecutionResult> {
+  async function ExecuteWithTimeout(context: ToolContext, callId: string, toolName: string, args: Record<string, unknown>, execution: (executionContext: ToolContext) => Promise<ToolExecutionResult>): Promise<ToolExecutionResult> {
     const meta = GetToolMeta(toolName);
     const timeoutMs = meta?.timeoutMs ?? 10000;
     const isWrite = writeTools.has(NormalizeToolName(toolName));
+    const deadline = Math.min(context.deadline ?? Number.POSITIVE_INFINITY, Date.now() + timeoutMs);
+    const remainingMs = Math.max(0, deadline - Date.now());
+    const executionController = new AbortController();
+    const startedLedgerIds = new Set<string>();
+    let acceptsToolEvents = true;
+    const abortFromRun = () => executionController.abort(context.signal?.reason);
+    if (context.signal?.aborted) abortFromRun();
+    else context.signal?.addEventListener('abort', abortFromRun, { once: true });
+    const executionContext: ToolContext = {
+      ...context,
+      signal: executionController.signal,
+      deadline,
+      emit: (event) => {
+        if (acceptsToolEvents && !executionController.signal.aborted && Date.now() < deadline) context.emit(event);
+      },
+      ...(context.ledger ? {
+        ledger: {
+          Start: async (entry) => {
+            startedLedgerIds.add(entry.ledgerId);
+            await context.ledger!.Start(entry);
+          },
+          Finish: async (ledgerId, status, extra) => {
+            await context.ledger!.Finish(ledgerId, status, extra);
+            if (status !== 'started') startedLedgerIds.delete(ledgerId);
+          },
+          FindByIdempotencyKey: (idempotencyKey) => context.ledger!.FindByIdempotencyKey(idempotencyKey),
+        },
+      } : {}),
+    };
     return await new Promise<ToolExecutionResult>((resolve) => {
       let timer: ReturnType<typeof setTimeout> | undefined;
       const timeout = new Promise<ToolExecutionResult>((resolveTimeout) => {
-        timer = setTimeout(() => {
+        timer = setTimeout(async () => {
+          acceptsToolEvents = false;
+          executionController.abort(new Error('Tool execution timed out.'));
           if (isWrite) {
+            await Promise.allSettled([...startedLedgerIds].map((ledgerId) => context.ledger?.Finish(ledgerId, 'status_unknown', { errorCode: 'TIMEOUT', finishedAt: Date.now() })));
             resolveTimeout(CreateToolResult(callId, { ok: false, code: 'STATUS_UNKNOWN', message: 'Tool execution timed out; the write outcome is unknown and will not be retried without reconciliation.', retryable: false }, { disposition: 'pause' }));
           } else {
             resolveTimeout(CreateToolResult(callId, { ok: false, code: 'TIMEOUT', message: 'Tool execution timed out.' }));
           }
-        }, timeoutMs);
+        }, remainingMs);
       });
       const abort = () => {
+        acceptsToolEvents = false;
         clearTimeout(timer);
         resolve(CreateToolResult(callId, { ok: false, code: 'CANCELLED', message: 'Tool execution was cancelled.' }));
       };
       context.signal?.addEventListener('abort', abort, { once: true });
-      Promise.race([execution(), timeout]).then((result) => {
+      Promise.race([execution(executionContext), timeout]).then((result) => {
+        acceptsToolEvents = false;
         clearTimeout(timer);
         context.signal?.removeEventListener('abort', abort);
+        context.signal?.removeEventListener('abort', abortFromRun);
         resolve(result);
       }).catch((error) => {
         clearTimeout(timer);
         context.signal?.removeEventListener('abort', abort);
+        context.signal?.removeEventListener('abort', abortFromRun);
         const message = error instanceof Error ? error.message : 'Tool validation failed.';
         const isAuthorization = /outside|unavailable|not authorized|not accessible/i.test(message);
         const code = isAuthorization ? 'RESOURCE_NOT_AUTHORIZED' : 'VALIDATION_ERROR';
@@ -598,22 +634,22 @@ export function CreateToolsModule(ports: AgentDefaultPorts): ToolsModule {
         const cached = executedToolCalls.get(`${context.sessionId}:${call.id}`);
         if (cached) return CreateToolResult(call.id, cached);
       }
-      const execution = async () => {
+      const execution = async (executionContext: ToolContext) => {
         switch (toolName) {
-          case 'Read': return await Read(context, call.id, args);
-          case 'Glob': return Glob(context, call.id, args);
-          case 'Grep': return await Grep(context, call.id, args);
-          case 'ReadProfile': return CreateToolResult(call.id, { ok: true, profiles: context.profileSnapshot });
-          case 'ReadResume': return CreateToolResult(call.id, { ok: true, resume: context.resumeSnapshot });
-          case 'CreateResume': return await CreateResume(context, call.id, args);
-          case 'UpdateResume': return await UpdateResume(context, call.id, args);
-          case 'UpdateProfile': return await UpdateProfile(context, call.id, args);
-          case 'AskUserQuestion': return AskUserQuestion(context, call.id, args);
-          case 'CreateTodo': return CreateTodo(context, call.id, args);
-          case 'UpdateTodo': return UpdateTodo(context, call.id, args);
-          case 'ReadTodo': return ReadTodo(context, call.id);
-          case 'SearchJobs': return await SearchJobs(context, call.id, args);
-          case 'ReadUrl': return await ReadUrl(context, call.id, args);
+          case 'Read': return await Read(executionContext, call.id, args);
+          case 'Glob': return Glob(executionContext, call.id, args);
+          case 'Grep': return await Grep(executionContext, call.id, args);
+          case 'ReadProfile': return CreateToolResult(call.id, { ok: true, profiles: executionContext.profileSnapshot });
+          case 'ReadResume': return CreateToolResult(call.id, { ok: true, resume: executionContext.resumeSnapshot });
+          case 'CreateResume': return await CreateResume(executionContext, call.id, args);
+          case 'UpdateResume': return await UpdateResume(executionContext, call.id, args);
+          case 'UpdateProfile': return await UpdateProfile(executionContext, call.id, args);
+          case 'AskUserQuestion': return AskUserQuestion(executionContext, call.id, args);
+          case 'CreateTodo': return CreateTodo(executionContext, call.id, args);
+          case 'UpdateTodo': return UpdateTodo(executionContext, call.id, args);
+          case 'ReadTodo': return ReadTodo(executionContext, call.id);
+          case 'SearchJobs': return await SearchJobs(executionContext, call.id, args);
+          case 'ReadUrl': return await ReadUrl(executionContext, call.id, args);
           default: return CreateToolResult(call.id, { ok: false, code: 'TOOL_NOT_ALLOWED', message: 'This tool is not available in the current scenario.' });
         }
       };
