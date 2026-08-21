@@ -532,6 +532,9 @@ export function CreateToolsModule(ports: AgentDefaultPorts): ToolsModule {
 
   /** 执行单个工具调用并应用统一超时/取消；写工具超时标记 STATUS_UNKNOWN，不自动重试。 */
   async function ExecuteWithTimeout(context: ToolContext, callId: string, toolName: string, args: Record<string, unknown>, execution: (executionContext: ToolContext) => Promise<ToolExecutionResult>): Promise<ToolExecutionResult> {
+    if (context.signal?.aborted) {
+      return CreateToolResult(callId, { ok: false, code: 'CANCELLED', message: 'Tool execution was cancelled.' });
+    }
     const meta = GetToolMeta(toolName);
     const timeoutMs = meta?.timeoutMs ?? 10000;
     const isWrite = writeTools.has(NormalizeToolName(toolName));
@@ -613,6 +616,9 @@ export function CreateToolsModule(ports: AgentDefaultPorts): ToolsModule {
     GetToolDefinitions() { return registry; },
     /** 统一执行管道：Schema 校验与一次修复、写工具幂等账本、按工具超时、结构化错误码、统一 disposition。 */
     async ExecuteToolCall(call: ToolCallFragment, context: ToolContext): Promise<ToolExecutionResult> {
+      if (context.signal?.aborted) {
+        return CreateToolResult(call.id, { ok: false, code: 'CANCELLED', message: 'Tool execution was cancelled.' });
+      }
       const rawName = call.function.name;
       const toolName = NormalizeToolName(rawName);
       if (!GetToolMeta(toolName)) {

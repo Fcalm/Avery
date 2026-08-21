@@ -129,6 +129,52 @@ describe('agent-core RunAgentLoop', () => {
     expect(harness.events).toHaveLength(eventCount);
   });
 
+  it('Provider 忽略取消并迟到返回写工具 completion 时不得记录 Usage、历史或执行工具', async () => {
+    const controller = new AbortController();
+    const update = CreateRegisteredTool('UpdateProfile', { isConcurrencySafe: false, sideEffect: 'local_write' });
+    const execute = vi.fn(async (call: ToolCallFragment) => ({ role: 'tool' as const, tool_call_id: call.id, content: '{"ok":true}' }));
+    let resolveCompletion: ((completion: {
+      content: string;
+      toolCalls: ToolCallFragment[];
+      usage: { promptTokens: number; completionTokens: number; totalTokens: number };
+    }) => void) | undefined;
+    let markStarted: (() => void) | undefined;
+    const started = new Promise<void>((resolve) => { markStarted = resolve; });
+    const completion = new Promise<{
+      content: string;
+      toolCalls: ToolCallFragment[];
+      usage: { promptTokens: number; completionTokens: number; totalTokens: number };
+    }>((resolve) => { resolveCompletion = resolve; });
+    const harness = CreateKernelHarness({
+      signal: controller.signal,
+      tools: [update],
+      executeTool: execute,
+      streamCompletion: vi.fn(async () => {
+        markStarted?.();
+        return await completion;
+      }),
+    });
+    const running = RunAgentLoop(harness.input);
+    await started;
+
+    controller.abort(new Error('cancelled by test'));
+    resolveCompletion?.({
+      content: '',
+      toolCalls: [ToolCall('late-write-1', 'UpdateProfile')],
+      usage: { promptTokens: 11, completionTokens: 7, totalTokens: 18 },
+    });
+    const result = await running;
+
+    expect(result.outcome).toBe('cancelled');
+    expect(result.disposition).toBe('cancelled');
+    expect(harness.usages).toEqual([]);
+    expect(execute).not.toHaveBeenCalled();
+    expect(result.transcript.some((message) => message.role === 'assistant' || message.role === 'tool')).toBe(false);
+    expect(harness.events.map((event) => event.type)).toEqual(['cancelled']);
+    expect(harness.trace.finish).toHaveBeenCalledOnce();
+    expect(harness.trace.finish).toHaveBeenCalledWith('request-1', 'cancelled', 'Cancelled by user.');
+  });
+
   it('压缩连续失败时熔断并记录 circuit_open，不留下 running Trace', async () => {
     const history = [{ role: 'user' as const, content: 'old turn' }, { role: 'assistant' as const, content: 'old answer' }];
     const harness = CreateKernelHarness({

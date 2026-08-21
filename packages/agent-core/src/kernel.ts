@@ -26,6 +26,12 @@ function HistorySnapshot(transcript: AgentMessage[]): AgentMessage[] {
   return KeepRecentTurnGroups(transcript.filter((message) => message.role !== 'system'), 5);
 }
 
+/** 取消是硬边界：Provider 或工具即使忽略 AbortSignal 迟到返回，也不得继续产生 Usage、历史或副作用。 */
+function ThrowIfRunCancelled(signal: KernelRunInput['signal']): void {
+  if (!signal.aborted) return;
+  throw signal.reason instanceof Error ? signal.reason : new Error('Agent run was cancelled.');
+}
+
 /** 从工具结果解析统一 disposition；优先读取结构化字段，其次兼容旧 payload 标记。 */
 function ParseToolDisposition(result: ToolExecutionResult): ToolDisposition {
   if (result.disposition && result.disposition !== 'continue') return result.disposition;
@@ -77,6 +83,7 @@ async function CompressIfNeeded(input: KernelRunInput, history: AgentMessage[], 
         return candidate;
       }
       const summary = await modules.modelProvider.CreateSummary(input.model, earlier);
+      ThrowIfRunCancelled(input.signal);
       input.onModelUsage?.(summary.usage);
       const compacted: AgentMessage[] = [{ role: 'user', content: `<summary summary_id="summary-${input.createId()}">${summary.content}</summary>` }, ...recent];
       input.histories.set(input.sessionId, compacted);
@@ -98,6 +105,7 @@ async function CompressIfNeeded(input: KernelRunInput, history: AgentMessage[], 
 
 /** 按 tool_call 顺序执行工具批次；只读并行、写/交互屏障，等待后跳过未执行节点。 */
 async function RunToolBatch(input: KernelRunInput, calls: ToolCallFragment[]): Promise<{ results: AgentMessage[]; disposition: RunDisposition }> {
+  ThrowIfRunCancelled(input.signal);
   const results: AgentMessage[] = new Array(calls.length);
   const phases: ToolCallFragment[][] = [];
   let currentPhase: ToolCallFragment[] = [];
@@ -134,13 +142,15 @@ async function RunToolBatch(input: KernelRunInput, calls: ToolCallFragment[]): P
   let executedCount = 0;
   for (const phase of phases) {
     if (disposition !== 'continue') break;
+    ThrowIfRunCancelled(input.signal);
     const phaseResults = await Promise.all(phase.map(async (call) => {
+      ThrowIfRunCancelled(input.signal);
       const argumentsText = ScrubTraceContent(call.function.arguments);
       input.modules.observability.AppendTraceEvent(input.requestId, 'tool_call', { name: call.function.name, arguments: argumentsText }, EstimateTraceTokens(argumentsText));
       const registered = input.toolArray.some((tool) => tool.definition.function.name === call.function.name);
       const allowedByScenario = input.scenario?.toolNames.includes(call.function.name) ?? false;
       const result = registered && allowedByScenario
-        ? await input.modules.tools.ExecuteToolCall(call, input.toolContext)
+        ? await input.modules.tools.ExecuteToolCall(call, { ...input.toolContext, signal: input.signal })
         : CreateToolNotAllowedResult(call);
       let resultState: { ok: boolean; code: string; message: string } = { ok: false, code: 'UNPARSEABLE', message: '' };
       try {
@@ -150,6 +160,7 @@ async function RunToolBatch(input: KernelRunInput, calls: ToolCallFragment[]): P
       input.modules.observability.AppendTraceEvent(input.requestId, 'tool_result', { name: call.function.name, ...resultState }, EstimateTraceTokens(resultState.message));
       return { call, result };
     }));
+    ThrowIfRunCancelled(input.signal);
     for (const { call, result } of phaseResults) {
       const index = calls.findIndex((item) => item.id === call.id);
       if (index >= 0) results[index] = result;
@@ -220,6 +231,7 @@ export async function RunAgentLoop(input: KernelRunInput): Promise<KernelRunResu
           if (delta.content) { assistantContent += delta.content; emit({ type: 'content_delta', requestId, delta: delta.content }); }
         },
       }).finally(() => { acceptsProviderDelta = false; });
+      ThrowIfRunCancelled(signal);
       input.onModelUsage?.(completion.usage);
       const assistantMessage: AgentMessage = {
         role: 'assistant',

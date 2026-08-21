@@ -172,6 +172,29 @@ describe('agent-modules-defaults', () => {
     expect(JSON.parse(result.content)).toMatchObject({ ok: false, code: 'PERSISTENT_LEDGER_REQUIRED' });
   });
 
+  it('工具进入时 Run 已取消则立即返回 CANCELLED，且不调用底层端口', async () => {
+    const controller = new AbortController();
+    controller.abort(new Error('cancelled by test'));
+    const filePort = {
+      ...CreateToolContext().ports.file,
+      ResolveProjectPath: vi.fn(() => 'D:\\project\\resume.md'),
+      ReadAuthorizedFile: vi.fn(async () => ({ content: 'should not be read', truncated: false })),
+    };
+    const context = CreateToolContext({
+      signal: controller.signal,
+      projectRoot: 'D:\\project',
+      ports: { ...CreateToolContext().ports, file: filePort },
+    });
+
+    const result = await CreateToolsModule(CreatePorts({ file: filePort })).ExecuteToolCall({
+      id: 'cancelled-read-1', type: 'function', function: { name: 'Read', arguments: '{"path":"resume.md"}' },
+    }, context);
+
+    expect(JSON.parse(result.content)).toMatchObject({ ok: false, code: 'CANCELLED' });
+    expect(filePort.ResolveProjectPath).not.toHaveBeenCalled();
+    expect(filePort.ReadAuthorizedFile).not.toHaveBeenCalled();
+  });
+
   it('含【待确认】的简历草稿即使在无需确认模式也等待文本确认且不得直接写入', async () => {
     const save = vi.fn(async () => ({ id: 'resume-1', revision: 8 }));
     const context = CreateToolContext({
