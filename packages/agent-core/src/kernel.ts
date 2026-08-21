@@ -47,6 +47,15 @@ function CreateSkippedResult(call: ToolCallFragment): ToolExecutionResult {
   };
 }
 
+/** 构造冻结场景白名单拒绝结果；未知或未授权工具不得进入工具模块。 */
+function CreateToolNotAllowedResult(call: ToolCallFragment): ToolExecutionResult {
+  return {
+    role: 'tool',
+    tool_call_id: call.id,
+    content: JSON.stringify({ ok: false, code: 'TOOL_NOT_ALLOWED', message: 'This tool is not available in the frozen Run whitelist.' }),
+  };
+}
+
 /** 按真实用户轮次压缩早期历史；重试循环内置 3 次熔断，全部失败抛出压缩错误（宿主据此传播）。 */
 async function CompressIfNeeded(input: KernelRunInput, history: AgentMessage[], onCompressed: () => void): Promise<AgentMessage[]> {
   const { modules, toolArray } = input;
@@ -128,7 +137,11 @@ async function RunToolBatch(input: KernelRunInput, calls: ToolCallFragment[]): P
     const phaseResults = await Promise.all(phase.map(async (call) => {
       const argumentsText = ScrubTraceContent(call.function.arguments);
       input.modules.observability.AppendTraceEvent(input.requestId, 'tool_call', { name: call.function.name, arguments: argumentsText }, EstimateTraceTokens(argumentsText));
-      const result = await input.modules.tools.ExecuteToolCall(call, input.toolContext);
+      const registered = input.toolArray.some((tool) => tool.definition.function.name === call.function.name);
+      const allowedByScenario = input.scenario?.toolNames.includes(call.function.name) ?? false;
+      const result = registered && allowedByScenario
+        ? await input.modules.tools.ExecuteToolCall(call, input.toolContext)
+        : CreateToolNotAllowedResult(call);
       let resultState: { ok: boolean; code: string; message: string } = { ok: false, code: 'UNPARSEABLE', message: '' };
       try {
         const parsed = JSON.parse(result.content) as { ok?: unknown; code?: unknown; message?: unknown };

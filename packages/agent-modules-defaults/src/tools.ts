@@ -139,24 +139,6 @@ function BuildRegistry(): RegisteredAgentTool[] {
       idempotency: 'not_needed',
       resourceKeys: () => ['run:todos'],
     },
-    {
-      definition: CreateDefinition('SearchJobs', 'Search job openings from registered sources. Results are Run-scoped temporary data and are never written to the job library.', { type: 'object', properties: { query: { type: 'string' }, page: { type: 'integer', minimum: 1 } }, required: ['query'], additionalProperties: false }),
-      timeoutMs: 20000,
-      isConcurrencySafe: true,
-      sideEffect: 'none',
-      risk: 'low',
-      idempotency: 'not_needed',
-      resourceKeys: () => ['jobs:search'],
-    },
-    {
-      definition: CreateDefinition('ReadUrl', 'Read a public http/https URL selected from job search results. Localhost, intranet, file URLs, and credentialed redirects are blocked by the host port.', { type: 'object', properties: { url: { type: 'string' } }, required: ['url'], additionalProperties: false }),
-      timeoutMs: 20000,
-      isConcurrencySafe: true,
-      sideEffect: 'none',
-      risk: 'low',
-      idempotency: 'not_needed',
-      resourceKeys: (input) => [`url:${String(input?.url ?? '')}`],
-    },
   ];
   return registry;
 }
@@ -557,13 +539,16 @@ export function CreateToolsModule(ports: AgentDefaultPorts): ToolsModule {
     version: '0.1.0',
     sdkVersion: '0.1.0',
     slot: 'tools',
-    capabilities: ['tools:14'],
+    capabilities: ['tools:12'],
     /** 返回设计文档 MVP 白名单工具；旧名仅兼容旧快照，不再向新模型暴露。 */
     GetToolDefinitions() { return registry; },
     /** 统一执行管道：Schema 校验与一次修复、写工具幂等账本、按工具超时、结构化错误码、统一 disposition。 */
     async ExecuteToolCall(call: ToolCallFragment, context: ToolContext): Promise<ToolExecutionResult> {
       const rawName = call.function.name;
       const toolName = NormalizeToolName(rawName);
+      if (!GetToolMeta(toolName)) {
+        return CreateToolResult(call.id, { ok: false, code: 'TOOL_NOT_ALLOWED', message: 'This tool is not available in the current scenario.' });
+      }
       let args: Record<string, unknown>;
       try { args = JSON.parse(call.function.arguments || '{}'); } catch { return CreateToolResult(call.id, { ok: false, code: 'INVALID_JSON', message: 'Tool arguments are invalid JSON. Please correct the call once.' }); }
       const validator = EnsureToolValidators().get(toolName);
