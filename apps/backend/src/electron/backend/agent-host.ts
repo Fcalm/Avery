@@ -2,8 +2,8 @@ import { createHash, randomUUID } from 'node:crypto';
 import { mkdirSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import * as path from 'node:path';
 import { RunAgentLoop, ScrubTraceContent } from '@offerget/agent-core';
-import { ResolveModules } from '@offerget/agent-module-host';
-import { CreateDefaultModules } from '@offerget/agent-modules-defaults';
+import { CreateRunSnapshot, ResolveModules } from '@offerget/agent-module-host';
+import { BuildDefaultCompiledInstructions, CreateDefaultModules, DefaultScenario } from '@offerget/agent-modules-defaults';
 import { AgentFileReader } from './agent-file-reader';
 import { AgentResumePort } from './agent-resume-port';
 import { ResumeLockStore } from './resume-lock-store';
@@ -84,6 +84,7 @@ export class AgentHost {
   private toolLedger = new Map<string, any>();
   private projectEnvironments = new Map<string, any>();
   private sessionSnapshots = new Map<string, any>();
+  private runSnapshots = new Map<string, any>();
   private sessionReloadNotices = new Map<string, string>();
   private sessionUsage = new Map<string, any>();
   private lastContextUsage: { inputTokens: number; contextLimit: number } = { inputTokens: 0, contextLimit: 64000 };
@@ -251,6 +252,8 @@ export class AgentHost {
         .filter(([sessionId, value]: [string, any]) => typeof sessionId === 'string' && value));
       this.toolLedger = new Map((Array.isArray(state.toolLedger) ? state.toolLedger : [])
         .filter((entry: unknown) => Array.isArray(entry) && typeof entry[0] === 'string' && entry[1] && typeof entry[1] === 'object'));
+      this.runSnapshots = new Map((Array.isArray(state.runSnapshots) ? state.runSnapshots : [])
+        .filter((entry: unknown) => Array.isArray(entry) && typeof entry[0] === 'string' && entry[1] && typeof entry[1] === 'object'));
     } catch {
       // First launch or corrupted state starts with empty runtime data.
     }
@@ -264,6 +267,7 @@ export class AgentHost {
       projectEnvironments: [...this.projectEnvironments.entries()],
       sessionUsage: [...this.sessionUsage.entries()],
       toolLedger: [...this.toolLedger.entries()],
+      runSnapshots: [...this.runSnapshots.entries()],
     };
     const temporaryPath = `${this.statePath}.tmp`;
     mkdirSync(path.dirname(this.statePath), { recursive: true });
@@ -498,7 +502,6 @@ export class AgentHost {
     const resumeEditing = resumeId ? this.resumePort.IsUserEditing(resumeId) : false;
     const runtimeContext = { confirmationMode, resumeEditing, resume: resumeSnapshot, profiles, attachments, projectId };
     const controller = new AbortController();
-    this.controllers.set(requestId, controller);
     this.modules.observability.RecordLog('INFO', 'conversation.send', `session=${sessionId}`);
     this.modules.observability.StartTrace(requestId, sessionId, model);
     const history = this.histories.get(sessionId) || [];
@@ -506,6 +509,45 @@ export class AgentHost {
     const requestHistory = snapshot.changed ? [...history, snapshot.message] : history;
     this.pendingQuestions.delete(sessionId);
     const snapshots = await this.LoadOrCreateSnapshots(sessionId);
+    const activeTools = this.modules.tools.GetToolDefinitions();
+    const activeToolNames = activeTools.map((tool: any) => tool.definition.function.name);
+    const missingScenarioTools = DefaultScenario.toolNames.filter((name) => !activeToolNames.includes(name));
+    const unexpectedTools = activeToolNames.filter((name: string) => !DefaultScenario.toolNames.includes(name));
+    if (missingScenarioTools.length || unexpectedTools.length) {
+      throw new Error(`Active tool registry does not match the default scenario: missing=${missingScenarioTools.join(',') || 'none'}; unexpected=${unexpectedTools.join(',') || 'none'}.`);
+    }
+    const toolPolicyHash = createHash('sha256').update(JSON.stringify(activeTools.map((tool: any) => tool.definition))).digest('hex');
+    const { contextLimit, threshold } = this.modules.modelProvider.GetRuntimeLimits();
+    const runSnapshot = CreateRunSnapshot({
+      snapshotId: randomUUID(),
+      sessionId,
+      sessionRevision: snapshots.session.sessionRevision,
+      scenario: DefaultScenario,
+      instructions: BuildDefaultCompiledInstructions(toolPolicyHash),
+      tools: activeTools,
+      dataScope: {
+        ...(projectId ? { projectId } : {}),
+        ...(projectRoot ? { projectRoot } : {}),
+        ...(resumeId ? { resumeId } : {}),
+        attachmentPaths: attachments.map((attachment: any) => attachment.path),
+      },
+      provider: {
+        moduleName: this.modules.modelProvider.name,
+        moduleVersion: this.modules.modelProvider.version,
+        model,
+        capabilities: [...this.modules.modelProvider.capabilities],
+        contextLimit,
+        compressionThreshold: threshold,
+      },
+    });
+    // 函数型调度元数据不进入状态文件；可序列化副本保留完整授权清单、Prompt、数据范围与 Provider 选择供审计/恢复。
+    this.runSnapshots.set(requestId, JSON.parse(JSON.stringify(runSnapshot)));
+    while (this.runSnapshots.size > 100) {
+      const oldestRunId = this.runSnapshots.keys().next().value as string | undefined;
+      if (oldestRunId === undefined) break;
+      this.runSnapshots.delete(oldestRunId);
+    }
+    this.SaveState();
     let contextContent = this.modules.contextBuilder.SerializeSessionContext(snapshots.session);
     const reloadNotice = this.sessionReloadNotices.get(sessionId);
     if (reloadNotice) {
@@ -543,23 +585,27 @@ export class AgentHost {
       tasks: sessionTasks,
       pendingEdits: this.pendingEdits,
       pendingQuestions: this.pendingQuestions,
-      emit: (event: unknown) => this.Emit(event),
       ledger: this.CreateToolLedgerPort(),
+      runId: requestId,
+      scenarioSnapshotId: runSnapshot.snapshotId,
+      emit: (event: unknown) => this.Emit(event),
       persistSessionState: () => this.SaveState(),
     };
+    this.controllers.set(requestId, controller);
     try {
-      const { contextLimit, threshold } = this.modules.modelProvider.GetRuntimeLimits();
       let modelRequestCompleted = false;
       const result = await RunAgentLoop({
-        requestId, sessionId, model,
+        requestId, sessionId, model: runSnapshot.provider.model,
         systemContext: contextContent, requestHistory, userContent,
         histories: this.histories,
-        toolArray: this.modules.tools.GetToolDefinitions(),
+        toolArray: runSnapshot.tools,
         modules: this.modules, toolContext,
         emit: (event: unknown) => this.Emit(event),
         signal: controller.signal, maxTurns: 8,
         contextLimit, thresholdPercent: threshold,
         createId: () => randomUUID(),
+        scenario: runSnapshot.scenario,
+        instructions: runSnapshot.instructions,
         onModelUsage: (usage: any) => { modelRequestCompleted = true; this.RecordSessionUsage(sessionId, usage, contextLimit, threshold); },
       });
       this.compressionCount += result.compressionCount;

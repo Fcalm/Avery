@@ -9,7 +9,7 @@ export interface KernelRunInput {
   sessionId: string;
   /** 本次请求使用的模型。 */
   model: string;
-  /** 会话上下文快照序列化后的 system 消息正文（transcript[0]）；模型级系统提示由 modelProvider.SystemPrompt() 提供。 */
+  /** 会话上下文快照序列化后的 system 消息正文（transcript[0]）；业务系统提示由 Run 快照中的 instructions 提供。 */
   systemContext: string;
   /** 已含动态快照消息的请求历史；Kernel 压缩后以此为基构建完整 transcript。 */
   requestHistory: AgentMessage[];
@@ -29,10 +29,10 @@ export interface KernelRunInput {
   thresholdPercent: number;
   /** 生成摘要消息标识的注入函数：宿主提供 crypto.randomUUID，保持 Kernel 无 Node 依赖。 */
   createId: () => string;
-  /** 当前 Run 场景快照；缺省由 Kernel 使用宽松默认值，宿主接入场景后必须提供。 */
-  scenario?: ScenarioSnapshot;
+  /** 当前 Run 场景快照；必须与同一原子 Run 快照中的工具和 Prompt 一起提供。 */
+  scenario: ScenarioSnapshot;
   /** 运行前编译的 Prompt 指令；Provider 不再自行选择业务 Prompt。 */
-  instructions?: CompiledInstructions;
+  instructions: CompiledInstructions;
 }
 
 /** Kernel 单轮运行结果：宿主据 outcome 决定事件与错误传播语义。 */
