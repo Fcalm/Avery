@@ -1,6 +1,28 @@
 import type { LogEntry, ObservabilityModule } from '@offerget/agent-sdk';
 import { AgentDefaultPorts } from './ports';
 
+/** 观测入口统一脱敏：覆盖凭据、绝对路径及常见无关联系方式，保留可诊断的结构。 */
+export function ScrubObservabilityText(value: unknown): string {
+  return String(value ?? '')
+    .replace(/Bearer\s+[^\s]+/gi, 'Bearer [REDACTED]')
+    .replace(/\b(?:api[_-]?key|x-api-key|authorization|token)\s*[:=]\s*[^\s,;"'}]+/gi, (match) => `${match.split(/[:=]/, 1)[0]}=[REDACTED]`)
+    .replace(/\bsk-[A-Za-z0-9_-]+\b/g, '[REDACTED_API_KEY]')
+    .replace(/\b[A-Za-z]:\\[^\r\n"'<>]*/g, '[REDACTED_PATH]')
+    .replace(/(?<![:\w])\/(?:[^\s"'<>]+)/g, '[REDACTED_PATH]')
+    .replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, '[REDACTED_EMAIL]')
+    .replace(/(?<!\d)(?:\+?86[- ]?)?1[3-9]\d{9}(?!\d)/g, '[REDACTED_PHONE]');
+}
+
+function ScrubObservabilityPayload(value: unknown, seen = new WeakSet<object>()): unknown {
+  if (typeof value === 'string') return ScrubObservabilityText(value).slice(0, 20000);
+  if (!value || typeof value !== 'object') return value;
+  if (seen.has(value)) return '[REDACTED_CIRCULAR]';
+  seen.add(value);
+  if (Array.isArray(value)) return value.slice(0, 1000).map((item) => ScrubObservabilityPayload(item, seen));
+  return Object.fromEntries(Object.entries(value as Record<string, unknown>).slice(0, 1000)
+    .map(([key, item]) => [key, /api[_-]?key|authorization|token|secret/i.test(key) ? '[REDACTED]' : ScrubObservabilityPayload(item, seen)]));
+}
+
 /** 可观测性模块：本地日志缓冲 + 后端 Trace 存储端口；存储缺失或失败时以本地缓冲兜底，读失败返回空。 */
 export function CreateObservabilityModule(ports: AgentDefaultPorts): ObservabilityModule {
   const logs: LogEntry[] = [];
@@ -25,7 +47,7 @@ export function CreateObservabilityModule(ports: AgentDefaultPorts): Observabili
     capabilities: ['observability'],
     /** 记录不含用户正文、附件路径或密钥的有限本地运行日志；持久化异步失败不阻塞主流程。 */
     RecordLog(level, event, detail) {
-      const entry = { time: new Date().toLocaleTimeString('zh-CN', { hour12: false }), level, event, detail: String(detail).slice(0, 300) };
+      const entry = { time: new Date().toLocaleTimeString('zh-CN', { hour12: false }), level, event, detail: ScrubObservabilityText(detail).slice(0, 300) };
       logs.push(entry);
       if (logs.length > 100) logs.splice(0, logs.length - 100);
       SafeVoid(() => store?.RecordLog?.(level, event, entry.detail));
@@ -34,10 +56,10 @@ export function CreateObservabilityModule(ports: AgentDefaultPorts): Observabili
       SafeVoid(() => store?.StartTrace?.(requestId, sessionId, model));
     },
     AppendTraceEvent(requestId, eventType, payload, tokenCount) {
-      SafeVoid(() => store?.AppendTraceEvent?.(requestId, eventType, payload, tokenCount));
+      SafeVoid(() => store?.AppendTraceEvent?.(requestId, eventType, ScrubObservabilityPayload(payload), tokenCount));
     },
     FinishTrace(requestId, state, summary) {
-      SafeVoid(() => store?.FinishTrace?.(requestId, state, summary));
+      SafeVoid(() => store?.FinishTrace?.(requestId, state, ScrubObservabilityText(summary).slice(0, 2000)));
     },
     /** 返回持久化日志；存储缺失或失败时回退到本地缓冲。 */
     async GetLogs() {
