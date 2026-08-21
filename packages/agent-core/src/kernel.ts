@@ -205,6 +205,8 @@ export async function RunAgentLoop(input: KernelRunInput): Promise<KernelRunResu
       }
       turn += 1;
       modules.observability.AppendTraceEvent(requestId, 'loop_turn', { turn });
+      // Provider 可能在 Promise settle 或取消后仍回调；仅当前流处于 active 时接收增量，避免终态后污染 UI。
+      let acceptsProviderDelta = true;
       const completion = await modules.modelProvider.StreamCompletion({
         requestId,
         model: input.model,
@@ -213,10 +215,11 @@ export async function RunAgentLoop(input: KernelRunInput): Promise<KernelRunResu
         signal,
         instructions: input.instructions,
         onDelta: (delta) => {
+          if (!acceptsProviderDelta || signal.aborted) return;
           if (delta.reasoning) { reasoningContent += delta.reasoning; emit({ type: 'thinking_delta', requestId, delta: delta.reasoning }); }
           if (delta.content) { assistantContent += delta.content; emit({ type: 'content_delta', requestId, delta: delta.content }); }
         },
-      });
+      }).finally(() => { acceptsProviderDelta = false; });
       input.onModelUsage?.(completion.usage);
       const assistantMessage: AgentMessage = {
         role: 'assistant',
