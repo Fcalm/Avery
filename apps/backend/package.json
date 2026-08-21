@@ -7,7 +7,7 @@
   "types": "dist/index.d.ts",
   "scripts": {
     "build": "node ../../node_modules/typescript/bin/tsc -p tsconfig.json",
-    "test": "npm run build --workspace @offerget/contracts && npm run build --workspace @offerget/backend && node --test test/*.test.cjs"
+    "test": "npm run build --workspace @offerget/contracts && npm run build --workspace @offerget/agent-sdk && npm run build --workspace @offerget/agent-core && npm run build --workspace @offerget/agent-module-host && npm run build --workspace @offerget/agent-modules-defaults && npm run build --workspace @offerget/backend && node --test test/*.test.cjs"
   },
   "dependencies": {
     "@offerget/agent-core": "0.1.0",
