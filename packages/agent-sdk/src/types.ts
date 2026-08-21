@@ -227,6 +227,14 @@ export interface ModelUsage {
   totalTokens: number;
 }
 
+/** 单次模型响应的唯一 usage 事实：只接受 Provider 原始结果，缺失时显式标记 unavailable。 */
+export interface ProviderUsageFact {
+  source: 'provider' | 'unavailable';
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+}
+
 /** 一次完整模型补全：正文、可选思考正文与工具调用列表。 */
 export interface ModelCompletion {
   content: string;
@@ -270,6 +278,7 @@ export interface TraceEntry {
   createdAt: number;
   completedAt: number | null;
   eventCount: number;
+  usage: ProviderUsageFact & { reportedRequestCount: number; unreportedRequestCount: number };
 }
 
 /** Trace 事件条目：开发者页面只读。 */

@@ -14,7 +14,7 @@ export type {
   AgentMessage, AgentRole, AttachmentDescriptor, CompiledInstructions, LogEntry, ModelCapabilities,
   ModelCompletion, ModelDelta, ModelStreamEvent, ModelSummary, ModelUsage, NormalizedUsage, PendingConfirmation,
   PendingInteraction, PendingQuestionInteraction, ProfileSnapshotItem, PromptFragment, PromptManifest,
-  ProviderError, ResumeSnapshot, RunDisposition, RunState, RuntimeContext, ScenarioSnapshot, StructuredRunError,
+  ProviderError, ProviderUsageFact, ResumeSnapshot, RunDisposition, RunState, RuntimeContext, ScenarioSnapshot, StructuredRunError,
   TaskItem, ToolCallFragment, ToolDisposition, ToolExecutionResult, ToolLedgerEntry, ToolReceipt, TraceEntry,
   TraceEventEntry, TurnGroup,
 } from './types';

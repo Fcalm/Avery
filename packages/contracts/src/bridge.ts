@@ -52,7 +52,7 @@ export interface AgentObservability {
   taskCount: number;
   contextUsage: { inputTokens: number; contextLimit: number; compressionCount: number; compressionThreshold: number };
   logs: Array<{ time: string; level: 'INFO' | 'WARN' | 'ERROR'; event: string; detail: string }>;
-  traces: Array<{ requestId: string; sessionId: string; model: string; state: string; summary: string; createdAt: number; completedAt: number | null; eventCount: number }>;
+  traces: Array<{ requestId: string; sessionId: string; model: string; state: string; summary: string; createdAt: number; completedAt: number | null; eventCount: number; usage: { source: 'provider' | 'unavailable'; promptTokens: number; completionTokens: number; totalTokens: number; reportedRequestCount: number; unreportedRequestCount: number } }>;
 }
 
 /** 单会话的助手运行状态；用于恢复输入栏 usage 与项目环境，不含真实路径或凭据。 */

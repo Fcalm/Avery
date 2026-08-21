@@ -387,10 +387,11 @@ export class AgentHost {
   }
 
   /** 将每次已完成模型请求的 usage 合并到单会话账本；缺失值仅记未上报，绝不估算。 */
-  private RecordSessionUsage(sessionId: string, usage: any, contextLimit: number, threshold: number): void {
+  private RecordSessionUsage(requestId: string, sessionId: string, usage: any, contextLimit: number, threshold: number): void {
     const previous = this.sessionUsage.get(sessionId);
     const base = previous?.source === 'actual' ? previous : { promptTokens: 0, completionTokens: 0, totalTokens: 0, reportedRequestCount: 0, unreportedRequestCount: 0, compressionCount: 0 };
     if (!usage || ![usage.promptTokens, usage.completionTokens, usage.totalTokens].every((value: unknown) => Number.isSafeInteger(value) && (value as number) >= 0) || usage.totalTokens < usage.promptTokens || usage.totalTokens < usage.completionTokens) {
+      this.modules.observability.RecordTraceUsage?.(requestId, { source: 'unavailable', promptTokens: 0, completionTokens: 0, totalTokens: 0 });
       const next = previous?.source === 'actual'
         ? { ...previous, contextLimit, compressionThreshold: threshold, unreportedRequestCount: previous.unreportedRequestCount + 1, updatedAt: Date.now() }
         : {
@@ -401,6 +402,9 @@ export class AgentHost {
       this.SaveState();
       return;
     }
+    this.modules.observability.RecordTraceUsage?.(requestId, {
+      source: 'provider', promptTokens: usage.promptTokens, completionTokens: usage.completionTokens, totalTokens: usage.totalTokens,
+    });
     const next = {
       source: 'actual', inputTokens: usage.promptTokens, contextLimit, compressionCount: base.compressionCount, compressionThreshold: threshold,
       promptTokens: base.promptTokens + usage.promptTokens, completionTokens: base.completionTokens + usage.completionTokens, totalTokens: base.totalTokens + usage.totalTokens,
@@ -606,7 +610,7 @@ export class AgentHost {
         createId: () => randomUUID(),
         scenario: runSnapshot.scenario,
         instructions: runSnapshot.instructions,
-        onModelUsage: (usage: any) => { modelRequestCompleted = true; this.RecordSessionUsage(sessionId, usage, contextLimit, threshold); },
+        onModelUsage: (usage: any) => { modelRequestCompleted = true; this.RecordSessionUsage(requestId, sessionId, usage, contextLimit, threshold); },
       });
       this.compressionCount += result.compressionCount;
       const currentUsage = this.sessionUsage.get(sessionId);

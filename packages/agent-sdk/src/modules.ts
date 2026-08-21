@@ -1,7 +1,7 @@
 import type { AgentStreamEvent } from './events';
 import type { ModuleManifest, SlotName } from './manifest';
 import type { RegisteredAgentTool, ToolContext } from './tools';
-import type { AgentMessage, CompiledInstructions, LogEntry, ModelCompletion, ModelDelta, ModelSummary, RuntimeContext, ToolCallFragment, ToolExecutionResult, TraceEntry, TraceEventEntry } from './types';
+import type { AgentMessage, CompiledInstructions, LogEntry, ModelCompletion, ModelDelta, ModelSummary, ProviderUsageFact, RuntimeContext, ToolCallFragment, ToolExecutionResult, TraceEntry, TraceEventEntry } from './types';
 
 /** 会话上下文快照来源：如用户自定义上下文。 */
 export interface SessionContextSource {
@@ -88,6 +88,8 @@ export interface ObservabilityModule extends ModuleManifest {
   RecordLog(level: 'INFO' | 'WARN' | 'ERROR', event: string, detail: string): void;
   StartTrace(requestId: string, sessionId: string, model: string): void;
   AppendTraceEvent(requestId: string, eventType: string, payload: unknown, tokenCount?: number): void;
+  /** 同时是 Trace 汇总与会话账本的唯一 Provider usage 事实；不得传入本地估算值。 */
+  RecordTraceUsage(requestId: string, usage: ProviderUsageFact): void;
   FinishTrace(requestId: string, state: string, summary: string): void;
   GetLogs(): Promise<LogEntry[]>;
   GetTraces(): Promise<TraceEntry[]>;

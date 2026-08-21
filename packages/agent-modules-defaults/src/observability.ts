@@ -1,4 +1,4 @@
-import type { LogEntry, ObservabilityModule } from '@offerget/agent-sdk';
+import type { LogEntry, ObservabilityModule, ProviderUsageFact } from '@offerget/agent-sdk';
 import { AgentDefaultPorts } from './ports';
 
 /** 观测入口统一脱敏：覆盖凭据、绝对路径及常见无关联系方式，保留可诊断的结构。 */
@@ -57,6 +57,9 @@ export function CreateObservabilityModule(ports: AgentDefaultPorts): Observabili
     },
     AppendTraceEvent(requestId, eventType, payload, tokenCount) {
       SafeVoid(() => store?.AppendTraceEvent?.(requestId, eventType, ScrubObservabilityPayload(payload), tokenCount));
+    },
+    RecordTraceUsage(requestId, usage: ProviderUsageFact) {
+      SafeVoid(() => store?.RecordTraceUsage?.(requestId, usage));
     },
     FinishTrace(requestId, state, summary) {
       SafeVoid(() => store?.FinishTrace?.(requestId, state, ScrubObservabilityText(summary).slice(0, 2000)));

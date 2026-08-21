@@ -1,4 +1,4 @@
-import type { FileReadPort, LogEntry, ResumeReadPort, ResumeWritePort, TraceEntry, TraceEventEntry } from '@offerget/agent-sdk';
+import type { FileReadPort, LogEntry, ProviderUsageFact, ResumeReadPort, ResumeWritePort, TraceEntry, TraceEventEntry } from '@offerget/agent-sdk';
 
 /** 模型 Provider 配置：API Key 仅经宿主持有的 CredentialPort 存取，默认模块不直接接触 safeStorage。 */
 export interface ProviderConfig {
@@ -16,6 +16,7 @@ export interface ObservabilityStorePort {
   RecordLog?(level: 'INFO' | 'WARN' | 'ERROR', event: string, detail: string): unknown;
   StartTrace?(requestId: string, sessionId: string, model: string): unknown;
   AppendTraceEvent?(requestId: string, eventType: string, payload: unknown, tokenCount?: number): unknown;
+  RecordTraceUsage?(requestId: string, usage: ProviderUsageFact): unknown;
   FinishTrace?(requestId: string, state: string, summary: string): unknown;
   GetLogs?(): Promise<LogEntry[]>;
   GetTraces?(): Promise<TraceEntry[]>;

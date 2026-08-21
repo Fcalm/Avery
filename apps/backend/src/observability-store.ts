@@ -106,10 +106,41 @@ export class ObservabilityStore {
       .run(randomUUID(), requestId, ordinal, String(eventType).slice(0, 100), JSON.stringify(payload), Math.max(0, Math.floor(Number(tokenCount) || 0)), GetNow());
   }
 
+  /**
+   * 写入单次 Provider usage 的原始事实。Trace 汇总和会话账本都只消费此形状：
+   * 缺失 usage 必须明确为 unavailable，禁止把本地 token 估算写入本表。
+   */
+  RecordTraceUsage(requestId: string, usage: { source: 'provider' | 'unavailable'; promptTokens: number; completionTokens: number; totalTokens: number }): void {
+    if (typeof requestId !== 'string' || !requestId || requestId.length > 200) throw new Error('Trace request id is invalid.');
+    const validSource = usage?.source === 'provider' || usage?.source === 'unavailable';
+    const validTokens = [usage?.promptTokens, usage?.completionTokens, usage?.totalTokens].every((value) => Number.isSafeInteger(value) && value >= 0)
+      && usage.totalTokens >= usage.promptTokens && usage.totalTokens >= usage.completionTokens;
+    if (!validSource || !validTokens) throw new Error('Provider usage is invalid.');
+    this.AppendTraceEvent(requestId, 'provider_usage', usage, 0);
+  }
+
+  /** 从原始 Provider usage 事件构建 Trace 汇总，避免用 Trace token_count 的估算值参与账单展示。 */
+  private GetTraceUsage(requestId: string): any {
+    const rows = this.db.prepare("SELECT payload_json FROM agent_trace_events WHERE request_id = ? AND event_type = 'provider_usage' ORDER BY ordinal").all(requestId);
+    const usage = { source: 'unavailable' as 'provider' | 'unavailable', promptTokens: 0, completionTokens: 0, totalTokens: 0, reportedRequestCount: 0, unreportedRequestCount: 0 };
+    for (const row of rows) {
+      try {
+        const fact = JSON.parse(row.payload_json) as { source?: unknown; promptTokens?: unknown; completionTokens?: unknown; totalTokens?: unknown };
+        const tokens = [fact.promptTokens, fact.completionTokens, fact.totalTokens];
+        const valid = tokens.every((value) => Number.isSafeInteger(value) && (value as number) >= 0)
+          && (fact.totalTokens as number) >= (fact.promptTokens as number) && (fact.totalTokens as number) >= (fact.completionTokens as number);
+        if (fact.source === 'provider' && valid) {
+          usage.source = 'provider'; usage.promptTokens += fact.promptTokens as number; usage.completionTokens += fact.completionTokens as number; usage.totalTokens += fact.totalTokens as number; usage.reportedRequestCount += 1;
+        } else if (fact.source === 'unavailable') usage.unreportedRequestCount += 1;
+      } catch { usage.unreportedRequestCount += 1; }
+    }
+    return usage;
+  }
+
   /** 返回供开发者界面展示的最近 Trace 索引。 */
   GetTraces(limit = 50): any[] {
     return this.db.prepare('SELECT request_id, session_id, model, state, summary, created_at, completed_at FROM agent_traces ORDER BY created_at DESC, rowid DESC LIMIT ?').all(limit)
-      .map((row: any) => ({ requestId: row.request_id, sessionId: row.session_id, model: row.model, state: row.state, summary: row.summary, createdAt: row.created_at, completedAt: row.completed_at, eventCount: this.db.prepare('SELECT COUNT(*) AS count FROM agent_trace_events WHERE request_id = ?').get(row.request_id).count }));
+      .map((row: any) => ({ requestId: row.request_id, sessionId: row.session_id, model: row.model, state: row.state, summary: row.summary, createdAt: row.created_at, completedAt: row.completed_at, eventCount: this.db.prepare('SELECT COUNT(*) AS count FROM agent_trace_events WHERE request_id = ?').get(row.request_id).count, usage: this.GetTraceUsage(row.request_id) }));
   }
 
   /** 读取单条 Trace 的已脱敏事件，供开发者页面按需展开，不暴露其它会话的数据。 */
