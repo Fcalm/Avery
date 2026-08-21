@@ -150,7 +150,6 @@ export function CreateToolsModule(ports: AgentDefaultPorts): ToolsModule {
   const writeTools = new Set(
     registry.filter((tool) => tool.sideEffect === 'local_write' || tool.sideEffect === 'external_action').map((tool) => tool.definition.function.name),
   );
-  const fallbackLedger = new Map<string, ToolLedgerEntry>();
   const executedToolCalls = new Map<string, Record<string, unknown>>();
   let toolValidators: Map<string, (value: unknown) => boolean> | null = null;
 
@@ -209,22 +208,8 @@ export function CreateToolsModule(ports: AgentDefaultPorts): ToolsModule {
   }
 
   function GetLedger(context: ToolContext) {
-    return context.ledger ?? {
-      Start(entry: Omit<ToolLedgerEntry, 'status' | 'receipt' | 'errorCode' | 'finishedAt'>) {
-        fallbackLedger.set(entry.ledgerId, { ...entry, status: 'started' as const, startedAt: entry.startedAt });
-      },
-      Finish(ledgerId: string, status: ToolLedgerEntry['status'], extra?: { receipt?: ToolReceipt; errorCode?: string; finishedAt?: number }) {
-        const current = fallbackLedger.get(ledgerId);
-        if (!current) return;
-        fallbackLedger.set(ledgerId, { ...current, status, ...(extra?.receipt ? { receipt: extra.receipt } : {}), ...(extra?.errorCode ? { errorCode: extra.errorCode } : {}), finishedAt: extra?.finishedAt ?? Date.now() });
-      },
-      FindByIdempotencyKey(idempotencyKey: string) {
-        for (const entry of fallbackLedger.values()) {
-          if (entry.idempotencyKey === idempotencyKey && entry.status !== 'started') return entry;
-        }
-        return undefined;
-      },
-    };
+    if (!context.ledger) throw new Error('Persistent Tool Ledger is required for write tools.');
+    return context.ledger;
   }
 
   async function StartLedger(context: ToolContext, toolName: string, args: Record<string, unknown>, idempotencyKey: string): Promise<ToolLedgerEntry> {
@@ -394,9 +379,16 @@ export function CreateToolsModule(ports: AgentDefaultPorts): ToolsModule {
       // 当前宿主尚未提供 Profile 提案确认通道；不能伪造等待卡，安全拒绝写入。
       return CreateToolResult(callId, { ok: false, code: 'RESOURCE_NOT_AUTHORIZED', message: 'Profile confirmation is not yet supported by the host; no profile was changed.', proposalHash: HashArguments(args) });
     }
-    const result = await context.ports.profileWrite.Save({ profiles: args.items as never, actor: `agent:${context.requestId}`, idempotencyKey });
+    const ledgerEntry = await StartLedger(context, 'UpdateProfile', args, idempotencyKey);
+    let result;
+    try {
+      result = await context.ports.profileWrite.Save({ profiles: args.items as never, actor: `agent:${context.requestId}`, idempotencyKey });
+    } catch (error) {
+      await FinishLedger(context, ledgerEntry, 'failed', { errorCode: 'SAVE_FAILED' });
+      throw error;
+    }
     const receipt: ToolReceipt = { receiptId: `receipt-${randomUUID()}`, toolDefinitionId: 'UpdateProfile', resourceIds: ['profile'], revisions: result.revision ? { profile: result.revision } : undefined, idempotencyKey };
-    await FinishLedger(context, await StartLedger(context, 'UpdateProfile', args, idempotencyKey), 'succeeded', { receipt });
+    await FinishLedger(context, ledgerEntry, 'succeeded', { receipt });
     return CreateToolResult(callId, { ok: true, saved: true, count: result.count }, { disposition: 'continue', receipt });
   }
 
@@ -548,6 +540,9 @@ export function CreateToolsModule(ports: AgentDefaultPorts): ToolsModule {
       const toolName = NormalizeToolName(rawName);
       if (!GetToolMeta(toolName)) {
         return CreateToolResult(call.id, { ok: false, code: 'TOOL_NOT_ALLOWED', message: 'This tool is not available in the current scenario.' });
+      }
+      if (writeTools.has(toolName) && !context.ledger) {
+        return CreateToolResult(call.id, { ok: false, code: 'PERSISTENT_LEDGER_REQUIRED', message: 'A persistent Tool Ledger is required before this write can run.' }, { disposition: 'pause' });
       }
       let args: Record<string, unknown>;
       try { args = JSON.parse(call.function.arguments || '{}'); } catch { return CreateToolResult(call.id, { ok: false, code: 'INVALID_JSON', message: 'Tool arguments are invalid JSON. Please correct the call once.' }); }

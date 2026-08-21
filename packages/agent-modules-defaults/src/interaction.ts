@@ -4,25 +4,9 @@ import { RequireString, type PendingResumeEdit } from './helpers';
 
 /** 交互模块：澄清提问与简历确认的宿主侧状态与事件；AskUserQuestion 作为内置工具由 tools 槽实现。 */
 export function CreateInteractionModule(): InteractionModule {
-  const fallbackLedger = new Map<string, ToolLedgerEntry>();
-
   function GetLedger(context: ToolContext) {
-    return context.ledger ?? {
-      Start(entry: Omit<ToolLedgerEntry, 'status' | 'receipt' | 'errorCode' | 'finishedAt'>) {
-        fallbackLedger.set(entry.ledgerId, { ...entry, status: 'started' as const, startedAt: entry.startedAt });
-      },
-      Finish(ledgerId: string, status: ToolLedgerEntry['status'], extra?: { receipt?: ToolReceipt; errorCode?: string; finishedAt?: number }) {
-        const current = fallbackLedger.get(ledgerId);
-        if (!current) return;
-        fallbackLedger.set(ledgerId, { ...current, status, ...(extra?.receipt ? { receipt: extra.receipt } : {}), ...(extra?.errorCode ? { errorCode: extra.errorCode } : {}), finishedAt: extra?.finishedAt ?? Date.now() });
-      },
-      FindByIdempotencyKey(idempotencyKey: string) {
-        for (const entry of fallbackLedger.values()) {
-          if (entry.idempotencyKey === idempotencyKey && entry.status !== 'started') return entry;
-        }
-        return undefined;
-      },
-    };
+    if (!context.ledger) throw new Error('Persistent Tool Ledger is required to apply a confirmed write.');
+    return context.ledger;
   }
 
   return {

@@ -81,6 +81,7 @@ export class AgentHost {
   private tasks = new Map<string, Map<string, any>>();
   private pendingQuestions = new Map<string, unknown>();
   private pendingEdits = new Map<string, unknown>();
+  private toolLedger = new Map<string, any>();
   private projectEnvironments = new Map<string, any>();
   private sessionSnapshots = new Map<string, any>();
   private sessionReloadNotices = new Map<string, string>();
@@ -248,6 +249,8 @@ export class AgentHost {
       this.sessionUsage = new Map((Array.isArray(state.sessionUsage) ? state.sessionUsage : [])
         .map(([sessionId, value]: [string, unknown]) => [sessionId, NormalizeSessionUsage(value)])
         .filter(([sessionId, value]: [string, any]) => typeof sessionId === 'string' && value));
+      this.toolLedger = new Map((Array.isArray(state.toolLedger) ? state.toolLedger : [])
+        .filter((entry: unknown) => Array.isArray(entry) && typeof entry[0] === 'string' && entry[1] && typeof entry[1] === 'object'));
     } catch {
       // First launch or corrupted state starts with empty runtime data.
     }
@@ -260,6 +263,7 @@ export class AgentHost {
       tasks: [...this.tasks.entries()].map(([sessionId, tasks]) => [sessionId, [...tasks.entries()]]),
       projectEnvironments: [...this.projectEnvironments.entries()],
       sessionUsage: [...this.sessionUsage.entries()],
+      toolLedger: [...this.toolLedger.entries()],
     };
     const temporaryPath = `${this.statePath}.tmp`;
     mkdirSync(path.dirname(this.statePath), { recursive: true });
@@ -278,6 +282,27 @@ export class AgentHost {
   /** 返回脱敏的配置状态。 */
   GetStatus(): any { return this.modules.modelProvider.GetStatus(); }
 
+  /** 持久化写工具账本：每次状态迁移与会话状态一并原子落盘，供重启后幂等回放与对账。 */
+  private CreateToolLedgerPort(): any {
+    return {
+      Start: (entry: any) => {
+        this.toolLedger.set(entry.ledgerId, { ...entry, status: 'started' });
+        this.SaveState();
+      },
+      Finish: (ledgerId: string, status: string, extra?: any) => {
+        const current = this.toolLedger.get(ledgerId);
+        if (!current) throw new Error(`Tool Ledger entry ${ledgerId} does not exist.`);
+        if (current.status === 'status_unknown' && status !== 'status_unknown') {
+          throw new Error(`Tool Ledger entry ${ledgerId} requires explicit reconciliation before leaving status_unknown.`);
+        }
+        this.toolLedger.set(ledgerId, { ...current, status, ...(extra ?? {}) });
+        this.SaveState();
+      },
+      FindByIdempotencyKey: (idempotencyKey: string) => [...this.toolLedger.values()]
+        .find((entry: any) => entry.idempotencyKey === idempotencyKey && entry.status !== 'started'),
+    };
+  }
+
   /** 中止指定在途请求。 */
   Cancel(requestId: string): any {
     const controller = this.controllers.get(requestId);
@@ -291,6 +316,7 @@ export class AgentHost {
     return this.modules.interaction.ConfirmResumeEdit(confirmationId, accepted, {
       pendingEdits: this.pendingEdits,
       ports: { resumeWrite: this.resumeWritePort },
+      ledger: this.CreateToolLedgerPort(),
       emit: (event: unknown) => this.Emit(event),
     });
   }
@@ -502,11 +528,23 @@ export class AgentHost {
       profileSnapshot: profiles,
       resumeSnapshot,
       resumeId: resumeId || undefined,
-      ports: { file: this.fileReader, resumeRead: this.resumeReadPort, resumeWrite: this.resumeWritePort },
+      ports: {
+        file: this.fileReader,
+        resumeRead: this.resumeReadPort,
+        resumeWrite: this.resumeWritePort,
+        profileWrite: {
+          Save: async ({ profiles: nextProfiles }: any) => {
+            const saved = await this.business?.SaveProfiles?.(nextProfiles, false);
+            if (!saved || !Number.isSafeInteger(saved.count)) throw new Error('Profile persistence is unavailable.');
+            return { count: saved.count };
+          },
+        },
+      },
       tasks: sessionTasks,
       pendingEdits: this.pendingEdits,
       pendingQuestions: this.pendingQuestions,
       emit: (event: unknown) => this.Emit(event),
+      ledger: this.CreateToolLedgerPort(),
       persistSessionState: () => this.SaveState(),
     };
     try {
