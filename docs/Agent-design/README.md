@@ -1,8 +1,8 @@
 # OfferGet Agent 设计总览
 
-> 状态：讨论稿 v0.1
-> 更新时间：2026-08-19
-> 适用范围：OfferGet 默认场景；投递场景当前仅保留禁用占位
+> 状态：v0.2 已通过 PM 复审；Runtime Reminder 与 Session 前缀快照已进入实现
+> 更新时间：2026-08-22
+> 适用范围：OfferGet 0.2.0 默认场景；0.3.0 网络能力边界与未来候选仅作版本化设计
 
 ## 1. 文档目标
 
@@ -12,7 +12,7 @@
 2. [System Prompt](./02-system-prompt.md)：提示词由哪些可信层组成，如何版本化。
 3. [Tools](./03-tools.md)：场景白名单、Schema、权限、幂等、超时与并发调度。
 4. [Context](./04-context.md)：上下文组成、预算、工具结果限长和压缩。
-5. [Provider](./05-provider.md)：如何适配首批支持的 DeepSeek 与 OpenAI，并管理 MiMo 候选扩展。
+5. [Provider](./05-provider.md)：0.2.0 如何稳定支持 DeepSeek，并为 OpenAI 独立 Adapter 与 MiMo 候选扩展保留边界。
 6. [Harness](./06-harness.md)：如何用模型之外的机制约束、验证和纠正 Agent。
 
 对应产品与总体架构依据：
@@ -20,28 +20,36 @@
 - [PRD](../PRD.md)
 - [ARCHITECTURE](../ARCHITECTURE.md)
 - [项目重建计划](../PROJECT-RECONSTRUCTION-PLAN.md)
+- [A-02 产品裁决](../rebuild/A-02-PM-DECISION-2026-08-20.md)
+- [Agent ADR 索引](../architecture/decisions/README.md)
 
 ## 2. 核心结论
 
 - Agent 不是一个无限 `while`；它是可持久化、可恢复、受预算约束的状态机。
 - System Prompt 只表达指令，不承担权限控制。权限、确认和路径边界必须由 Harness 与工具端口强制执行。
-- 场景是一次运行的不可变快照，至少同时冻结 Prompt、工具白名单、数据范围、确认策略和 Provider 能力。
+- Session 首次使用时冻结稳定 Prompt/Context/Tool 前缀；每个 Run 引用该前缀并冻结数据范围、Provider/模型与预算。
 - 工具调用先经过 Schema、语义、权限和副作用检查，再进入调度器；模型给出的工具名和参数都不可信。
 - 等待用户输入或确认是正常运行状态，不是失败，也不是“返回一句话后猜测下轮会继续”。
 - Context 是按 token 预算构建的派生视图；完整会话、工具回执和业务事实分别持久化，不能只保存发给模型的截断消息。
 - Provider Adapter 负责协议差异，Loop 只消费统一事件；不得把所有供应商强行当作 OpenAI Chat Completions。
 - Harness 是独立于模型的控制层。确定性规则优先，模型自检只能补充语义判断，不能授予权限。
+- 一次点击发送创建一个 Run，不创建新 Session；场景切换才创建新 Session。
+- 默认场景最多 30 个模型轮次，投递场景占位 100；Runtime Reminder 以 user 角色 append-only 注入。
+- Session 前缀只在首次创建、满 24 小时后的下一次 Run 或 `/reload` 时重建，不设置独立 `ContextCacheEpoch`。
 
 ### 2.1 两个顶层场景
 
-产品只设置两个权限场景，简历优化、岗位定制、项目提炼和岗位搜索等属于场景内意图，不再各自成为权限场景：
+产品只设置两个顶层权限场景，简历优化、岗位定制和项目提炼等属于场景内意图，不再各自成为权限场景。网络岗位能力按版本单独启用，不能因 Prompt 或用户意图自动扩权：
 
-| 场景 | 核心能力 | 强制禁止 |
+| 版本/场景 | 核心能力 | 网络边界 |
 | --- | --- | --- |
-| 默认场景 `default` | 读写简历与档案；通过通用 UTF-8 文件工具读取授权文件；自主搜索岗位并读取搜索结果 URL | 填写申请表、上传投递材料、操作登录态、提交申请 |
-| 投递场景 `application` | 仅保留 `enabled: false` 的产品占位，第一阶段不创建 Run、不注册工具 | 复用默认场景权限或提前暴露浏览器能力 |
+| 0.2.0 默认场景 `default` | 读写简历与档案；通过通用 UTF-8 文件工具读取授权文件；维护 Run Todo；结构化提问 | 不注册 `SearchJobs`、`ReadUrl`，不访问岗位 URL，不拥有任意 HTTP 或浏览器能力 |
+| 0.3.0 默认场景候选 | 继承 0.2.0；用户显式提供 URL 时可调用受限 `ReadUrl` 生成预览 | `SearchJobs` 仍禁用；确认入库必须经过独立窄写入边界 |
+| 投递场景 `application` | 保留 `enabled: false` 的产品占位，不创建 Run、不注册工具 | 不得复用默认场景权限或提前暴露浏览器能力 |
 
-默认场景的岗位搜索不要求用户逐个提供 URL。Agent 在用户目标涉及岗位发现时，可以自主生成搜索条件、检索多个来源、翻页、去重并打开候选岗位；网络能力只通过 `SearchJobs` 和 `ReadUrl` 窄工具提供，不等于任意 HTTP、登录态或浏览器控制。搜索结果第一阶段只作为 Run 内临时数据，不提供岗位库保存工具。
+0.2.0 坚持手动岗位闭环，不开放岗位联网发现或 URL 提取。0.3.0 只允许“用户明确 URL → 受限读取 → 展示预览 → 用户确认后入库”，Agent 不得自行搜索、猜测 URL、扩展来源或携带简历全文和敏感信息访问网络。
+
+`SearchJobs` 仅是未承诺版本的候选设计。启用前必须另行更新 PRD 和路线图，并通过来源白名单、SSRF、预算、取消、超时、脱敏、审计和站点条款专项验收。无界翻页、后台监控、周期搜索和持续全网爬取永久禁止。
 
 投递场景暂不实现。用户尝试进入时由应用层直接返回“投递场景暂未开放”，不能创建空能力 Run，也不能临时继承默认场景工具。
 
@@ -75,7 +83,7 @@ Infrastructure → Backend-owned narrow ports
 | 对象 | 生命周期 | 保存内容 | 说明 |
 | --- | --- | --- | --- |
 | `Session` | 多轮长期存在 | 可见消息、场景选择、Usage、项目绑定 | 用户看到的会话 |
-| `Run` | 一次用户目标，可暂停恢复 | 状态机、Todo、预算、待交互、工具账本、结果 | 等待确认时仍是同一个逻辑 Run |
+| `Run` | 一次点击发送创建，可暂停恢复 | 状态机、Todo、轮数、待交互、工具账本、结果 | 等待确认时仍是同一个逻辑 Run |
 | `Execution` | 一段实际进程执行 | lease、abort signal、stream cursor、attempt | 应用重启或恢复会产生新的 Execution |
 
 不能用“请求 Promise 是否还在”表示 Run 是否运行。等待用户数小时、进程崩溃或应用重启后，Run 仍必须能从 checkpoint 恢复。
@@ -97,20 +105,24 @@ Infrastructure → Backend-owned narrow ports
 
 建议保留六槽兼容接口完成重建，但目标实现逐步把跨槽策略上移到 Harness，避免 Provider 或 Tool Module 自行决定全局行为。
 
-## 6. 当前实现必须正视的差距
+## 6. A-03 实现差距关闭记录
 
-以下不是要求立即在本轮文档任务中改代码，而是后续实现的优先风险：
+A-01 已为五包建立测试基线。统一等待、确认时重加锁、只读并发与写屏障、畸形 SSE 失败、完整 TurnGroup 和模块级 Ledger/Prompt 接口已经有绿色回归；A-03 不应无依据重写这些实现。
 
-| 现状 | 风险 | 目标修正 |
+A-01 曾记录 6 条 `it.fails` 失败证据，并由只读集成审计发现 2 条宿主接线缺口。A-03 已逐项关闭下表 8 项差距；当前 Agent 测试不再保留预期失败用例：
+
+| 当前缺口 | 风险 | A-03 目标 |
 | --- | --- | --- |
-| 确认只由部分工具返回 `awaitingUser` | 确认卡出现后 Loop 仍可能继续请求模型 | 所有等待通过统一 `RunDisposition` 驱动状态机 |
-| 等待确认期间持有简历锁 | 长等待、崩溃或重启会阻塞用户编辑 | 保存提案并释放锁；确认时重新加锁和校验 revision |
-| 工具当前全部串行，`isConcurrencySafe` 未参与调度 | 无法兑现并发设计，也没有真正的并发屏障 | 由 DAG/资源键调度只读工具，写入与交互是屏障 |
-| 超时使用 `Promise.race`，未取消底层执行 | 返回超时后写操作仍可能完成，产生幽灵副作用 | 工具必须接收 `AbortSignal`，超时后执行对账 |
-| SSE 畸形块被静默忽略 | 工具参数或正文可能损坏却被当作成功 | 记录协议错误并失败；只允许显式、可证明安全的兼容处理 |
-| 历史以最后 40 条消息截取 | 可能切断 assistant tool call 与 tool result 配对 | 按完整 turn/tool group 压缩，不按消息条数硬切 |
-| 写幂等仅用内存中的 `sessionId + toolCallId` | 重启后失效，Provider 重试也可能换 ID | 使用业务幂等键和持久化 Tool Ledger |
-| Provider 内部持有 System Prompt | Prompt、Context 和协议耦合，难以审计快照 | Prompt Compiler 在运行前生成，Provider 只做协议映射 |
+| 0.2.0 生产场景/工具清单仍含网络草案，且执行入口未再次核对冻结白名单 | 发布范围越界；模型还可直接请求已注册但未授权的工具 | 0.2.0 只注册 12 个本地工具；`SearchJobs`/`ReadUrl` 标为禁用草案；Harness 按冻结快照拒绝未授权工具 |
+| Run 取消完成后 Provider 迟到增量仍可能发出 | 已停止请求污染 UI、Trace 或其他会话 | 以 execution/run token 丢弃迟到事件，取消后 1 秒内保持唯一可见终态 |
+| Prompt、工具白名单和数据范围未作为同一原子 Run 快照被宿主实际消费 | 重载或重启后产生混合版本请求 | 一次冻结并持久化 Scenario/Prompt/Tool/DataScope/Provider，Loop 只读取该快照 |
+| 工具自身超时未中止底层操作 | 返回 timeout 后仍产生幽灵副作用 | 为单工具派生 AbortSignal/deadline；写入超时进入对账 |
+| 默认 Observability 写入日志前未统一脱敏 | Key、Authorization 或绝对路径进入日志 | 在观测入口集中脱敏，并保留回归 fixture |
+| “无需确认”模式尚未阻止含 `【待确认】` 的草稿直接写入 | 未确认推测内容进入正式简历 | Harness 强制保存待确认草稿并进入等待，文本确认后才能写入 |
+| Tool Ledger 接口已存在，但生产 Host 尚未保证持久化端口和 Run 上下文全链路注入 | 重启后业务幂等退化为内存缓存 | 宿主强制注入持久化 Ledger；缺失时拒绝写工具而非降级执行 |
+| Provider 已接受编译指令，但生产 Host 尚未把 Prompt Manifest 与工具策略哈希一起传入 | Provider 仍可能回退到内部 Prompt | Run 创建期编译并冻结 Prompt，Provider 不再拥有业务 Prompt 回退路径 |
+
+**关闭证据（2026-08-20）**：0.2.0 活动工具已收窄为 12 个本地工具；Core 与工具模块双层校验冻结白名单；Provider/Tool 迟到事件被丢弃；Host 消费原子 Run 快照并注入持久化 Tool Ledger；单工具超时派生取消信号且写超时进入 `status_unknown`；Provider 强制接收编译 Prompt；Observability 入口统一脱敏；含 `【待确认】` 的草稿强制进入文本等待。根测试为 Vitest 45/45、Backend 8/8，全量构建通过。
 
 ## 7. 跨文档不变量
 
@@ -125,24 +137,25 @@ Infrastructure → Backend-owned narrow ports
 7. 模型输出不能作为“已保存、已发送、已提交”的证据；只有工具回执和业务仓储状态可以。
 8. Provider 未返回 Usage 时记为 `unavailable`；本地估算只用于预算预判。
 9. 压缩不能改变工具权限、用户确认、`【待确认】` 标签、未完成工作或资源 revision。
-10. 默认场景只能通过 `SearchJobs`、`ReadUrl` 访问外部岗位信息；投递场景在启用前没有工具、不能创建 Run，也不能继承默认场景权限。
+10. 0.2.0 默认场景没有任何岗位网络工具；0.3.0 只允许用户明确 URL 对应的受限 `ReadUrl`；`SearchJobs` 在另行裁决前保持禁用，投递场景启用前不能创建 Run 或继承默认场景权限。
 11. 错误必须结构化、可追踪；不得通过静默忽略、无界重试或扩大容错掩盖根因。
 
-当前 [PRD](../PRD.md) 仍包含“不自动扫描全网岗位、以用户提供 URL 为主”的旧范围，和这里的自主岗位搜索设计冲突。实现前必须更新 PRD，使其明确区分“有界的按需岗位发现”与“无界的持续全网爬取”；在 PRD 修订前，本节视为待上游确认的新设计决策。
+本节执行 [A-02 产品裁决](../rebuild/A-02-PM-DECISION-2026-08-20.md)。PRD 与路线图的版本措辞若尚未同步，以“0.2.0 无网络、0.3.0 仅用户 URL、未来发现未承诺、无界爬取永久禁止”为设计边界；不得据此提前实现网络能力。
 
-## 8. 第一版待共同确认的决策
+## 8. 已裁决的第一版决策
 
-本文档先给出推荐值，后续讨论可形成 ADR：
+以下值已由 PM 于 2026-08-20 裁决，并分别固化到 [Agent ADR](../architecture/decisions/README.md)：
 
-| 决策 | 第一版建议 | 理由 |
+| 决策 | 已裁决值 | ADR |
 | --- | --- | --- |
-| 默认压缩阈值 | 输入预算的 70% | 为未知工具结果和输出保留空间；现有 80% 偏晚 |
-| 最近原文轮次 | 至少 5 个完整用户轮次 | 与现有行为兼容，但按完整工具组保留 |
-| 单 Run 模型子轮上限 | 默认 12，可由场景降至 6–8 | 防止工具循环；不允许场景无限放宽 |
-| Schema 方言 | 内部受限 JSON Schema 2020-12 子集 | 可下编译到主要 Provider，避免依赖复杂关键字 |
-| 等待确认的锁策略 | 不持锁，确认时重加锁 | 避免长事务和租约泄漏 |
-| 首批 Provider | DeepSeek + OpenAI；MiMo 仅为候选扩展 | 首批范围明确，不支持自定义兼容 Endpoint；MiMo 验证通过后再增加独立 Adapter |
-| 纠正重试 | 同类错误最多 1 次；Provider 瞬时错误有界退避 | 防止“反复试到成功”掩盖权限或数据问题 |
+| 岗位网络范围 | 0.2.0 无网络；0.3.0 仅用户明确 URL；未来发现未承诺 | [ADR-AGENT-001](../architecture/decisions/ADR-AGENT-001-versioned-job-network-scope.md) |
+| 场景快照 | Session 冻结稳定 Prompt/Context/Tool 前缀；Run 冻结动态数据范围与 Provider 选择 | [ADR-AGENT-002](../architecture/decisions/ADR-AGENT-002-immutable-run-snapshot.md) |
+| 默认压缩阈值 | 输入预算的 70%，场景只可降低 | [ADR-AGENT-003](../architecture/decisions/ADR-AGENT-003-context-budget-and-compaction.md) |
+| 最近原文轮次 | 至少 5 个完整用户轮次及完整工具组 | [ADR-AGENT-003](../architecture/decisions/ADR-AGENT-003-context-budget-and-compaction.md) |
+| 单 Run 模型子轮 | 默认场景 30；投递场景占位 100；最后一轮禁止新工具调用 | [ADR-AGENT-003](../architecture/decisions/ADR-AGENT-003-context-budget-and-compaction.md) |
+| Schema 与确认 | 受限 JSON Schema 2020-12；等待不持锁，确认时重加锁校验 revision | [ADR-AGENT-004](../architecture/decisions/ADR-AGENT-004-tool-safety-and-correction.md) |
+| 纠正重试 | 同错误指纹最多 1 次；Provider 瞬时错误仅输出前有界退避 | [ADR-AGENT-004](../architecture/decisions/ADR-AGENT-004-tool-safety-and-correction.md) |
+| Provider | 0.2.0 DeepSeek；OpenAI 为后续独立 Adapter；MiMo 仅候选 | [ADR-AGENT-005](../architecture/decisions/ADR-AGENT-005-provider-rollout.md) |
 
 ## 9. 文档验收标准
 

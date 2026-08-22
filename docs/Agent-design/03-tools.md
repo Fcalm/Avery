@@ -25,6 +25,8 @@ ReadUrl
 CreateTodo
 ```
 
+其中 `SearchJobs`、`ReadUrl` 仅用于说明未来草案也遵循同一命名规则，不代表 0.2.0 已注册。
+
 名称必须匹配：
 
 ```regex
@@ -46,6 +48,9 @@ interface AgentToolDefinition<TInput, TOutput> {
   id: string;
   name: string;
   version: number;
+  enabled: boolean;
+  lifecycle: 'active' | 'disabled_draft' | 'planned';
+  introducedIn?: string;
   domain: string;
   description: string;
   inputSchema: object;
@@ -71,31 +76,42 @@ interface AgentToolDefinition<TInput, TOutput> {
 
 `resourceKeys` 示例：`resume:123`、`run:456:todos`、`workspace:789:files`。它们是调度器内部资源标识，不是模型可见工具名。端口仍需使用真实资源锁和 revision。
 
+只有 `enabled = true` 且 `lifecycle = active` 的定义才能进入生产 Tool Registry 和 ScenarioSnapshot。`disabled_draft` 只允许保留 Schema、威胁模型和 fixture，`GetToolDefinitions()`、Prompt 编译和执行分发表必须同时排除。
+
 ## 4. 场景白名单
 
 ### 4.1 默认场景
 
-默认场景 `default` 是第一阶段唯一启用的场景。
+0.2.0 默认场景 `default` 是当前唯一启用的场景。
 
 | 能力 | 模型可见工具 |
 | --- | --- |
 | UTF-8 文件读取 | `Read`、`Glob`、`Grep` |
 | 档案 | `ReadProfile`、`UpdateProfile` |
 | 简历 | `ReadResume`、`CreateResume`、`UpdateResume` |
-| 岗位发现 | `SearchJobs`、`ReadUrl` |
 | Run Todo | `CreateTodo`、`UpdateTodo`、`ReadTodo` |
 | 用户交互 | `AskUserQuestion` |
 
 明确禁止：
 
 - 填写申请表、上传投递材料、操作登录态或提交申请。
-- Shell、任意 HTTP、任意 Header、任意浏览器或脚本执行。
+- `SearchJobs`、`ReadUrl`、Shell、任意 HTTP、任意 Header、任意浏览器或脚本执行。
 - 项目文件写入、未授权路径访问和敏感文件读取。
-- 将搜索结果自动写入岗位库；第一阶段岗位结果只作为 Run 内临时数据。
+- 后台搜索、定时搜索、URL 提取、跨来源聚合和自动写入岗位库。
 
-白名单存在不等于本轮必须把全部工具发给模型。Host 可以根据当前意图进一步收窄，例如简单简历修改不暴露 `SearchJobs` 和 `ReadUrl`。
+白名单存在不等于本轮必须把全部工具发给模型。Host 可以根据当前意图进一步收窄，但不得加入 0.2.0 注册表之外的工具。执行入口必须再次按冻结快照校验，不能只依赖“没有把定义发给模型”。
 
-### 4.2 投递场景占位
+### 4.2 版本化网络能力
+
+| 版本 | `ReadUrl` | `SearchJobs` | 约束 |
+| --- | --- | --- | --- |
+| 0.2.0 | `enabled: false` | `enabled: false` | 两者不注册、不进入 Prompt、不允许执行 |
+| 0.3.0 候选 | 仅用户明确 URL，满足门禁后可启用 | `enabled: false` | 受限读取、预览；确认入库走独立窄写边界 |
+| 未承诺未来版本 | 需重新评审 | 需重新评审 | 仅当前 Run 的有界按需发现；无界/后台/周期搜索永久禁止 |
+
+保留 `SearchJobs`/`ReadUrl` 草案不代表产品已承诺实现。任何启用都必须修改产品版本、ScenarioSnapshot、Prompt fragment、Tool Registry 和发布门禁，不能只切换一个配置布尔值。
+
+### 4.3 投递场景占位
 
 投递场景 `application` 第一阶段只保留产品占位，不实现、不启用，也不注册任何浏览器或 Automation 工具：
 
@@ -156,38 +172,45 @@ UpdateResume
 
 `UpdateProfile` 和 `UpdateResume` 接收结构化 patch 与 expected revision。是否展示 diff、等待确认或直接提交由 Harness 根据场景策略决定，模型不调用 Preview/Commit 工具。包含未确认 `【待确认】` 的简历草稿不能调用 `UpdateResume` 写入正式版本；Harness 必须先完成文本确认并移除已确认标签。
 
-### 5.3 岗位发现
+### 5.3 岗位网络工具草案（0.2.0 禁用）
 
-MVP 只保留：
+Schema 草案保留：
 
 ```text
 SearchJobs
 ReadUrl
 ```
 
-`SearchJobs` 用于自主生成查询、选择注册来源、翻页、去重并返回岗位摘要和 URL。`ReadUrl` 用于读取选中候选岗位的完整页面内容。
+两者在 0.2.0 都是 `enabled: false / disabled_draft`，不得由 `GetToolDefinitions()` 返回，也不得因为模型猜中名称而进入执行分发。
 
-典型流程：
+#### 0.3.0 `ReadUrl` 候选流程
+
+只有 PM 裁决要求的以下流程可进入后续实现评审：
 
 ```text
-ReadProfile / ReadResume
-→ SearchJobs
-→ 筛选候选结果
-→ ReadUrl 读取部分完整 JD
-→ 向用户展示有依据的推荐
+用户消息明确包含一个公开 URL
+→ Harness 绑定原始 URL 与当前 Run
+→ ReadUrl 逐次校验初始地址和每次重定向
+→ 输出不可信、带来源和截断信息的岗位预览
+→ 用户确认
+→ 通过独立窄写入边界入库
 ```
 
-搜索边界：
+边界：
 
-- 不要求用户逐个提供 URL；当用户目标明确包含岗位发现时，Agent 可以自主决定查询词、来源和翻页。
-- 每个 Run 有查询数、结果数、读取 URL 数、下载量和墙钟预算。
-- `ReadUrl` 仅允许 `http/https`，拒绝本机、内网、文件协议、疑似凭据 URL 和非预期重定向。
+- URL 必须来自当前用户消息中的明确值；Agent 不得自行搜索、猜测、补全域名或跟随页面链接扩展来源。
+- `ReadUrl` 仅允许公开 `http/https`；每次重定向重新校验，拒绝本机、内网、文件协议、携带凭据 URL 和跨域凭据转发。
 - 使用无登录态、无用户 Cookie 的网络端口；需要登录或交互的页面不能转为浏览器操作。
-- 搜索结果和页面正文是不可信数据，必须记录来源、抓取时间和不确定性。
-- 不输出缺乏依据的单一匹配百分比；应列出硬条件、证据、冲突和待确认项。
-- 不创建持续后台扫描。周期搜索需要未来单独定义范围、频率和停止条件。
+- 限制响应体、内容类型、重定向次数、墙钟时间和下载量；不绕过验证码、反自动化或站点访问限制。
+- 页面正文是不可信数据，必须记录原始/最终 URL、抓取时间、内容哈希、截断和不确定性。
+- 不把简历全文、Profile 或其他敏感信息拼入网络请求，不计算岗位匹配分。
+- `ReadUrl` 只读；岗位入库能力不能隐藏在同一个工具结果中。
 
-第一阶段不提供 `SaveJob`、`ReadJob` 或 `AddJobToLibrary`。搜索结果作为当前 Run 的临时数据；岗位库保存流程明确后再决定由 UI 还是 Agent 执行。
+#### 未来 `SearchJobs` 候选
+
+`SearchJobs` 在 0.3.0 仍禁用。未来若另行裁决，只能在用户显式给出岗位、地区和关键词范围后访问登记来源，并受当前 Run 查询数、页数、结果数、下载量和墙钟预算约束。结果只作为临时数据；无界翻页、后台扫描、周期监控和“扫描全网”永久禁止。
+
+0.3.0 的确认入库需要单独定义窄写命令、revision、幂等键和确认提案。此前讨论过的 `SaveJob`、`AddJobToLibrary` 等名称不自动复活；工具命名与是否向模型暴露必须在 0.3.0 设计评审中单独决定。
 
 ### 5.4 Todo
 
@@ -262,7 +285,7 @@ inProgress → completed | cancelled
 | `TaskCreate` | 更名并调整为批量 `CreateTodo` |
 | `TaskUpdate` | 更名为 `UpdateTodo` |
 | `TaskList` / `TaskGet` | 合并为一个 `ReadTodo` |
-| 当前无岗位搜索 | 新增 `SearchJobs`、`ReadUrl` |
+| 当前无岗位网络工具 | 0.2.0 保持无网络；保留 `SearchJobs`/`ReadUrl` 的 `disabled_draft` Schema，不注册 |
 
 迁移时 Todo 从 Session 级 Task 转为 Run 级实体，需要显式数据迁移或仅对新 Run 启用，不能把旧会话任务静默归入错误 Run。
 
@@ -284,7 +307,7 @@ inProgress → completed | cancelled
 
 1. 聚合 Provider 的完整工具调用和参数增量。
 2. 校验调用数量、名称、参数字节数和 JSON 深度。
-3. 用 `ScenarioSnapshot.toolIds` 查白名单。
+3. 用冻结 ScenarioSnapshot 中的 tool definition ID 与名称查白名单；名称存在于全局草案注册表也不代表允许执行。
 4. 解析 JSON；拒绝重复键、非有限数字和原型污染键。
 5. 按内部 Input Schema 校验。
 6. 执行业务语义校验：资源归属、revision、Run ID 和路径授权。
@@ -367,10 +390,12 @@ interface ToolEnvelope<T> {
 
 - 模型可见工具名全部符合 PascalCase 规则且跨 Provider 可接受。
 - 默认场景按意图进一步收窄工具，不暴露任何投递或浏览器能力。
+- 0.2.0 默认场景不注册、不展示也不执行 `SearchJobs`、`ReadUrl`。
 - 投递场景处于禁用占位，不能创建 Run 或继承默认场景工具。
 - `Read`、`Glob`、`Grep` 可以访问授权虚拟挂载，但不能路径逃逸、读取非法 UTF-8 或敏感文件。
-- `SearchJobs`、`ReadUrl` 不能访问 localhost、内网、文件协议或携带用户 Cookie。
-- 岗位搜索结果不会自动写入岗位库。
+- 模型直接请求未进入冻结快照的已注册/草案工具时，执行入口返回 `TOOL_NOT_ALLOWED`，实现函数调用次数为 0。
+- 0.3.0 fixture 必须证明 `ReadUrl` 只接受用户明确 URL，并拒绝 localhost、内网、文件协议、凭据、Cookie 和未校验重定向。
+- `SearchJobs` 在 0.3.0 仍保持禁用；任何岗位网络结果都不会自动写入岗位库。
 - `CreateTodo` 在目标含关键歧义或单步任务中不应被模型调用。
 - Todo 不出现 `blocked`，Run 等待/暂停状态与 Todo `inProgress` 可以并存。
 - 无 Todo 自动注入时记录主动读取率、进度遗漏率和提前完成率。
@@ -381,4 +406,4 @@ interface ToolEnvelope<T> {
 
 ## 14. 总结
 
-MVP 工具集优先使用少量、高辨识度的 PascalCase 工具。`Read`、`Glob`、`Grep` 是通用 UTF-8 文件只读能力，来源差异由虚拟挂载和端口授权处理；简历、档案、岗位搜索和 Todo 只在权限、Schema 或副作用真正不同的地方拆分。确认阶段属于 Harness，投递场景暂不实现，Todo 先在无自动注入条件下验证模型自身的进度管理能力。
+MVP 工具集优先使用少量、高辨识度的 PascalCase 工具。`Read`、`Glob`、`Grep` 是通用 UTF-8 文件只读能力，来源差异由虚拟挂载和端口授权处理；简历、档案和 Todo 只在权限、Schema 或副作用真正不同的地方拆分。0.2.0 不注册岗位网络工具；0.3.0 只评估用户明确 URL 的受限 `ReadUrl`，`SearchJobs` 留在未承诺候选。确认阶段属于 Harness，投递场景暂不实现，Todo 先在无自动注入条件下验证模型自身的进度管理能力。

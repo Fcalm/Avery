@@ -64,9 +64,6 @@ interface AgentRun {
   budgets: {
     maxModelTurns: number;
     maxToolCalls: number;
-    maxWallTimeMs: number;
-    maxInputTokens: number;
-    maxOutputTokens: number;
   };
   pendingInteraction?: PendingInteraction;
   lastCheckpointId?: string;
@@ -76,6 +73,25 @@ interface AgentRun {
   updatedAt: string;
 }
 ```
+
+一次点击“发送”创建一个新 Run，而不是创建新 Session。同一 Session 可以连续包含多个 Run；等待用户输入或确认后恢复的是原逻辑 Run，进程重启后承接它的则是新 Execution。场景切换由产品层新建 Session，因此不会在原 Session 中热切场景。
+
+`AgentRun` 是权威状态机和审计对象，不应为了给模型显示状态而不断扩充字段。累计 input tokens 和浏览器动作数不设置硬预算；Provider 单请求仍必须服从模型的上下文长度，浏览器动作数未来启用投递场景后只作为 Trace 审计指标。
+
+模型可见的运行状态栏使用独立的最小结构：
+
+```ts
+interface RuntimeReminderState {
+  now: number;
+  timeZone: string;
+  usedTurns: number;
+  maxTurns: number;
+  confirmationMode: 'always_confirm' | 'allow_low_risk' | 'fully_trusted';
+  finalTurn: boolean;
+}
+```
+
+该结构只包含需要提醒模型的当前事实，不传 `createdAt`、`scenario`、Session ID、Run ID 或内部状态机字段。
 
 `stateRevision` 用于 compare-and-swap，避免取消、确认和模型完成事件并发覆盖。实际执行进程还持有短租约：
 
@@ -94,7 +110,7 @@ interface RunLease {
 
 | 当前状态                   | 事件                     | 下一状态                      | 必要动作                          |
 | ---------------------- | ---------------------- | ------------------------- | ----------------------------- |
-| `created`              | `run.start`            | `preparing`               | 冻结场景、Provider、Prompt 和权限快照    |
+| `created`              | `run.start`            | `preparing`               | 校验场景已启用，原子冻结 Scenario、Provider、Prompt、工具和数据范围快照 |
 | `preparing`            | context ready          | `model_streaming`         | 预算检查并持久化 request manifest     |
 | `model_streaming`      | final text             | `completed`               | Harness 验证最终声明后提交终态           |
 | `model_streaming`      | tool calls             | `tool_validating`         | 聚合完整调用，不执行半截参数                |
@@ -140,15 +156,15 @@ async function executeRun(runId: string, signal: AbortSignal): Promise<void> {
       const outcome = await toolScheduler.execute(plan, signal);
       await store.checkpoint(runId, 'tool_batch_finished', outcome.receipts);
 
-      if (outcome.disposition === 'wait_user') {
+      if (outcome.disposition === 'waiting_user_input') {
         await store.waitForUser(runId, outcome.interaction);
         return;
       }
-      if (outcome.disposition === 'wait_confirmation') {
+      if (outcome.disposition === 'waiting_confirmation') {
         await store.waitForConfirmation(runId, outcome.interaction);
         return;
       }
-      if (outcome.disposition === 'pause') {
+      if (outcome.disposition === 'paused') {
         await store.pauseRun(runId, outcome.reason);
         return;
       }
@@ -233,6 +249,7 @@ interface PendingConfirmation {
 - 只读、无依赖、资源键不冲突的工具可以并行；写操作、用户交互和状态快照刷新是屏障。
 - 某个工具要求等待时，屏障后的工具全部标记 `SKIPPED_AFTER_WAIT`，不得继续产生副作用。
 - 用户取消立即触发共享 `AbortSignal`，取消未启动节点；已启动写操作必须通过幂等账本查询最终状态。
+- Run 进入 `cancelled` 后，所有 Provider/Tool 回调还必须校验 execution token 和 `stateRevision`；迟到增量只能记脱敏诊断，不能再发送 UI 事件或写入其他会话。
 - Provider 已产生部分文本后失败，不透明重试并拼接第二份输出；应保留诊断并允许用户显式重试。
 - 停止生成不等于回滚已完成副作用。UI 必须分别展示“生成已停止”和“已完成的动作”。
 
@@ -240,16 +257,24 @@ interface PendingConfirmation {
 
 至少限制：
 
-- 模型子轮数：默认 80。
+- 模型子轮数：默认场景 30，投递场景占位 100；调整属于场景配置，不需要用额外的“轮数过多”策略阻止。
 - 工具调用总数：默认 12，场景可降低。
 - 相同错误指纹：最多纠正 1 次。
 - 相同工具名 + 规范化参数：读工具最多自动重试 1 次，写工具不得无业务幂等键重试。
-- 单次 Execution 墙钟时间：默认 5 分钟；进入用户等待后不累计。
-- Provider 输入、输出与工具结果 token 预算。
+- Provider 单请求必须满足模型上下文上限；累计 input tokens 不设 Run 级硬预算。
 
-预算耗尽进入 `paused`，保留 transcript、工具账本和下一步建议。不得伪装成正常完成，也不得自动创建新 Run 绕过上限。
+模型轮数耗尽前必须在最后一轮提醒模型“不得发起新工具调用，应收束当前结果并说明未完成项”。若最后一轮仍返回工具调用，Kernel 不执行工具，写入 `TURN_BUDGET_EXHAUSTED` 结果并进入 `paused`。不得伪装成正常完成，也不得自动创建新 Run 绕过上限。
 
-## 10. 恢复策略
+## 10. Runtime Reminder 注入
+
+- 使用 `user` 角色追加，Provider 只接收 `role/content`；内部 metadata 不进入 API。
+- 默认场景在首轮、每 5 个已使用模型轮次、最后一轮以及确认权限变化时注入；投递场景占位采用每 10 轮。
+- 整条状态栏必须由且仅由一组 `<runtime-reminder>...</runtime-reminder>` 标签包裹；标签内部使用直白英语，例如 `Today is ...`、`Used turns: 20 of 30.`、`Current confirmation mode: ...`。
+- 结尾固定表达：`The above is the current runtime status. No response is needed; continue the task.`
+- 同一 Session 的正常追加过程中不得删除、替换或就地改写旧 reminder；最新一条代表当前状态，旧消息用于保持历史和前缀缓存稳定。
+- reminder 是状态提示，不授予工具、资源或外部账号权限。
+
+## 11. 恢复策略
 
 启动时扫描非终态 Run：
 
@@ -259,16 +284,21 @@ interface PendingConfirmation {
 - Provider 流中断且没有副作用：标记可重试，不拼接未知残片。
 - 写工具状态未知：进入 `paused`，调用只读对账接口；禁止再次写入。
 
-## 11. Loop 验证清单
+## 12. Loop 验证清单
 
 - 状态转换表外的转换全部被拒绝。
+- 禁用场景不能创建 Run；0.2.0 默认场景快照中不得出现 `SearchJobs`、`ReadUrl`。
+- 场景白名单必须在模型可见列表和执行入口使用同一份冻结快照，不能只隐藏工具定义。
 - 两个 Execution 不能同时推进同一个 Run。
 - checkpoint 早于等待 UI 事件和副作用成功事件。
 - 工具调用与结果组不会在历史裁剪时拆开。
 - 取消、确认和 Provider 完成并发发生时，只有一次 CAS 成功。
+- 取消完成后迟到 Provider/Tool 事件不会进入 UI、Transcript 或其他 Run。
 - 应用在每个 checkpoint 后崩溃，重启均不会重复写入或丢失确认卡。
 - 达到预算时保存可恢复状态，不产生无限循环。
+- runtime reminder 始终以 user 角色追加，权限变化会在下一模型轮次反映，旧 reminder 保持不变。
+- 最后一轮的新工具调用不会进入 Tool Scheduler。
 
-## 12. 总结
+## 13. 总结
 
 Loop 的本质是持久化状态机，而不是模型调用循环。它必须把模型、工具、用户等待和副作用切成可审计的状态转换；任何等待都释放执行资源，任何恢复都从 checkpoint 和 revision 继续，任何副作用都通过持久化幂等账本确认结果。

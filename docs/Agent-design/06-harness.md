@@ -88,11 +88,19 @@ type PolicyDecision =
 
 Policy 规则使用代码和数据表实现，不从 Prompt 或模型文本解析。每个决定记录 `policyVersion`、匹配规则 ID 和输入快照哈希。
 
+确认权限只有三档：
+
+- `always_confirm`：所有会产生外部修改的工具均等待确认。
+- `allow_low_risk`：只有注册表标记为 low risk 的操作可免确认；medium/high 仍等待。
+- `fully_trusted`：在现有场景白名单和资源授权内免除普通确认。UI 必须先展示警告并让用户显式确认切换。
+
 示例不变量：
 
-- `confirmationMode = 无需确认` 只影响场景声明的低风险写入。
+- 三档权限只改变“是否等待确认”，不增加工具、路径、数据范围、账号或网络权限。
 - 删除、不可逆覆盖、扩大文件范围、外部发送图片、自动提交始终单独授权。
-- 默认场景永远拒绝 Shell、任意网络和浏览器投递，只允许经过 SSRF、来源和预算策略约束的 `SearchJobs`、`ReadUrl`。
+- 0.2.0 默认场景永远拒绝 `SearchJobs`、`ReadUrl`、Shell、任意网络和浏览器投递；全局草案注册表中存在名称或 Schema 也不构成授权。
+- 0.3.0 只有版本化场景快照明确启用、URL 来自当前用户消息且网络策略通过时才允许 `ReadUrl`；`SearchJobs` 继续拒绝。
+- 未来 `SearchJobs` 必须经过新的产品裁决与网络安全门禁；后台、周期、无界发现永久拒绝。
 - 投递场景第一阶段为禁用占位：没有工具白名单，不创建 Agent Run，也不能复用默认场景权限。
 - 用户正在编辑简历或 revision 冲突时，不允许 Agent 静默覆盖。
 - 确认只对 `proposalHash` 对应的参数生效一次。
@@ -183,7 +191,7 @@ interface PendingResumeDraft {
 }
 ```
 
-即使会话使用“无需确认”模式，存在 `【待确认】` 时也必须等待用户，因为免除的是普通编辑确认，不是对推测事实的授权。
+即使会话使用 `fully_trusted`，存在 `【待确认】` 时也必须等待用户，因为免除的是普通编辑确认，不是对推测事实的授权。
 
 ### 7.2 文本确认
 
@@ -281,6 +289,7 @@ run.paused|completed|failed|cancelled
 - 禁止补造项进入正式简历的比例必须为 0。
 - 未确认且未带标签的推测性补全进入正式简历的比例必须为 0。
 - Prompt injection 导致能力扩张率必须为 0。
+- 0.2.0 岗位网络工具执行次数必须为 0；模型猜中禁用工具名时实现函数调用次数也必须为 0。
 - 等待/重启后的交互恢复成功率应为 100%。
 - 语义质量指标不能用来抵消安全不变量失败。
 
@@ -296,20 +305,24 @@ run.paused|completed|failed|cancelled
 6. 涉及等待、写入或恢复时的故障注入测试。
 7. 变更前后 Trace 对比，确认没有新增敏感字段。
 
+涉及岗位网络能力时还必须校验产品版本：0.2.0 直接拒绝发布；0.3.0 只能启用用户明确 URL 的 `ReadUrl`，且必须完成 SSRF、重定向、响应限长、取消、超时、脱敏、审计和站点条款专项验收。
+
 模型升级视为行为变更，即使 API Schema 不变，也需重新跑场景 eval 和高风险回归。
 
 ## 12. 当前实现优先纠正项
 
-按风险排序：
+A-01 已固定绿色回归的统一等待、确认时重加锁、只读并发与写屏障、畸形 SSE 失败和完整 TurnGroup 行为不得回退。文档复审通过后，A-03 按以下当前缺口推进：
 
-1. 统一等待 disposition，修复确认后 Loop 仍继续的可能性。
-2. 等待确认不再持有简历锁，改为提案 + 确认时 revision 校验。
-3. 写工具接入持久化业务幂等键与 Tool Ledger。
-4. 工具超时传递 AbortSignal，并增加状态未知对账。
-5. Provider 不再静默忽略畸形流事件。
-6. 历史按完整 TurnGroup 保存和压缩，移除固定 40 消息截取。
-7. Prompt 所有权从 Provider 移到 Prompt Compiler/ScenarioSnapshot。
-8. 实现基于资源键的只读并发与写屏障。
+1. 将 0.2.0 生产场景/工具清单收窄为 12 个本地工具，把 `SearchJobs`/`ReadUrl` 降为禁用草案，并在执行入口再次校验冻结白名单。
+2. 以 execution token/state revision 丢弃取消后的迟到 Provider/Tool 事件。
+3. 将 Scenario、Prompt、Tool、DataScope 和 Provider 合并为宿主实际消费的原子 Run 快照。
+4. 为单工具派生 AbortSignal/deadline；超时写入进入 `status_unknown` 对账。
+5. 强制生产 Host 注入持久化 Tool Ledger；写工具不得静默退化到内存幂等。
+6. 在 Run 创建期编译 Prompt Manifest 并传给 Provider，删除 Provider 的业务 Prompt 回退所有权。
+7. 在 Observability 入口统一脱敏 Key、Authorization、绝对路径和无关个人信息。
+8. 对含 `【待确认】` 的草稿强制等待文本确认，不受 `fully_trusted` 模式豁免。
+
+每项先使用 A-01 的现有回归或失败证据复现；缺少失败用例的版本清单/宿主接线项必须先补失败用例。修复后把对应 `it.fails` 改为普通回归测试，一个差距一个提交。A-03 不实现 `SearchJobs` 或联网 `ReadUrl`。
 
 ## 13. 总结
 

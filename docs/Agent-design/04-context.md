@@ -2,7 +2,7 @@
 
 ## 1. 核心定义
 
-Context 不是数据库，也不是完整会话。它是针对一次模型请求，从持久化事实、最近 transcript、工具定义和当前输入派生出的有预算快照。
+Context 不是数据库，也不是完整会话。它由“Session 首次建立的稳定前缀快照”和“每次模型请求追加的动态 transcript”共同组成；两者都从持久化事实派生，但刷新周期不同。
 
 必须分开保存：
 
@@ -17,9 +17,9 @@ Context 不是数据库，也不是完整会话。它是针对一次模型请求
 按稳定到动态的顺序：
 
 1. 编译后的 System Prompt Manifest。
-2. 当前场景工具定义。
+2. 当前版本与场景快照实际启用的工具定义；`disabled_draft` 工具不得进入 Context。
 3. 会话级结构化记忆：目标、已确认事实、决策、未完成工作。
-4. 当前业务快照：选中简历、岗位、Profile、项目授权、确认模式。
+4. 当前 Run 业务快照：选中简历、岗位、Profile、项目授权；确认模式由 Runtime Reminder 追加。
 5. 已压缩的早期对话摘要及来源范围。
 6. 最近完整用户轮次，包含不可拆分的工具调用组。
 7. 当前 Run 已产生的工具结果。
@@ -48,6 +48,23 @@ interface ContextSnapshot {
 
 构建期间任一关键 revision 改变时，快照作废并重新准备；不能把新简历内容和旧 revision 拼成一个请求。
 
+SessionPrefixSnapshot 原子冻结 Scenario、Prompt Manifest 与 Tool Manifest；每个 RunSnapshot 引用该 Session 快照，并冻结本 Run 的 DataScope、Provider/模型与预算。发送前不得重新读取“最新工具列表”替换快照定义，否则仍会产生混合版本。
+
+### 3.1 SessionPrefixSnapshot
+
+Session 首次实际使用时一次性生成完整稳定前缀，包含编译后的 System Prompt、Session Context、Tool Schema/顺序及对应哈希。后续点击发送只创建新 Run，复用相同 Session 前缀，不按 Run 重新编译。
+
+快照只允许在以下两个边界重建：
+
+1. 快照创建满 24 小时后的下一次新 Run；运行中的 Run 不热替换。
+2. 用户显式执行 `/reload`。
+
+场景切换会创建新 Session，不属于 `/reload`。模型切换可能使 Provider 前缀缓存未命中，但不会重建 Session 快照。Provider 自身缓存可能早于 24 小时失效，此时重新发送字节一致的前缀即可，不为了供应商缓存失效改写本地快照。
+
+不引入 `ContextCacheEpoch`。独立 epoch 只有在需要让多个缓存消费者比较“逻辑代际”时才有价值；当前 `snapshotId + compiledHash + createdAt + expiresAt + sessionRevision + refreshReason` 已能回答身份、内容、有效期和刷新原因，额外 epoch 只会形成第二事实源。
+
+Runtime Reminder 位于稳定前缀之后，以 `user` 角色 append-only 追加。正常追加不得删除或替换旧 reminder，否则会同时破坏语义历史和 Provider 前缀缓存。只有显式 Context 压缩会重写后续消息视图，并明确造成缓存失效。
+
 ## 4. Token 预算
 
 ```text
@@ -70,7 +87,7 @@ inputBudget = contextLimit
 | Prompt + Tool schemas | 20% | 减少场景工具、压缩描述；不裁剪安全规则 |
 | 结构化记忆与业务快照 | 20% | 按字段重要性和当前目标选取 |
 | 早期摘要 | 15% | 重新压缩并保留不变量 |
-| 最近完整轮次 | 35% | 至少保留最近 5 个完整用户轮次，必要时减少但不拆工具组 |
+| 最近完整轮次 | 35% | 至少保留最近 5 个完整用户轮次；预算不足时先收缩其他部分或暂停，不能减少到 5 轮以下，也不能拆工具组 |
 | 当前工具结果 | 10% | 分页、结构化裁剪或 artifact reference |
 
 这是软配额，未使用部分可按优先级回收。当前用户输入、待确认提案和最近失败信息具有高优先级，不能因比例表被裁掉。
@@ -168,11 +185,11 @@ Run 存在待确认简历草稿时，Context 必须保留 `draftId`、`contentHa
 
 ## 9. 压缩触发与流程
 
-第一版推荐在预计输入达到 `inputBudget` 的 70% 时预压缩，而不是等到 Provider 拒绝请求。场景可降低阈值，不得高于 80%。
+第一版在预计输入达到 `inputBudget` 的 70% 时预压缩，而不是等到 Provider 拒绝请求。场景可以降低阈值，不得自行提高；调整默认值必须更新 ADR 和压缩回归基线。
 
 顺序：
 
-1. 去除可重建的重复动态快照和已被新 revision 替代的旧展示副本。
+1. 识别可重建的派生内容；正常追加路径不得就地删除或替换旧 Runtime Reminder，只有本次明确进入压缩流程时才可重建消息视图并记录缓存失效。
 2. 将大型工具结果替换为带哈希的 artifact reference 和已验证摘要。
 3. 将已结束的早期 TurnGroup 送入独立摘要调用。
 4. 生成结构化摘要：目标、事实、决策、约束、工具结果、未完成事项、来源范围。
@@ -194,6 +211,8 @@ Run 存在待确认简历草稿时，Context 必须保留 `draftId`、`contentHa
 ## 11. Prompt Injection 与隐私
 
 - 所有外部文本带 `sourceType/sourceId/contentHash/trustedAs=data`。
+- 0.2.0 不存在岗位网页数据来源；用户粘贴的 JD 仍按普通不可信文本处理，不能转换成网络访问授权。
+- 0.3.0 若启用 `ReadUrl`，Context 只接收经过网络端口验证、限长后的预览信封，并保留原始/最终 URL、抓取时间、哈希和截断状态；页面中的链接或指令不能触发第二次网络调用。
 - 项目文件、附件和工具结果中的指令不参与 Prompt 编译。
 - 敏感扫描发生在发送 Provider 前；命中密钥、私钥或明确排除路径时停止并报告。
 - 只向 Provider 发送完成当前目标所需字段，避免把整份 Profile 或全部项目文件作为默认上下文。
@@ -202,6 +221,11 @@ Run 存在待确认简历草稿时，Context 必须保留 `draftId`、`contentHa
 ## 12. 验证清单
 
 - 相同快照输入产生稳定 `compiledHash`。
+- 同一 Session 的普通 Run 复用同一 `SessionPrefixSnapshot`；24 小时和 `/reload` 之外不重建。
+- Provider 缓存过期或模型切换不修改本地快照；场景切换创建新 Session。
+- 旧 Runtime Reminder 在未压缩 transcript 中保持 append-only，Provider 请求中 metadata 已剥离。
+- Scenario/Prompt/Tool/DataScope/Provider 使用相同 Run snapshot revision；运行中重载不会混入当前请求。
+- 0.2.0 Context 不包含 `SearchJobs`、`ReadUrl` Schema 或任何岗位网络结果。
 - 预算计算为 Prompt、工具 Schema、消息和协议开销分别记账。
 - 最近轮次按完整 TurnGroup 保留。
 - 压缩前后 confirmed facts、pending interaction、权限和 receipt 集合一致。

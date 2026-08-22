@@ -494,7 +494,7 @@ Desktop Gateway、Preload 暴露对象、Backend Router 和契约测试必须引
 1. Electron Main 与 Backend Utility Process 的职责分界。
 2. Business DB 与 Observability DB 分库原因。
 3. 跨文件/数据库操作采用 Saga 而非分布式事务。
-4. Agent 六槽和场景权限快照模型。
+4. Agent 六槽和场景权限快照模型（已建立 [Agent ADR 索引](./architecture/decisions/README.md)）。
 5. 结构化简历编辑命令与版本模型。
 6. 自动化执行器隔离、页面适配器和 session partition 策略。
 7. 项目文件授权、敏感过滤与虚拟 URI。

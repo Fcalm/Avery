@@ -1,4 +1,4 @@
-# Provider：DeepSeek 与 OpenAI 协议适配
+# Provider：版本化供应商适配与发布门禁
 
 ## 1. 目标边界
 
@@ -86,14 +86,13 @@ interface ModelCapabilities {
 
 ## 4. 供应商范围
 
-### 4.1 首批正式支持
+### 4.1 0.2.0 正式支持
 
-| Adapter | 协议 | 首期定位 | 关键差异 |
+| Adapter | 协议 | 0.2.0 定位 | 关键差异 |
 | --- | --- | --- | --- |
-| DeepSeek | 官方 Chat Completions API | V1 默认 | 多轮历史由客户端维护；thinking + tool calls 可能要求回传 Provider-specific reasoning state |
-| OpenAI | 官方 Responses API | V1 支持 | 使用 Responses 事件、response item 和 function call/output 语义，不能按 Chat Completions 解析 |
+| DeepSeek | 官方 Chat Completions API | 唯一正式发布门禁 | 多轮历史由客户端维护；thinking + tool calls 可能要求回传 Provider-specific reasoning state |
 
-“正式支持”意味着必须同时具备：
+0.2.0 只以现有 DeepSeek Adapter 的稳定性作为发布门禁。正式支持意味着必须同时具备：
 
 - 产品配置入口和凭据存储。
 - 模型发现或受控模型清单。
@@ -101,11 +100,24 @@ interface ModelCapabilities {
 - Prompt、工具 Schema 和 Provider Continuation 的契约测试。
 - Mock/fixture、真实联调开关和发布回归门禁。
 
-DeepSeek 与 OpenAI 必须使用独立 Adapter。不能因为 DeepSeek 采用 OpenAI 风格的部分结构，就让二者共享一套未经区分的流解析和消息映射。
+### 4.2 OpenAI 后续独立 Adapter
 
-首批不支持自定义 OpenAI-compatible Endpoint，不提供自定义 Base URL、任意 Header 或第三方兼容服务配置。
+OpenAI 使用官方 Responses API，属于后续扩展，不是 0.2.0 发布阻断项：
 
-### 4.2 MiMo 候选扩展
+```ts
+{
+  id: 'openai',
+  protocol: 'responses',
+  status: 'planned',
+  userConfigEnabled: false
+}
+```
+
+启用前必须补齐 Responses 事件、response item、function call/output、Usage、取消、错误映射和真实联调门禁。OpenAI 与 DeepSeek 必须使用独立 Adapter；不能因为 DeepSeek 采用 OpenAI 风格的部分结构，就共享未经区分的流解析和消息映射。
+
+0.2.0 及后续正式范围都不因 OpenAI 计划而自动支持自定义 OpenAI-compatible Endpoint，不提供自定义 Base URL、任意 Header 或第三方兼容服务配置。
+
+### 4.3 MiMo 候选扩展
 
 MiMo 只作为候选 Provider，不属于首批支持范围：
 
@@ -124,7 +136,7 @@ MiMo 只作为候选 Provider，不属于首批支持范围：
 - 不承诺 Prompt、工具或 Continuation 与现有 Adapter 兼容。
 - 不通过“OpenAI-compatible”名义直接复用 DeepSeek/OpenAI Adapter。
 
-如果后续验证通过，应新增独立 MiMo Adapter、fixture 和能力快照，并通过与 DeepSeek/OpenAI 相同的发布门禁。
+如果后续验证通过，应新增独立 MiMo Adapter、fixture 和能力快照，并通过当时正式 Adapter 相同的发布门禁。
 
 ## 5. 消息与工具映射
 
@@ -167,6 +179,14 @@ interface NormalizedUsage {
 - 校验整数、非负和明显矛盾值；异常 Usage 记协议告警，不用于 UI 百分比。
 - 流中多次出现 Usage 时按 Adapter 规则选择最终累计值，不能简单相加。
 - 本地 token 估算放在 Context `TokenMeasurement`，不写入 `NormalizedUsage`。
+
+DeepSeek 0.2.0 Adapter 进一步固定以下协议：
+
+- 流请求必须发送 `stream_options.include_usage=true`。
+- `[DONE]` 前只允许一个非空 Usage 块。优先接受官方约定的空 `choices` 附加块；兼容 DeepSeek 实际返回的纯终止 choice（存在非空 `finish_reason`，但 delta 不含正文、思考或工具调用）。普通增量中的 `usage: null` 不计为 Usage 块。
+- `prompt_tokens`、`completion_tokens`、`total_tokens` 必须是非负安全整数，并满足 `total_tokens = prompt_tokens + completion_tokens`；不接受数字字符串或 `null` 转换。
+- 缺失或无效 Usage 转成显式 `unavailable` 事实；重复非空块，或 Usage 与真实正文、思考、工具调用增量同块，属于协议错误，不采用“最后一个覆盖”。
+- SDK/Core 对宿主只输出 `ProviderUsageFact`，因此会话账本、Trace 和 UI 数据源消费同一份 `provider` / `unavailable` 事实。
 
 ## 8. 流解析
 
@@ -220,7 +240,7 @@ interface ProviderError {
 
 ## 12. 契约与回归测试
 
-每个 Adapter 至少有：
+每个已启用 Adapter 至少有：
 
 - 请求 golden fixture：指令、多轮消息、单/多工具、工具结果、空正文。
 - 流分片 fuzz：每个字节边界切块、多个 data 行、未知事件、畸形 JSON、提前 EOF。
@@ -231,6 +251,18 @@ interface ProviderError {
 
 外部联调测试使用显式环境开关，不在普通 CI 使用真实 Key。CI 以录制后脱敏的协议 fixture 和 mock server 为主。
 
+DeepSeek 真实 Usage 门禁命令（PowerShell）如下；模型可通过 `OFFERGET_DEEPSEEK_MODEL` 覆盖：
+
+```powershell
+$env:OFFERGET_DEEPSEEK_LIVE = '1'
+$env:DEEPSEEK_API_KEY = '<真实密钥>'
+npm run test:vitest -- tests/integration/agent/deepseek-usage.integration.test.ts
+```
+
+未设置显式开关时用例必须显示为 skipped；设置开关但缺少 Key 时必须失败，不能将跳过误报为真实联调通过。
+
+OpenAI 和 MiMo 在 `status` 不是 `active` 时可以保留设计 fixture，但不能进入用户设置、模型列表、ProviderSnapshot 或普通 CI 的“正式支持”矩阵。
+
 ## 13. 参考协议
 
 设计时应以供应商官方文档为准，并在实现 Adapter 时固定校验日期与协议版本：
@@ -239,7 +271,8 @@ interface ProviderError {
 - [OpenAI Streaming responses](https://developers.openai.com/api/docs/guides/streaming-responses)
 - [DeepSeek Tool Calls](https://api-docs.deepseek.com/guides/tool_calls)
 - [DeepSeek Thinking Mode](https://api-docs.deepseek.com/guides/thinking_mode/)
+- [DeepSeek Create Chat Completion（含流式 Usage）](https://api-docs.deepseek.com/api/create-chat-completion/)
 
 ## 14. 总结
 
-Provider Adapter 是协议反腐层。它把 DeepSeek 和 OpenAI 的角色、流事件、工具调用、推理状态和 Usage 转成内部契约，但不拥有业务 Prompt、权限和 Loop 策略。首批只正式支持 DeepSeek 与 OpenAI；MiMo 保持候选状态，完成独立协议验证后再决定是否扩展。
+Provider Adapter 是协议反腐层。它把各供应商的角色、流事件、工具调用、推理状态和 Usage 转成内部契约，但不拥有业务 Prompt、权限和 Loop 策略。0.2.0 只以 DeepSeek 为正式发布门禁；OpenAI 必须以后续独立 Responses Adapter 接入，MiMo 保持候选状态，二者都不能通过“兼容协议”绕过验证后提前展示。
