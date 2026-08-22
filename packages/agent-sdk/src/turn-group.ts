@@ -3,6 +3,7 @@ import type { AgentMessage, TurnGroup } from './types';
 /** 判断是否为一个真实用户轮次：排除运行时上下文与摘要消息。 */
 export function IsUserTurn(message: AgentMessage): boolean {
   return message.role === 'user'
+    && message.metadata?.kind !== 'runtime_reminder'
     && !String(message.content).startsWith('<runtime-context>')
     && !String(message.content).startsWith('<summary');
 }

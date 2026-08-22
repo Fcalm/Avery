@@ -26,6 +26,9 @@ export class AgentRunService {
   /** 中止指定在途请求。 */
   Cancel(requestId: string): any { return this.agent.Cancel(requestId); }
 
+  /** 在途 Run 的确认权限切换；Kernel 在下一轮状态提醒中同步给模型。 */
+  UpdateConfirmationMode(requestId: string, confirmationMode: unknown): any { return this.agent.UpdateConfirmationMode(requestId, confirmationMode); }
+
   /** 应用或丢弃待确认的简历补丁。 */
   ConfirmResumeEdit(confirmationId: string, accepted: boolean): any { return this.agent.ConfirmResumeEdit(confirmationId, accepted); }
 

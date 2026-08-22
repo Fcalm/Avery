@@ -3,7 +3,7 @@ import {
   DropOldestTurnGroups, KeepRecentTurnGroups, SlotOrder, SlotToModuleKey, SplitTurnGroups,
 } from '../../../packages/agent-sdk/src/index';
 import type {
-  AgentMessage, FileReadPort, KernelRunInput, ModelUsage, NormalizedUsage, RunDisposition,
+  AgentMessage, FileReadPort, KernelRunInput, NormalizedUsage, ProviderUsageFact, RunDisposition,
   RunState, ToolPorts,
 } from '../../../packages/agent-sdk/src/index';
 
@@ -20,10 +20,10 @@ describe('agent-sdk 六槽与窄契约', () => {
     });
   });
 
-  it('工具端口保持业务窄接口，Kernel usage 回调允许明确缺失', () => {
+  it('工具端口保持业务窄接口，Kernel usage 回调显式区分 provider 与 unavailable', () => {
     type UsageCallback = NonNullable<KernelRunInput['onModelUsage']>;
     expectTypeOf<ToolPorts['file']>().toEqualTypeOf<FileReadPort>();
-    expectTypeOf<Parameters<UsageCallback>[0]>().toEqualTypeOf<ModelUsage | undefined>();
+    expectTypeOf<Parameters<UsageCallback>[0]>().toEqualTypeOf<ProviderUsageFact>();
     expectTypeOf<NormalizedUsage['source']>().toEqualTypeOf<'provider'>();
   });
 

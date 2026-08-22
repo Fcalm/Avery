@@ -43,4 +43,16 @@ describe('ObservabilityStore Provider usage 对账', () => {
     expect(store.GetTraces()[0]?.usage).toEqual({ source: 'unavailable', promptTokens: 0, completionTokens: 0, totalTokens: 0, reportedRequestCount: 0, unreportedRequestCount: 1 });
     store.Close();
   });
+
+  it('拒绝总数矛盾或携带非零值的 unavailable usage', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'offerget-observability-'));
+    directories.push(directory);
+    const store = new ObservabilityStore(directory);
+    store.StartTrace('request-invalid', 'session-1', 'model-1');
+
+    expect(() => store.RecordTraceUsage('request-invalid', { source: 'provider', promptTokens: 11, completionTokens: 7, totalTokens: 19 })).toThrow(/usage is invalid/i);
+    expect(() => store.RecordTraceUsage('request-invalid', { source: 'unavailable', promptTokens: 1, completionTokens: 0, totalTokens: 1 })).toThrow(/usage is invalid/i);
+    expect(store.GetTraces()[0]?.usage).toEqual({ source: 'unavailable', promptTokens: 0, completionTokens: 0, totalTokens: 0, reportedRequestCount: 0, unreportedRequestCount: 0 });
+    store.Close();
+  });
 });

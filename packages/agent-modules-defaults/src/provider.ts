@@ -8,7 +8,8 @@ export { SummaryPrompt } from './prompts';
 
 /** DeepSeek 官方 API 根地址；自定义 Provider 使用用户配置的 BaseUrl。 */
 export const DefaultBaseUrl = 'https://api.deepseek.com';
-const DefaultDeepSeekModels = ['deepseek-v4-flash', 'deepseek-v4-pro'];
+const DefaultDeepSeekModels = ['deepseek-v4-flash', 'deepseek-v4-pro', 'deepseek-v4-flash-vision-exp'];
+const DeepSeekMaximumRequestBytes = 48 * 1024 * 1024;
 
 /** 将已弃用的历史模型名迁移为当前默认模型，避免旧配置导致请求被服务端拒绝。 */
 function NormalizeDeepSeekModel(model: unknown) {
@@ -34,14 +35,68 @@ function CreateSseParser(onData: (value: string) => void) {
 }
 
 /** 仅接受 Provider 明确返回的完整非负整数 usage；无效或缺失时不使用估算值替代。 */
-function NormalizeModelUsage(value: unknown) {
+function NormalizeModelUsage(value: unknown): ModelUsage | undefined {
   const usage = value && typeof value === 'object' ? value as Record<string, unknown> : null;
-  const promptTokens = Number(usage?.prompt_tokens);
-  const completionTokens = Number(usage?.completion_tokens);
-  const totalTokens = Number(usage?.total_tokens);
-  if (![promptTokens, completionTokens, totalTokens].every((item) => Number.isSafeInteger(item) && item >= 0)) return undefined;
-  if (totalTokens < promptTokens || totalTokens < completionTokens) return undefined;
+  const promptTokens = usage?.prompt_tokens;
+  const completionTokens = usage?.completion_tokens;
+  const totalTokens = usage?.total_tokens;
+  if (typeof promptTokens !== 'number' || !Number.isSafeInteger(promptTokens) || promptTokens < 0) return undefined;
+  if (typeof completionTokens !== 'number' || !Number.isSafeInteger(completionTokens) || completionTokens < 0) return undefined;
+  if (typeof totalTokens !== 'number' || !Number.isSafeInteger(totalTokens) || totalTokens < 0) return undefined;
+  if (totalTokens !== promptTokens + completionTokens) return undefined;
   return { promptTokens, completionTokens, totalTokens };
+}
+
+/**
+ * DeepSeek 的 Usage 既可能出现在官方约定的空 choices 附加块，也可能附着在纯终止 choice 上。
+ * 纯终止 choice 只能携带 finish_reason 和空 delta；正文、思考或工具增量与 Usage 同块仍按协议错误拒绝。
+ */
+function IsDeepSeekUsageChunk(choices: Array<Record<string, unknown>> | null): boolean {
+  if (!choices) return false;
+  if (choices.length === 0) return true;
+  return choices.every((choice) => {
+    if (typeof choice.finish_reason !== 'string' || !choice.finish_reason) return false;
+    if (choice.delta === undefined || choice.delta === null) return true;
+    if (typeof choice.delta !== 'object') return false;
+    const delta = choice.delta as Record<string, unknown>;
+    const hasContent = delta.content !== undefined && delta.content !== null && delta.content !== '';
+    const hasReasoning = delta.reasoning_content !== undefined && delta.reasoning_content !== null && delta.reasoning_content !== '';
+    const hasToolCalls = delta.tool_calls !== undefined && (!Array.isArray(delta.tool_calls) || delta.tool_calls.length > 0);
+    return !hasContent && !hasReasoning && !hasToolCalls;
+  });
+}
+
+/** 只发送 Provider 协议字段；runtime 元数据只在本地用于隐藏展示和压缩分组。 */
+function ToProviderMessage(message: AgentMessage): Omit<AgentMessage, 'content' | 'providerContent' | 'imageAttachments'> & { content: AgentMessage['content'] | NonNullable<AgentMessage['providerContent']> } {
+  return {
+    role: message.role,
+    content: message.providerContent ?? message.content,
+    ...(message.tool_calls ? { tool_calls: message.tool_calls } : {}),
+    ...(message.tool_call_id ? { tool_call_id: message.tool_call_id } : {}),
+    ...(message.reasoning_content ? { reasoning_content: message.reasoning_content } : {}),
+  };
+}
+
+/** DeepSeek 对内联图片与其他字段共同执行 48 MiB 请求体限制；在发网前给出稳定错误。 */
+function SerializeCompletionBody(value: unknown, enforceDeepSeekLimit: boolean): string {
+  const body = JSON.stringify(value);
+  if (enforceDeepSeekLimit && new TextEncoder().encode(body).byteLength > DeepSeekMaximumRequestBytes) {
+    throw new Error('DeepSeek vision request exceeds the 48 MiB request body limit. Reduce the number or size of images.');
+  }
+  return body;
+}
+
+/** Base64 字节数不是视觉 token 数；按官方单图最高 384 token 估算，避免图片误触发文本压缩。 */
+function EstimateProviderTokens(value: unknown): number {
+  let inlineImageCount = 0;
+  const serialized = JSON.stringify(value, (_key, item) => {
+    if (typeof item === 'string' && /^data:image\/(?:jpeg|png|gif|webp);base64,/i.test(item)) {
+      inlineImageCount += 1;
+      return '[inline-image]';
+    }
+    return item;
+  }) ?? '';
+  return Math.ceil(serialized.length / 4) + inlineImageCount * 384;
 }
 
 /** 默认模型 Provider 模块：配置、连通性、请求级模型解析、流式补全、摘要与规模估算；API Key 经宿主端口存取。 */
@@ -171,7 +226,7 @@ export function CreateProviderModule(ports: AgentDefaultPorts): ModelProviderMod
         method: 'POST',
         signal: request.signal,
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${config.apiKey}` },
-        body: JSON.stringify({ model: request.model, stream: true, ...(config.provider === 'DeepSeek' ? { stream_options: { include_usage: true } } : {}), messages: [{ role: 'system', content: systemContent }, ...request.history], tools: request.tools.map((tool) => tool.definition), tool_choice: 'auto' }),
+        body: SerializeCompletionBody({ model: request.model, stream: true, ...(config.provider === 'DeepSeek' ? { stream_options: { include_usage: true } } : {}), messages: [{ role: 'system', content: systemContent }, ...request.history.map(ToProviderMessage)], tools: request.tools.map((tool) => tool.definition), tool_choice: 'auto' }, config.provider === 'DeepSeek'),
       });
       if (!response.ok || !response.body) throw new Error(`Model request failed (${response.status}).`);
       const decoder = new TextDecoder();
@@ -179,6 +234,7 @@ export function CreateProviderModule(ports: AgentDefaultPorts): ModelProviderMod
       let content = '';
       let reasoningContent = '';
       let usage: ModelUsage | undefined;
+      let usageChunkSeen = false;
       const parse = CreateSseParser((data) => {
         let payload: unknown;
         try {
@@ -188,10 +244,19 @@ export function CreateProviderModule(ports: AgentDefaultPorts): ModelProviderMod
         }
         const record = payload && typeof payload === 'object' ? payload as Record<string, unknown> : null;
         if (!record) throw new Error('PROTOCOL_INVALID_SSE_JSON: Provider SSE data is not an object.');
-        const reportedUsage = NormalizeModelUsage(record?.usage);
-        if (reportedUsage) usage = reportedUsage;
-        const choices = Array.isArray(record?.choices) ? record.choices as Array<Record<string, unknown>> : null;
-        if (record?.choices !== undefined && !Array.isArray(record?.choices)) throw new Error('PROTOCOL_INVALID_SSE_SHAPE: Provider delta shape is invalid.');
+        const choices = Array.isArray(record.choices) ? record.choices as Array<Record<string, unknown>> : null;
+        if (record.choices !== undefined && !Array.isArray(record.choices)) throw new Error('PROTOCOL_INVALID_SSE_SHAPE: Provider delta shape is invalid.');
+        if (record.usage !== undefined && record.usage !== null) {
+          if (config.provider === 'DeepSeek' && usageChunkSeen) {
+            throw new Error('PROTOCOL_DUPLICATE_USAGE: DeepSeek sent more than one non-null usage chunk.');
+          }
+          if (config.provider === 'DeepSeek' && !IsDeepSeekUsageChunk(choices)) {
+            throw new Error('PROTOCOL_INVALID_USAGE_CHUNK: DeepSeek usage must be in an empty choices chunk or a terminal-only choice.');
+          }
+          usageChunkSeen = true;
+          const reportedUsage = NormalizeModelUsage(record.usage);
+          if (reportedUsage) usage = reportedUsage;
+        }
         const choice = choices?.[0] && typeof choices[0] === 'object' ? choices[0].delta as Record<string, unknown> | undefined : undefined;
         const reasoning = typeof choice?.reasoning_content === 'string' ? choice.reasoning_content : '';
         const deltaContent = typeof choice?.content === 'string' ? choice.content : '';
@@ -231,7 +296,7 @@ export function CreateProviderModule(ports: AgentDefaultPorts): ModelProviderMod
       const response = await providerFetch(`${config.baseUrl}/chat/completions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${config.apiKey}` },
-        body: JSON.stringify({ model, stream: false, messages: [{ role: 'system', content: SummaryPrompt }, ...messages] }),
+        body: JSON.stringify({ model, stream: false, messages: [{ role: 'system', content: SummaryPrompt }, ...messages.map(ToProviderMessage)] }),
       });
       if (!response.ok) throw new Error(`Summary request failed (${response.status}).`);
       const json = (await response.json()) as { choices?: Array<{ message?: { content?: unknown } }>; usage?: unknown };
@@ -240,7 +305,7 @@ export function CreateProviderModule(ports: AgentDefaultPorts): ModelProviderMod
       return { content: RequireString(content, 'summary', 16000), ...(usage ? { usage } : {}) };
     },
     /** 估算 Provider 请求输入规模；仅用于触发阈值与界面提示，不用于计费。 */
-    EstimateTokens(value) { return Math.ceil(JSON.stringify(value).length / 4); },
+    EstimateTokens(value) { return EstimateProviderTokens(value); },
     /** 返回上下文长度上限与压缩阈值百分比。 */
     GetRuntimeLimits() { return { contextLimit: config.contextLimit, threshold: config.compressionThreshold }; },
     /** 返回当前 BaseUrl，供连通性等只读展示（不含密钥）。 */

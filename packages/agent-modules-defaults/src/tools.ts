@@ -161,6 +161,14 @@ export function CreateToolsModule(ports: AgentDefaultPorts): ToolsModule {
     return byName.get(NormalizeToolName(name));
   }
 
+  /** 确认级别只作用于已授权场景内的业务写入；Run Todo 属于内部进度状态，不进入用户确认流程。 */
+  function RequiresConfirmation(context: ToolContext, toolName: string): boolean {
+    if (context.confirmationMode === 'fully_trusted') return false;
+    const risk = GetToolMeta(toolName)?.risk ?? 'high';
+    if (context.confirmationMode === 'allow_low_risk' && risk === 'low') return false;
+    return true;
+  }
+
   /** 惰性编译各工具参数 JSON Schema；Ajv 实例为每个管道共享。 */
   function EnsureToolValidators() {
     if (toolValidators) return toolValidators;
@@ -327,7 +335,7 @@ export function CreateToolsModule(ports: AgentDefaultPorts): ToolsModule {
         ownerId: `agent-${context.requestId}`, proposalHash, canonicalArguments: canonical, idempotencyKey, uncertainItems,
       });
     }
-    if (context.confirmationMode === '需要确认') {
+    if (RequiresConfirmation(context, 'CreateResume')) {
       const pending: PendingResumeEdit = { kind: 'create', resumeId, name, content, reason, baseRevision: undefined, ownerId: `agent-${context.requestId}`, proposalHash, canonicalArguments: canonical, idempotencyKey };
       const confirmationId = `resume-confirmation-${randomUUID()}`;
       context.pendingEdits.set(confirmationId, pending);
@@ -379,7 +387,7 @@ export function CreateToolsModule(ports: AgentDefaultPorts): ToolsModule {
         canonicalArguments: canonical, idempotencyKey, uncertainItems,
       });
     }
-    if (context.confirmationMode === '需要确认') {
+    if (RequiresConfirmation(context, 'UpdateResume')) {
       const pending: PendingResumeEdit = { kind: 'edit', resumeId: args.resumeId, content, reason, baseRevision, ownerId: `agent-${context.requestId}`, resume: { ...context.resumeSnapshot }, proposalHash, canonicalArguments: canonical, idempotencyKey };
       const confirmationId = `resume-confirmation-${randomUUID()}`;
       context.pendingEdits.set(confirmationId, pending);
@@ -416,7 +424,7 @@ export function CreateToolsModule(ports: AgentDefaultPorts): ToolsModule {
     const ledger = GetLedger(context);
     const previous = await ledger.FindByIdempotencyKey(idempotencyKey);
     if (previous?.status === 'succeeded') return CreateToolResult(callId, { ok: true, saved: true, replayed: true }, { disposition: 'continue', receipt: previous.receipt });
-    if (context.confirmationMode === '需要确认') {
+    if (RequiresConfirmation(context, 'UpdateProfile')) {
       // 当前宿主尚未提供 Profile 提案确认通道；不能伪造等待卡，安全拒绝写入。
       return CreateToolResult(callId, { ok: false, code: 'RESOURCE_NOT_AUTHORIZED', message: 'Profile confirmation is not yet supported by the host; no profile was changed.', proposalHash: HashArguments(args) });
     }

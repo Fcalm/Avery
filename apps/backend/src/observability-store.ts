@@ -114,8 +114,9 @@ export class ObservabilityStore {
     if (typeof requestId !== 'string' || !requestId || requestId.length > 200) throw new Error('Trace request id is invalid.');
     const validSource = usage?.source === 'provider' || usage?.source === 'unavailable';
     const validTokens = [usage?.promptTokens, usage?.completionTokens, usage?.totalTokens].every((value) => Number.isSafeInteger(value) && value >= 0)
-      && usage.totalTokens >= usage.promptTokens && usage.totalTokens >= usage.completionTokens;
-    if (!validSource || !validTokens) throw new Error('Provider usage is invalid.');
+      && usage.totalTokens === usage.promptTokens + usage.completionTokens;
+    const validUnavailable = usage?.source !== 'unavailable' || usage.totalTokens === 0;
+    if (!validSource || !validTokens || !validUnavailable) throw new Error('Provider usage is invalid.');
     this.AppendTraceEvent(requestId, 'provider_usage', usage, 0);
   }
 
@@ -128,7 +129,7 @@ export class ObservabilityStore {
         const fact = JSON.parse(row.payload_json) as { source?: unknown; promptTokens?: unknown; completionTokens?: unknown; totalTokens?: unknown };
         const tokens = [fact.promptTokens, fact.completionTokens, fact.totalTokens];
         const valid = tokens.every((value) => Number.isSafeInteger(value) && (value as number) >= 0)
-          && (fact.totalTokens as number) >= (fact.promptTokens as number) && (fact.totalTokens as number) >= (fact.completionTokens as number);
+          && (fact.totalTokens as number) === (fact.promptTokens as number) + (fact.completionTokens as number);
         if (fact.source === 'provider' && valid) {
           usage.source = 'provider'; usage.promptTokens += fact.promptTokens as number; usage.completionTokens += fact.completionTokens as number; usage.totalTokens += fact.totalTokens as number; usage.reportedRequestCount += 1;
         } else if (fact.source === 'unavailable') usage.unreportedRequestCount += 1;

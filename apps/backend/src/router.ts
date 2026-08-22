@@ -49,6 +49,7 @@ export const MethodRoutes: Record<string, MethodRoute> = {
   'agent:get-models': { service: 'agent', method: 'GetModels' },
   'agent:send': { service: 'agent', method: 'Send' },
   'agent:cancel': { service: 'agent', method: 'Cancel' },
+  'agent:update-confirmation-mode': { service: 'agent', method: 'UpdateConfirmationMode' },
   'agent:confirm-resume-edit': { service: 'agent', method: 'ConfirmResumeEdit' },
   'agent:acquire-resume-lock': { service: 'agent', method: 'AcquireResumeEditLock' },
   'agent:release-resume-lock': { service: 'agent', method: 'ReleaseResumeEditLock' },

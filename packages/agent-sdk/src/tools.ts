@@ -1,5 +1,5 @@
 import type { AgentStreamEvent } from './events';
-import type { AttachmentDescriptor, ProfileSnapshotItem, ResumeSnapshot, TaskItem, ToolExecutionResult, ToolLedgerEntry, ToolReceipt } from './types';
+import type { AttachmentDescriptor, ConfirmationMode, ProfileSnapshotItem, ResumeSnapshot, TaskItem, ToolExecutionResult, ToolLedgerEntry, ToolReceipt } from './types';
 
 /** 已注册工具：定义 + 超时 + 并发安全标记 + 设计文档要求的副作用/风险/确认/幂等/资源键/限额/场景白名单；并发屏障由 Kernel 调度。 */
 export interface RegisteredAgentTool {
@@ -124,7 +124,7 @@ export interface ToolPorts {
 export interface ToolContext {
   sessionId: string;
   requestId: string;
-  confirmationMode: '需要确认' | '无需确认';
+  confirmationMode: ConfirmationMode;
   resumeEditing: boolean;
   projectRoot: string | null;
   attachments: AttachmentDescriptor[];

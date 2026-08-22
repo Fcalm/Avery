@@ -4,12 +4,23 @@ import * as path from 'node:path';
 import { RunAgentLoop, ScrubTraceContent } from '@offerget/agent-core';
 import { CreateRunSnapshot, ResolveModules } from '@offerget/agent-module-host';
 import { BuildDefaultCompiledInstructions, CreateDefaultModules, DefaultScenario } from '@offerget/agent-modules-defaults';
+import type { AgentMessage, ConfirmationMode, ProviderUsageFact } from '@offerget/agent-sdk';
 import { AgentFileReader } from './agent-file-reader';
 import { AgentResumePort } from './agent-resume-port';
 import { ResumeLockStore } from './resume-lock-store';
+import { CreateVisionUserMessage, DeepSeekVisionModel, HydrateVisionMessage } from './vision-input';
 
 /** 用户编辑锁的稳定 ownerId；前端经 bridge 加解锁都以此为准。 */
 const UserLockOwnerId = 'user-main';
+const SessionSnapshotTtlMs = 24 * 60 * 60 * 1000;
+const RuntimeTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+
+/** 兼容迁移旧版中文权限值；所有新运行统一使用稳定的英文枚举。 */
+function NormalizeConfirmationMode(value: unknown): ConfirmationMode {
+  if (value === 'always_confirm' || value === 'allow_low_risk' || value === 'fully_trusted') return value;
+  if (value === '无需确认') return 'fully_trusted';
+  return 'always_confirm';
+}
 
 function NormalizeProjectBinding(value: unknown): any {
   if (typeof value === 'string' && value) return { rootPath: value, projectId: null, name: path.basename(value) };
@@ -77,6 +88,7 @@ export class AgentHost {
   private credentialPort: any;
   private resolveProjectEnvironment: (projectId: string) => Promise<unknown> | unknown;
   private controllers = new Map<string, AbortController>();
+  private runtimeControls = new Map<string, { confirmationMode: ConfirmationMode; toolContext: any }>();
   private histories = new Map<string, any[]>();
   private tasks = new Map<string, Map<string, any>>();
   private pendingQuestions = new Map<string, unknown>();
@@ -85,7 +97,6 @@ export class AgentHost {
   private projectEnvironments = new Map<string, any>();
   private sessionSnapshots = new Map<string, any>();
   private runSnapshots = new Map<string, any>();
-  private sessionReloadNotices = new Map<string, string>();
   private sessionUsage = new Map<string, any>();
   private lastContextUsage: { inputTokens: number; contextLimit: number } = { inputTokens: 0, contextLimit: 64000 };
   private compressionCount = 0;
@@ -315,6 +326,16 @@ export class AgentHost {
     return { cancelled: true };
   }
 
+  /** 更新当前 Run 的确认权限；不扩展场景白名单、资源授权或工具能力。 */
+  UpdateConfirmationMode(requestId: string, value: unknown): any {
+    const control = this.runtimeControls.get(requestId);
+    if (!control) return { updated: false, reason: 'not_running' };
+    const confirmationMode = NormalizeConfirmationMode(value);
+    control.confirmationMode = confirmationMode;
+    control.toolContext.confirmationMode = confirmationMode;
+    return { updated: true, confirmationMode };
+  }
+
   /** 应用或丢弃待确认的简历补丁：接受时经简历写端口落库并释放 Agent 锁。 */
   ConfirmResumeEdit(confirmationId: string, accepted: boolean): any {
     return this.modules.interaction.ConfirmResumeEdit(confirmationId, accepted, {
@@ -387,7 +408,7 @@ export class AgentHost {
   }
 
   /** 为旧版自定义观测模块保留兼容降级，但无论哪条路径都写入同一 Provider usage 事实。 */
-  private RecordProviderUsageFact(requestId: string, fact: { source: 'provider' | 'unavailable'; promptTokens: number; completionTokens: number; totalTokens: number }): void {
+  private RecordProviderUsageFact(requestId: string, fact: ProviderUsageFact): void {
     const observability = this.modules.observability as {
       RecordTraceUsage?: (id: string, usage: typeof fact) => void;
       AppendTraceEvent: (id: string, eventType: string, payload: unknown, tokenCount?: number) => void;
@@ -400,10 +421,13 @@ export class AgentHost {
   }
 
   /** 将每次已完成模型请求的 usage 合并到单会话账本；缺失值仅记未上报，绝不估算。 */
-  private RecordSessionUsage(requestId: string, sessionId: string, usage: any, contextLimit: number, threshold: number): void {
+  private RecordSessionUsage(requestId: string, sessionId: string, usage: ProviderUsageFact, contextLimit: number, threshold: number): void {
     const previous = this.sessionUsage.get(sessionId);
     const base = previous?.source === 'actual' ? previous : { promptTokens: 0, completionTokens: 0, totalTokens: 0, reportedRequestCount: 0, unreportedRequestCount: 0, compressionCount: 0 };
-    if (!usage || ![usage.promptTokens, usage.completionTokens, usage.totalTokens].every((value: unknown) => Number.isSafeInteger(value) && (value as number) >= 0) || usage.totalTokens < usage.promptTokens || usage.totalTokens < usage.completionTokens) {
+    const providerUsageIsValid = usage?.source === 'provider'
+      && [usage.promptTokens, usage.completionTokens, usage.totalTokens].every((value) => Number.isSafeInteger(value) && value >= 0)
+      && usage.totalTokens === usage.promptTokens + usage.completionTokens;
+    if (!providerUsageIsValid) {
       this.RecordProviderUsageFact(requestId, { source: 'unavailable', promptTokens: 0, completionTokens: 0, totalTokens: 0 });
       const next = previous?.source === 'actual'
         ? { ...previous, contextLimit, compressionThreshold: threshold, unreportedRequestCount: previous.unreportedRequestCount + 1, updatedAt: Date.now() }
@@ -433,32 +457,94 @@ export class AgentHost {
   private BuildToolSnapshot(sessionId: string, sessionRevision: number): any {
     const builtInTools = this.modules.tools.GetToolDefinitions();
     const orderedToolNames = builtInTools.map((tool: any) => tool.definition.function.name);
-    return { snapshotId: randomUUID(), sessionId, sessionRevision, builtInTools, mcpTools: [], orderedToolNames, toolsetHash: createHash('sha256').update(JSON.stringify(orderedToolNames)).digest('hex') };
+    const toolsetHash = createHash('sha256').update(JSON.stringify(builtInTools.map((tool: any) => tool.definition))).digest('hex');
+    return { snapshotId: randomUUID(), sessionId, sessionRevision, builtInTools, mcpTools: [], orderedToolNames, toolsetHash };
   }
 
   private BuildModuleSnapshot(sessionId: string, sessionRevision: number): any {
     return { ...this.moduleSnapshot, snapshotId: randomUUID(), sessionId, sessionRevision };
   }
 
-  /** 创建两份快照并原子写入会话表；供首次发送与原子重载使用。 */
-  private async CreateAndPersistSnapshots(sessionId: string, sessionRevision: number): Promise<any> {
-    const session = await this.modules.contextBuilder.BuildSessionContextSnapshot(sessionId, sessionRevision);
+  /** 创建完整会话前缀快照并原子写入会话表；普通 Run 只复用，不重编译。 */
+  private async CreateAndPersistSnapshots(sessionId: string, sessionRevision: number, refreshReason: 'session_created' | 'ttl_elapsed' | 'user_reload'): Promise<any> {
+    const session = await this.modules.contextBuilder.BuildSessionContextSnapshot(sessionId, sessionRevision, {
+      now: Date.now(), ttlMs: SessionSnapshotTtlMs, refreshReason,
+    });
     const module = this.BuildModuleSnapshot(sessionId, sessionRevision);
     const tool = this.BuildToolSnapshot(sessionId, sessionRevision);
-    const entry = { session, module, tool };
+    const instructions = BuildDefaultCompiledInstructions(tool.toolsetHash);
+    const entry = { session, module, tool, instructions };
+    await this.business?.SetConversationSnapshots?.(sessionId, { sessionSnapshotJson: JSON.stringify(session), toolSnapshotJson: JSON.stringify({ module, tool, instructions }) });
     this.sessionSnapshots.set(sessionId, entry);
-    await this.business?.SetConversationSnapshots?.(sessionId, { sessionSnapshotJson: JSON.stringify(session), toolSnapshotJson: JSON.stringify({ module, tool }) });
     return entry;
+  }
+
+  /** 持久化 JSON 不包含执行函数；按名称接回当前同版本注册表，同时保留快照中的协议定义。 */
+  private HydrateToolSnapshot(toolSnapshot: any): any[] {
+    const activeTools = this.modules.tools.GetToolDefinitions();
+    const activeByName = new Map(activeTools.map((tool: any) => [tool.definition.function.name, tool]));
+    const storedTools = Array.isArray(toolSnapshot?.builtInTools) ? toolSnapshot.builtInTools : [];
+    return storedTools.map((stored: any) => {
+      const name = stored?.definition?.function?.name;
+      const active: any = activeByName.get(name);
+      if (!active) throw new Error(`Session tool ${String(name)} is unavailable. Use /reload after restoring the module.`);
+      return { ...active, ...stored, definition: stored.definition, execute: active.execute };
+    });
+  }
+
+  private HasCompleteSessionSnapshot(session: any): boolean {
+    return Boolean(session
+      && typeof session.compiledPrefix === 'string'
+      && typeof session.compiledHash === 'string'
+      && typeof session.createdAt === 'string'
+      && typeof session.expiresAt === 'string'
+      && Number.isFinite(Date.parse(session.expiresAt))
+      && createHash('sha256').update(session.compiledPrefix).digest('hex') === session.compiledHash);
+  }
+
+  private IsUsableSessionSnapshot(session: any, now = Date.now()): boolean {
+    return this.HasCompleteSessionSnapshot(session) && Date.parse(session.expiresAt) > now;
+  }
+
+  private HasCompleteToolBundle(tool: any, instructions: any): boolean {
+    if (!Array.isArray(tool?.builtInTools) || !Array.isArray(tool?.orderedToolNames) || typeof tool?.toolsetHash !== 'string') return false;
+    if (typeof instructions?.compiled !== 'string' || typeof instructions?.manifest?.compiledHash !== 'string') return false;
+    const definitionsHash = createHash('sha256').update(JSON.stringify(tool.builtInTools.map((item: any) => item?.definition))).digest('hex');
+    const orderedNames = tool.builtInTools.map((item: any) => item?.definition?.function?.name);
+    const promptHash = createHash('sha256').update(instructions.compiled).digest('hex');
+    return definitionsHash === tool.toolsetHash
+      && JSON.stringify(orderedNames) === JSON.stringify(tool.orderedToolNames)
+      && instructions.manifest.toolPolicyHash === tool.toolsetHash
+      && instructions.manifest.compiledHash === promptHash;
+  }
+
+  /** 模块变化不能偷换既有 Session 的工具实现；必须由用户 /reload 创建新快照。 */
+  private EnsureModuleSnapshotCompatible(moduleSnapshot: any): void {
+    const signature = (snapshot: any) => JSON.stringify((Array.isArray(snapshot?.modules) ? snapshot.modules : []).map((module: any) => ({
+      slot: module.slot,
+      name: module.name,
+      version: module.version,
+      sdkVersion: module.sdkVersion,
+      capabilities: module.capabilities,
+    })));
+    if (signature(moduleSnapshot) !== signature(this.moduleSnapshot)) {
+      throw new Error('Session modules changed. Use /reload before starting the next run.');
+    }
   }
 
   /** 读取或惰性创建会话快照：内存缓存优先，其次会话表，最后新建并持久化。 */
   private async LoadOrCreateSnapshots(sessionId: string): Promise<any> {
     const cached = this.sessionSnapshots.get(sessionId);
-    if (cached) return cached;
+    if (cached && this.IsUsableSessionSnapshot(cached.session) && this.HasCompleteToolBundle(cached.tool, cached.instructions)) return cached;
+    if (cached) {
+      const expiredCompleteBundle = this.HasCompleteSessionSnapshot(cached.session) && this.HasCompleteToolBundle(cached.tool, cached.instructions);
+      return this.CreateAndPersistSnapshots(sessionId, (cached.session?.sessionRevision ?? 0) + 1, expiredCompleteBundle ? 'ttl_elapsed' : 'session_created');
+    }
     const stored = await this.business?.GetConversationSnapshots?.(sessionId);
     let session: any = null;
     let module: any = null;
     let tool: any = null;
+    let instructions: any = null;
     if (stored?.sessionSnapshotJson) {
       try { session = JSON.parse(stored.sessionSnapshotJson); } catch { session = null; }
     }
@@ -467,15 +553,17 @@ export class AgentHost {
         const combined = JSON.parse(stored.toolSnapshotJson);
         module = combined?.module ?? null;
         tool = combined?.tool ?? combined;
+        instructions = combined?.instructions ?? null;
       } catch { tool = null; }
     }
-    if (session && tool) {
-      const entry = { session, module: module ?? this.BuildModuleSnapshot(sessionId, session.sessionRevision ?? 1), tool };
+    if (this.IsUsableSessionSnapshot(session) && this.HasCompleteToolBundle(tool, instructions)) {
+      const entry = { session, module: module ?? this.BuildModuleSnapshot(sessionId, session.sessionRevision ?? 1), tool, instructions };
       this.sessionSnapshots.set(sessionId, entry);
       return entry;
     }
     const nextRevision = Math.max(1, (session?.sessionRevision ?? 0) + 1);
-    return this.CreateAndPersistSnapshots(sessionId, nextRevision);
+    const hadCompleteBundle = this.HasCompleteSessionSnapshot(session) && this.HasCompleteToolBundle(tool, instructions);
+    return this.CreateAndPersistSnapshots(sessionId, nextRevision, hadCompleteBundle ? 'ttl_elapsed' : 'session_created');
   }
 
   /** 空闲时原子重载会话上下文与 Tool 快照；任一步失败保留旧快照。 */
@@ -485,12 +573,7 @@ export class AgentHost {
     const current = this.sessionSnapshots.get(sessionId) ?? await this.LoadOrCreateSnapshots(sessionId);
     const nextRevision = (current.session?.sessionRevision ?? 0) + 1;
     try {
-      const session = await this.modules.contextBuilder.BuildSessionContextSnapshot(sessionId, nextRevision);
-      const module = this.BuildModuleSnapshot(sessionId, nextRevision);
-      const tool = this.BuildToolSnapshot(sessionId, nextRevision);
-      this.sessionSnapshots.set(sessionId, { session, module, tool });
-      await this.business?.SetConversationSnapshots?.(sessionId, { sessionSnapshotJson: JSON.stringify(session), toolSnapshotJson: JSON.stringify({ module, tool }) });
-      this.sessionReloadNotices.set(sessionId, current.session?.snapshotId ?? 'unknown');
+      const { session } = await this.CreateAndPersistSnapshots(sessionId, nextRevision, 'user_reload');
       return { reloaded: true, sessionRevision: session.sessionRevision };
     } catch (error) {
       return { reloaded: false, reason: error instanceof Error ? error.message : 'reload failed' };
@@ -507,7 +590,7 @@ export class AgentHost {
     if (!status.configured) throw new Error('API Key is not configured.');
     const model = this.modules.modelProvider.ResolveRequestModel(input?.model);
     if (this.controllers.has(requestId)) throw new Error('The request is already running.');
-    const confirmationMode = input?.confirmationMode === '无需确认' ? '无需确认' as const : '需要确认' as const;
+    const confirmationMode = NormalizeConfirmationMode(input?.confirmationMode);
     const attachments = Array.isArray(input?.attachments) ? input.attachments.slice(0, 10).map((attachment: any) => ({
       name: String(attachment?.name ?? '').slice(0, 200), path: String(attachment?.path ?? '').slice(0, 1000),
     })).filter((attachment: any) => attachment.name && attachment.path) : [];
@@ -517,30 +600,38 @@ export class AgentHost {
     const profiles = (await this.business?.GetProfiles?.())?.items ?? [];
     const resumeSnapshot = resumeId ? (await this.resumeReadPort.ReadCurrent(resumeId)) ?? null : null;
     const resumeEditing = resumeId ? this.resumePort.IsUserEditing(resumeId) : false;
-    const runtimeContext = { confirmationMode, resumeEditing, resume: resumeSnapshot, profiles, attachments, projectId };
+    const runtimeContext = { resumeEditing, resume: resumeSnapshot, profiles, attachments, projectId };
+    const history = this.histories.get(sessionId) || [];
+    const snapshot = this.modules.contextBuilder.CreateDynamicSnapshot(sessionId, runtimeContext);
+    const baseRequestHistory = snapshot.changed ? [...history, snapshot.message] : history;
+    const usesDeepSeekVision = status.provider === 'DeepSeek' && model === DeepSeekVisionModel;
+    const resolveAttachment = (uri: string) => this.business?.ResolveAttachmentUri?.(uri) ?? Promise.resolve(null);
+    const requestHistory: AgentMessage[] = usesDeepSeekVision
+      ? await Promise.all(baseRequestHistory.map((message: AgentMessage) => HydrateVisionMessage(message, resolveAttachment)))
+      : baseRequestHistory;
+    const userMessage = usesDeepSeekVision
+      ? await CreateVisionUserMessage(userContent, attachments, resolveAttachment)
+      : { role: 'user' as const, content: userContent };
     const controller = new AbortController();
     this.modules.observability.RecordLog('INFO', 'conversation.send', `session=${sessionId}`);
     this.modules.observability.StartTrace(requestId, sessionId, model);
-    const history = this.histories.get(sessionId) || [];
-    const snapshot = this.modules.contextBuilder.CreateDynamicSnapshot(sessionId, runtimeContext);
-    const requestHistory = snapshot.changed ? [...history, snapshot.message] : history;
     this.pendingQuestions.delete(sessionId);
     const snapshots = await this.LoadOrCreateSnapshots(sessionId);
-    const activeTools = this.modules.tools.GetToolDefinitions();
+    this.EnsureModuleSnapshotCompatible(snapshots.module);
+    const activeTools = this.HydrateToolSnapshot(snapshots.tool);
     const activeToolNames = activeTools.map((tool: any) => tool.definition.function.name);
     const missingScenarioTools = DefaultScenario.toolNames.filter((name) => !activeToolNames.includes(name));
     const unexpectedTools = activeToolNames.filter((name: string) => !DefaultScenario.toolNames.includes(name));
     if (missingScenarioTools.length || unexpectedTools.length) {
       throw new Error(`Active tool registry does not match the default scenario: missing=${missingScenarioTools.join(',') || 'none'}; unexpected=${unexpectedTools.join(',') || 'none'}.`);
     }
-    const toolPolicyHash = createHash('sha256').update(JSON.stringify(activeTools.map((tool: any) => tool.definition))).digest('hex');
     const { contextLimit, threshold } = this.modules.modelProvider.GetRuntimeLimits();
     const runSnapshot = CreateRunSnapshot({
       snapshotId: randomUUID(),
       sessionId,
       sessionRevision: snapshots.session.sessionRevision,
       scenario: DefaultScenario,
-      instructions: BuildDefaultCompiledInstructions(toolPolicyHash),
+      instructions: snapshots.instructions,
       tools: activeTools,
       dataScope: {
         ...(projectId ? { projectId } : {}),
@@ -565,16 +656,11 @@ export class AgentHost {
       this.runSnapshots.delete(oldestRunId);
     }
     this.SaveState();
-    let contextContent = this.modules.contextBuilder.SerializeSessionContext(snapshots.session);
-    const reloadNotice = this.sessionReloadNotices.get(sessionId);
-    if (reloadNotice) {
-      contextContent += `<system-reminder type="snapshot-replaced" replaces-snapshot-id="${reloadNotice}" snapshot-id="${snapshots.session.snapshotId}" session-revision="${snapshots.session.sessionRevision}">Session context and tool snapshots were atomically reloaded.</system-reminder>`;
-      this.sessionReloadNotices.delete(sessionId);
-    }
+    const contextContent = this.modules.contextBuilder.SerializeSessionContext(snapshots.session);
     const systemPrompt = ScrubTraceContent(contextContent);
-    const userMessage = ScrubTraceContent(userContent);
+    const tracedUserMessage = ScrubTraceContent(userContent);
     this.modules.observability.AppendTraceEvent(requestId, 'system_prompt', { content: systemPrompt }, EstimateTraceTokens(systemPrompt));
-    this.modules.observability.AppendTraceEvent(requestId, 'user_message', { content: userMessage }, EstimateTraceTokens(userMessage));
+    this.modules.observability.AppendTraceEvent(requestId, 'user_message', { content: tracedUserMessage }, EstimateTraceTokens(tracedUserMessage));
     const sessionTasks = this.tasks.get(sessionId) ?? new Map();
     this.tasks.set(sessionId, sessionTasks);
     const toolContext = {
@@ -608,22 +694,30 @@ export class AgentHost {
       emit: (event: unknown) => this.Emit(event),
       persistSessionState: () => this.SaveState(),
     };
+    const runtimeControl = { confirmationMode, toolContext };
+    this.runtimeControls.set(requestId, runtimeControl);
     this.controllers.set(requestId, controller);
     try {
       let modelRequestCompleted = false;
       const result = await RunAgentLoop({
         requestId, sessionId, model: runSnapshot.provider.model,
-        systemContext: contextContent, requestHistory, userContent,
+        systemContext: contextContent, requestHistory, userContent, userMessage,
         histories: this.histories,
         toolArray: runSnapshot.tools,
         modules: this.modules, toolContext,
         emit: (event: unknown) => this.Emit(event),
-        signal: controller.signal, maxTurns: 8,
+        signal: controller.signal, maxTurns: runSnapshot.scenario.budgets?.maxModelTurns ?? 30,
+        runtimeReminder: {
+          confirmationMode,
+          getConfirmationMode: () => runtimeControl.confirmationMode,
+          interval: runSnapshot.scenario.id === 'application' ? 10 : 5,
+          timeZone: RuntimeTimeZone,
+        },
         contextLimit, thresholdPercent: threshold,
         createId: () => randomUUID(),
         scenario: runSnapshot.scenario,
         instructions: runSnapshot.instructions,
-        onModelUsage: (usage: any) => { modelRequestCompleted = true; this.RecordSessionUsage(requestId, sessionId, usage, contextLimit, threshold); },
+        onModelUsage: (usage) => { modelRequestCompleted = true; this.RecordSessionUsage(requestId, sessionId, usage, contextLimit, threshold); },
       });
       this.compressionCount += result.compressionCount;
       const currentUsage = this.sessionUsage.get(sessionId);
@@ -645,6 +739,7 @@ export class AgentHost {
       throw error;
     } finally {
       this.controllers.delete(requestId);
+      this.runtimeControls.delete(requestId);
     }
   }
 

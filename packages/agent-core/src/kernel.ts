@@ -1,5 +1,5 @@
-import type { AgentMessage, KernelRunInput, KernelRunResult, RunDisposition, ToolCallFragment, ToolDisposition, ToolExecutionResult } from '@offerget/agent-sdk';
-import { KeepRecentTurnGroups } from '@offerget/agent-sdk';
+import type { AgentMessage, KernelRunInput, KernelRunResult, ModelUsage, ProviderUsageFact, RunDisposition, ToolCallFragment, ToolDisposition, ToolExecutionResult } from '@offerget/agent-sdk';
+import { CreateRuntimeReminderMessage, ShouldInjectRuntimeReminder } from './runtime-reminder';
 
 /** 从 Trace 正文中移除常见密钥、Authorization 凭据和绝对路径；纯函数，供内核事件脱敏。 */
 export function ScrubTraceContent(value: unknown): string {
@@ -21,15 +21,26 @@ function EstimateTraceTokens(value: unknown): number {
   return Math.max(1, Math.ceil(units));
 }
 
-/** 提取不含 system 消息的 transcript，并按完整 TurnGroup 保留最近 5 轮，避免拆开工具链。 */
+/** 提取不含 system 消息的完整 append-only transcript；只有显式压缩可以改变历史前缀。 */
 function HistorySnapshot(transcript: AgentMessage[]): AgentMessage[] {
-  return KeepRecentTurnGroups(transcript.filter((message) => message.role !== 'system'), 5);
+  return transcript.filter((message) => message.role !== 'system').map(({ providerContent: _providerContent, ...message }) => message);
 }
 
 /** 取消是硬边界：Provider 或工具即使忽略 AbortSignal 迟到返回，也不得继续产生 Usage、历史或副作用。 */
 function ThrowIfRunCancelled(signal: KernelRunInput['signal']): void {
   if (!signal.aborted) return;
   throw signal.reason instanceof Error ? signal.reason : new Error('Agent run was cancelled.');
+}
+
+/** 将 Provider 模块边界的可选 usage 转为唯一事实；无效或缺失时显式 unavailable，禁止估算。 */
+function CreateProviderUsageFact(usage: ModelUsage | undefined): ProviderUsageFact {
+  if (!usage
+    || ![usage.promptTokens, usage.completionTokens, usage.totalTokens]
+      .every((value) => Number.isSafeInteger(value) && value >= 0)
+    || usage.totalTokens !== usage.promptTokens + usage.completionTokens) {
+    return { source: 'unavailable', promptTokens: 0, completionTokens: 0, totalTokens: 0 };
+  }
+  return { source: 'provider', promptTokens: usage.promptTokens, completionTokens: usage.completionTokens, totalTokens: usage.totalTokens };
 }
 
 /** 从工具结果解析统一 disposition；优先读取结构化字段，其次兼容旧 payload 标记。 */
@@ -62,6 +73,16 @@ function CreateToolNotAllowedResult(call: ToolCallFragment): ToolExecutionResult
   };
 }
 
+/** 最后一轮仍返回工具调用时构造协议完整的拒绝结果，但绝不进入工具模块。 */
+function CreateTurnBudgetExhaustedResult(call: ToolCallFragment): ToolExecutionResult {
+  return {
+    role: 'tool',
+    tool_call_id: call.id,
+    content: JSON.stringify({ ok: false, code: 'TURN_BUDGET_EXHAUSTED', message: 'The final model turn cannot start new tool calls.' }),
+    disposition: 'pause',
+  };
+}
+
 /** 按真实用户轮次压缩早期历史；重试循环内置 3 次熔断，全部失败抛出压缩错误（宿主据此传播）。 */
 async function CompressIfNeeded(input: KernelRunInput, history: AgentMessage[], onCompressed: () => void): Promise<AgentMessage[]> {
   const { modules, toolArray } = input;
@@ -69,7 +90,7 @@ async function CompressIfNeeded(input: KernelRunInput, history: AgentMessage[], 
   const estimate = modules.modelProvider.EstimateTokens({
     system: input.instructions.compiled,
     tools: toolArray,
-    messages: [...history, { role: 'user', content: input.userContent }],
+    messages: [...history, input.userMessage ?? { role: 'user', content: input.userContent }],
   });
   if (!modules.compaction.ShouldCompact(estimate, contextLimit, threshold)) return history;
   let candidate = history;
@@ -84,9 +105,9 @@ async function CompressIfNeeded(input: KernelRunInput, history: AgentMessage[], 
       }
       const summary = await modules.modelProvider.CreateSummary(input.model, earlier);
       ThrowIfRunCancelled(input.signal);
-      input.onModelUsage?.(summary.usage);
+      input.onModelUsage?.(CreateProviderUsageFact(summary.usage));
       const compacted: AgentMessage[] = [{ role: 'user', content: `<summary summary_id="summary-${input.createId()}">${summary.content}</summary>` }, ...recent];
-      input.histories.set(input.sessionId, compacted);
+      input.histories.set(input.sessionId, HistorySnapshot(compacted));
       onCompressed();
       modules.observability.AppendTraceEvent(input.requestId, 'context_compressed', { retry, removed: earlier.length });
       modules.observability.RecordLog('INFO', 'context.compressed', `retry=${retry}; removed=${earlier.length}`);
@@ -196,6 +217,8 @@ export async function RunAgentLoop(input: KernelRunInput): Promise<KernelRunResu
   let assistantContent = '';
   let reasoningContent = '';
   let turn = 0;
+  let reminderRevision = 0;
+  let lastReminderConfirmationMode = input.runtimeReminder.confirmationMode;
   let toolCallCount = 0;
   const maxTurns = input.scenario?.budgets?.maxModelTurns ?? input.maxTurns;
   const maxToolCalls = input.scenario?.budgets?.maxToolCalls ?? 12;
@@ -203,7 +226,7 @@ export async function RunAgentLoop(input: KernelRunInput): Promise<KernelRunResu
   try {
     // 压缩熔断错误进入 catch，统一 FinishTrace/emit error（旧实现压缩在 try 外，抛错会跳过 Trace 收尾导致 running 幽灵 Trace）。
     requestHistory = await CompressIfNeeded(input, input.requestHistory, () => { compressionCount += 1; });
-    transcript = [{ role: 'system', content: input.systemContext }, ...requestHistory, { role: 'user', content: input.userContent }];
+    transcript = [{ role: 'system', content: input.systemContext }, ...requestHistory, input.userMessage ?? { role: 'user', content: input.userContent }];
     inputTokens = modules.modelProvider.EstimateTokens({ system: input.instructions.compiled, tools: input.toolArray, messages: transcript });
     while (true) {
       // 取消不经循环顶部轮询：模型流经 signal 中止抛错，由 catch 统一 FinishTrace 并 emit cancelled。
@@ -213,6 +236,30 @@ export async function RunAgentLoop(input: KernelRunInput): Promise<KernelRunResu
         modules.observability.FinishTrace(requestId, 'circuit_open', 'Circuit opened: iteration_limit. Transcript preserved for automatic recovery.');
         emit({ type: 'error', requestId, message: '本轮迭代达到上限，已暂停；会话上下文与历史已保留，可继续提问' });
         return { outcome: 'circuit_open', disposition: 'paused', reason: 'iteration_limit', transcript: HistorySnapshot(transcript), inputTokens, compressionCount };
+      }
+      const finalTurn = turn === maxTurns - 1;
+      const currentConfirmationMode = input.runtimeReminder.getConfirmationMode?.() ?? input.runtimeReminder.confirmationMode;
+      const confirmationChanged = currentConfirmationMode !== lastReminderConfirmationMode;
+      if (ShouldInjectRuntimeReminder(turn, maxTurns, input.runtimeReminder.interval, confirmationChanged)) {
+        reminderRevision += 1;
+        const reminder = CreateRuntimeReminderMessage({
+          now: input.runtimeReminder.now?.() ?? Date.now(),
+          timeZone: input.runtimeReminder.timeZone,
+          usedTurns: turn,
+          maxTurns,
+          confirmationMode: currentConfirmationMode,
+          finalTurn,
+        }, reminderRevision);
+        transcript = [...transcript, reminder];
+        modules.observability.AppendTraceEvent(requestId, 'runtime_reminder', {
+          reminderRevision,
+          injectedAtTurn: turn,
+          maxTurns,
+          remainingTurns: maxTurns - turn,
+          confirmationMode: currentConfirmationMode,
+          finalTurn,
+        });
+        lastReminderConfirmationMode = currentConfirmationMode;
       }
       turn += 1;
       modules.observability.AppendTraceEvent(requestId, 'loop_turn', { turn });
@@ -232,7 +279,7 @@ export async function RunAgentLoop(input: KernelRunInput): Promise<KernelRunResu
         },
       }).finally(() => { acceptsProviderDelta = false; });
       ThrowIfRunCancelled(signal);
-      input.onModelUsage?.(completion.usage);
+      input.onModelUsage?.(CreateProviderUsageFact(completion.usage));
       const assistantMessage: AgentMessage = {
         role: 'assistant',
         content: completion.content,
@@ -241,6 +288,14 @@ export async function RunAgentLoop(input: KernelRunInput): Promise<KernelRunResu
       };
       transcript = [...transcript, assistantMessage];
       if (!completion.toolCalls.length) break;
+      if (finalTurn) {
+        transcript = [...transcript, ...completion.toolCalls.map(CreateTurnBudgetExhaustedResult)];
+        input.histories.set(input.sessionId, HistorySnapshot(transcript));
+        modules.observability.RecordLog('WARN', 'conversation.circuit_open', 'iteration_limit');
+        modules.observability.FinishTrace(requestId, 'circuit_open', 'Final model turn attempted new tool calls.');
+        emit({ type: 'error', requestId, message: '本轮模型轮数已用尽，最后一轮的新工具调用未执行；上下文已保存，可继续提问' });
+        return { outcome: 'circuit_open', disposition: 'paused', reason: 'iteration_limit', transcript: HistorySnapshot(transcript), inputTokens, compressionCount };
+      }
       toolCallCount += completion.toolCalls.length;
       if (toolCallCount > maxToolCalls) {
         input.histories.set(input.sessionId, HistorySnapshot(transcript));

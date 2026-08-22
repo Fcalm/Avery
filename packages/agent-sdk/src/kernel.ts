@@ -1,7 +1,7 @@
 import type { AgentStreamEvent } from './events';
 import type { AgentModules } from './modules';
 import type { RegisteredAgentTool, ToolContext } from './tools';
-import type { AgentMessage, CompiledInstructions, ModelUsage, RunDisposition, ScenarioSnapshot } from './types';
+import type { AgentMessage, CompiledInstructions, ConfirmationMode, ProviderUsageFact, RunDisposition, ScenarioSnapshot } from './types';
 
 /** Kernel 单轮运行输入：全部业务态（历史、任务、交互）经参数与上下文注入，Kernel 自身不持持久化。 */
 export interface KernelRunInput {
@@ -14,6 +14,8 @@ export interface KernelRunInput {
   /** 已含动态快照消息的请求历史；Kernel 压缩后以此为基构建完整 transcript。 */
   requestHistory: AgentMessage[];
   userContent: string;
+  /** 可选的多模态用户消息；缺省时 Kernel 仍按 userContent 构造纯文本消息。 */
+  userMessage?: AgentMessage;
   /** 会话 Transcript 表：宿主持有的 Map 引用；压缩与落库由 Kernel 更新。 */
   histories: Map<string, AgentMessage[]>;
   /** 本次请求的工具数组（来自会话 Tool 快照顺序）。 */
@@ -21,8 +23,8 @@ export interface KernelRunInput {
   modules: AgentModules;
   toolContext: ToolContext;
   emit: (event: AgentStreamEvent) => void;
-  /** 每次模型请求完成时通知宿主；`undefined` 表示 Provider 未返回 usage，宿主不得估算替代。 */
-  onModelUsage?: (usage: ModelUsage | undefined) => void;
+  /** 每次模型请求完成时通知宿主；Provider 未返回完整 usage 时必须显式传 unavailable，宿主不得估算替代。 */
+  onModelUsage?: (usage: ProviderUsageFact) => void;
   signal: AbortSignal;
   maxTurns: number;
   contextLimit: number;
@@ -33,6 +35,15 @@ export interface KernelRunInput {
   scenario: ScenarioSnapshot;
   /** 运行前编译的 Prompt 指令；Provider 不再自行选择业务 Prompt。 */
   instructions: CompiledInstructions;
+  /** 由 Kernel 追加的 user 角色运行状态栏；旧提醒保持 append-only。 */
+  runtimeReminder: {
+    confirmationMode: ConfirmationMode;
+    /** 权限可由宿主在 Run 进行中切换；Kernel 只在轮次边界读取。 */
+    getConfirmationMode?: () => ConfirmationMode;
+    interval: number;
+    timeZone: string;
+    now?: () => number;
+  };
 }
 
 /** Kernel 单轮运行结果：宿主据 outcome 决定事件与错误传播语义。 */

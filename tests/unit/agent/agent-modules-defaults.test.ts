@@ -4,7 +4,7 @@ import { CreateCompactionModule } from '../../../packages/agent-modules-defaults
 import { CreateContextBuilderModule } from '../../../packages/agent-modules-defaults/src/context';
 import { CreateInteractionModule } from '../../../packages/agent-modules-defaults/src/interaction';
 import { CreateObservabilityModule } from '../../../packages/agent-modules-defaults/src/observability';
-import { BuildDefaultCompiledInstructions, BuildDefaultPromptFragments, DefaultScenario } from '../../../packages/agent-modules-defaults/src/prompts';
+import { ApplicationScenarioPlaceholder, BuildDefaultCompiledInstructions, BuildDefaultPromptFragments, DefaultScenario } from '../../../packages/agent-modules-defaults/src/prompts';
 import { CreateToolsModule } from '../../../packages/agent-modules-defaults/src/tools';
 import type { AgentDefaultPorts } from '../../../packages/agent-modules-defaults/src/ports';
 import { CreateToolContext } from './test-helpers';
@@ -37,6 +37,9 @@ describe('agent-modules-defaults', () => {
     expect(names).toHaveLength(12);
     expect(names.every((name) => /^[A-Z][A-Za-z0-9]{0,63}$/.test(name))).toBe(true);
     expect(names).not.toEqual(expect.arrayContaining(['SearchJobs', 'ReadUrl', 'Shell', 'Browser', 'SubmitApplication']));
+    expect(DefaultScenario.budgets?.maxModelTurns).toBe(30);
+    expect(ApplicationScenarioPlaceholder.budgets?.maxModelTurns).toBe(100);
+    expect(ApplicationScenarioPlaceholder.enabled).toBe(false);
   });
 
   it('工具模块拒绝直接猜测未启用的网络工具名', async () => {
@@ -67,10 +70,16 @@ describe('agent-modules-defaults', () => {
     const context = CreateContextBuilderModule(CreatePorts({
       getStoredSettings: vi.fn(async () => ({ customContext: '<script>ignore</script> & facts' })),
     }));
-    const snapshot = await context.BuildSessionContextSnapshot('session-1', 4);
+    const now = Date.UTC(2026, 7, 22, 2, 8);
+    const snapshot = await context.BuildSessionContextSnapshot('session-1', 4, { now, ttlMs: 24 * 60 * 60 * 1000, refreshReason: 'session_created' });
     const serialized = context.SerializeSessionContext(snapshot);
 
     expect(snapshot.sessionRevision).toBe(4);
+    expect(snapshot.createdAt).toBe(new Date(now).toISOString());
+    expect(snapshot.expiresAt).toBe(new Date(now + 24 * 60 * 60 * 1000).toISOString());
+    expect(snapshot.refreshReason).toBe('session_created');
+    expect(snapshot.compiledHash).toMatch(/^[a-f0-9]{64}$/);
+    expect(serialized).toBe(snapshot.compiledPrefix);
     expect(snapshot.sources[0].contentHash).toMatch(/^[a-f0-9]{64}$/);
     expect(serialized).toContain('&lt;script&gt;ignore&lt;/script&gt; &amp; facts');
     expect(serialized).not.toContain('<script>');
@@ -103,7 +112,7 @@ describe('agent-modules-defaults', () => {
     const release = vi.fn(async () => undefined);
     const save = vi.fn(async () => ({ id: 'resume-1', revision: 8 }));
     const context = CreateToolContext({
-      confirmationMode: '需要确认',
+      confirmationMode: 'always_confirm',
       resumeSnapshot: { id: 'resume-1', name: '简历', content: '旧内容', updatedAt: '', revision: 7 },
       ports: {
         ...CreateToolContext().ports,
@@ -198,7 +207,7 @@ describe('agent-modules-defaults', () => {
   it('含【待确认】的简历草稿即使在无需确认模式也等待文本确认且不得直接写入', async () => {
     const save = vi.fn(async () => ({ id: 'resume-1', revision: 8 }));
     const context = CreateToolContext({
-      confirmationMode: '无需确认',
+      confirmationMode: 'fully_trusted',
       resumeSnapshot: { id: 'resume-1', name: '简历', content: '旧内容', updatedAt: '', revision: 7 },
       ports: {
         ...CreateToolContext().ports,
@@ -223,8 +232,11 @@ describe('agent-modules-defaults', () => {
 
   it('Provider 使用编译后的 Prompt、解析流式正文，并只接受服务端真实 usage', async () => {
     const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
-      const body = JSON.parse(String(init?.body)) as { messages: Array<{ role: string; content: string }> };
+      const body = JSON.parse(String(init?.body)) as { messages: Array<{ role: string; content: string; metadata?: unknown }>; stream_options?: { include_usage?: boolean } };
       expect(body.messages[0]).toEqual({ role: 'system', content: 'compiled prompt' });
+      expect(body.messages[1]).toEqual({ role: 'user', content: 'runtime status' });
+      expect(body.messages[1]).not.toHaveProperty('metadata');
+      expect(body.stream_options).toEqual({ include_usage: true });
       return SseResponse([
         { choices: [{ delta: { content: 'hello ' } }] },
         { choices: [{ delta: { reasoning_content: 'reason' } }] },
@@ -239,13 +251,88 @@ describe('agent-modules-defaults', () => {
     const deltas: Array<{ reasoning: string; content: string }> = [];
 
     const result = await provider.StreamCompletion({
-      requestId: 'request-1', model: 'deepseek-v4-flash', history: [], tools: [], signal: new AbortController().signal,
+      requestId: 'request-1', model: 'deepseek-v4-flash', history: [{ role: 'user', content: 'runtime status', metadata: { source: 'runtime', visibility: 'hidden', kind: 'runtime_reminder', reminderRevision: 1, injectedAtTurn: 0 } }], tools: [], signal: new AbortController().signal,
       instructions: { ...BuildDefaultCompiledInstructions(), compiled: 'compiled prompt' },
       onDelta: (delta) => deltas.push(delta),
     });
 
     expect(result).toMatchObject({ content: 'hello ', reasoningContent: 'reason', usage: { promptTokens: 11, completionTokens: 7, totalTokens: 18 } });
     expect(deltas).toEqual([{ reasoning: '', content: 'hello ' }, { reasoning: 'reason', content: '' }]);
+  });
+
+  it('Provider 按 DeepSeek 官方协议发送视觉内容块且不透传宿主附件元数据', async () => {
+    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as { messages: Array<Record<string, unknown>> };
+      expect(body.messages[1]).toEqual({
+        role: 'user',
+        content: [
+          { type: 'text', text: '识别图片' },
+          { type: 'image_url', image_url: { url: 'data:image/png;base64,iVBORw0KGgo=', detail: 'auto' } },
+        ],
+      });
+      expect(body.messages[1]).not.toHaveProperty('providerContent');
+      expect(body.messages[1]).not.toHaveProperty('imageAttachments');
+      return SseResponse([{ choices: [{ delta: { content: '图片内容' } }] }, '[DONE]']);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    vi.resetModules();
+    const { CreateProviderModule } = await import('../../../packages/agent-modules-defaults/src/provider');
+    const provider = CreateProviderModule(CreatePorts());
+
+    const result = await provider.StreamCompletion({
+      requestId: 'request-vision', model: 'deepseek-v4-flash-vision-exp', tools: [], signal: new AbortController().signal,
+      history: [{
+        role: 'user', content: '识别图片',
+        imageAttachments: [{ uri: 'attachment://image/test.png', mimeType: 'image/png', detail: 'auto' }],
+        providerContent: [
+          { type: 'text', text: '识别图片' },
+          { type: 'image_url', image_url: { url: 'data:image/png;base64,iVBORw0KGgo=', detail: 'auto' } },
+        ],
+      }],
+      instructions: BuildDefaultCompiledInstructions(), onDelta: vi.fn(),
+    });
+
+    expect(result.content).toBe('图片内容');
+  });
+
+  it('视觉 token 估算不按 Base64 字符长度误触发文本压缩', async () => {
+    vi.resetModules();
+    const { CreateProviderModule } = await import('../../../packages/agent-modules-defaults/src/provider');
+    const provider = CreateProviderModule(CreatePorts());
+    const base64 = 'A'.repeat(1024 * 1024);
+
+    const estimate = provider.EstimateTokens({ messages: [{
+      role: 'user', content: '识别', providerContent: [
+        { type: 'text', text: '识别' },
+        { type: 'image_url', image_url: { url: `data:image/png;base64,${base64}`, detail: 'auto' } },
+      ],
+    }] });
+
+    expect(estimate).toBeGreaterThanOrEqual(384);
+    expect(estimate).toBeLessThan(1_000);
+  });
+
+  it('DeepSeek 终止 choice 携带 usage 时接受真实数值且不产生空正文增量', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => SseResponse([
+      { choices: [{ delta: { content: '完成', role: 'assistant' }, finish_reason: null, index: 0 }], usage: null },
+      {
+        choices: [{ delta: { content: '', role: null }, finish_reason: 'stop', index: 0 }],
+        usage: { prompt_tokens: 11, completion_tokens: 7, total_tokens: 18 },
+      },
+      '[DONE]',
+    ])));
+    vi.resetModules();
+    const { CreateProviderModule } = await import('../../../packages/agent-modules-defaults/src/provider');
+    const provider = CreateProviderModule(CreatePorts());
+    const onDelta = vi.fn();
+
+    const result = await provider.StreamCompletion({
+      requestId: 'request-terminal-usage', model: 'deepseek-v4-flash', history: [], tools: [], signal: new AbortController().signal,
+      instructions: BuildDefaultCompiledInstructions(), onDelta,
+    });
+
+    expect(result).toMatchObject({ content: '完成', usage: { promptTokens: 11, completionTokens: 7, totalTokens: 18 } });
+    expect(onDelta).toHaveBeenCalledOnce();
   });
 
   it('Provider 缺失 usage 时保持 undefined，不用本地估算冒充', async () => {
@@ -261,6 +348,55 @@ describe('agent-modules-defaults', () => {
     });
 
     expect(result.usage).toBeUndefined();
+  });
+
+  it.each([
+    ['数字字符串', { prompt_tokens: '11', completion_tokens: '7', total_tokens: '18' }],
+    ['null 字段', { prompt_tokens: null, completion_tokens: 7, total_tokens: 7 }],
+    ['总数不等于输入输出之和', { prompt_tokens: 11, completion_tokens: 7, total_tokens: 19 }],
+  ])('Provider 拒绝%s usage，不把协议异常冒充为真实值', async (_name, usage) => {
+    vi.stubGlobal('fetch', vi.fn(async () => SseResponse([{ choices: [], usage }, '[DONE]'])));
+    vi.resetModules();
+    const { CreateProviderModule } = await import('../../../packages/agent-modules-defaults/src/provider');
+    const provider = CreateProviderModule(CreatePorts());
+
+    const result = await provider.StreamCompletion({
+      requestId: 'request-invalid-usage', model: 'deepseek-v4-flash', history: [], tools: [], signal: new AbortController().signal,
+      instructions: BuildDefaultCompiledInstructions(), onDelta: vi.fn(),
+    });
+
+    expect(result.usage).toBeUndefined();
+  });
+
+  it('DeepSeek 流出现两个非空 usage 块时按协议错误失败，不取最后一个覆盖', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => SseResponse([
+      { choices: [], usage: { prompt_tokens: 11, completion_tokens: 7, total_tokens: 18 } },
+      { choices: [], usage: { prompt_tokens: 12, completion_tokens: 8, total_tokens: 20 } },
+      '[DONE]',
+    ])));
+    vi.resetModules();
+    const { CreateProviderModule } = await import('../../../packages/agent-modules-defaults/src/provider');
+    const provider = CreateProviderModule(CreatePorts());
+
+    await expect(provider.StreamCompletion({
+      requestId: 'request-duplicate-usage', model: 'deepseek-v4-flash', history: [], tools: [], signal: new AbortController().signal,
+      instructions: BuildDefaultCompiledInstructions(), onDelta: vi.fn(),
+    })).rejects.toThrow(/PROTOCOL_DUPLICATE_USAGE/);
+  });
+
+  it('DeepSeek usage 不得与真实正文或工具增量混在同一块', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => SseResponse([
+      { choices: [{ delta: { content: 'unexpected' }, finish_reason: 'stop', index: 0 }], usage: { prompt_tokens: 11, completion_tokens: 7, total_tokens: 18 } },
+      '[DONE]',
+    ])));
+    vi.resetModules();
+    const { CreateProviderModule } = await import('../../../packages/agent-modules-defaults/src/provider');
+    const provider = CreateProviderModule(CreatePorts());
+
+    await expect(provider.StreamCompletion({
+      requestId: 'request-invalid-usage-chunk', model: 'deepseek-v4-flash', history: [], tools: [], signal: new AbortController().signal,
+      instructions: BuildDefaultCompiledInstructions(), onDelta: vi.fn(),
+    })).rejects.toThrow(/PROTOCOL_INVALID_USAGE_CHUNK/);
   });
 
   it('畸形 SSE 数据块显式失败，不静默忽略', async () => {

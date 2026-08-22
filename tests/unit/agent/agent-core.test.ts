@@ -15,11 +15,31 @@ describe('agent-core RunAgentLoop', () => {
 
     expect(result.outcome).toBe('completed');
     expect(result.disposition).toBe('completed');
-    expect(harness.usages).toEqual([undefined]);
+    expect(harness.usages).toEqual([{ source: 'unavailable', promptTokens: 0, completionTokens: 0, totalTokens: 0 }]);
     expect(harness.events.map((event) => event.type)).toEqual(['content_delta', 'completed']);
     expect(harness.events).not.toContainEqual(expect.objectContaining({ type: 'cancelled' }));
     expect(harness.trace.finish).toHaveBeenCalledOnce();
     expect(harness.trace.finish).toHaveBeenCalledWith('request-1', 'completed', expect.any(String));
+  });
+
+  it('把 Provider 返回的真实 usage 规范化为唯一 provider 事实', async () => {
+    const harness = CreateKernelHarness({
+      completions: [{ content: '完成', toolCalls: [], usage: { promptTokens: 11, completionTokens: 7, totalTokens: 18 } }],
+    });
+
+    await RunAgentLoop(harness.input);
+
+    expect(harness.usages).toEqual([{ source: 'provider', promptTokens: 11, completionTokens: 7, totalTokens: 18 }]);
+  });
+
+  it('自定义 Provider 越过 Adapter 返回矛盾 usage 时仍降级为 unavailable', async () => {
+    const harness = CreateKernelHarness({
+      completions: [{ content: '完成', toolCalls: [], usage: { promptTokens: 11, completionTokens: 7, totalTokens: 19 } }],
+    });
+
+    await RunAgentLoop(harness.input);
+
+    expect(harness.usages).toEqual([{ source: 'unavailable', promptTokens: 0, completionTokens: 0, totalTokens: 0 }]);
   });
 
   it('工具进入等待状态后停止请求模型，并跳过批次中的后续工具', async () => {
@@ -175,6 +195,29 @@ describe('agent-core RunAgentLoop', () => {
     expect(harness.trace.finish).toHaveBeenCalledWith('request-1', 'cancelled', 'Cancelled by user.');
   });
 
+  it('多模态用户消息进入 Provider，但历史快照只保留受控附件引用', async () => {
+    const streamCompletion = vi.fn(async ({ history }) => {
+      const message = history.find((item) => item.content === '识别图片');
+      expect(message?.providerContent?.[1]).toMatchObject({ type: 'image_url' });
+      return { content: 'identified', toolCalls: [] };
+    });
+    const harness = CreateKernelHarness({ streamCompletion });
+    harness.input.userMessage = {
+      role: 'user', content: '识别图片',
+      imageAttachments: [{ uri: 'attachment://image/test.png', mimeType: 'image/png', detail: 'auto' }],
+      providerContent: [
+        { type: 'text', text: '识别图片' },
+        { type: 'image_url', image_url: { url: 'data:image/png;base64,iVBORw0KGgo=', detail: 'auto' } },
+      ],
+    };
+
+    const result = await RunAgentLoop(harness.input);
+    const storedUserMessage = result.transcript.find((message) => message.content === '识别图片');
+
+    expect(storedUserMessage?.providerContent).toBeUndefined();
+    expect(storedUserMessage?.imageAttachments).toEqual([{ uri: 'attachment://image/test.png', mimeType: 'image/png', detail: 'auto' }]);
+  });
+
   it('压缩连续失败时熔断并记录 circuit_open，不留下 running Trace', async () => {
     const history = [{ role: 'user' as const, content: 'old turn' }, { role: 'assistant' as const, content: 'old answer' }];
     const harness = CreateKernelHarness({
@@ -207,5 +250,79 @@ describe('agent-core RunAgentLoop', () => {
     await RunAgentLoop(harness.input);
 
     expect(execute).not.toHaveBeenCalled();
+  });
+
+  it('运行状态提醒以 user 角色追加且旧提醒在后续轮次保持不变', async () => {
+    const read = CreateRegisteredTool('Read');
+    const histories: Array<Array<{ role: string; content: string; metadata?: { kind?: string; injectedAtTurn?: number } }>> = [];
+    let callIndex = 0;
+    const harness = CreateKernelHarness({
+      tools: [read],
+      streamCompletion: vi.fn(async ({ history }) => {
+        histories.push(history.map((message) => ({ role: message.role, content: message.content, metadata: message.metadata })));
+        callIndex += 1;
+        return callIndex < 6
+          ? { content: '', toolCalls: [ToolCall(`read-${callIndex}`, 'Read')] }
+          : { content: 'done', toolCalls: [] };
+      }),
+    });
+    harness.input.maxTurns = 6;
+    harness.input.scenario.budgets = { maxModelTurns: 6, maxToolCalls: 12 };
+
+    const result = await RunAgentLoop(harness.input);
+
+    expect(result.outcome).toBe('completed');
+    const finalReminders = histories.at(-1)?.filter((message) => message.metadata?.kind === 'runtime_reminder') ?? [];
+    expect(finalReminders).toHaveLength(2);
+    expect(finalReminders.map((message) => message.metadata?.injectedAtTurn)).toEqual([0, 5]);
+    expect(finalReminders.every((message) => message.role === 'user')).toBe(true);
+    expect(histories[0].find((message) => message.metadata?.kind === 'runtime_reminder')?.content).toBe(finalReminders[0].content);
+    expect(finalReminders[1].content).toContain('Do not start new tool calls.');
+  });
+
+  it('确认权限变化时在下一模型轮次追加提醒并更新工具上下文', async () => {
+    const read = CreateRegisteredTool('Read');
+    let mode: 'always_confirm' | 'fully_trusted' = 'always_confirm';
+    let callIndex = 0;
+    const harness = CreateKernelHarness({
+      tools: [read],
+      executeTool: vi.fn(async (call, context) => {
+        mode = 'fully_trusted';
+        context.confirmationMode = mode;
+        return { role: 'tool', tool_call_id: call.id, content: '{"ok":true}' };
+      }),
+      streamCompletion: vi.fn(async () => {
+        callIndex += 1;
+        return callIndex === 1 ? { content: '', toolCalls: [ToolCall('read-1', 'Read')] } : { content: 'done', toolCalls: [] };
+      }),
+    });
+    harness.input.runtimeReminder.confirmationMode = 'always_confirm';
+    harness.input.runtimeReminder.getConfirmationMode = () => mode;
+
+    const result = await RunAgentLoop(harness.input);
+
+    const reminders = result.transcript.filter((message) => message.metadata?.kind === 'runtime_reminder');
+    expect(reminders).toHaveLength(2);
+    expect(reminders[1].content).toContain('Current confirmation mode: fully trusted.');
+    expect(harness.input.toolContext.confirmationMode).toBe('fully_trusted');
+  });
+
+  it('最后一轮返回工具调用时不执行工具并显式暂停', async () => {
+    const write = CreateRegisteredTool('UpdateProfile', { isConcurrencySafe: false, sideEffect: 'local_write' });
+    const execute = vi.fn(async (call: ToolCallFragment) => ({ role: 'tool' as const, tool_call_id: call.id, content: '{"ok":true}' }));
+    const harness = CreateKernelHarness({
+      tools: [write],
+      executeTool: execute,
+      completions: [{ content: '', toolCalls: [ToolCall('write-final', 'UpdateProfile')] }],
+    });
+    harness.input.maxTurns = 1;
+    harness.input.scenario.budgets = { maxModelTurns: 1, maxToolCalls: 12 };
+
+    const result = await RunAgentLoop(harness.input);
+
+    expect(result.outcome).toBe('circuit_open');
+    expect(execute).not.toHaveBeenCalled();
+    expect(result.transcript.at(-1)?.content).toContain('TURN_BUDGET_EXHAUSTED');
+    expect(harness.events.at(-1)).toMatchObject({ type: 'error' });
   });
 });

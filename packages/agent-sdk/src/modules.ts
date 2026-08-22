@@ -16,7 +16,13 @@ export interface SessionContextSnapshot {
   snapshotId: string;
   sessionId: string;
   sessionRevision: number;
+  createdAt: string;
+  expiresAt: string;
+  refreshReason: 'session_created' | 'ttl_elapsed' | 'user_reload';
   sources: SessionContextSource[];
+  /** 字节稳定的会话 system 前缀；同一快照的所有 Run 直接复用，禁止逐请求重新序列化。 */
+  compiledPrefix: string;
+  compiledHash: string;
 }
 
 /** 模型 Provider 槽：配置、连通性、请求级模型解析、流式补全、摘要与规模估算。 */
@@ -49,7 +55,11 @@ export interface ModelProviderModule extends ModuleManifest {
 /** 上下文构建槽：读取业务只读快照并序列化为会话上下文。 */
 export interface ContextBuilderModule extends ModuleManifest {
   slot: 'context-builder';
-  BuildSessionContextSnapshot(sessionId: string, sessionRevision: number): Promise<SessionContextSnapshot>;
+  BuildSessionContextSnapshot(sessionId: string, sessionRevision: number, options?: {
+    now?: number;
+    ttlMs?: number;
+    refreshReason?: SessionContextSnapshot['refreshReason'];
+  }): Promise<SessionContextSnapshot>;
   SerializeSessionContext(snapshot: SessionContextSnapshot): string;
   /** 业务快照变化时返回动态快照消息；否则返回 unchanged。 */
   CreateDynamicSnapshot(sessionId: string, context: RuntimeContext | null): { changed: boolean; message: AgentMessage | null };

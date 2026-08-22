@@ -30,6 +30,9 @@ export type RunDisposition =
 /** 工具结果携带的统一等待/暂停语义；默认 continue。 */
 export type ToolDisposition = 'continue' | 'wait_user_input' | 'wait_confirmation' | 'pause';
 
+/** 用户选择的确认级别；它只改变场景白名单内动作的确认方式，不扩大工具或资源权限。 */
+export type ConfirmationMode = 'always_confirm' | 'allow_low_risk' | 'fully_trusted';
+
 /** 一次 Run 的不可变场景快照；工具白名单、确认策略与预算均来自这里。 */
 export interface ScenarioSnapshot {
   id: string;
@@ -209,9 +212,28 @@ export interface ToolCallFragment {
 export interface AgentMessage {
   role: AgentRole;
   content: string;
+  /** Chat Completions 多模态内容块；仅在 Provider 请求期间存在，不得持久化 Base64 正文。 */
+  providerContent?: Array<
+    | { type: 'text'; text: string }
+    | { type: 'image_url'; image_url: { url: string; detail?: 'low' | 'high' | 'original' | 'auto' } }
+  >;
+  /** 宿主持久化的受控图片引用；请求前重新解析为 providerContent，绝不保存物理路径或 Base64。 */
+  imageAttachments?: Array<{
+    uri: string;
+    mimeType: 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp';
+    detail?: 'low' | 'high' | 'original' | 'auto';
+  }>;
   tool_calls?: ToolCallFragment[];
   tool_call_id?: string;
   reasoning_content?: string;
+  /** 仅供宿主持久化与 Context 编排；Provider Adapter 不得透传该元数据。 */
+  metadata?: {
+    source: 'runtime';
+    visibility: 'hidden';
+    kind: 'runtime_reminder';
+    reminderRevision: number;
+    injectedAtTurn: number;
+  };
 }
 
 /** 流式模型增量：思考正文与回复正文可能各自到达。 */
@@ -324,9 +346,8 @@ export interface AttachmentDescriptor {
   path: string;
 }
 
-/** 归一化后的受限运行时上下文：仅承载确认模式与业务只读快照。 */
+/** 归一化后的受限业务上下文；确认模式只通过 Runtime Reminder 传递。 */
 export interface RuntimeContext {
-  confirmationMode: '需要确认' | '无需确认';
   resumeEditing: boolean;
   resume: ResumeSnapshot | null;
   profiles: ProfileSnapshotItem[];

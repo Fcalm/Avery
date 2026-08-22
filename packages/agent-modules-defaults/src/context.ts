@@ -15,22 +15,37 @@ export function CreateContextBuilderModule(ports: AgentDefaultPorts): ContextBui
     slot: 'context-builder',
     capabilities: ['context'],
     /** 基于用户自定义上下文构建不可变的会话上下文快照。 */
-    async BuildSessionContextSnapshot(sessionId, sessionRevision) {
+    async BuildSessionContextSnapshot(sessionId, sessionRevision, options = {}) {
       const settings = (await ports.getStoredSettings()) ?? {};
       const customContext = typeof settings.customContext === 'string' ? settings.customContext.trim() : '';
       const sources: SessionContextSnapshot['sources'] = [];
       if (customContext) {
         sources.push({ type: 'user-context', name: 'user-context', content: customContext, contentHash: createHash('sha256').update(customContext).digest('hex') });
       }
-      return { snapshotId: randomUUID(), sessionId, sessionRevision, sources };
-    },
-    /** 将会话上下文快照序列化为不计轮次的 system 消息；正文做 XML 转义。 */
-    SerializeSessionContext(session) {
-      const sourcesText = session.sources.map((source) => {
+      const snapshotId = randomUUID();
+      const createdAtMs = options.now ?? Date.now();
+      const createdAt = new Date(createdAtMs).toISOString();
+      const expiresAt = new Date(createdAtMs + (options.ttlMs ?? 24 * 60 * 60 * 1000)).toISOString();
+      const sourcesText = sources.map((source) => {
         const content = source.content.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
         return `# ${source.name}\n${content}`;
       }).join('\n\n');
-      return `<system-reminder type="session-context-snapshot" snapshot-id="${session.snapshotId}" session-revision="${session.sessionRevision}">\n${sourcesText}\n</system-reminder>`;
+      const compiledPrefix = `<system-reminder type="session-context-snapshot" snapshot-id="${snapshotId}" session-revision="${sessionRevision}">\n${sourcesText}\n</system-reminder>`;
+      return {
+        snapshotId,
+        sessionId,
+        sessionRevision,
+        createdAt,
+        expiresAt,
+        refreshReason: options.refreshReason ?? 'session_created',
+        sources,
+        compiledPrefix,
+        compiledHash: createHash('sha256').update(compiledPrefix).digest('hex'),
+      };
+    },
+    /** 直接返回快照内保存的字节稳定 system 前缀，禁止逐请求重新序列化。 */
+    SerializeSessionContext(session) {
+      return session.compiledPrefix;
     },
     /** 仅在业务快照内容变化时，向内部 Transcript 追加稳定格式的动态消息。 */
     CreateDynamicSnapshot(sessionId, context) {

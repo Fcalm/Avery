@@ -1,6 +1,6 @@
 import { vi } from 'vitest';
 import type {
-  AgentMessage, AgentModules, AgentStreamEvent, KernelRunInput, ModelCompletion, ModelUsage,
+  AgentMessage, AgentModules, AgentStreamEvent, KernelRunInput, ModelCompletion, ProviderUsageFact,
   RegisteredAgentTool, ToolCallFragment, ToolContext, ToolExecutionResult,
 } from '../../../packages/agent-sdk/src/index';
 
@@ -31,7 +31,7 @@ export function CreateToolContext(overrides: Partial<ToolContext> = {}): ToolCon
     sessionId: 'session-1',
     requestId: 'request-1',
     runId: 'run-1',
-    confirmationMode: '无需确认',
+    confirmationMode: 'fully_trusted',
     resumeEditing: false,
     projectRoot: null,
     attachments: [],
@@ -74,7 +74,7 @@ export interface KernelHarness {
   input: KernelRunInput;
   modules: AgentModules;
   events: AgentStreamEvent[];
-  usages: Array<ModelUsage | undefined>;
+  usages: ProviderUsageFact[];
   trace: {
     append: ReturnType<typeof vi.fn>;
     finish: ReturnType<typeof vi.fn>;
@@ -97,7 +97,7 @@ export function CreateKernelHarness(options: {
 } = {}): KernelHarness {
   const completions = [...(options.completions ?? [{ content: 'done', toolCalls: [] }])];
   const events: AgentStreamEvent[] = [];
-  const usages: Array<ModelUsage | undefined> = [];
+  const usages: ProviderUsageFact[] = [];
   const trace = { append: vi.fn(), finish: vi.fn(), log: vi.fn() };
   const streamCompletion = options.streamCompletion ?? vi.fn(async ({ onDelta }) => {
     const completion = completions.shift();
@@ -139,6 +139,7 @@ export function CreateKernelHarness(options: {
     observability: {
       packageName: 'test', name: 'test-observability', version: '0.1.0', sdkVersion: '0.1.0', slot: 'observability', capabilities: ['observability'],
       RecordLog: trace.log, StartTrace: vi.fn(), AppendTraceEvent: trace.append, FinishTrace: trace.finish,
+      RecordTraceUsage: vi.fn(),
       GetLogs: vi.fn(), GetTraces: vi.fn(), GetTraceEvents: vi.fn(), DeleteTraces: vi.fn(), SetTraceRetention: vi.fn(), ClearObservability: vi.fn(), SnapshotLocalLogs: vi.fn(() => []),
     },
   } satisfies AgentModules;
@@ -174,6 +175,12 @@ export function CreateKernelHarness(options: {
         toolPolicyHash: 'test-tools', outputContractVersion: 'test', compiledHash: 'test-prompt',
       },
       compiled: 'compiled system prompt',
+    },
+    runtimeReminder: {
+      confirmationMode: 'fully_trusted',
+      interval: 5,
+      timeZone: 'Asia/Shanghai',
+      now: () => Date.UTC(2026, 7, 22, 2, 8),
     },
   };
 

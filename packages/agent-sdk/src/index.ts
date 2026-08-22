@@ -11,7 +11,7 @@ export type {
   ToolContext, ToolLedgerPort, ToolPorts, UrlReadPort,
 } from './tools';
 export type {
-  AgentMessage, AgentRole, AttachmentDescriptor, CompiledInstructions, LogEntry, ModelCapabilities,
+  AgentMessage, AgentRole, AttachmentDescriptor, CompiledInstructions, ConfirmationMode, LogEntry, ModelCapabilities,
   ModelCompletion, ModelDelta, ModelStreamEvent, ModelSummary, ModelUsage, NormalizedUsage, PendingConfirmation,
   PendingInteraction, PendingQuestionInteraction, ProfileSnapshotItem, PromptFragment, PromptManifest,
   ProviderError, ProviderUsageFact, ResumeSnapshot, RunDisposition, RunState, RuntimeContext, ScenarioSnapshot, StructuredRunError,
