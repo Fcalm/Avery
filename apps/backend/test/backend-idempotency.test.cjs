@@ -8,7 +8,7 @@ const { join } = require('node:path');
 const { CreateBackend } = require('../dist/router.js');
 const { IdempotencyStore } = require('../dist/idempotency-store.js');
 const { RegisterGateway } = require('../../desktop/dist/gateway.js');
-const { CreateWriteIntentKeyStore, WriteCommandEnvelopeSchema } = require('../../../packages/contracts/dist/index.js');
+const { BridgeNamespaces, CreateWriteIntentKeyStore, WriteCommandEnvelopeSchema } = require('../../../packages/contracts/dist/index.js');
 
 function createContainer(executions, delayMs = 0) {
   return {
@@ -140,7 +140,7 @@ test('幂等记录写盘失败会报告降级，重启后不承诺回放', async
   }
 });
 
-test('生产 Preload/Gateway 信封透传稳定幂等键，重试使用不同内部 requestId 只执行一次', async () => {
+test('生产 Preload/Gateway 与 Bridge 契约一致，并透传稳定幂等键', async () => {
   const { Module } = require('node:module');
   const originalLoad = Module._load;
   const exposed = new Map();
@@ -162,6 +162,14 @@ test('生产 Preload/Gateway 信封透传稳定幂等键，重试使用不同内
   } finally {
     Module._load = originalLoad;
     delete require.cache[preloadPath];
+  }
+
+  for (const namespace of ['agent', 'workspace']) {
+    assert.deepEqual(
+      Object.keys(exposed.get(`offerget${namespace[0].toUpperCase()}${namespace.slice(1)}`)).sort(),
+      [...BridgeNamespaces[namespace]].sort(),
+      `Preload ${namespace} Bridge 方法必须与 contracts 保持一致`,
+    );
   }
 
   const idempotencyKey = 'idem-production-retry';
