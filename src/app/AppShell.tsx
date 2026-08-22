@@ -12,7 +12,7 @@ import { ASSISTANT_MAIN_MIN_WIDTH } from '../shared/layoutConstants';
 const ChineseDigits = ['〇', '一', '二', '三', '四', '五', '六', '七', '八', '九'];
 const Weekdays = ['日', '一', '二', '三', '四', '五', '六'];
 const MinSidebarWidth = 192;
-const MaxSidebarWidth = 360;
+const MaxSidebarWidth = 320;
 const MinContentWidth = 800;
 
 function ToChineseNumber(value: number) {
@@ -39,7 +39,7 @@ function AppShell({ page, onNavigate, onRestartOnboarding, children }: { page: P
   const renameConversation = useRenameConversation({ onConflict: () => ShowNotice('会话已在其他窗口被修改，已刷新为最新版本'), onFailure: () => ShowNotice('会话重命名失败，请稍后重试。') });
   const deleteConversation = useDeleteConversation({ onFailure: () => ShowNotice('会话删除失败，请稍后重试。') });
   const { settings, setSettings } = useSettingsStore();
-  const { activeConversationId, setActiveConversationId, resumePanelOpen, setResumePanelOpen, ShowNotice } = useUiStore();
+  const { activeConversationId, setActiveConversationId, resumePanelOpen, setResumePanelOpen, setRightPanelMode, ShowNotice } = useUiStore();
   const activeConversation = conversations.find((item) => item.id === activeConversationId);
   const [renameConversationId, setRenameConversationId] = useState<string | null>(null);
   const [renameTitle, setRenameTitle] = useState('');
@@ -47,6 +47,7 @@ function AppShell({ page, onNavigate, onRestartOnboarding, children }: { page: P
   const [balance, setBalance] = useState<Array<{ currency: string; totalBalance: string }> | null>(null);
   const [refreshingBalance, setRefreshingBalance] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [showRightPanelChooser, setShowRightPanelChooser] = useState(false);
   const appShellRef = useRef<HTMLDivElement>(null);
   const sidebarWidthRef = useRef(224);
   const minimumContentWidth = page === 'assistant' ? ASSISTANT_MAIN_MIN_WIDTH : MinContentWidth;
@@ -96,7 +97,14 @@ function AppShell({ page, onNavigate, onRestartOnboarding, children }: { page: P
   }
 
   function HandleResumePanel() {
-    setResumePanelOpen(!resumePanelOpen);
+    if (resumePanelOpen && page === 'assistant') { setResumePanelOpen(false); return; }
+    setShowRightPanelChooser(true);
+  }
+
+  function OpenRightPanel(mode: 'resume' | 'browser') {
+    setRightPanelMode(mode);
+    setResumePanelOpen(true);
+    setShowRightPanelChooser(false);
     if (page !== 'assistant') onNavigate('assistant');
   }
   function BeginRenameConversation(id: string, title: string) { setRenameConversationId(id); setRenameTitle(title); }
@@ -174,12 +182,13 @@ function AppShell({ page, onNavigate, onRestartOnboarding, children }: { page: P
       <div className="sidebar-resizer" aria-hidden="true" onPointerDown={StartSidebarResize} />
     </aside>
     <main className="main-frame">
-      <header className="letterhead"><div className="letterhead-context"><strong>{FormatChineseDate().replace(/^.*?年/, '')}</strong><span>当前场景 · {MainRoutes.find((route) => route.id === page)?.label ?? '设置'}</span></div><div className="letterhead-note">{page === 'assistant' && <button className="letterhead-resume-button" type="button" onClick={HandleResumePanel} aria-expanded={resumePanelOpen} aria-label={resumePanelOpen ? '隐藏侧边栏' : '展开侧边栏'} title={resumePanelOpen ? '隐藏侧边栏' : '展开侧边栏'}><Icon name={resumePanelOpen ? 'sidebar-collapse' : 'sidebar-expand'} size={17} /></button>}</div></header>
+      <header className="letterhead"><div className="letterhead-context"><strong>{FormatChineseDate().replace(/^.*?年/, '')}</strong><span>当前场景 · {MainRoutes.find((route) => route.id === page)?.label ?? '设置'}</span></div><div className="letterhead-note">{page === 'assistant' && <button className="letterhead-resume-button" type="button" onClick={HandleResumePanel} aria-expanded={resumePanelOpen} aria-label={resumePanelOpen ? '隐藏侧边栏' : '打开右侧边栏'} title={resumePanelOpen ? '隐藏侧边栏' : '打开右侧边栏'}><Icon name={resumePanelOpen ? 'sidebar-collapse' : 'sidebar-expand'} size={17} /></button>}</div></header>
       <div className="letter-rule" />
       <div className="page-container">{children}</div>
     </main>
     <Modal open={Boolean(renameConversationId)} title="重命名会话" onClose={() => setRenameConversationId(null)}><input value={renameTitle} maxLength={120} onChange={(event) => setRenameTitle(event.target.value)} autoFocus /><div className="modal-actions"><Button onClick={() => setRenameConversationId(null)}>取消</Button><Button variant="primary" onClick={SaveConversationRename}>保存</Button></div></Modal>
     <Modal open={Boolean(deleteConversationId)} title="删除会话？" onClose={() => setDeleteConversationId(null)}><p className="modal-copy">会话及其本地消息将被删除，此操作不可撤销。</p><div className="modal-actions"><Button onClick={() => setDeleteConversationId(null)}>取消</Button><Button variant="danger" onClick={ConfirmDeleteConversation}>删除</Button></div></Modal>
+    <Modal open={showRightPanelChooser} title="打开右侧边栏" onClose={() => setShowRightPanelChooser(false)}><p className="modal-copy">请选择要在右侧展开的内容。</p><div className="right-panel-choice"><Button variant="primary" onClick={() => OpenRightPanel('browser')}>内置浏览器</Button><Button onClick={() => OpenRightPanel('resume')}>简历预览栏</Button></div></Modal>
   </div>;
 }
 

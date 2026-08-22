@@ -69,6 +69,7 @@ export const platformClient = {
     GetModels: () => CallBridge(() => RequireAgent().GetModels()),
     Send: (request: Parameters<DesktopAgentBridge['Send']>[0]) => CallBridge(() => RequireAgent().Send(request)),
     Cancel: (requestId: string) => CallBridge(() => RequireAgent().Cancel(requestId)),
+    UpdateConfirmationMode: (requestId: string, confirmationMode: Parameters<DesktopAgentBridge['UpdateConfirmationMode']>[1]) => CallBridge(() => RequireAgent().UpdateConfirmationMode(requestId, confirmationMode)),
     ConfirmResumeEdit: (confirmationId: string, accepted: boolean) => CallBridge(() => RequireAgent().ConfirmResumeEdit(confirmationId, accepted)),
     AcquireResumeEditLock: (resumeId: string) => CallBridge(() => RequireAgent().AcquireResumeEditLock(resumeId)),
     ReleaseResumeEditLock: (resumeId: string) => CallBridge(() => RequireAgent().ReleaseResumeEditLock(resumeId)),
@@ -111,6 +112,13 @@ export const platformClient = {
     SaveProfiles: (items: Parameters<WorkspaceBridge['SaveProfiles']>[0], force?: boolean, options?: WriteCommandOptions) => CallBridge(() => RequireWorkspace().SaveProfiles(items, force, ResolveWriteOptions(options))),
     ReloadProfiles: () => CallBridge(() => RequireWorkspace().ReloadProfiles()),
     ImportAttachment: (file: File, mimeType: string, options?: WriteCommandOptions) => CallBridge(() => RequireWorkspace().ImportAttachment(file, mimeType, ResolveWriteOptions(options))),
+    CleanupAttachments: (options?: WriteCommandOptions) => CallBridge(() => RequireWorkspace().CleanupAttachments(ResolveWriteOptions(options))),
+    GetRecoveryStatus: () => CallBridge(() => RequireWorkspace().GetRecoveryStatus()),
+    RecoverOperations: (options?: WriteCommandOptions) => CallBridge(() => RequireWorkspace().RecoverOperations(ResolveWriteOptions(options))),
+    GetDatabaseRecoveryStatus: () => CallBridge(() => RequireWorkspace().GetDatabaseRecoveryStatus()),
+    RestoreLatestBackup: (options?: WriteCommandOptions) => CallBridge(() => RequireWorkspace().RestoreLatestBackup(ResolveWriteOptions(options))),
+    RestoreBackup: (backupId: string, options?: WriteCommandOptions) => CallBridge(() => RequireWorkspace().RestoreBackup(backupId, ResolveWriteOptions(options))),
+    ExportRecoveryDiagnostic: (options?: WriteCommandOptions) => CallBridge(() => RequireWorkspace().ExportRecoveryDiagnostic(ResolveWriteOptions(options))),
     CreateBackup: (options?: WriteCommandOptions) => CallBridge(() => RequireWorkspace().CreateBackup(ResolveWriteOptions(options))),
     GetResumeRevisions: (resumeId: string) => CallBridge(() => RequireWorkspace().GetResumeRevisions(resumeId)),
     SetResumeRevisionPinned: (revisionId: string, pinned: boolean, options?: WriteCommandOptions) => CallBridge(() => RequireWorkspace().SetResumeRevisionPinned(revisionId, pinned, ResolveWriteOptions(options))),
@@ -118,6 +126,16 @@ export const platformClient = {
     Migrate: () => CallBridge(() => RequireWorkspace().Migrate()),
   },
 };
+
+/**
+ * 编译期契约门禁：新增 Bridge 方法时，Renderer 平台客户端必须同步提供封装。
+ * 这里仅校验方法名；参数与返回值由每个调用点的 WorkspaceBridge/DesktopAgentBridge 类型继续校验。
+ */
+const bridgeClientCompleteness: {
+  agent: Record<keyof DesktopAgentBridge, unknown>;
+  workspace: Record<keyof WorkspaceBridge, unknown>;
+} = platformClient;
+void bridgeClientCompleteness;
 
 /** 判断当前页面是否由带安全桥接的桌面客户端承载。 */
 export function IsDesktopClientAvailable() {

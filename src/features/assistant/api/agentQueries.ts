@@ -1,4 +1,4 @@
-import type { AgentConfiguration, AgentModuleConfiguration, AgentSendRequest, AgentSessionAssistantState, AgentStreamEvent } from '@offerget/contracts';
+import type { AgentConfiguration, AgentModuleConfiguration, AgentSendRequest, AgentSessionAssistantState, AgentStreamEvent, ConfirmationMode } from '@offerget/contracts';
 import { platformClient, Unwrap } from '../../../shared/platform/platformClient';
 
 /** 判断当前页面是否由带安全桥接的桌面客户端承载。 */
@@ -62,6 +62,11 @@ export async function GetAgentObservability() {
 export async function GetAgentTraceEvents(requestId: string) {
   const result = await platformClient.agent.GetTraceEvents(requestId);
   return result.ok ? result.data : [];
+}
+
+/** 更新在途 Run 的确认权限；无在途 Run 时由下一次 Send 携带当前值。 */
+export async function UpdateAgentConfirmationMode(requestId: string, confirmationMode: ConfirmationMode) {
+  return Unwrap(await platformClient.agent.UpdateConfirmationMode(requestId, confirmationMode));
 }
 
 /** 按会话删除对应的全部 Trace 与事件；运行日志和会话消息保持不变。 */

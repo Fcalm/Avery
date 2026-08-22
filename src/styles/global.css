@@ -759,3 +759,16 @@ body.is-resizing-resume, body.is-resizing-resume * { cursor: col-resize !importa
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
 }
+
+/* 右侧浏览器的网页由主进程视图绘制；本层只保留地址栏和安全说明。 */
+.browser-side aside { display: flex; min-width: 0; flex-direction: column; overflow: hidden; }
+.browser-toolbar { display: flex; align-items: center; gap: 5px; margin-top: 18px; }
+.browser-toolbar > button { display: grid; width: 28px; height: 30px; flex: 0 0 28px; place-items: center; border: 0; border-radius: 6px; padding: 0; color: var(--ink-soft); background: transparent; font-size: 16px; }
+.browser-toolbar > button:hover { background: var(--paper-deep); }
+.browser-toolbar input { min-width: 0; height: 30px; flex: 1; padding: 5px 8px; font-size: 12px; }
+.browser-toolbar .browser-go { width: auto; flex-basis: auto; padding: 0 8px; color: var(--card); background: var(--accent); font-size: 12px; }
+.browser-toolbar .browser-go:hover { color: var(--card); background: var(--accent-strong); }
+.browser-viewport { min-height: 120px; flex: 1; margin-top: 12px; overflow: hidden; border: 1px solid var(--line); border-radius: 8px; background: var(--card); }
+.browser-viewport p { margin: 0; padding: 18px; color: var(--ink-faint); font-size: 12px; line-height: 1.7; }
+.browser-safety-note { margin: 10px 0 0; color: var(--ink-faint); font-size: var(--text-meta); line-height: 1.6; }
+.right-panel-choice { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-2); margin-top: var(--space-4); }

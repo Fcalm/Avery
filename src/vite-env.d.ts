@@ -1,11 +1,12 @@
 /// <reference types="vite/client" />
 
-import type { DesktopAgentBridge, WorkspaceBridge } from '@offerget/contracts';
+import type { DesktopAgentBridge, DesktopBrowserBridge, WorkspaceBridge } from '@offerget/contracts';
 
 declare global {
   interface Window {
     offergetAgent?: DesktopAgentBridge;
     offergetWorkspace?: WorkspaceBridge;
+    offergetBrowser?: DesktopBrowserBridge;
   }
 }
 

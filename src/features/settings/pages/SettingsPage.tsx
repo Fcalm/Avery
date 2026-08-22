@@ -17,7 +17,7 @@ const Tabs: Array<{ id: SettingTab; label: string; description: string }> = [
   { id: 'api', label: 'API 配置', description: '配置模型服务；测试连接不会保存，保存后凭据加密存储在本机。' },
   { id: 'developer', label: '开发者模式', description: '查看本地日志、Trace 和上下文用量界面。' },
 ];
-const FallbackDeepSeekModels = ['deepseek-v4-flash', 'deepseek-v4-pro'];
+const FallbackDeepSeekModels = ['deepseek-v4-flash', 'deepseek-v4-pro', 'deepseek-v4-flash-vision-exp'];
 
 function UpgradeDeepSeekSettings(settings: SettingsDraft): SettingsDraft {
   if (settings.provider !== 'DeepSeek' || (settings.model !== 'deepseek-chat' && settings.model !== 'deepseek-reasoner')) return settings;

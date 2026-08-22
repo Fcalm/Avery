@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type CSSProperties, type KeyboardEvent, type MouseEvent } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useLayoutEffect } from 'react';
-import type { AgentStreamEvent } from '@offerget/contracts';
+import type { AgentStreamEvent, ConfirmationMode } from '@offerget/contracts';
 import { useUiStore } from '../../../app/UiStore';
 import { WORKSPACE_QUERY_KEY } from '../../../features/workspace/api/workspaceData';
 import {
@@ -13,13 +13,15 @@ import { useProfiles } from '../../../features/profile/api/profileQueries';
 import { useSettings } from '../../../features/settings/api/settingsQueries';
 import {
   AcquireResumeEditLock, BindProjectEnvironment, CancelAgentRequest, ConfirmResumeEdit, GetDeepSeekModels, GetSessionAssistantState, ImportAttachmentFile,
-  ReleaseResumeEditLock, ReloadAgentSession, SelectAgentProjectDirectory, SendAgentRequest, SubscribeAgentStream,
+  ReleaseResumeEditLock, ReloadAgentSession, SelectAgentProjectDirectory, SendAgentRequest, SubscribeAgentStream, UpdateAgentConfirmationMode,
 } from '../../../features/assistant/api/agentQueries';
 import { Button, Modal } from '../../../shared/components/UI';
 import { Icon, type IconName } from '../../../shared/components/Icon';
 import { MarkdownText } from '../../../shared/components/MarkdownText';
 import { FormatTime } from '../../../shared/utils/format';
 import { ASSISTANT_MAIN_MIN_WIDTH } from '../../../shared/layoutConstants';
+import { CreateSessionUsagePresentation } from '../usagePresentation';
+import { BrowserSidePanel } from '../components/BrowserSidePanel';
 import type { ChatMessage, PageId } from '../../../types/domain';
 
 const ScenarioOptions: Array<{ id: Extract<PageId, 'assistant' | 'jobs' | 'applications'>; label: string; icon: IconName; description: string }> = [
@@ -27,7 +29,12 @@ const ScenarioOptions: Array<{ id: Extract<PageId, 'assistant' | 'jobs' | 'appli
   { id: 'jobs', label: '岗位库', icon: 'jobs', description: '管理已保存岗位' },
   { id: 'applications', label: '投递管理', icon: 'applications', description: '跟进投递进度' },
 ];
-const FallbackDeepSeekModels = ['deepseek-v4-flash', 'deepseek-v4-pro'];
+const FallbackDeepSeekModels = ['deepseek-v4-flash', 'deepseek-v4-pro', 'deepseek-v4-flash-vision-exp'];
+const ConfirmationOptions: Array<{ id: ConfirmationMode; label: string; description: string }> = [
+  { id: 'always_confirm', label: '始终确认', description: '执行任何外部修改前都征求同意' },
+  { id: 'allow_low_risk', label: '允许低风险', description: '低风险操作自动执行，其他操作仍确认' },
+  { id: 'fully_trusted', label: '完全信任', description: '在当前工具与数据授权范围内自动执行' },
+];
 type SessionUsageView = {
   percent: number; threshold: number; compressionCount: number; tokens: number; limit: number;
   source: 'actual' | 'unavailable' | 'legacy_estimate' | 'loading'; promptTokens: number; completionTokens: number; totalTokens: number; reportedRequestCount: number; unreportedRequestCount: number;
@@ -45,7 +52,7 @@ function UpgradeDeepSeekModel(model: string | undefined) {
 interface ComposerAttachment { name: string; path: string; }
 
 function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
-  const { activeConversationId, setActiveConversationId, currentResumeId, setCurrentResumeId, resumePanelOpen, setResumePanelOpen, ShowNotice } = useUiStore();
+  const { activeConversationId, setActiveConversationId, currentResumeId, setCurrentResumeId, resumePanelOpen, setResumePanelOpen, rightPanelMode, ShowNotice } = useUiStore();
   const conversations = useConversations();
   const resumes = useResumes();
   const profiles = useProfiles();
@@ -59,8 +66,9 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
   const [composer, setComposer] = useState('');
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
   const [projectEnvironment, setProjectEnvironment] = useState<{ projectId: string | null; name: string } | null>(null);
-  const [permission, setPermission] = useState<'需要确认' | '无需确认'>('需要确认');
+  const [permission, setPermission] = useState<ConfirmationMode>('always_confirm');
   const [showPermission, setShowPermission] = useState(false);
+  const [showFullyTrustedWarning, setShowFullyTrustedWarning] = useState(false);
   const [showModel, setShowModel] = useState(false);
   const [showScenario, setShowScenario] = useState(false);
   const [model, setModel] = useState(UpgradeDeepSeekModel(settings.model));
@@ -104,7 +112,14 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
 
   const conversation = useMemo(() => conversations.find((item) => item.id === activeConversationId), [conversations, activeConversationId]);
   const resume = resumes.find((item) => item.id === currentResumeId);
-  const usageTone = usage.percent < 50 ? 'is-safe' : usage.percent < 70 ? 'is-warning' : 'is-danger';
+  const usagePresentation = CreateSessionUsagePresentation({
+    inputTokens: usage.tokens,
+    contextLimit: usage.limit,
+    compressionThreshold: usage.threshold,
+    source: usage.source,
+    reportedRequestCount: usage.reportedRequestCount,
+    unreportedRequestCount: usage.unreportedRequestCount,
+  });
   useEffect(() => { resumesRef.current = resumes; }, [resumes]);
 
   /** 仅在进入会话或一轮 Agent 成功结束时请求定位；不随流式增量抢占用户滚动位置。 */
@@ -314,7 +329,7 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
 
   async function HandleSend(contentOverride?: string) {
     const text = (contentOverride ?? composer).trim();
-    if (text === '/reload-session') {
+    if (text === '/reload' || text === '/reload-session') {
       if (!activeConversationId) { ShowNotice('请先发送一条消息建立会话，再重载会话上下文'); return; }
       const result = await ReloadAgentSession(activeConversationId);
       if (result.reloaded) ShowNotice(`会话上下文已重载（revision ${result.sessionRevision ?? ''}）`);
@@ -359,6 +374,19 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
   }
 
   function HandleStop() { if (activeRequestRef.current) void CancelAgentRequest(activeRequestRef.current); }
+
+  /** 权限切换同时更新在途 Run；完全信任由警告弹窗的显式确认入口调用。 */
+  async function ApplyConfirmationMode(next: ConfirmationMode) {
+    setPermission(next);
+    setShowPermission(false);
+    const requestId = activeRequestRef.current;
+    if (!requestId) return;
+    try {
+      await UpdateAgentConfirmationMode(requestId, next);
+    } catch (error) {
+      ShowNotice(error instanceof Error ? error.message : '确认权限同步失败，将在下一轮任务生效');
+    }
+  }
 
   async function HandleFiles(event: ChangeEvent<HTMLInputElement>) {
     const files = Array.from(event.target.files ?? []);
@@ -476,21 +504,15 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
           <textarea value={composer} placeholder="写下你的需求，如：把这段项目经历写得更突出成果…" onChange={(event) => setComposer(event.target.value)} onKeyDown={HandleKeyDown} />
           <div className="composer-bar">
             <div>
-              <input ref={inputRef} className="visually-hidden" type="file" multiple accept=".pdf,.doc,.docx,.txt,image/png,image/jpeg" onChange={HandleFiles} />
+              <input ref={inputRef} className="visually-hidden" type="file" multiple accept=".pdf,.doc,.docx,.txt,image/png,image/jpeg,image/gif,image/webp" onChange={HandleFiles} />
               <button type="button" aria-label="上传文件" title="上传文件" onClick={() => inputRef.current?.click()}><Icon name="plus" size={18} /></button>
               <div className="menu-wrap">
-                <button className="permission-button" type="button" aria-label={`权限：${permission}`} aria-expanded={showPermission} onClick={() => setShowPermission((value) => !value)}><Icon name={permission === '需要确认' ? 'user-check' : 'user-x'} size={15} /><span className="permission-label">{permission}</span><span className="chevron-indicator" aria-hidden="true" /></button>
-                {showPermission && <div className="popup-menu"><button onClick={() => { setPermission('需要确认'); setShowPermission(false); }}><b>需要确认</b><small>修改简历前征求同意</small></button><button onClick={() => { setPermission('无需确认'); setShowPermission(false); }}><b>无需确认</b><small>仅作为前端状态演示</small></button></div>}
+                <button className="permission-button" type="button" aria-label={`权限：${ConfirmationOptions.find((item) => item.id === permission)?.label}`} aria-expanded={showPermission} onClick={() => setShowPermission((value) => !value)}><Icon name={permission === 'fully_trusted' ? 'user-x' : 'user-check'} size={15} /><span className="permission-label">{ConfirmationOptions.find((item) => item.id === permission)?.label}</span><span className="chevron-indicator" aria-hidden="true" /></button>
+                {showPermission && <div className="popup-menu">{ConfirmationOptions.map((item) => <button key={item.id} onClick={() => { if (item.id === 'fully_trusted') { setShowPermission(false); setShowFullyTrustedWarning(true); } else void ApplyConfirmationMode(item.id); }}><b>{item.label}</b><small>{item.description}</small></button>)}</div>}
               </div>
             </div>
             <div>
-              {settings.developerMode && <button className={`composer-usage ${usageTone}`} type="button" title={usage.source === 'actual'
-                ? `真实 usage · 最新输入 ${usage.tokens.toLocaleString()} / ${usage.limit.toLocaleString()} tokens · 累计输入 ${usage.promptTokens.toLocaleString()} · 累计输出 ${usage.completionTokens.toLocaleString()} · 累计 ${usage.totalTokens.toLocaleString()} · 已报告 ${usage.reportedRequestCount} 次${usage.unreportedRequestCount ? ` · ${usage.unreportedRequestCount} 次未返回 usage` : ''} · 压缩阈值 ${usage.threshold}% · 已压缩 ${usage.compressionCount} 次`
-                : usage.source === 'legacy_estimate'
-                  ? `历史版本仅保存了估算值，不能作为真实 usage 使用；完成下一次模型请求后将以模型返回为准`
-                  : usage.source === 'loading'
-                    ? '正在恢复此会话的 usage'
-                    : `当前会话尚未收到模型返回的 usage；不会用本地估算替代`}>{usage.source === 'actual' && <span className="usage-dot" aria-hidden="true">·</span>}{usage.source === 'actual' ? `${usage.percent}%` : '—'}</button>}
+              <button className={`composer-usage ${usagePresentation.tone}`} type="button" title={usagePresentation.title} aria-label={usagePresentation.title}>{usage.source === 'actual' && <span className="usage-dot" aria-hidden="true">·</span>}{usagePresentation.display}</button>
               <div className="menu-wrap">
                 <button className="scenario-button" type="button" aria-label="选择场景" aria-expanded={showScenario} onClick={() => setShowScenario((value) => !value)}><Icon name="assistant" size={15} /><span className="scenario-label">场景</span><span className="chevron-indicator" aria-hidden="true" /></button>
                 {showScenario && <div className="popup-menu right scenario-menu">{ScenarioOptions.map((item) => <button key={item.id} onClick={() => HandleScenarioChange(item.id)}><b><Icon name={item.icon} size={15} />{item.label}</b><small>{item.description}</small></button>)}</div>}
@@ -506,7 +528,9 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
         </div>
       </div>
     </section>
-    <section ref={resumeSideRef} className={`resume-side ${resumePanelOpen ? 'open' : ''}`} aria-hidden={!resumePanelOpen} style={{ '--panel-width': `${panelWidth}px` } as CSSProperties}>{resumePanelOpen && <button className="resume-side-backdrop" aria-label="关闭简历栏" onClick={() => setResumePanelOpen(false)} />}<div className="resize-bar" onMouseDown={HandleResize} /><aside><header><div><p className="eyebrow">当前简历</p><h2>{resume?.name ?? '尚未选择简历'}</h2></div><button type="button" aria-label="关闭简历栏" onClick={() => setResumePanelOpen(false)}><Icon name="close" size={18} /></button></header><div className="resume-paper">{editing ? <textarea value={resumeText} onChange={(event) => HandleEditChange(event.target.value)} /> : <pre>{savedText}</pre>}</div><div className="resume-action-row"><Button onClick={HandleStartEditing}>编辑</Button><Button disabled={!history.length} onClick={() => { const last = history.at(-1); if (last) { setResumeText(last); setHistory((current) => current.slice(0, -1)); } }}>撤销</Button><Button variant="primary" onClick={() => void HandleSaveResume()}>保存</Button></div><button className="switch-resume" type="button" onClick={HandleSwitchResume}>切换至另一份简历</button></aside></section>
+    <section ref={resumeSideRef} className={`resume-side ${resumePanelOpen && rightPanelMode === 'resume' ? 'open' : ''}`} aria-hidden={!resumePanelOpen || rightPanelMode !== 'resume'} style={{ '--panel-width': `${panelWidth}px` } as CSSProperties}>{resumePanelOpen && rightPanelMode === 'resume' && <button className="resume-side-backdrop" aria-label="关闭简历栏" onClick={() => setResumePanelOpen(false)} />}<div className="resize-bar" onMouseDown={HandleResize} /><aside><header><div><p className="eyebrow">当前简历</p><h2>{resume?.name ?? '尚未选择简历'}</h2></div><button type="button" aria-label="关闭简历栏" onClick={() => setResumePanelOpen(false)}><Icon name="close" size={18} /></button></header><div className="resume-paper">{editing ? <textarea value={resumeText} onChange={(event) => HandleEditChange(event.target.value)} /> : <pre>{savedText}</pre>}</div><div className="resume-action-row"><Button onClick={HandleStartEditing}>编辑</Button><Button disabled={!history.length} onClick={() => { const last = history.at(-1); if (last) { setResumeText(last); setHistory((current) => current.slice(0, -1)); } }}>撤销</Button><Button variant="primary" onClick={() => void HandleSaveResume()}>保存</Button></div><button className="switch-resume" type="button" onClick={HandleSwitchResume}>切换至另一份简历</button></aside></section>
+    <BrowserSidePanel open={resumePanelOpen && rightPanelMode === 'browser'} panelWidth={panelWidth} onClose={() => setResumePanelOpen(false)} onResizeStart={HandleResize} onNotice={ShowNotice} />
+    <Modal open={showFullyTrustedWarning} title="开启完全信任模式" onClose={() => setShowFullyTrustedWarning(false)}><p className="modal-copy">开启后，Agent 可在当前场景的工具白名单与数据授权范围内自动执行操作，不再逐项请求确认。此设置不会授予新的工具、文件或账号权限。</p><div className="modal-actions"><Button onClick={() => setShowFullyTrustedWarning(false)}>取消</Button><Button variant="primary" onClick={() => { setShowFullyTrustedWarning(false); void ApplyConfirmationMode('fully_trusted'); }}>我了解风险，继续</Button></div></Modal>
     <Modal open={Boolean(pendingEdit)} title="确认 Agent 修改简历" onClose={() => void HandlePendingEdit(false)}><p className="modal-copy">{pendingEdit?.reason}</p><pre className="confirmation-preview">{pendingEdit?.content}</pre><div className="modal-actions"><Button onClick={() => void HandlePendingEdit(false)}>拒绝</Button><Button variant="primary" onClick={() => void HandlePendingEdit(true)}>确认并保存</Button></div></Modal>
     <Modal open={Boolean(pendingQuestions)} title="Agent 需要补充信息" onClose={() => setPendingQuestions(null)}><div className="question-card-list">{pendingQuestions?.map((question) => <label key={question.id} className="form-field"><span>{question.question}</span><select value={questionAnswers[question.id] ?? question.options[0]} onChange={(event) => setQuestionAnswers((current) => ({ ...current, [question.id]: event.target.value }))}>{question.options.map((option) => <option key={option}>{option}</option>)}</select>{questionAnswers[question.id] === '其他' && <input placeholder="请输入其他答案" value={otherAnswers[question.id] ?? ''} onChange={(event) => setOtherAnswers((current) => ({ ...current, [question.id]: event.target.value }))} />}</label>)}</div><div className="modal-actions"><Button onClick={() => setPendingQuestions(null)}>取消</Button><Button variant="primary" onClick={SubmitQuestionAnswers}>提交答案</Button></div></Modal>
   </div>;
