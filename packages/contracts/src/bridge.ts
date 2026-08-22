@@ -4,6 +4,9 @@ import type {
 } from './dto';
 import type { WriteCommandOptions } from './envelope';
 
+/** Agent 确认级别；完全信任仍受场景白名单、Schema、资源授权与幂等约束。 */
+export type ConfirmationMode = 'always_confirm' | 'allow_low_risk' | 'fully_trusted';
+
 /** Agent 请求的显式窄字段：确认模式、附件、项目 ID 与简历 ID；业务只读快照（简历/档案）由后端按 ID 读取，不再整包透传前端组合态。 */
 export interface AgentSendRequest {
   requestId: string;
@@ -11,7 +14,7 @@ export interface AgentSendRequest {
   content: string;
   model?: string;
   /** 请求级确认模式；缺省由后端场景默认。 */
-  confirmationMode?: '需要确认' | '无需确认';
+  confirmationMode?: ConfirmationMode;
   attachments?: Array<{ name: string; path: string }>;
   projectId?: string;
   resumeId?: string;
@@ -100,6 +103,7 @@ export interface DesktopAgentBridge {
   GetModels: () => Promise<{ models: string[] }>;
   Send: (request: AgentSendRequest) => Promise<{ accepted: boolean }>;
   Cancel: (requestId: string) => Promise<{ cancelled: boolean }>;
+  UpdateConfirmationMode: (requestId: string, confirmationMode: ConfirmationMode) => Promise<{ updated: boolean; confirmationMode?: ConfirmationMode; reason?: string }>;
   ConfirmResumeEdit: (confirmationId: string, accepted: boolean) => Promise<{ applied: boolean }>;
   /** 用户开始编辑简历前获取互斥锁；Agent 占用时返回未获取及原因。 */
   AcquireResumeEditLock: (resumeId: string) => Promise<{ acquired: boolean; reason?: string }>;
@@ -122,6 +126,24 @@ export interface DesktopAgentBridge {
   SelectModuleDirectory: () => Promise<AgentModuleConfiguration>;
   ResetModules: () => Promise<AgentModuleConfiguration>;
   OnStream: (listener: (event: AgentStreamEvent) => void) => () => void;
+}
+
+/** 渲染层只能请求受限的浏览器动作，网页实例与导航策略始终由主进程持有。 */
+export interface DesktopBrowserBridge {
+  Show: (bounds: BrowserPanelBounds) => Promise<{ shown: boolean }>;
+  Hide: () => Promise<{ hidden: boolean }>;
+  Navigate: (address: string) => Promise<{ accepted: boolean; url?: string; reason?: string }>;
+  GoBack: () => Promise<{ navigated: boolean }>;
+  GoForward: () => Promise<{ navigated: boolean }>;
+  Reload: () => Promise<{ reloaded: boolean }>;
+}
+
+/** 内嵌网页区域相对于主窗口内容区的逻辑像素；主进程会再次校验边界。 */
+export interface BrowserPanelBounds {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
 }
 
 /** preload `offergetWorkspace` 命名空间的类型化 Bridge 接口；形状与当前实现保持一致。 */
@@ -166,7 +188,7 @@ export interface WorkspaceBridge {
 /** Bridge 方法清单：preload 暴露的方法名唯一来源，供一致性冒烟校验与契约生成使用。 */
 export const BridgeNamespaces = {
   agent: [
-    'Configure', 'TestConnection', 'GetBalance', 'GetModels', 'Send', 'Cancel', 'ConfirmResumeEdit',
+    'Configure', 'TestConnection', 'GetBalance', 'GetModels', 'Send', 'Cancel', 'UpdateConfirmationMode', 'ConfirmResumeEdit',
     'AcquireResumeEditLock', 'ReleaseResumeEditLock', 'GetStatus',
     'GetObservability', 'GetTraceEvents', 'DeleteTraces', 'SetTraceRetention', 'ClearObservability',
     'ReloadSession', 'SelectProjectDirectory', 'GetSessionAssistantState', 'BindProjectEnvironment',
@@ -182,6 +204,7 @@ export const BridgeNamespaces = {
     'RestoreLatestBackup', 'RestoreBackup', 'ExportRecoveryDiagnostic', 'CreateBackup', 'GetResumeRevisions', 'SetResumeRevisionPinned',
     'ExportResume', 'Migrate',
   ] as const,
+  browser: ['Show', 'Hide', 'Navigate', 'GoBack', 'GoForward', 'Reload'] as const,
 } as const;
 
 /** Bridge 命名空间名：agent → offergetAgent，workspace → offergetWorkspace。 */

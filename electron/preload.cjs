@@ -13,6 +13,7 @@ const agentBridge = {
     GetModels: () => invoke('agent:get-models'),
     Send: (request) => invoke('agent:send', request),
     Cancel: (requestId) => invoke('agent:cancel', requestId),
+    UpdateConfirmationMode: (requestId, confirmationMode) => invoke('agent:update-confirmation-mode', requestId, confirmationMode),
     ConfirmResumeEdit: (id, accepted) => invoke('agent:confirm-resume-edit', id, accepted),
     AcquireResumeEditLock: (id) => invoke('agent:acquire-resume-lock', id),
     ReleaseResumeEditLock: (id) => invoke('agent:release-resume-lock', id),
@@ -76,4 +77,12 @@ electron_1.contextBridge.exposeInMainWorld('offergetAgent', agentBridge);
 electron_1.contextBridge.exposeInMainWorld('offergetWorkspace', workspaceBridge);
 electron_1.contextBridge.exposeInMainWorld('offergetWindow', {
     Minimize: () => invoke('window:minimize'), ToggleMaximize: () => invoke('window:toggle-maximize'), Close: () => invoke('window:close'),
+});
+electron_1.contextBridge.exposeInMainWorld('offergetBrowser', {
+    Show: (bounds) => invoke('browser:show', bounds),
+    Hide: () => invoke('browser:hide'),
+    Navigate: (address) => invoke('browser:navigate', address),
+    GoBack: () => invoke('browser:back'),
+    GoForward: () => invoke('browser:forward'),
+    Reload: () => invoke('browser:reload'),
 });

@@ -5,10 +5,12 @@ import { join, resolve } from 'node:path';
 import { CreateBackendHost } from '@offerget/backend/dist/host';
 import { CreateDesktopAdapters } from './adapters';
 import { RegisterGateway, RegisterWindowControls } from './gateway';
+import { BrowserPanelHost, RegisterBrowserPanel } from './browser-panel';
 
 const smokeStartedAt = Date.now();
 let mainWindow: BrowserWindow | undefined;
 let backendHost: ReturnType<typeof CreateBackendHost> | undefined;
+let browserPanelHost: BrowserPanelHost | undefined;
 let rendererLoaded = false;
 let lifecycleRunning = false;
 let lifecycleStep: string | null = null;
@@ -20,13 +22,15 @@ function writeSmokeStage(stage: string, extra: Record<string, unknown> = {}): vo
 }
 writeSmokeStage('main_loaded');
 
-/** 默认拒绝权限、弹窗和导航；桌面能力只能经 preload/Gateway 调用。 */
+/** 默认拒绝权限、弹窗和导航；内嵌浏览器仅允许经其主进程白名单导航。 */
 function configureSecurityPolicies(): void {
   session.defaultSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
   session.defaultSession.setPermissionCheckHandler(() => false);
   app.on('web-contents-created', (_event, contents) => {
     contents.setWindowOpenHandler(() => ({ action: 'deny' }));
-    contents.on('will-navigate', (event) => event.preventDefault());
+    contents.on('will-navigate', (event, url) => {
+      if (!browserPanelHost?.IsBrowserContents(contents) || !browserPanelHost.AllowNavigation(url)) event.preventDefault();
+    });
   });
 }
 
@@ -42,6 +46,7 @@ function createWindow(): BrowserWindow {
   else void window.loadURL(process.env.VITE_DEV_SERVER_URL || 'http://127.0.0.1:5173');
   window.webContents.once('did-finish-load', () => { rendererLoaded = true; });
   window.webContents.on('console-message', (_event, level, message) => { if (level >= 3) consoleErrors.push(String(message).slice(0, 300)); });
+  window.on('closed', () => { browserPanelHost?.Destroy(); if (mainWindow === window) mainWindow = undefined; });
   return window;
 }
 
@@ -105,11 +110,49 @@ async function runInstalledVisualScenario(outputDirectory: string): Promise<Reco
   const window = mainWindow;
   if (!window) throw new Error('Main window is unavailable.');
   mkdirSync(outputDirectory, { recursive: true });
-  window.setContentSize(1280, 800);
   const ready = await window.webContents.executeJavaScript(`new Promise((resolve)=>{const end=Date.now()+5000;const wait=()=>document.querySelector('nav button')?resolve(true):Date.now()>=end?resolve(false):setTimeout(wait,50);wait();})`, true);
-  const image = await window.webContents.capturePage();
-  writeFileSync(join(outputDirectory, 'installed-home-1280x800.png'), image.toPNG());
-  return { rendererNavigationReady: ready === true, consoleErrors, width: 1280, height: 800, passed: ready === true && consoleErrors.length === 0 };
+  if (ready !== true) return { rendererNavigationReady: false, consoleErrors, pages: [], passed: false };
+
+  const pageLabels = ['求职助手', '岗位库', '投递管理', '简历库', '档案库', '开发者工具'];
+  const pages: Array<Record<string, unknown>> = [];
+  for (const [width, height] of [[1280, 800], [1024, 680]] as const) {
+    window.setContentSize(width, height);
+    for (const label of pageLabels) {
+      const metrics = await window.webContents.executeJavaScript(`(async () => {
+        const button = [...document.querySelectorAll('button[title]')].find((item) => item.getAttribute('title') === ${JSON.stringify(label)});
+        if (!button) return { label: ${JSON.stringify(label)}, selected: false, reason: 'navigation_button_missing' };
+        button.click();
+        const end = Date.now() + 1500;
+        while (button.getAttribute('aria-current') !== 'page' && Date.now() < end) await new Promise((resolve) => setTimeout(resolve, 25));
+        const visible = (element) => { const style = getComputedStyle(element); const rect = element.getBoundingClientRect(); return style.visibility !== 'hidden' && style.display !== 'none' && rect.width > 0 && rect.height > 0; };
+        const critical = [...document.querySelectorAll('.page-header-actions button, .onboarding-actions button, .composer-dock button, [role="dialog"] button')].filter(visible);
+        const offscreenCritical = critical.filter((element) => { const rect = element.getBoundingClientRect(); return rect.left < 0 || rect.right > innerWidth || rect.top < 0 || rect.bottom > innerHeight; }).map((element) => element.textContent?.trim() || element.getAttribute('aria-label'));
+        return {
+          label: ${JSON.stringify(label)}, selected: button.getAttribute('aria-current') === 'page',
+          horizontalOverflow: document.documentElement.scrollWidth > document.documentElement.clientWidth || document.body.scrollWidth > document.body.clientWidth,
+          offscreenCritical,
+        };
+      })()`, true) as Record<string, unknown>;
+      const image = await window.webContents.capturePage();
+      const safeLabel = label === '求职助手' ? 'assistant' : label === '岗位库' ? 'jobs' : label === '投递管理' ? 'applications' : label === '简历库' ? 'resumes' : label === '档案库' ? 'profiles' : 'developer';
+      writeFileSync(join(outputDirectory, `${safeLabel}-${width}x${height}.png`), image.toPNG());
+      pages.push({ width, height, ...metrics });
+    }
+  }
+
+  window.show();
+  window.focus();
+  await window.webContents.executeJavaScript(`document.querySelector('button[title="岗位库"]')?.focus()`, true);
+  window.webContents.debugger.attach('1.3');
+  try {
+    await window.webContents.debugger.sendCommand('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 });
+    await window.webContents.debugger.sendCommand('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 });
+  } finally {
+    if (window.webContents.debugger.isAttached()) window.webContents.debugger.detach();
+  }
+  const keyboardNavigation = await window.webContents.executeJavaScript(`new Promise((resolve)=>{const end=Date.now()+1000;const wait=()=>document.querySelector('button[title="岗位库"]')?.getAttribute('aria-current')==='page'?resolve(true):Date.now()>=end?resolve(false):setTimeout(wait,25);wait();})`, true);
+  const pagesPassed = pages.every((page) => page.selected === true && page.horizontalOverflow !== true && Array.isArray(page.offscreenCritical) && page.offscreenCritical.length === 0);
+  return { rendererNavigationReady: true, consoleErrors, pages, keyboardNavigation, passed: pagesPassed && keyboardNavigation === true && consoleErrors.length === 0 };
 }
 
 if (process.env.OFFERGET_DESKTOP_SMOKE === '1' && process.env.OFFERGET_SMOKE_USER_DATA) app.setPath('userData', resolve(process.env.OFFERGET_SMOKE_USER_DATA));
@@ -117,12 +160,14 @@ if (process.env.OFFERGET_DESKTOP_SMOKE === '1' && process.env.OFFERGET_SMOKE_USE
 app.whenReady().then(() => {
   writeSmokeStage('electron_ready');
   configureSecurityPolicies();
+  browserPanelHost = new BrowserPanelHost(() => mainWindow);
   const userDataPath = app.getPath('userData');
   const workspacePath = join(userDataPath, 'OfferGet Workspace');
   const adapters = CreateDesktopAdapters({ getWindow: () => mainWindow, userDataPath });
   backendHost = CreateBackendHost({ appContext: { userDataPath, defaultWorkspacePath: workspacePath, workspacePath }, desktopCapabilities: adapters });
   RegisterGateway({ backendHost, webContentsGetter: () => mainWindow });
   RegisterWindowControls({ webContentsGetter: () => mainWindow });
+  RegisterBrowserPanel({ host: browserPanelHost, webContentsGetter: () => mainWindow });
   Menu.setApplicationMenu(null);
   createWindow();
   if (process.env.OFFERGET_DESKTOP_SMOKE !== '1') return;
@@ -151,4 +196,4 @@ app.whenReady().then(() => {
 });
 app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
-app.on('before-quit', () => { backendHost?.Shutdown(); });
+app.on('before-quit', () => { browserPanelHost?.Destroy(); backendHost?.Shutdown(); });

@@ -16,6 +16,7 @@ const agentBridge: DesktopAgentBridge = {
   GetModels: () => invoke('agent:get-models') as ReturnType<DesktopAgentBridge['GetModels']>,
   Send: (request) => invoke('agent:send', request) as ReturnType<DesktopAgentBridge['Send']>,
   Cancel: (requestId) => invoke('agent:cancel', requestId) as ReturnType<DesktopAgentBridge['Cancel']>,
+  UpdateConfirmationMode: (requestId, confirmationMode) => invoke('agent:update-confirmation-mode', requestId, confirmationMode) as ReturnType<DesktopAgentBridge['UpdateConfirmationMode']>,
   ConfirmResumeEdit: (id, accepted) => invoke('agent:confirm-resume-edit', id, accepted) as ReturnType<DesktopAgentBridge['ConfirmResumeEdit']>,
   AcquireResumeEditLock: (id) => invoke('agent:acquire-resume-lock', id) as ReturnType<DesktopAgentBridge['AcquireResumeEditLock']>,
   ReleaseResumeEditLock: (id) => invoke('agent:release-resume-lock', id) as ReturnType<DesktopAgentBridge['ReleaseResumeEditLock']>,
@@ -81,4 +82,12 @@ contextBridge.exposeInMainWorld('offergetAgent', agentBridge);
 contextBridge.exposeInMainWorld('offergetWorkspace', workspaceBridge);
 contextBridge.exposeInMainWorld('offergetWindow', {
   Minimize: () => invoke('window:minimize'), ToggleMaximize: () => invoke('window:toggle-maximize'), Close: () => invoke('window:close'),
+});
+contextBridge.exposeInMainWorld('offergetBrowser', {
+  Show: (bounds: { x: number; y: number; width: number; height: number }) => invoke('browser:show', bounds),
+  Hide: () => invoke('browser:hide'),
+  Navigate: (address: string) => invoke('browser:navigate', address),
+  GoBack: () => invoke('browser:back'),
+  GoForward: () => invoke('browser:forward'),
+  Reload: () => invoke('browser:reload'),
 });
