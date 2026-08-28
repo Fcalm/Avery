@@ -1,4 +1,4 @@
-import { Children, cloneElement, isValidElement, useEffect, useId, useRef, type ButtonHTMLAttributes, type ReactElement, type ReactNode, type RefObject } from 'react';
+import { Children, cloneElement, isValidElement, useEffect, useId, useRef, useState, type ButtonHTMLAttributes, type KeyboardEvent as ReactKeyboardEvent, type ReactElement, type ReactNode, type RefObject } from 'react';
 import { createPortal } from 'react-dom';
 import { Icon } from './Icon';
 
@@ -105,4 +105,49 @@ function FormField({ label, children, hint }: { label: string; children: ReactNo
   return <label className="form-field"><span>{label}</span>{children}{hint && <small>{hint}</small>}</label>;
 }
 
-export { Button, Drawer, EmptyState, FormField, Modal, PageHeader };
+interface SelectOption { value: string; label: string; }
+
+/**
+ * 原生 select 的展开层由操作系统绘制，无法稳定使用应用的选中背景和圆角；统一由此组件承载菜单层。
+ */
+function Select({ value, options, onChange, ariaLabel, disabled = false, className = '' }: { value: string; options: SelectOption[]; onChange: (value: string) => void; ariaLabel: string; disabled?: boolean; className?: string }) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const listboxId = useId();
+  const selected = options.find((option) => option.value === value) ?? options[0];
+
+  useEffect(() => {
+    if (!open) return;
+    const CloseOnOutsidePointer = (event: PointerEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    document.addEventListener('pointerdown', CloseOnOutsidePointer);
+    return () => document.removeEventListener('pointerdown', CloseOnOutsidePointer);
+  }, [open]);
+
+  function FocusOption(index: number) {
+    requestAnimationFrame(() => rootRef.current?.querySelectorAll<HTMLButtonElement>('.custom-select-option')[index]?.focus());
+  }
+
+  function HandleTriggerKeyDown(event: ReactKeyboardEvent<HTMLButtonElement>) {
+    if (event.key === 'Escape') { setOpen(false); return; }
+    if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp' && event.key !== 'Enter' && event.key !== ' ') return;
+    event.preventDefault();
+    if (event.key === 'Enter' || event.key === ' ') { setOpen((current) => !current); return; }
+    setOpen(true);
+    const currentIndex = Math.max(0, options.findIndex((option) => option.value === value));
+    FocusOption(Math.max(0, Math.min(options.length - 1, currentIndex + (event.key === 'ArrowDown' ? 1 : -1))));
+  }
+
+  function HandleOptionKeyDown(event: ReactKeyboardEvent<HTMLButtonElement>, index: number) {
+    if (event.key === 'Escape') { event.preventDefault(); setOpen(false); rootRef.current?.querySelector<HTMLButtonElement>('.custom-select-trigger')?.focus(); return; }
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); FocusOption((index + (event.key === 'ArrowDown' ? 1 : options.length - 1)) % options.length); }
+  }
+
+  return <div className={`custom-select ${className}`} ref={rootRef}>
+    <button className="custom-select-trigger" type="button" role="combobox" aria-label={ariaLabel} aria-controls={listboxId} aria-expanded={open} aria-haspopup="listbox" disabled={disabled} onClick={() => setOpen((current) => !current)} onKeyDown={HandleTriggerKeyDown}><span>{selected?.label ?? ''}</span><Icon name="chevron-down" size={16} /></button>
+    {open && <div className="custom-select-menu" id={listboxId} role="listbox" aria-label={ariaLabel}>{options.map((option, index) => <button key={option.value} className={`custom-select-option ${option.value === value ? 'is-selected' : ''}`} type="button" role="option" aria-selected={option.value === value} onClick={() => { onChange(option.value); setOpen(false); }} onKeyDown={(event) => HandleOptionKeyDown(event, index)}>{option.label}</button>)}</div>}
+  </div>;
+}
+
+export { Button, Drawer, EmptyState, FormField, Modal, PageHeader, Select };

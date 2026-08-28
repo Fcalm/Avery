@@ -8,8 +8,12 @@ interface UiStoreValue {
   setCurrentResumeId: (id: string | null) => void;
   resumePanelOpen: boolean;
   setResumePanelOpen: (open: boolean) => void;
-  rightPanelMode: 'resume' | 'browser';
-  setRightPanelMode: (mode: 'resume' | 'browser') => void;
+  rightPanelWidth: number;
+  setRightPanelWidth: (width: number) => void;
+  rightPanelExpanded: boolean;
+  setRightPanelExpanded: (expanded: boolean) => void;
+  assistantView: 'chat' | 'trace';
+  setAssistantView: (view: 'chat' | 'trace') => void;
   notice: string;
   ShowNotice: (message: string) => void;
   profileConflict: boolean;
@@ -22,7 +26,9 @@ function UiStoreProvider({ children }: { children: ReactNode }) {
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
   const [currentResumeId, setCurrentResumeId] = useState<string | null>(null);
   const [resumePanelOpen, setResumePanelOpen] = useState(false);
-  const [rightPanelMode, setRightPanelMode] = useState<'resume' | 'browser'>('resume');
+  const [rightPanelWidth, setRightPanelWidth] = useState(430);
+  const [rightPanelExpanded, setRightPanelExpanded] = useState(false);
+  const [assistantView, setAssistantView] = useState<'chat' | 'trace'>('chat');
   const [notice, setNotice] = useState('');
   const [profileConflict, setProfileConflict] = useState(false);
 
@@ -35,9 +41,11 @@ function UiStoreProvider({ children }: { children: ReactNode }) {
     activeConversationId, setActiveConversationId,
     currentResumeId, setCurrentResumeId,
     resumePanelOpen, setResumePanelOpen,
-    rightPanelMode, setRightPanelMode,
+    rightPanelWidth, setRightPanelWidth,
+    rightPanelExpanded, setRightPanelExpanded,
+    assistantView, setAssistantView,
     notice, ShowNotice, profileConflict, setProfileConflict,
-  }), [activeConversationId, currentResumeId, resumePanelOpen, rightPanelMode, notice, profileConflict, ShowNotice]);
+  }), [activeConversationId, currentResumeId, resumePanelOpen, rightPanelWidth, rightPanelExpanded, assistantView, notice, profileConflict, ShowNotice]);
 
   return <UiStoreContext.Provider value={value}>{children}</UiStoreContext.Provider>;
 }

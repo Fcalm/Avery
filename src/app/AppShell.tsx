@@ -8,24 +8,11 @@ import { Button, Modal } from '../shared/components/UI';
 import { Icon } from '../shared/components/Icon';
 import { GetAgentBalance, IsDesktopAgentAvailable } from '../features/assistant/api/agentQueries';
 import { ASSISTANT_MAIN_MIN_WIDTH } from '../shared/layoutConstants';
+import { ListEvalRuns } from '../features/developer/api/evaluationQueries';
 
-const ChineseDigits = ['〇', '一', '二', '三', '四', '五', '六', '七', '八', '九'];
-const Weekdays = ['日', '一', '二', '三', '四', '五', '六'];
 const MinSidebarWidth = 192;
 const MaxSidebarWidth = 320;
 const MinContentWidth = 800;
-
-function ToChineseNumber(value: number) {
-  if (value < 10) return ChineseDigits[value];
-  if (value === 10) return '十';
-  if (value < 20) return `十${ChineseDigits[value - 10]}`;
-  return `${ChineseDigits[Math.floor(value / 10)]}十${value % 10 ? ChineseDigits[value % 10] : ''}`;
-}
-
-function FormatChineseDate(date = new Date()) {
-  const year = String(date.getFullYear()).split('').map((digit) => ChineseDigits[Number(digit)]).join('');
-  return `${year}年${ToChineseNumber(date.getMonth() + 1)}月${ToChineseNumber(date.getDate())}日 星期${Weekdays[date.getDay()]}`;
-}
 
 function FormatBalance(currency: string, total: string) {
   const number = Number(total);
@@ -33,21 +20,20 @@ function FormatBalance(currency: string, total: string) {
   return currency === 'CNY' ? `¥ ${amount}` : currency === 'USD' ? `$ ${amount}` : `${currency} ${amount}`;
 }
 
-function AppShell({ page, onNavigate, onRestartOnboarding, children }: { page: PageId; onNavigate: (page: PageId) => void; onRestartOnboarding: () => void; children: ReactNode }) {
+function AppShell({ page, sidebarCollapsed, onNavigate, onRestartOnboarding, children }: { page: PageId; sidebarCollapsed: boolean; onNavigate: (page: PageId) => void; onRestartOnboarding: () => void; children: ReactNode }) {
   const conversations = useConversations();
   const createConversation = useCreateConversation({ onFailure: (message) => ShowNotice(message || '会话创建失败，请稍后重试。') });
   const renameConversation = useRenameConversation({ onConflict: () => ShowNotice('会话已在其他窗口被修改，已刷新为最新版本'), onFailure: () => ShowNotice('会话重命名失败，请稍后重试。') });
   const deleteConversation = useDeleteConversation({ onFailure: () => ShowNotice('会话删除失败，请稍后重试。') });
-  const { settings, setSettings } = useSettingsStore();
-  const { activeConversationId, setActiveConversationId, resumePanelOpen, setResumePanelOpen, setRightPanelMode, ShowNotice } = useUiStore();
+  const { settings, setSettings, saveSettingsNow } = useSettingsStore();
+  const { activeConversationId, setActiveConversationId, resumePanelOpen, setResumePanelOpen, rightPanelWidth, rightPanelExpanded, setRightPanelExpanded, assistantView, setAssistantView, ShowNotice } = useUiStore();
   const activeConversation = conversations.find((item) => item.id === activeConversationId);
   const [renameConversationId, setRenameConversationId] = useState<string | null>(null);
   const [renameTitle, setRenameTitle] = useState('');
   const [deleteConversationId, setDeleteConversationId] = useState<string | null>(null);
+  const [showHeaderConversationMenu, setShowHeaderConversationMenu] = useState(false);
   const [balance, setBalance] = useState<Array<{ currency: string; totalBalance: string }> | null>(null);
   const [refreshingBalance, setRefreshingBalance] = useState(false);
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const [showRightPanelChooser, setShowRightPanelChooser] = useState(false);
   const appShellRef = useRef<HTMLDivElement>(null);
   const sidebarWidthRef = useRef(224);
   const minimumContentWidth = page === 'assistant' ? ASSISTANT_MAIN_MIN_WIDTH : MinContentWidth;
@@ -73,6 +59,14 @@ function AppShell({ page, onNavigate, onRestartOnboarding, children }: { page: P
   }, [RefreshBalance]);
 
   useEffect(() => {
+    const CloseHeaderConversationMenu = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setShowHeaderConversationMenu(false);
+    };
+    window.addEventListener('keydown', CloseHeaderConversationMenu);
+    return () => window.removeEventListener('keydown', CloseHeaderConversationMenu);
+  }, []);
+
+  useEffect(() => {
     const KeepContentReadable = () => {
       const shellWidth = appShellRef.current?.clientWidth ?? window.innerWidth;
       const maximum = Math.min(MaxSidebarWidth, Math.max(MinSidebarWidth, shellWidth - minimumContentWidth));
@@ -91,21 +85,42 @@ function AppShell({ page, onNavigate, onRestartOnboarding, children }: { page: P
     onNavigate('assistant');
   }
 
-  function HandleDeveloperModeChange(enabled: boolean) {
-    setSettings((current) => ({ ...current, developerMode: enabled }));
-    ShowNotice(enabled ? '开发者模式已开启，请重启客户端后查看开发者界面' : '开发者模式已关闭');
+  async function HandleDeveloperModeChange(enabled: boolean) {
+    if (!enabled) {
+      try {
+        const runs = await ListEvalRuns();
+        if (runs.some((run) => !['completed', 'failed', 'cancelled'].includes(run.status))) {
+          ShowNotice('存在未结束的测评，请先取消或等待完成');
+          return;
+        }
+      } catch (error) {
+        ShowNotice(error instanceof Error ? error.message : '无法确认测评运行状态');
+        return;
+      }
+    }
+    const next = { ...settings, developerMode: enabled };
+    try {
+      await saveSettingsNow(next);
+      setSettings(() => next);
+    } catch (error) {
+      ShowNotice(error instanceof Error ? error.message : '保存开发者模式失败');
+      return;
+    }
+    if (!enabled && page === 'developer') onNavigate('settings');
+    ShowNotice(enabled ? '开发者模式已开启' : '开发者模式已关闭');
   }
 
   function HandleResumePanel() {
-    if (resumePanelOpen && page === 'assistant') { setResumePanelOpen(false); return; }
-    setShowRightPanelChooser(true);
-  }
-
-  function OpenRightPanel(mode: 'resume' | 'browser') {
-    setRightPanelMode(mode);
+    if (resumePanelOpen && page === 'assistant') { setResumePanelOpen(false); setRightPanelExpanded(false); return; }
     setResumePanelOpen(true);
-    setShowRightPanelChooser(false);
     if (page !== 'assistant') onNavigate('assistant');
+  }
+  function HandlePanelExpansion() {
+    if (!resumePanelOpen) {
+      setResumePanelOpen(true);
+      if (page !== 'assistant') onNavigate('assistant');
+    }
+    setRightPanelExpanded(!rightPanelExpanded);
   }
   function BeginRenameConversation(id: string, title: string) { setRenameConversationId(id); setRenameTitle(title); }
   function SaveConversationRename() {
@@ -145,11 +160,12 @@ function AppShell({ page, onNavigate, onRestartOnboarding, children }: { page: P
     window.addEventListener('pointercancel', Stop, { once: true });
   }
 
-  return <div ref={appShellRef} className={`app-shell ${sidebarCollapsed ? 'is-sidebar-collapsed' : ''}`} style={{ '--main-content-min-width': `${minimumContentWidth}px` } as CSSProperties}>
+  const rightPanelWidthToken = rightPanelExpanded ? 'min(720px, calc(100vw - var(--sidebar-width) - var(--space-7)))' : `${rightPanelWidth}px`;
+  return <div ref={appShellRef} className={`app-shell ${sidebarCollapsed ? 'is-sidebar-collapsed' : ''} ${page === 'assistant' && resumePanelOpen ? 'has-right-panel' : ''} ${page === 'assistant' && resumePanelOpen && rightPanelExpanded ? 'is-right-panel-expanded' : ''}`} style={{ '--main-content-min-width': `${minimumContentWidth}px`, '--right-panel-width': rightPanelWidthToken } as CSSProperties}>
     <aside className="sidebar" aria-label="主导航">
-      <button className="sidebar-collapse-toggle" type="button" aria-label={sidebarCollapsed ? '展开导航栏' : '隐藏导航栏'} title={sidebarCollapsed ? '展开导航栏' : '隐藏导航栏'} onClick={() => setSidebarCollapsed((value) => !value)}><Icon name="chevron-down" size={15} className={sidebarCollapsed ? 'points-right' : 'points-left'} /></button>
       <div className="brand">
-        <div><b>OfferGet</b></div>
+        <img className="brand-logo" src="./assets/avery-guiding-elf-icon-v2.png" alt="" />
+        <div><b>Avery</b></div>
       </div>
 
       <nav className="sidebar-nav">
@@ -172,7 +188,7 @@ function AppShell({ page, onNavigate, onRestartOnboarding, children }: { page: P
           <button className="sidebar-user-trigger" type="button"><span className="avatar">{settings.nickname.slice(0, 1)}</span><span><b>{settings.nickname}</b><small>账户与偏好</small></span><em><Icon name="more" size={16} /></em></button>
           <div className="user-flyout" aria-label="账户菜单">
             <button type="button" onClick={() => onNavigate('settings')}><span className="user-menu-item-label"><Icon name="settings" size={16} /><span>设置</span></span></button>
-            <label className="developer-toggle"><span className="user-menu-item-label"><Icon name="developer-mode" size={16} /><span>开发者模式</span></span><input className="switch-control" type="checkbox" role="switch" aria-label="开发者模式" checked={settings.developerMode} onChange={(event) => HandleDeveloperModeChange(event.target.checked)} /></label>
+            <label className="developer-toggle"><span className="user-menu-item-label"><Icon name="developer-mode" size={16} /><span>开发者模式</span></span><input className="switch-control" type="checkbox" role="switch" aria-label="开发者模式" checked={settings.developerMode} onChange={(event) => void HandleDeveloperModeChange(event.target.checked)} /></label>
             <div className="balance-line"><span className="user-menu-item-label"><Icon name="balance" size={16} /><span>账户余额</span></span><div><b>{refreshingBalance && !balance ? '刷新中…' : balance?.map((item) => FormatBalance(item.currency, item.totalBalance)).join(' / ') ?? '未配置'}</b><button className="balance-refresh" type="button" onClick={() => void RefreshBalance(true)} disabled={refreshingBalance} aria-label="刷新余额" title="刷新余额"><Icon name="refresh" size={15} /></button></div></div>
             <button className="sign-out-button" type="button" onClick={() => ShowNotice('退出功能将在 Electron 客户端接入后启用')}><span className="user-menu-item-label"><Icon name="logout" size={16} /><span>退出</span></span></button>
           </div>
@@ -182,13 +198,12 @@ function AppShell({ page, onNavigate, onRestartOnboarding, children }: { page: P
       <div className="sidebar-resizer" aria-hidden="true" onPointerDown={StartSidebarResize} />
     </aside>
     <main className="main-frame">
-      <header className="letterhead"><div className="letterhead-context"><strong>{FormatChineseDate().replace(/^.*?年/, '')}</strong><span>当前场景 · {MainRoutes.find((route) => route.id === page)?.label ?? '设置'}</span></div><div className="letterhead-note">{page === 'assistant' && <button className="letterhead-resume-button" type="button" onClick={HandleResumePanel} aria-expanded={resumePanelOpen} aria-label={resumePanelOpen ? '隐藏侧边栏' : '打开右侧边栏'} title={resumePanelOpen ? '隐藏侧边栏' : '打开右侧边栏'}><Icon name={resumePanelOpen ? 'sidebar-collapse' : 'sidebar-expand'} size={17} /></button>}</div></header>
+      <header className="letterhead">{page === 'assistant' && <div className="assistant-view-switcher" role="tablist" aria-label="求职助手视图"><button type="button" role="tab" aria-selected={assistantView === 'chat'} className={assistantView === 'chat' ? 'selected' : ''} aria-label="对话" title="对话" onClick={() => setAssistantView('chat')}><Icon name="assistant" size={16} /></button><button type="button" role="tab" aria-selected={assistantView === 'trace'} className={assistantView === 'trace' ? 'selected' : ''} aria-label="轨迹" title="轨迹" onClick={() => setAssistantView('trace')}><Icon name="trace" size={16} /></button></div>}{page === 'assistant' ? <div className="letterhead-context letterhead-conversation"><button className="letterhead-conversation-button" type="button" aria-haspopup="menu" aria-expanded={showHeaderConversationMenu} title={activeConversation?.title ?? '选择会话'} onClick={() => setShowHeaderConversationMenu((value) => !value)}><span>{activeConversation?.title ?? '选择会话'}</span><Icon name={showHeaderConversationMenu ? 'chevron-up' : 'chevron-down'} size={15} /></button>{showHeaderConversationMenu && <div className="letterhead-conversation-menu" role="menu" aria-label="切换会话">{conversations.map((item) => <button key={item.id} type="button" role="menuitem" className={item.id === activeConversationId ? 'selected' : ''} title={item.title} onClick={() => { setActiveConversationId(item.id); setShowHeaderConversationMenu(false); onNavigate('assistant'); }}><span>{item.title}</span></button>)}</div>}</div> : <div className="letterhead-context"><span>{MainRoutes.find((route) => route.id === page)?.label ?? '设置'}</span></div>}<div className="letterhead-note">{page === 'assistant' && <><button className="letterhead-panel-button" type="button" onClick={HandlePanelExpansion} aria-pressed={rightPanelExpanded} aria-label={rightPanelExpanded ? '缩小右侧面板' : '展开右侧面板'} title={rightPanelExpanded ? '缩小右侧面板' : '展开右侧面板'}><Icon name={rightPanelExpanded ? 'panel-shrink' : 'panel-expand'} size={17} /></button><button className="letterhead-resume-button" type="button" onClick={HandleResumePanel} aria-expanded={resumePanelOpen} aria-label={resumePanelOpen ? '隐藏侧边栏' : '打开右侧边栏'} title={resumePanelOpen ? '隐藏侧边栏' : '打开右侧边栏'}><Icon name={resumePanelOpen ? 'sidebar-collapse' : 'sidebar-expand'} size={17} /></button></>}</div></header>
       <div className="letter-rule" />
       <div className="page-container">{children}</div>
     </main>
     <Modal open={Boolean(renameConversationId)} title="重命名会话" onClose={() => setRenameConversationId(null)}><input value={renameTitle} maxLength={120} onChange={(event) => setRenameTitle(event.target.value)} autoFocus /><div className="modal-actions"><Button onClick={() => setRenameConversationId(null)}>取消</Button><Button variant="primary" onClick={SaveConversationRename}>保存</Button></div></Modal>
     <Modal open={Boolean(deleteConversationId)} title="删除会话？" onClose={() => setDeleteConversationId(null)}><p className="modal-copy">会话及其本地消息将被删除，此操作不可撤销。</p><div className="modal-actions"><Button onClick={() => setDeleteConversationId(null)}>取消</Button><Button variant="danger" onClick={ConfirmDeleteConversation}>删除</Button></div></Modal>
-    <Modal open={showRightPanelChooser} title="打开右侧边栏" onClose={() => setShowRightPanelChooser(false)}><p className="modal-copy">请选择要在右侧展开的内容。</p><div className="right-panel-choice"><Button variant="primary" onClick={() => OpenRightPanel('browser')}>内置浏览器</Button><Button onClick={() => OpenRightPanel('resume')}>简历预览栏</Button></div></Modal>
   </div>;
 }
 
