@@ -63,7 +63,7 @@ Trace 默认只保存 fragment ID、版本和哈希；正文仅在开发模式�
 
 System Prompt 只声明以下解释规则：Runtime Reminder 是宿主以 `user` 角色追加的内部状态栏，模型不应复述或专门回复，最新一条是当前状态，但旧消息必须继续保留。它不改变工具白名单、数据授权或安全约束。
 
-每条 Reminder 必须由且仅由一组 `<runtime-reminder>...</runtime-reminder>` 标签完整包裹，不添加属性，也不包含 `createdAt` 或 `scenario`。标签内部由宿主函数生成直白英语正文，并以 `The above is the current runtime status. No response is needed; continue the task.` 结束。默认场景每 5 轮提醒，投递场景占位每 10 轮提醒；首轮、最后一轮和确认权限变化时额外注入。
+每条 Reminder 必须由且仅由一组 `<runtime-reminder>...</runtime-reminder>` 标签完整包裹，不添加属性，也不包含 `createdAt` 或 `scenario`。标签内部由宿主函数生成直白英语正文，并以 `The above is the current runtime status. No response is needed; continue the task.` 结束。默认场景每 5 轮提醒，投递场景每 10 轮提醒；首轮、最后一轮和确认权限变化时额外注入。
 
 ## 5. 各片段应表达什么
 
@@ -86,7 +86,7 @@ System Prompt 只声明以下解释规则：Runtime Reminder 是宿主以 `user`
 - 0.2.0 默认场景没有岗位网络能力，岗位信息由用户手动录入或作为已授权本地材料提供。
 - 0.3.0 只有在用户明确提供 URL 且版本化场景启用 `ReadUrl` 时才能受限读取；不得自行搜索、猜测 URL 或扩展来源。
 - `SearchJobs` 只属于未承诺的未来候选，在另行产品裁决前不得出现在生产 Prompt 或工具白名单中。
-- 投递场景第一阶段处于禁用占位，不能创建 Agent Run，也不向模型暴露任何 Automation 工具。
+- 投递场景只向模型暴露冻结的原子浏览器工具，不开放原始 CLI、任意脚本、简历写入或档案写入。
 - 默认使用用户语言，编辑性判断可自主完成；允许推测性补全，但必须遵守 `【待确认】` 规则。
 
 ### 5.3 Scenario

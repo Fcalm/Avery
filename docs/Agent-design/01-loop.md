@@ -257,7 +257,7 @@ interface PendingConfirmation {
 
 至少限制：
 
-- 模型子轮数：默认场景 30，投递场景占位 100；调整属于场景配置，不需要用额外的“轮数过多”策略阻止。
+- 模型子轮数：默认场景 30，投递场景 100；调整属于场景配置，不需要用额外的“轮数过多”策略阻止。
 - 工具调用总数：默认 12，场景可降低。
 - 相同错误指纹：最多纠正 1 次。
 - 相同工具名 + 规范化参数：读工具最多自动重试 1 次，写工具不得无业务幂等键重试。
@@ -268,7 +268,7 @@ interface PendingConfirmation {
 ## 10. Runtime Reminder 注入
 
 - 使用 `user` 角色追加，Provider 只接收 `role/content`；内部 metadata 不进入 API。
-- 默认场景在首轮、每 5 个已使用模型轮次、最后一轮以及确认权限变化时注入；投递场景占位采用每 10 轮。
+- 默认场景在首轮、每 5 个已使用模型轮次、最后一轮以及确认权限变化时注入；投递场景采用每 10 轮。
 - 整条状态栏必须由且仅由一组 `<runtime-reminder>...</runtime-reminder>` 标签包裹；标签内部使用直白英语，例如 `Today is ...`、`Used turns: 20 of 30.`、`Current confirmation mode: ...`。
 - 结尾固定表达：`The above is the current runtime status. No response is needed; continue the task.`
 - 同一 Session 的正常追加过程中不得删除、替换或就地改写旧 reminder；最新一条代表当前状态，旧消息用于保持历史和前缀缓存稳定。

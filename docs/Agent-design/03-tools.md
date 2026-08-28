@@ -111,21 +111,27 @@ interface AgentToolDefinition<TInput, TOutput> {
 
 保留 `SearchJobs`/`ReadUrl` 草案不代表产品已承诺实现。任何启用都必须修改产品版本、ScenarioSnapshot、Prompt fragment、Tool Registry 和发布门禁，不能只切换一个配置布尔值。
 
-### 4.3 投递场景占位
+### 4.3 投递场景
 
-投递场景 `application` 第一阶段只保留产品占位，不实现、不启用，也不注册任何浏览器或 Automation 工具：
+投递场景 `application` 已按浏览器开发计划启用。它只读取本地求职资料，并使用受控原子浏览器工具；不得继承默认场景的简历或档案写权限：
 
 ```ts
 {
   id: 'application',
   name: '投递场景',
-  enabled: false,
-  status: 'planned',
-  toolNames: []
+  enabled: true,
+  status: 'active',
+  toolNames: [
+    'Read', 'Glob', 'Grep', 'ReadProfile', 'ReadResume',
+    'CreateTodo', 'UpdateTodo', 'ReadTodo', 'AskUserQuestion',
+    'BrowserNavigate', 'BrowserSnapshot', 'BrowserReadPage', 'BrowserClick',
+    'BrowserFill', 'BrowserSelect', 'BrowserSetChecked', 'BrowserPressKey',
+    'BrowserUploadFile', 'BrowserWait', 'BrowserSwitchTab', 'BrowserGoBack'
+  ]
 }
 ```
 
-用户尝试进入时由应用层直接返回“投递场景暂未开放”，不得创建一个空能力 Run，也不得临时复用默认场景权限。
+场景在会话首次发送时冻结；切换场景必须新建会话。浏览器工具名称与执行边界见 5.4 节和 `07-browser-tools-development-plan.md`，确认权限只改变普通动作的确认频率，不扩大工具、文件或网络权限。
 
 ## 5. MVP 工具定义
 
@@ -212,7 +218,30 @@ ReadUrl
 
 0.3.0 的确认入库需要单独定义窄写命令、revision、幂等键和确认提案。此前讨论过的 `SaveJob`、`AddJobToLibrary` 等名称不自动复活；工具命名与是否向模型暴露必须在 0.3.0 设计评审中单独决定。
 
-### 5.4 Todo
+### 5.4 浏览器操作工具（投递场景规划）
+
+浏览器能力使用 `agent-browser` CLI 作为执行层，由 Host 将模型调用固定映射为 CLI 参数数组，不向模型开放原始命令、任意参数、`eval`、`chat` 或插件能力。CLI 通过随机本地 CDP 端口连接由应用自带 Electron 启动的隔离浏览器伴随进程，不连接 OfferGet 主进程，也不需要额外安装 Chromium。登录态保存在伴随进程独立的持久化 Profile 中，由用户在可见窗口内手动登录并跨 Session 复用。
+
+隔离伴随进程只承载招聘网页 target，不初始化 OfferGet Renderer 或 Backend，因此 CLI 无法枚举主应用页面。第一阶段仍只实施应用层网络限制：导航及重定向仅接受经校验的公开 `http/https` 地址，拒绝本机、内网和特殊协议；页面输出使用内容边界并限长；上传只接受 Host 签发的文件引用；提交、发送和敏感上传继续由 Harness 判断并确认。这里的进程隔离是页面与身份隔离，不等同于受控代理或完整网络出口隔离。
+
+规划工具列表：
+
+| 工具 | 职责 | 对应 CLI |
+| --- | --- | --- |
+| `BrowserNavigate` | 在当前标签页导航到指定 URL | `agent-browser open <url>` |
+| `BrowserSnapshot` | 获取当前页面结构、可交互元素及稳定引用 | `agent-browser snapshot` |
+| `BrowserReadPage` | 读取当前页面的正文内容 | `agent-browser read` |
+| `BrowserClick` | 点击指定页面元素 | `agent-browser click <selector>` |
+| `BrowserFill` | 清空并填写指定输入框 | `agent-browser fill <selector> <text>` |
+| `BrowserSelect` | 选择指定下拉选项 | `agent-browser select <selector> <value>` |
+| `BrowserSetChecked` | 设置复选框或单选项的选中状态 | 选中：`agent-browser check <selector>`；取消选中：`agent-browser uncheck <selector>` |
+| `BrowserPressKey` | 在当前页面按下指定按键 | `agent-browser press <key>` |
+| `BrowserUploadFile` | 将 Host 授权的文件上传到指定网页控件 | `agent-browser upload <selector> <files>` |
+| `BrowserWait` | 等待元素、页面状态或 URL 变化 | `agent-browser wait <selector>`、`wait --text <text>`、`wait --url <pattern>` 或 `wait --load <state>` |
+| `BrowserSwitchTab` | 切换到指定浏览器标签页 | `agent-browser tab <tabId或label>` |
+| `BrowserGoBack` | 返回当前标签页的上一历史页面 | `agent-browser back` |
+
+### 5.5 Todo
 
 Todo 是当前 Run 的执行清单，不属于整个 Session，避免旧目标污染新任务。MVP 保留：
 
@@ -265,7 +294,7 @@ inProgress → completed | cancelled
 
 在得到基线数据前，不增加自动注入或强制读取，以免掩盖模型的自然 Todo 管理能力。
 
-### 5.5 用户交互
+### 5.6 用户交互
 
 `AskUserQuestion` 是结构化等待入口。工具返回统一 wait disposition，Loop 持久化问题后进入 `waiting_user_input`，而不是继续请求模型或保持悬空 Promise。
 
@@ -391,7 +420,7 @@ interface ToolEnvelope<T> {
 - 模型可见工具名全部符合 PascalCase 规则且跨 Provider 可接受。
 - 默认场景按意图进一步收窄工具，不暴露任何投递或浏览器能力。
 - 0.2.0 默认场景不注册、不展示也不执行 `SearchJobs`、`ReadUrl`。
-- 投递场景处于禁用占位，不能创建 Run 或继承默认场景工具。
+- 投递场景只暴露冻结的 21 个工具，不包含 `CreateResume`、`UpdateResume`、`UpdateProfile`、`SearchJobs` 或 `ReadUrl`。
 - `Read`、`Glob`、`Grep` 可以访问授权虚拟挂载，但不能路径逃逸、读取非法 UTF-8 或敏感文件。
 - 模型直接请求未进入冻结快照的已注册/草案工具时，执行入口返回 `TOOL_NOT_ALLOWED`，实现函数调用次数为 0。
 - 0.3.0 fixture 必须证明 `ReadUrl` 只接受用户明确 URL，并拒绝 localhost、内网、文件协议、凭据、Cookie 和未校验重定向。
@@ -406,4 +435,4 @@ interface ToolEnvelope<T> {
 
 ## 14. 总结
 
-MVP 工具集优先使用少量、高辨识度的 PascalCase 工具。`Read`、`Glob`、`Grep` 是通用 UTF-8 文件只读能力，来源差异由虚拟挂载和端口授权处理；简历、档案和 Todo 只在权限、Schema 或副作用真正不同的地方拆分。0.2.0 不注册岗位网络工具；0.3.0 只评估用户明确 URL 的受限 `ReadUrl`，`SearchJobs` 留在未承诺候选。确认阶段属于 Harness，投递场景暂不实现，Todo 先在无自动注入条件下验证模型自身的进度管理能力。
+MVP 工具集优先使用少量、高辨识度的 PascalCase 工具。`Read`、`Glob`、`Grep` 是通用 UTF-8 文件只读能力，来源差异由虚拟挂载和端口授权处理；简历、档案和 Todo 只在权限、Schema 或副作用真正不同的地方拆分。默认场景不注册岗位网络工具；投递场景使用 12 个原子浏览器工具完成自主岗位发现、JD 阅读和投递，不包装 `SearchJobs` 高层工具。确认阶段属于 Harness，Todo 先在无自动注入条件下验证模型自身的进度管理能力。

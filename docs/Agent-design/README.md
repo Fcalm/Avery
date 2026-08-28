@@ -1,7 +1,7 @@
 # OfferGet Agent 设计总览
 
 > 状态：v0.2 已通过 PM 复审；Runtime Reminder 与 Session 前缀快照已进入实现
-> 更新时间：2026-08-22
+> 更新时间：2026-08-27
 > 适用范围：OfferGet 0.2.0 默认场景；0.3.0 网络能力边界与未来候选仅作版本化设计
 
 ## 1. 文档目标
@@ -14,6 +14,15 @@
 4. [Context](./04-context.md)：上下文组成、预算、工具结果限长和压缩。
 5. [Provider](./05-provider.md)：0.2.0 如何稳定支持 DeepSeek，并为 OpenAI 独立 Adapter 与 MiMo 候选扩展保留边界。
 6. [Harness](./06-harness.md)：如何用模型之外的机制约束、验证和纠正 Agent。
+
+专项开发规划：
+
+- [Browser Tools 开发规划与进度](./07-browser-tools-development-plan.md)：`agent-browser` CLI、登录持久化、工具契约、安全边界、Harness、取消恢复、测试与发布进度。
+- [Electron CDP 兼容性验证](./08-electron-cdp-compatibility-validation.md)：记录主进程 `WebContentsView` 的兼容性与越权风险，以及隔离 Electron 伴随进程的方案决定。
+- [投递场景 Agent E2E 开发规划](./09-application-agent-e2e-development-plan.md)：本地多岗位测试站、真实表单控件、ScriptedProvider、AgentHost 完整链路与发布门禁。
+- [投递 Agent 发布验证](./10-application-release-validation.md)：打包桌面/浏览器证据边界、DeepSeek 10 次评估运行器和真实招聘站人工安全门禁。
+- [拟真浏览器 Agent 测评分支需求](./11-realistic-browser-evaluation-branch.md)：记录后续复杂 DOM、动态组件、安全干扰、可复现用例和测评指标需求；当前不开发。
+- [Agent 测评系统开发规划](./12-agent-evaluation-system-development-plan.md)：定义开发者模式下的应用内测评控制台、Prompt/Browser Runner、多候选快照、评分、存储、页面和分阶段验收。
 
 对应产品与总体架构依据：
 
@@ -34,7 +43,7 @@
 - Provider Adapter 负责协议差异，Loop 只消费统一事件；不得把所有供应商强行当作 OpenAI Chat Completions。
 - Harness 是独立于模型的控制层。确定性规则优先，模型自检只能补充语义判断，不能授予权限。
 - 一次点击发送创建一个 Run，不创建新 Session；场景切换才创建新 Session。
-- 默认场景最多 30 个模型轮次，投递场景占位 100；Runtime Reminder 以 user 角色 append-only 注入。
+- 默认场景最多 30 个模型轮次，投递场景 100；Runtime Reminder 以 user 角色 append-only 注入。
 - Session 前缀只在首次创建、满 24 小时后的下一次 Run 或 `/reload` 时重建，不设置独立 `ContextCacheEpoch`。
 
 ### 2.1 两个顶层场景
@@ -45,13 +54,13 @@
 | --- | --- | --- |
 | 0.2.0 默认场景 `default` | 读写简历与档案；通过通用 UTF-8 文件工具读取授权文件；维护 Run Todo；结构化提问 | 不注册 `SearchJobs`、`ReadUrl`，不访问岗位 URL，不拥有任意 HTTP 或浏览器能力 |
 | 0.3.0 默认场景候选 | 继承 0.2.0；用户显式提供 URL 时可调用受限 `ReadUrl` 生成预览 | `SearchJobs` 仍禁用；确认入库必须经过独立窄写入边界 |
-| 投递场景 `application` | 保留 `enabled: false` 的产品占位，不创建 Run、不注册工具 | 不得复用默认场景权限或提前暴露浏览器能力 |
+| 投递场景 `application` | 读取简历/档案/授权文件，使用 12 个受控原子浏览器工具自主搜索、阅读 JD 和投递 | 不得写简历/档案，不开放 `SearchJobs`、原始 CLI、任意脚本或未经确认的高风险外部动作 |
 
-0.2.0 坚持手动岗位闭环，不开放岗位联网发现或 URL 提取。0.3.0 只允许“用户明确 URL → 受限读取 → 展示预览 → 用户确认后入库”，Agent 不得自行搜索、猜测 URL、扩展来源或携带简历全文和敏感信息访问网络。
+默认场景坚持本地材料闭环，不开放岗位联网发现或 URL 提取。投递场景允许 Agent 通过受控浏览器自主搜索岗位、读取公开 JD，并在用户授权范围内填写和投递；它不能把页面内容当成指令、不能携带未授权文件或绕过最终外部动作确认。
 
 `SearchJobs` 仅是未承诺版本的候选设计。启用前必须另行更新 PRD 和路线图，并通过来源白名单、SSRF、预算、取消、超时、脱敏、审计和站点条款专项验收。无界翻页、后台监控、周期搜索和持续全网爬取永久禁止。
 
-投递场景暂不实现。用户尝试进入时由应用层直接返回“投递场景暂未开放”，不能创建空能力 Run，也不能临时继承默认场景工具。
+投递场景已进入开发态：新会话可冻结独立的 Prompt、100 轮预算和 21 个工具白名单，并通过隔离浏览器执行原子动作；确定性本地 AgentHost E2E 与打包浏览器冒烟已通过，但 DeepSeek 10 次基线和真实站点发布门禁尚未通过，因此不能标记为正式开放。场景切换仍须新建会话，不能临时继承默认场景权限。
 
 ## 3. 边界与数据流
 
@@ -152,7 +161,7 @@ A-01 曾记录 6 条 `it.fails` 失败证据，并由只读集成审计发现 2 
 | 场景快照 | Session 冻结稳定 Prompt/Context/Tool 前缀；Run 冻结动态数据范围与 Provider 选择 | [ADR-AGENT-002](../architecture/decisions/ADR-AGENT-002-immutable-run-snapshot.md) |
 | 默认压缩阈值 | 输入预算的 70%，场景只可降低 | [ADR-AGENT-003](../architecture/decisions/ADR-AGENT-003-context-budget-and-compaction.md) |
 | 最近原文轮次 | 至少 5 个完整用户轮次及完整工具组 | [ADR-AGENT-003](../architecture/decisions/ADR-AGENT-003-context-budget-and-compaction.md) |
-| 单 Run 模型子轮 | 默认场景 30；投递场景占位 100；最后一轮禁止新工具调用 | [ADR-AGENT-003](../architecture/decisions/ADR-AGENT-003-context-budget-and-compaction.md) |
+| 单 Run 模型子轮 | 默认场景 30；投递场景 100；最后一轮禁止新工具调用 | [ADR-AGENT-003](../architecture/decisions/ADR-AGENT-003-context-budget-and-compaction.md) |
 | Schema 与确认 | 受限 JSON Schema 2020-12；等待不持锁，确认时重加锁校验 revision | [ADR-AGENT-004](../architecture/decisions/ADR-AGENT-004-tool-safety-and-correction.md) |
 | 纠正重试 | 同错误指纹最多 1 次；Provider 瞬时错误仅输出前有界退避 | [ADR-AGENT-004](../architecture/decisions/ADR-AGENT-004-tool-safety-and-correction.md) |
 | Provider | 0.2.0 DeepSeek；OpenAI 为后续独立 Adapter；MiMo 仅候选 | [ADR-AGENT-005](../architecture/decisions/ADR-AGENT-005-provider-rollout.md) |
