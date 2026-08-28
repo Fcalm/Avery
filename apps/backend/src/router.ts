@@ -23,7 +23,8 @@ export const ReadOnlyChannels = new Set<string>([
   'workspace:get-profiles', 'workspace:get-resume-revisions',
   'workspace:recovery-status',
   'workspace:database-recovery-status',
-  'agent:status', 'agent:observability', 'agent:trace-events', 'agent:test-connection', 'agent:get-balance', 'agent:get-models', 'agent:get-session-assistant-state',
+  'agent:status', 'agent:observability', 'agent:trace-events', 'agent:test-connection', 'agent:get-balance', 'agent:get-models', 'agent:get-session-assistant-state', 'agent:browser-runtime-status',
+  'evaluation:projects-list', 'evaluation:project-read', 'evaluation:project-validate', 'evaluation:project-preview', 'evaluation:runs-list', 'evaluation:run-read', 'evaluation:case-read', 'evaluation:runs-compare',
 ]);
 
 /**
@@ -51,6 +52,9 @@ export const MethodRoutes: Record<string, MethodRoute> = {
   'agent:cancel': { service: 'agent', method: 'Cancel' },
   'agent:update-confirmation-mode': { service: 'agent', method: 'UpdateConfirmationMode' },
   'agent:confirm-resume-edit': { service: 'agent', method: 'ConfirmResumeEdit' },
+  'agent:confirm-browser-action': { service: 'agent', method: 'ConfirmBrowserAction' },
+  'agent:browser-runtime-status': { service: 'agent', method: 'GetBrowserRuntimeStatus' },
+  'agent:browser-clear-profile': { service: 'agent', method: 'ClearBrowserProfile' },
   'agent:acquire-resume-lock': { service: 'agent', method: 'AcquireResumeEditLock' },
   'agent:release-resume-lock': { service: 'agent', method: 'ReleaseResumeEditLock' },
   'agent:status': { service: 'agent', method: 'GetStatus' },
@@ -66,6 +70,20 @@ export const MethodRoutes: Record<string, MethodRoute> = {
   'agent:module-configuration': { service: 'agent', method: 'GetModuleConfiguration' },
   'agent:select-module-directory': { service: 'agent', method: 'SelectModuleDirectory' },
   'agent:reset-modules': { service: 'agent', method: 'ResetModules' },
+  'evaluation:project-create': { service: 'evaluation', method: 'CreateProject' },
+  'evaluation:project-update': { service: 'evaluation', method: 'UpdateProject' },
+  'evaluation:project-read': { service: 'evaluation', method: 'ReadProject' },
+  'evaluation:projects-list': { service: 'evaluation', method: 'ListProjects' },
+  'evaluation:project-delete': { service: 'evaluation', method: 'DeleteProject' },
+  'evaluation:dataset-import': { service: 'evaluation', method: 'ImportDataset' },
+  'evaluation:project-validate': { service: 'evaluation', method: 'ValidateProject' },
+  'evaluation:project-preview': { service: 'evaluation', method: 'PreviewProject' },
+  'evaluation:run-start': { service: 'evaluation', method: 'StartRun' },
+  'evaluation:run-cancel': { service: 'evaluation', method: 'CancelRun' },
+  'evaluation:run-read': { service: 'evaluation', method: 'ReadRun' },
+  'evaluation:runs-list': { service: 'evaluation', method: 'ListRuns' },
+  'evaluation:case-read': { service: 'evaluation', method: 'ReadCaseResult' },
+  'evaluation:runs-compare': { service: 'evaluation', method: 'CompareRuns' },
   'workspace:status': { service: 'workspace', method: 'GetStatus' },
   'workspace:get-view-model': { service: 'workspace', method: 'LoadViewModel' },
   'workspace:get-settings': { service: 'settings', method: 'GetStoredSettings' },
@@ -106,16 +124,29 @@ export const MethodRoutes: Record<string, MethodRoute> = {
 export const FunctionRouteChannels = ['workspace:migrate'];
 
 /** 事件发送通道：preload 用 ipcRenderer.on 订阅，不经 HandleCommand 分发。 */
-export const EventChannels = ['agent:stream'];
+export const EventChannels = ['agent:stream', 'evaluation:event'];
 
 /** 结构必需的实体 ID：长度受限，防止超长标识进入领域层。 */
 const EntityId = z.string().min(1).max(200);
 
 /** 可选实体修订号：写命令第二个位置参数的 envelope 级字段。 */
 const Revision = z.number().int().nonnegative().optional();
+const RequiredRevision = z.number().int().positive();
+const EvalProjectInputSchema = z.object({
+  id: EntityId.optional(), name: z.string().min(1).max(200), runnerType: z.enum(['prompt', 'browser']),
+  config: z.record(z.string(), z.unknown()), rubric: z.string().max(100000).optional(),
+}).strict();
 
 /** 写通道负载的整数组形状校验表（阶段 6 A2 收口）：键为通道，值为对该通道 args 的整体 tuple 校验。 */
 const WriteArgsSchemas: Record<string, z.ZodTuple> = {
+  'agent:confirm-browser-action': z.tuple([EntityId, z.boolean()]),
+  'agent:browser-clear-profile': z.tuple([]),
+  'evaluation:project-create': z.tuple([EvalProjectInputSchema]),
+  'evaluation:project-update': z.tuple([EntityId, EvalProjectInputSchema, RequiredRevision]),
+  'evaluation:project-delete': z.tuple([EntityId]),
+  'evaluation:dataset-import': z.tuple([EntityId, z.string().max(8 * 1024 * 1024), z.string().max(100000), RequiredRevision]),
+  'evaluation:run-start': z.tuple([EntityId]),
+  'evaluation:run-cancel': z.tuple([EntityId]),
   'workspace:save-settings': z.tuple([SettingsSubmitSchema]),
   'workspace:conversations-create': z.tuple([ConversationCreateSchema]),
   'workspace:conversations-rename': z.tuple([EntityId, z.string().max(200), Revision]),

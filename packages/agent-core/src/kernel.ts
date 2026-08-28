@@ -21,6 +21,19 @@ function EstimateTraceTokens(value: unknown): number {
   return Math.max(1, Math.ceil(units));
 }
 
+/** 浏览器填写与上传参数可能包含简历、联系方式或附件标识；Trace 只记录结构，不保存敏感明文。 */
+function ScrubToolArguments(toolName: string, value: string): string {
+  if (!['BrowserFill', 'BrowserUploadFile'].includes(toolName)) return ScrubTraceContent(value);
+  try {
+    const parsed = JSON.parse(value) as Record<string, unknown>;
+    if ('text' in parsed) parsed.text = '[REDACTED_BROWSER_INPUT]';
+    if ('fileId' in parsed) parsed.fileId = '[REDACTED_FILE_ID]';
+    return ScrubTraceContent(JSON.stringify(parsed));
+  } catch {
+    return '[REDACTED_BROWSER_ARGUMENTS]';
+  }
+}
+
 /** 提取不含 system 消息的完整 append-only transcript；只有显式压缩可以改变历史前缀。 */
 function HistorySnapshot(transcript: AgentMessage[]): AgentMessage[] {
   return transcript.filter((message) => message.role !== 'system').map(({ providerContent: _providerContent, ...message }) => message);
@@ -166,7 +179,7 @@ async function RunToolBatch(input: KernelRunInput, calls: ToolCallFragment[]): P
     ThrowIfRunCancelled(input.signal);
     const phaseResults = await Promise.all(phase.map(async (call) => {
       ThrowIfRunCancelled(input.signal);
-      const argumentsText = ScrubTraceContent(call.function.arguments);
+      const argumentsText = ScrubToolArguments(call.function.name, call.function.arguments);
       input.modules.observability.AppendTraceEvent(input.requestId, 'tool_call', { name: call.function.name, arguments: argumentsText }, EstimateTraceTokens(argumentsText));
       const registered = input.toolArray.some((tool) => tool.definition.function.name === call.function.name);
       const allowedByScenario = input.scenario?.toolNames.includes(call.function.name) ?? false;
@@ -221,7 +234,8 @@ export async function RunAgentLoop(input: KernelRunInput): Promise<KernelRunResu
   let lastReminderConfirmationMode = input.runtimeReminder.confirmationMode;
   let toolCallCount = 0;
   const maxTurns = input.scenario?.budgets?.maxModelTurns ?? input.maxTurns;
-  const maxToolCalls = input.scenario?.budgets?.maxToolCalls ?? 12;
+  // 场景只有显式配置时才限制工具总数；投递场景依赖较多原子浏览器动作，不另设浏览器动作预算。
+  const maxToolCalls = input.scenario?.budgets?.maxToolCalls ?? Number.POSITIVE_INFINITY;
 
   try {
     // 压缩熔断错误进入 catch，统一 FinishTrace/emit error（旧实现压缩在 try 外，抛错会跳过 Trace 收尾导致 running 幽灵 Trace）。

@@ -32,6 +32,15 @@ export class AgentRunService {
   /** 应用或丢弃待确认的简历补丁。 */
   ConfirmResumeEdit(confirmationId: string, accepted: boolean): any { return this.agent.ConfirmResumeEdit(confirmationId, accepted); }
 
+  /** 应用或拒绝冻结的浏览器动作提案。 */
+  ConfirmBrowserAction(confirmationId: string, accepted: boolean): any { return this.agent.ConfirmBrowserAction(confirmationId, accepted); }
+
+  /** 返回不含本地路径的浏览器运行时状态。 */
+  GetBrowserRuntimeStatus(): any { return this.agent.GetBrowserRuntimeStatus(); }
+
+  /** 清除 OfferGet 独立浏览器登录身份。 */
+  ClearBrowserProfile(): any { return this.agent.ClearBrowserProfile(); }
+
   /** 用户开始编辑简历前获取互斥锁。 */
   AcquireResumeEditLock(resumeId: string): any { return this.agent.AcquireResumeEditLock(resumeId); }
 

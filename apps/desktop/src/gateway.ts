@@ -64,7 +64,12 @@ export function RegisterGateway({ backendHost, webContentsGetter, ipcMainApi = i
   }
   backendHost.OnEvent((event) => {
     const window = webContentsGetter();
-    if (window && !window.isDestroyed()) window.webContents.send('agent:stream', event);
+    if (!window || window.isDestroyed()) return;
+    if (event && typeof event === 'object' && (event as { type?: unknown }).type === 'evaluation_event') {
+      window.webContents.send('evaluation:event', (event as { event?: unknown }).event);
+      return;
+    }
+    window.webContents.send('agent:stream', event);
   });
 }
 

@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
-import type { DesktopAgentBridge, WorkspaceBridge, WriteCommandOptions } from '@offerget/contracts';
+import type { DesktopAgentBridge, DesktopEvaluationBridge, WorkspaceBridge, WriteCommandOptions } from '@offerget/contracts';
 
 type Invoke = (channel: string, ...args: unknown[]) => Promise<unknown>;
 const invoke: Invoke = (channel, ...args) => ipcRenderer.invoke(channel, ...args);
@@ -7,6 +7,16 @@ const invoke: Invoke = (channel, ...args) => ipcRenderer.invoke(channel, ...args
 /** 写命令仅转交调用方提供的稳定幂等键；传输 requestId 由 Main/Backend 生成。 */
 function invokeWorkspaceWrite(channel: string, payload: unknown[], options?: WriteCommandOptions): Promise<unknown> {
   return invoke(channel, { idempotencyKey: options?.idempotencyKey, payload });
+}
+
+/** Agent 的高风险确认和身份清理同样使用写命令信封，避免 Renderer 绕过幂等协议。 */
+function invokeAgentWrite(channel: string, payload: unknown[]): Promise<unknown> {
+  return invoke(channel, { idempotencyKey: globalThis.crypto.randomUUID(), payload });
+}
+
+/** 测评写命令使用独立命名空间和稳定信封，不得混入 Agent Tool Bridge。 */
+function invokeEvaluationWrite(channel: string, payload: unknown[]): Promise<unknown> {
+  return invoke(channel, { idempotencyKey: globalThis.crypto.randomUUID(), payload });
 }
 
 const agentBridge: DesktopAgentBridge = {
@@ -18,6 +28,9 @@ const agentBridge: DesktopAgentBridge = {
   Cancel: (requestId) => invoke('agent:cancel', requestId) as ReturnType<DesktopAgentBridge['Cancel']>,
   UpdateConfirmationMode: (requestId, confirmationMode) => invoke('agent:update-confirmation-mode', requestId, confirmationMode) as ReturnType<DesktopAgentBridge['UpdateConfirmationMode']>,
   ConfirmResumeEdit: (id, accepted) => invoke('agent:confirm-resume-edit', id, accepted) as ReturnType<DesktopAgentBridge['ConfirmResumeEdit']>,
+  ConfirmBrowserAction: (id, accepted) => invokeAgentWrite('agent:confirm-browser-action', [id, accepted]) as ReturnType<DesktopAgentBridge['ConfirmBrowserAction']>,
+  GetBrowserRuntimeStatus: () => invoke('agent:browser-runtime-status') as ReturnType<DesktopAgentBridge['GetBrowserRuntimeStatus']>,
+  ClearBrowserProfile: () => invokeAgentWrite('agent:browser-clear-profile', []) as ReturnType<DesktopAgentBridge['ClearBrowserProfile']>,
   AcquireResumeEditLock: (id) => invoke('agent:acquire-resume-lock', id) as ReturnType<DesktopAgentBridge['AcquireResumeEditLock']>,
   ReleaseResumeEditLock: (id) => invoke('agent:release-resume-lock', id) as ReturnType<DesktopAgentBridge['ReleaseResumeEditLock']>,
   GetStatus: () => invoke('agent:status') as ReturnType<DesktopAgentBridge['GetStatus']>,
@@ -78,16 +91,31 @@ const workspaceBridge: WorkspaceBridge = {
   Migrate: () => invoke('workspace:migrate') as ReturnType<WorkspaceBridge['Migrate']>,
 };
 
+const evaluationBridge: DesktopEvaluationBridge = {
+  CreateProject: (input) => invokeEvaluationWrite('evaluation:project-create', [input]) as ReturnType<DesktopEvaluationBridge['CreateProject']>,
+  UpdateProject: (id, input, revision) => invokeEvaluationWrite('evaluation:project-update', [id, input, revision]) as ReturnType<DesktopEvaluationBridge['UpdateProject']>,
+  ReadProject: (id) => invoke('evaluation:project-read', id) as ReturnType<DesktopEvaluationBridge['ReadProject']>,
+  ListProjects: () => invoke('evaluation:projects-list') as ReturnType<DesktopEvaluationBridge['ListProjects']>,
+  DeleteProject: (id) => invokeEvaluationWrite('evaluation:project-delete', [id]) as ReturnType<DesktopEvaluationBridge['DeleteProject']>,
+  ImportDataset: (id, jsonl, rubric, revision) => invokeEvaluationWrite('evaluation:dataset-import', [id, jsonl, rubric, revision]) as ReturnType<DesktopEvaluationBridge['ImportDataset']>,
+  ValidateProject: (id) => invoke('evaluation:project-validate', id) as ReturnType<DesktopEvaluationBridge['ValidateProject']>,
+  PreviewProject: (id) => invoke('evaluation:project-preview', id) as ReturnType<DesktopEvaluationBridge['PreviewProject']>,
+  StartRun: (id) => invokeEvaluationWrite('evaluation:run-start', [id]) as ReturnType<DesktopEvaluationBridge['StartRun']>,
+  CancelRun: (id) => invokeEvaluationWrite('evaluation:run-cancel', [id]) as ReturnType<DesktopEvaluationBridge['CancelRun']>,
+  ReadRun: (id) => invoke('evaluation:run-read', id) as ReturnType<DesktopEvaluationBridge['ReadRun']>,
+  ListRuns: (projectId) => invoke('evaluation:runs-list', projectId) as ReturnType<DesktopEvaluationBridge['ListRuns']>,
+  ReadCaseResult: (id) => invoke('evaluation:case-read', id) as ReturnType<DesktopEvaluationBridge['ReadCaseResult']>,
+  CompareRuns: (left, right) => invoke('evaluation:runs-compare', left, right) as ReturnType<DesktopEvaluationBridge['CompareRuns']>,
+  OnEvent: (listener) => {
+    const handler = (_event: Electron.IpcRendererEvent, payload: unknown) => listener(payload as Parameters<typeof listener>[0]);
+    ipcRenderer.on('evaluation:event', handler);
+    return () => ipcRenderer.removeListener('evaluation:event', handler);
+  },
+};
+
 contextBridge.exposeInMainWorld('offergetAgent', agentBridge);
 contextBridge.exposeInMainWorld('offergetWorkspace', workspaceBridge);
+contextBridge.exposeInMainWorld('offergetEvaluation', evaluationBridge);
 contextBridge.exposeInMainWorld('offergetWindow', {
   Minimize: () => invoke('window:minimize'), ToggleMaximize: () => invoke('window:toggle-maximize'), Close: () => invoke('window:close'),
-});
-contextBridge.exposeInMainWorld('offergetBrowser', {
-  Show: (bounds: { x: number; y: number; width: number; height: number }) => invoke('browser:show', bounds),
-  Hide: () => invoke('browser:hide'),
-  Navigate: (address: string) => invoke('browser:navigate', address),
-  GoBack: () => invoke('browser:back'),
-  GoForward: () => invoke('browser:forward'),
-  Reload: () => invoke('browser:reload'),
 });

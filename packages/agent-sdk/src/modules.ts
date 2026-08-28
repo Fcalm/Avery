@@ -79,7 +79,7 @@ export interface CompactionModule extends ModuleManifest {
 export interface ToolsModule extends ModuleManifest {
   slot: 'tools';
   capabilities: string[];
-  GetToolDefinitions(): RegisteredAgentTool[];
+  GetToolDefinitions(scenarioId?: string): RegisteredAgentTool[];
   ExecuteToolCall(call: ToolCallFragment, context: ToolContext): Promise<ToolExecutionResult>;
 }
 

@@ -5,32 +5,38 @@ import { join, resolve } from 'node:path';
 import { CreateBackendHost } from '@offerget/backend/dist/host';
 import { CreateDesktopAdapters } from './adapters';
 import { RegisterGateway, RegisterWindowControls } from './gateway';
-import { BrowserPanelHost, RegisterBrowserPanel } from './browser-panel';
+import { IsBrowserCompanionProcess, StartBrowserCompanion } from './browser-companion';
 
 const smokeStartedAt = Date.now();
 let mainWindow: BrowserWindow | undefined;
 let backendHost: ReturnType<typeof CreateBackendHost> | undefined;
-let browserPanelHost: BrowserPanelHost | undefined;
 let rendererLoaded = false;
 let lifecycleRunning = false;
 let lifecycleStep: string | null = null;
 const consoleErrors: string[] = [];
 
+/** 仅解析应用固定依赖中的原生 CLI，不回退到 PATH 或用户全局安装。 */
+function resolveAgentBrowserExecutablePath(): string {
+  const binaryName = process.platform === 'win32'
+    ? `agent-browser-win32-${process.arch}.exe`
+    : `agent-browser-${process.platform === 'darwin' ? 'darwin' : 'linux'}-${process.arch}`;
+  const candidates = app.isPackaged
+    ? [join(process.resourcesPath, 'app.asar.unpacked', 'node_modules', 'agent-browser', 'bin', binaryName)]
+    : [join(__dirname, '..', '..', '..', 'node_modules', 'agent-browser', 'bin', binaryName)];
+  return candidates.find((candidate) => existsSync(candidate)) ?? candidates[0];
+}
+
 function writeSmokeStage(stage: string, extra: Record<string, unknown> = {}): void {
   const output = process.env.OFFERGET_SMOKE_RESULT_PATH;
   if (process.env.OFFERGET_DESKTOP_SMOKE === '1' && output) writeFileSync(output, JSON.stringify({ stage, electron: process.versions.electron, ...extra }), 'utf8');
 }
-writeSmokeStage('main_loaded');
-
-/** 默认拒绝权限、弹窗和导航；内嵌浏览器仅允许经其主进程白名单导航。 */
+/** 默认拒绝权限、弹窗和导航；桌面能力只能经 preload/Gateway 调用。 */
 function configureSecurityPolicies(): void {
   session.defaultSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
   session.defaultSession.setPermissionCheckHandler(() => false);
   app.on('web-contents-created', (_event, contents) => {
     contents.setWindowOpenHandler(() => ({ action: 'deny' }));
-    contents.on('will-navigate', (event, url) => {
-      if (!browserPanelHost?.IsBrowserContents(contents) || !browserPanelHost.AllowNavigation(url)) event.preventDefault();
-    });
+    contents.on('will-navigate', (event) => event.preventDefault());
   });
 }
 
@@ -46,7 +52,7 @@ function createWindow(): BrowserWindow {
   else void window.loadURL(process.env.VITE_DEV_SERVER_URL || 'http://127.0.0.1:5173');
   window.webContents.once('did-finish-load', () => { rendererLoaded = true; });
   window.webContents.on('console-message', (_event, level, message) => { if (level >= 3) consoleErrors.push(String(message).slice(0, 300)); });
-  window.on('closed', () => { browserPanelHost?.Destroy(); if (mainWindow === window) mainWindow = undefined; });
+  window.on('closed', () => { if (mainWindow === window) mainWindow = undefined; });
   return window;
 }
 
@@ -58,6 +64,21 @@ async function callBackend(channel: string, ...args: unknown[]): Promise<unknown
   const result = await backendHost.Command(channel, undefined, ...args) as CommandFailure | CommandSuccess;
   if (!result.ok) throw Object.assign(new Error(`Lifecycle command failed: ${channel}${result.error?.message ? ` (${result.error.message})` : ''}`), { code: result.error?.code || 'INTERNAL_ERROR' });
   return result.data;
+}
+
+/** 从隔离 Renderer 经 preload/IPC 读取 AgentHost 状态，避免桌面冒烟只验证 Main 直连 Backend。 */
+async function probeRendererAgentIpc(): Promise<{ agentStatus: boolean; browserRuntimeStatus: boolean }> {
+  const window = mainWindow;
+  if (!window || window.isDestroyed()) throw new Error('Main window is unavailable for Renderer Agent IPC probe.');
+  return window.webContents.executeJavaScript(`(async () => {
+    const agent = globalThis.offergetAgent;
+    if (!agent) return { agentStatus: false, browserRuntimeStatus: false };
+    const [status, browser] = await Promise.all([agent.GetStatus(), agent.GetBrowserRuntimeStatus()]);
+    return {
+      agentStatus: Boolean(status && status.ok === true && status.data && typeof status.data.configured === 'boolean'),
+      browserRuntimeStatus: Boolean(browser && browser.ok === true && browser.data && typeof browser.data.available === 'boolean'),
+    };
+  })()`, true) as Promise<{ agentStatus: boolean; browserRuntimeStatus: boolean }>;
 }
 
 /** 安装生命周期冒烟：恢复模式无凭据，seed/verify 继续覆盖持久化的关键事实。 */
@@ -110,6 +131,14 @@ async function runInstalledVisualScenario(outputDirectory: string): Promise<Reco
   const window = mainWindow;
   if (!window) throw new Error('Main window is unavailable.');
   mkdirSync(outputDirectory, { recursive: true });
+  const ReloadRenderer = async (): Promise<void> => {
+    const loaded = new Promise<void>((resolveLoaded) => window.webContents.once('did-finish-load', () => resolveLoaded()));
+    window.webContents.reload();
+    await loaded;
+  };
+  const originalSettings = await callBackend('workspace:get-settings') as Record<string, unknown>;
+  await callBackend('workspace:save-settings', { ...originalSettings, developerMode: true, onboardingCompleted: true });
+  await ReloadRenderer();
   const ready = await window.webContents.executeJavaScript(`new Promise((resolve)=>{const end=Date.now()+5000;const wait=()=>document.querySelector('nav button')?resolve(true):Date.now()>=end?resolve(false):setTimeout(wait,50);wait();})`, true);
   if (ready !== true) return { rendererNavigationReady: false, consoleErrors, pages: [], passed: false };
 
@@ -131,6 +160,7 @@ async function runInstalledVisualScenario(outputDirectory: string): Promise<Reco
           label: ${JSON.stringify(label)}, selected: button.getAttribute('aria-current') === 'page',
           horizontalOverflow: document.documentElement.scrollWidth > document.documentElement.clientWidth || document.body.scrollWidth > document.body.clientWidth,
           offscreenCritical,
+          evaluationTabVisible: ${JSON.stringify(label)} !== '开发者工具' || [...document.querySelectorAll('button[role="tab"]')].some((item) => item.textContent?.includes('Agent 测评')),
         };
       })()`, true) as Record<string, unknown>;
       const image = await window.webContents.capturePage();
@@ -142,58 +172,81 @@ async function runInstalledVisualScenario(outputDirectory: string): Promise<Reco
 
   window.show();
   window.focus();
-  await window.webContents.executeJavaScript(`document.querySelector('button[title="岗位库"]')?.focus()`, true);
+  const keyboardTargetFocused = await window.webContents.executeJavaScript(`(() => { const button = document.querySelector('button[title="岗位库"]'); button?.focus(); return document.activeElement === button; })()`, true);
   window.webContents.debugger.attach('1.3');
   try {
-    await window.webContents.debugger.sendCommand('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 });
+    await window.webContents.debugger.sendCommand('Input.dispatchKeyEvent', { type: 'rawKeyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 });
+    await window.webContents.debugger.sendCommand('Input.dispatchKeyEvent', { type: 'char', key: 'Enter', code: 'Enter', text: '\r', unmodifiedText: '\r', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 });
     await window.webContents.debugger.sendCommand('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 });
   } finally {
     if (window.webContents.debugger.isAttached()) window.webContents.debugger.detach();
   }
   const keyboardNavigation = await window.webContents.executeJavaScript(`new Promise((resolve)=>{const end=Date.now()+1000;const wait=()=>document.querySelector('button[title="岗位库"]')?.getAttribute('aria-current')==='page'?resolve(true):Date.now()>=end?resolve(false):setTimeout(wait,25);wait();})`, true);
-  const pagesPassed = pages.every((page) => page.selected === true && page.horizontalOverflow !== true && Array.isArray(page.offscreenCritical) && page.offscreenCritical.length === 0);
-  return { rendererNavigationReady: true, consoleErrors, pages, keyboardNavigation, passed: pagesPassed && keyboardNavigation === true && consoleErrors.length === 0 };
+  await callBackend('workspace:save-settings', { ...originalSettings, developerMode: false, onboardingCompleted: true });
+  await ReloadRenderer();
+  const hiddenWhenDisabled = await window.webContents.executeJavaScript(`new Promise((resolve)=>{const end=Date.now()+5000;const wait=()=>{const hidden=![...document.querySelectorAll('button[title]')].some((item)=>item.getAttribute('title')==='开发者工具');hidden?resolve(true):Date.now()>=end?resolve(false):setTimeout(wait,25)};wait();})`, true);
+  await callBackend('workspace:save-settings', { ...originalSettings, developerMode: true, onboardingCompleted: true });
+  await ReloadRenderer();
+  const visibleWhenEnabled = await window.webContents.executeJavaScript(`new Promise((resolve)=>{const end=Date.now()+5000;const wait=()=>{const visible=[...document.querySelectorAll('button[title]')].some((item)=>item.getAttribute('title')==='开发者工具');visible?resolve(true):Date.now()>=end?resolve(false):setTimeout(wait,25)};wait();})`, true);
+  const developerModeGate = hiddenWhenDisabled === true && visibleWhenEnabled === true;
+  const pagesPassed = pages.every((page) => page.selected === true && page.horizontalOverflow !== true && Array.isArray(page.offscreenCritical) && page.offscreenCritical.length === 0 && page.evaluationTabVisible === true);
+  return { rendererNavigationReady: true, consoleErrors, pages, keyboardTargetFocused, keyboardNavigation, developerModeGate, passed: pagesPassed && keyboardTargetFocused === true && keyboardNavigation === true && developerModeGate && consoleErrors.length === 0 };
 }
 
-if (process.env.OFFERGET_DESKTOP_SMOKE === '1' && process.env.OFFERGET_SMOKE_USER_DATA) app.setPath('userData', resolve(process.env.OFFERGET_SMOKE_USER_DATA));
+if (IsBrowserCompanionProcess()) {
+  StartBrowserCompanion();
+} else {
+  writeSmokeStage('main_loaded');
+  if (process.env.OFFERGET_DESKTOP_SMOKE === '1' && process.env.OFFERGET_SMOKE_USER_DATA) app.setPath('userData', resolve(process.env.OFFERGET_SMOKE_USER_DATA));
 
-app.whenReady().then(() => {
-  writeSmokeStage('electron_ready');
-  configureSecurityPolicies();
-  browserPanelHost = new BrowserPanelHost(() => mainWindow);
-  const userDataPath = app.getPath('userData');
-  const workspacePath = join(userDataPath, 'OfferGet Workspace');
-  const adapters = CreateDesktopAdapters({ getWindow: () => mainWindow, userDataPath });
-  backendHost = CreateBackendHost({ appContext: { userDataPath, defaultWorkspacePath: workspacePath, workspacePath }, desktopCapabilities: adapters });
-  RegisterGateway({ backendHost, webContentsGetter: () => mainWindow });
-  RegisterWindowControls({ webContentsGetter: () => mainWindow });
-  RegisterBrowserPanel({ host: browserPanelHost, webContentsGetter: () => mainWindow });
-  Menu.setApplicationMenu(null);
-  createWindow();
-  if (process.env.OFFERGET_DESKTOP_SMOKE !== '1') return;
-  const deadline = Date.now() + 15000;
-  const timer = setInterval(async () => {
-    if (rendererLoaded && backendHost?.state() === 'ready') {
-      if (lifecycleRunning) return;
-      lifecycleRunning = true;
-      clearInterval(timer);
-      try {
-        const mode = process.env.OFFERGET_LIFECYCLE_MODE;
-        lifecycleStep = mode ? `starting:${mode}` : 'completed';
-        const lifecycle = mode ? await runLifecycleScenario(mode, userDataPath, workspacePath) : undefined;
-        const visual = process.env.OFFERGET_INSTALLED_VISUAL_OUTPUT ? await runInstalledVisualScenario(resolve(process.env.OFFERGET_INSTALLED_VISUAL_OUTPUT)) : undefined;
-        const result = { rendererLoaded: true, backendReady: true, electron: process.versions.electron, startupReadyMs: Date.now() - smokeStartedAt, ...(lifecycle ? { lifecycle } : {}), ...(visual ? { installedVisual: visual } : {}) };
-        writeSmokeStage('ready', result); console.log(JSON.stringify(result)); app.quit();
-      } catch (error) {
-        const message = String(error instanceof Error ? error.message : 'Lifecycle smoke failed.').replaceAll(userDataPath, '[USER_DATA]').replace(/[A-Za-z]:\\[^\r\n]+/g, '[PATH]').slice(0, 240);
-        const result = { rendererLoaded, backendState: backendHost?.state(), electron: process.versions.electron, lifecycleError: error instanceof Error && 'code' in error ? String(error.code) : 'INTERNAL_ERROR', lifecycleErrorMessage: message, lifecycleStep };
-        writeSmokeStage('failed', result); console.error(JSON.stringify(result)); app.exit(1);
+  app.whenReady().then(() => {
+    writeSmokeStage('electron_ready');
+    configureSecurityPolicies();
+    const userDataPath = app.getPath('userData');
+    const workspacePath = join(userDataPath, 'OfferGet Workspace');
+    const adapters = CreateDesktopAdapters({ getWindow: () => mainWindow, userDataPath });
+    backendHost = CreateBackendHost({
+      appContext: {
+        userDataPath,
+        defaultWorkspacePath: workspacePath,
+        workspacePath,
+        agentBrowserExecutablePath: resolveAgentBrowserExecutablePath(),
+        browserCompanionExecutablePath: process.execPath,
+        browserCompanionAppPath: process.defaultApp ? app.getAppPath() : undefined,
+      },
+      desktopCapabilities: adapters,
+    });
+    RegisterGateway({ backendHost, webContentsGetter: () => mainWindow });
+    RegisterWindowControls({ webContentsGetter: () => mainWindow });
+    Menu.setApplicationMenu(null);
+    createWindow();
+    if (process.env.OFFERGET_DESKTOP_SMOKE !== '1') return;
+    const deadline = Date.now() + 15000;
+    const timer = setInterval(async () => {
+      if (rendererLoaded && backendHost?.state() === 'ready') {
+        if (lifecycleRunning) return;
+        lifecycleRunning = true;
+        clearInterval(timer);
+        try {
+          const mode = process.env.OFFERGET_LIFECYCLE_MODE;
+          lifecycleStep = mode ? `starting:${mode}` : 'completed';
+          const lifecycle = mode ? await runLifecycleScenario(mode, userDataPath, workspacePath) : undefined;
+          const visual = process.env.OFFERGET_INSTALLED_VISUAL_OUTPUT ? await runInstalledVisualScenario(resolve(process.env.OFFERGET_INSTALLED_VISUAL_OUTPUT)) : undefined;
+          const rendererAgentIpc = await probeRendererAgentIpc();
+          if (!rendererAgentIpc.agentStatus || !rendererAgentIpc.browserRuntimeStatus) throw new Error('Renderer Agent IPC probe failed.');
+          const result = { rendererLoaded: true, backendReady: true, rendererAgentIpc, electron: process.versions.electron, startupReadyMs: Date.now() - smokeStartedAt, ...(lifecycle ? { lifecycle } : {}), ...(visual ? { installedVisual: visual } : {}) };
+          writeSmokeStage('ready', result); console.log(JSON.stringify(result)); app.quit();
+        } catch (error) {
+          const message = String(error instanceof Error ? error.message : 'Lifecycle smoke failed.').replaceAll(userDataPath, '[USER_DATA]').replace(/[A-Za-z]:\\[^\r\n]+/g, '[PATH]').slice(0, 240);
+          const result = { rendererLoaded, backendState: backendHost?.state(), electron: process.versions.electron, lifecycleError: error instanceof Error && 'code' in error ? String(error.code) : 'INTERNAL_ERROR', lifecycleErrorMessage: message, lifecycleStep };
+          writeSmokeStage('failed', result); console.error(JSON.stringify(result)); app.exit(1);
+        }
+      } else if (Date.now() >= deadline) {
+        clearInterval(timer); const result = { rendererLoaded, backendState: backendHost?.state(), electron: process.versions.electron }; writeSmokeStage('failed', result); console.error(JSON.stringify(result)); app.exit(1);
       }
-    } else if (Date.now() >= deadline) {
-      clearInterval(timer); const result = { rendererLoaded, backendState: backendHost?.state(), electron: process.versions.electron }; writeSmokeStage('failed', result); console.error(JSON.stringify(result)); app.exit(1);
-    }
-  }, 100);
-});
-app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
-app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
-app.on('before-quit', () => { browserPanelHost?.Destroy(); backendHost?.Shutdown(); });
+    }, 100);
+  });
+  app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
+  app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
+  app.on('before-quit', () => { backendHost?.Shutdown(); });
+}

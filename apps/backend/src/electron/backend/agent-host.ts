@@ -3,12 +3,13 @@ import { mkdirSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync
 import * as path from 'node:path';
 import { RunAgentLoop, ScrubTraceContent } from '@offerget/agent-core';
 import { CreateRunSnapshot, ResolveModules } from '@offerget/agent-module-host';
-import { BuildDefaultCompiledInstructions, CreateDefaultModules, DefaultScenario } from '@offerget/agent-modules-defaults';
-import type { AgentMessage, ConfirmationMode, ProviderUsageFact } from '@offerget/agent-sdk';
+import { ApplicationScenario, BuildApplicationCompiledInstructions, BuildDefaultCompiledInstructions, CreateDefaultModules, DefaultScenario } from '@offerget/agent-modules-defaults';
+import type { AgentMessage, AgentModules, BrowserAutomationPort, CompiledInstructions, ConfirmationMode, ProviderUsageFact, ScenarioSnapshot } from '@offerget/agent-sdk';
 import { AgentFileReader } from './agent-file-reader';
 import { AgentResumePort } from './agent-resume-port';
 import { ResumeLockStore } from './resume-lock-store';
 import { CreateVisionUserMessage, DeepSeekVisionModel, HydrateVisionMessage } from './vision-input';
+import { AgentBrowserRuntime } from './agent-browser-runtime';
 
 /** 用户编辑锁的稳定 ownerId；前端经 bridge 加解锁都以此为准。 */
 const UserLockOwnerId = 'user-main';
@@ -20,6 +21,12 @@ function NormalizeConfirmationMode(value: unknown): ConfirmationMode {
   if (value === 'always_confirm' || value === 'allow_low_risk' || value === 'fully_trusted') return value;
   if (value === '无需确认') return 'fully_trusted';
   return 'always_confirm';
+}
+
+function ResolveScenario(value: unknown) {
+  if (value === 'application') return ApplicationScenario;
+  if (value === undefined || value === null || value === '' || value === 'default') return DefaultScenario;
+  throw Object.assign(new Error('Scenario is invalid.'), { code: 'VALIDATION_ERROR' });
 }
 
 function NormalizeProjectBinding(value: unknown): any {
@@ -63,7 +70,14 @@ function EstimateTraceTokens(value: unknown): number {
   return Math.max(1, Math.ceil(units));
 }
 
-interface AgentHostOptions {
+type AgentHostBrowserRuntime = BrowserAutomationPort & {
+  Close(): Promise<void>;
+  ResetPageReferences(): void;
+  GetStatus(): Promise<unknown>;
+  ClearProfile(): Promise<unknown>;
+};
+
+export interface AgentHostOptions {
   userDataPath: string;
   workspacePath: string;
   Emit(event: unknown): void;
@@ -72,6 +86,17 @@ interface AgentHostOptions {
   credentialPort: any;
   resolveProjectEnvironment?: (projectId: string) => Promise<unknown> | unknown;
   resumeLockStore?: ResumeLockStore;
+  agentBrowserExecutablePath?: string;
+  browserCompanionExecutablePath?: string;
+  browserCompanionAppPath?: string;
+  /** 构造期测试接缝；生产组合根不传入，不能由 Renderer、IPC 或环境变量选择。 */
+  createDefaultModules?: (ports: Parameters<typeof CreateDefaultModules>[0]) => AgentModules;
+  /** 构造期测试接缝；用于完整链路测试连接精确本地 fixture origin。 */
+  browserRuntime?: AgentHostBrowserRuntime;
+  /** 测评宿主专用接缝：生产组合根不传入，候选 Prompt 只能在隔离 AgentHost 内生效。 */
+  compileInstructions?: (scenarioId: 'default' | 'application', toolPolicyHash: string) => CompiledInstructions;
+  /** 测评宿主专用冻结场景；可收窄工具和轮数，不能由生产 Renderer 请求设置。 */
+  scenarioOverride?: ScenarioSnapshot;
 }
 
 /**
@@ -93,21 +118,28 @@ export class AgentHost {
   private tasks = new Map<string, Map<string, any>>();
   private pendingQuestions = new Map<string, unknown>();
   private pendingEdits = new Map<string, unknown>();
+  private pendingBrowserActions = new Map<string, any>();
+  private browserRunId: string | null = null;
   private toolLedger = new Map<string, any>();
   private projectEnvironments = new Map<string, any>();
   private sessionSnapshots = new Map<string, any>();
   private runSnapshots = new Map<string, any>();
   private sessionUsage = new Map<string, any>();
+  private sessionScenarios = new Map<string, 'default' | 'application'>();
   private lastContextUsage: { inputTokens: number; contextLimit: number } = { inputTokens: 0, contextLimit: 64000 };
   private compressionCount = 0;
   private fileReader: AgentFileReader;
   private resumePort: AgentResumePort;
   private resumeReadPort: AgentResumePort;
   private resumeWritePort: AgentResumePort;
+  private browserRuntime: AgentHostBrowserRuntime;
+  private createDefaultModules: (ports: Parameters<typeof CreateDefaultModules>[0]) => AgentModules;
   private moduleError: string | null = null;
   private moduleConfiguration: any = { enabled: false, trusted: false, status: 'default', directoryName: null, modules: [] };
   private moduleSnapshot: any = null;
   private modules: any;
+  private compileInstructions: (scenarioId: 'default' | 'application', toolPolicyHash: string) => CompiledInstructions;
+  private scenarioOverride?: ScenarioSnapshot;
 
   constructor(options: AgentHostOptions) {
     this.statePath = path.join(options.userDataPath, 'agent-state.json');
@@ -124,6 +156,21 @@ export class AgentHost {
     this.resumePort = new AgentResumePort({ lockStore: options.resumeLockStore ?? new ResumeLockStore(), business: this.business });
     this.resumeReadPort = this.resumePort;
     this.resumeWritePort = this.resumePort;
+    this.createDefaultModules = options.createDefaultModules ?? CreateDefaultModules;
+    this.compileInstructions = options.compileInstructions ?? ((scenarioId, toolPolicyHash) => scenarioId === 'application'
+      ? BuildApplicationCompiledInstructions(toolPolicyHash)
+      : BuildDefaultCompiledInstructions(toolPolicyHash));
+    this.scenarioOverride = options.scenarioOverride;
+    this.browserRuntime = options.browserRuntime ?? new AgentBrowserRuntime({
+      executablePath: options.agentBrowserExecutablePath ?? path.join(options.userDataPath, 'agent-browser', 'runtime-unavailable'),
+      companionExecutablePath: options.browserCompanionExecutablePath ?? path.join(options.userDataPath, 'agent-browser', 'companion-unavailable'),
+      companionAppPath: options.browserCompanionAppPath,
+      runtimeRoot: path.join(options.userDataPath, 'agent-browser'),
+      resolveUploadFile: async (fileId) => {
+        const resolved = await this.business?.ResolveAttachmentUri?.(fileId);
+        return typeof resolved === 'string' ? resolved : null;
+      },
+    });
     this.moduleError = null;
     this.moduleConfiguration = { enabled: false, trusted: false, status: 'default', directoryName: null, modules: [] };
     this.modules = this.BuildModules();
@@ -135,12 +182,13 @@ export class AgentHost {
   }
 
   async Close(): Promise<void> {
+    await this.browserRuntime.Close();
     await this.fileReader.Close();
   }
 
   /** 构造官方默认六槽；端口全部由宿主持有。 */
   private CreateDefaults(): any {
-    const defaults = CreateDefaultModules({
+    const defaults = this.createDefaultModules({
       getConfig: async () => (await this.credentialPort?.Load?.()) ?? null,
       saveConfig: async (config: unknown) => { await this.credentialPort?.Save?.(config); },
       getStoredSettings: async () => (await this.business?.GetStoredSettings?.()) ?? {},
@@ -247,7 +295,7 @@ export class AgentHost {
   }
 
   /** 返回是否有未结束的 Agent 请求；工作空间迁移期间必须保持空闲。 */
-  IsBusy(): boolean { return this.controllers.size > 0; }
+  IsBusy(): boolean { return this.controllers.size > 0 || this.browserRunId !== null; }
 
   /** 读取不含密钥的会话与任务状态；损坏文件只会回退为空状态。 */
   private LoadState(): void {
@@ -261,7 +309,11 @@ export class AgentHost {
       this.sessionUsage = new Map((Array.isArray(state.sessionUsage) ? state.sessionUsage : [])
         .map(([sessionId, value]: [string, unknown]) => [sessionId, NormalizeSessionUsage(value)])
         .filter(([sessionId, value]: [string, any]) => typeof sessionId === 'string' && value));
+      this.sessionScenarios = new Map((Array.isArray(state.sessionScenarios) ? state.sessionScenarios : [])
+        .filter((entry: unknown) => Array.isArray(entry) && typeof entry[0] === 'string' && (entry[1] === 'default' || entry[1] === 'application')));
       this.toolLedger = new Map((Array.isArray(state.toolLedger) ? state.toolLedger : [])
+        .filter((entry: unknown) => Array.isArray(entry) && typeof entry[0] === 'string' && entry[1] && typeof entry[1] === 'object'));
+      this.pendingBrowserActions = new Map((Array.isArray(state.pendingBrowserActions) ? state.pendingBrowserActions : [])
         .filter((entry: unknown) => Array.isArray(entry) && typeof entry[0] === 'string' && entry[1] && typeof entry[1] === 'object'));
       this.runSnapshots = new Map((Array.isArray(state.runSnapshots) ? state.runSnapshots : [])
         .filter((entry: unknown) => Array.isArray(entry) && typeof entry[0] === 'string' && entry[1] && typeof entry[1] === 'object'));
@@ -277,7 +329,9 @@ export class AgentHost {
       tasks: [...this.tasks.entries()].map(([sessionId, tasks]) => [sessionId, [...tasks.entries()]]),
       projectEnvironments: [...this.projectEnvironments.entries()],
       sessionUsage: [...this.sessionUsage.entries()],
+      sessionScenarios: [...this.sessionScenarios.entries()],
       toolLedger: [...this.toolLedger.entries()],
+      pendingBrowserActions: [...this.pendingBrowserActions.entries()],
       runSnapshots: [...this.runSnapshots.entries()],
     };
     const temporaryPath = `${this.statePath}.tmp`;
@@ -346,6 +400,113 @@ export class AgentHost {
     });
   }
 
+  /** 执行被冻结的浏览器提案；确认后仍重新校验页面 revision 和目标引用，拒绝模型重建动作。 */
+  async ConfirmBrowserAction(confirmationId: string, accepted: boolean, execution: { signal?: AbortSignal } = {}): Promise<any> {
+    const normalizedId = RequireString(confirmationId, 'confirmationId', 200);
+    if (this.browserRunId) throw Object.assign(new Error('Another browser Agent run is already active.'), { code: 'AGENT_BUSY' });
+    const confirmationRunId = `confirmation:${normalizedId}`;
+    this.browserRunId = confirmationRunId;
+    try {
+    const pending = this.pendingBrowserActions.get(normalizedId) as any;
+    if (!pending) throw Object.assign(new Error('Browser confirmation is unavailable or expired.'), { code: 'VALIDATION_ERROR' });
+    this.pendingBrowserActions.delete(normalizedId);
+    this.SaveState();
+    if (!Number.isFinite(pending.createdAt) || Date.now() - pending.createdAt > SessionSnapshotTtlMs) {
+      throw Object.assign(new Error('Browser confirmation expired. Take a new snapshot and prepare the action again.'), { code: 'VALIDATION_ERROR' });
+    }
+    if (!accepted) {
+      const result = { confirmationId: normalizedId, status: 'rejected', summary: pending.proposal?.summary };
+      this.Emit({ type: 'browser_action_completed', requestId: pending.requestId, confirmationId: normalizedId, browserAction: result });
+      return result;
+    }
+    if (execution.signal?.aborted) throw Object.assign(new Error('Browser action was cancelled before execution.'), { code: 'CANCELLED' });
+
+    const ledger = this.CreateToolLedgerPort();
+    const previous = await ledger.FindByIdempotencyKey(pending.idempotencyKey);
+    if (previous?.status === 'succeeded' && previous.receipt) {
+      const replayed = { confirmationId: normalizedId, status: 'succeeded', replayed: true, receipt: previous.receipt, summary: pending.proposal?.summary };
+      this.Emit({ type: 'browser_action_completed', requestId: pending.requestId, confirmationId: normalizedId, browserAction: replayed });
+      return replayed;
+    }
+    if (previous?.status === 'status_unknown') {
+      const unknown = { confirmationId: normalizedId, status: 'status_unknown', summary: pending.proposal?.summary, message: '该动作此前结果未知，请先在目标网站核对，不能自动重试。' };
+      this.Emit({ type: 'browser_action_completed', requestId: pending.requestId, confirmationId: normalizedId, browserAction: unknown });
+      return unknown;
+    }
+
+    const ledgerId = `ledger-${randomUUID()}`;
+    await ledger.Start({
+      ledgerId,
+      runId: pending.runId,
+      toolCallId: pending.toolCallId,
+      toolName: pending.proposal.toolName,
+      idempotencyKey: pending.idempotencyKey,
+      argumentsHash: createHash('sha256').update(JSON.stringify(pending.proposal.canonicalArguments)).digest('hex'),
+      actor: 'agent',
+      resourceIds: pending.proposal.resourceIds,
+      startedAt: Date.now(),
+    });
+    try {
+      const outcome = await this.browserRuntime.Execute({ proposal: pending.proposal, signal: execution.signal, deadline: Date.now() + 30_000 });
+      if (execution.signal?.aborted) throw Object.assign(new Error('Browser action completion arrived after cancellation.'), { code: 'CANCELLED' });
+      if (outcome.status === 'status_unknown') {
+        await ledger.Finish(ledgerId, 'status_unknown', { errorCode: 'BROWSER_STATUS_UNKNOWN', finishedAt: Date.now() });
+        const unknown = { confirmationId: normalizedId, status: 'status_unknown', data: outcome.data, summary: pending.proposal.summary };
+        this.Emit({ type: 'browser_action_completed', requestId: pending.requestId, confirmationId: normalizedId, browserAction: unknown });
+        return unknown;
+      }
+      const receipt = {
+        receiptId: `receipt-${randomUUID()}`,
+        toolDefinitionId: pending.proposal.toolName,
+        resourceIds: pending.proposal.resourceIds,
+        idempotencyKey: pending.idempotencyKey,
+      };
+      await ledger.Finish(ledgerId, 'succeeded', { receipt, finishedAt: Date.now() });
+      const succeeded = { confirmationId: normalizedId, status: 'succeeded', data: outcome.data, receipt, summary: pending.proposal.summary };
+      this.Emit({ type: 'browser_action_completed', requestId: pending.requestId, confirmationId: normalizedId, browserAction: succeeded });
+      return succeeded;
+    } catch (error) {
+      const code = error && typeof error === 'object' && 'code' in error ? String((error as { code: unknown }).code) : 'BROWSER_COMMAND_FAILED';
+      await ledger.Finish(ledgerId, code === 'CANCELLED' ? 'status_unknown' : 'failed', { errorCode: code, finishedAt: Date.now() });
+      const failed = { confirmationId: normalizedId, status: code === 'CANCELLED' ? 'status_unknown' : 'failed', code, summary: pending.proposal.summary, message: error instanceof Error ? error.message : 'Browser action failed.' };
+      this.Emit({ type: 'browser_action_completed', requestId: pending.requestId, confirmationId: normalizedId, browserAction: failed });
+      return failed;
+    }
+    } finally {
+      if (this.browserRunId === confirmationRunId) this.browserRunId = null;
+    }
+  }
+
+  /** 测评 UserSimulator 只读检查被冻结提案；该方法未注册 IPC，生产 Renderer 无法获取参数。 */
+  InspectPendingBrowserAction(confirmationId: string): any {
+    const normalizedId = RequireString(confirmationId, 'confirmationId', 200);
+    const pending = this.pendingBrowserActions.get(normalizedId) as any;
+    if (!pending?.proposal) return null;
+    return structuredClone({
+      toolName: pending.proposal.toolName,
+      canonicalArguments: pending.proposal.canonicalArguments,
+      summary: pending.proposal.summary,
+      url: pending.proposal.url,
+      risk: pending.proposal.risk,
+      resourceIds: pending.proposal.resourceIds,
+    });
+  }
+
+  /** 返回浏览器运行时状态；Renderer 看不到可执行文件和 Profile 物理路径。 */
+  GetBrowserRuntimeStatus(): any { return this.browserRuntime.GetStatus(); }
+
+  /** 清除 OfferGet 独立浏览器身份；调用方必须先展示破坏性确认。 */
+  async ClearBrowserProfile(): Promise<any> {
+    if (this.IsBusy()) throw Object.assign(new Error('Stop the current Agent run before clearing the browser profile.'), { code: 'AGENT_BUSY' });
+    this.browserRunId = 'maintenance:clear';
+    try {
+      this.pendingBrowserActions.clear();
+      this.SaveState();
+      return await this.browserRuntime.ClearProfile();
+    }
+    finally { if (this.browserRunId === 'maintenance:clear') this.browserRunId = null; }
+  }
+
   /** 用户开始编辑简历前获取互斥锁；Agent 占用时返回未获取及原因。 */
   async AcquireResumeEditLock(resumeId: string): Promise<any> {
     const normalizedId = typeof resumeId === 'string' ? resumeId : '';
@@ -404,6 +565,7 @@ export class AgentHost {
         unreportedRequestCount: storedUsage?.unreportedRequestCount ?? 0,
       },
       project: project ? { projectId: project.projectId, name: project.name } : null,
+      scenarioId: this.sessionScenarios.get(normalizedSessionId) ?? 'default',
     };
   }
 
@@ -454,11 +616,14 @@ export class AgentHost {
   }
 
   /** 构建不可变的 Tool Array 快照：内置工具固定前缀、MCP 预留末尾；不保存 MCP 凭据。 */
-  private BuildToolSnapshot(sessionId: string, sessionRevision: number): any {
-    const builtInTools = this.modules.tools.GetToolDefinitions();
+  private BuildToolSnapshot(sessionId: string, sessionRevision: number, scenarioId: 'default' | 'application'): any {
+    const registeredTools = this.modules.tools.GetToolDefinitions(scenarioId);
+    const builtInTools = this.scenarioOverride
+      ? registeredTools.filter((tool: any) => this.scenarioOverride?.toolNames.includes(tool.definition.function.name))
+      : registeredTools;
     const orderedToolNames = builtInTools.map((tool: any) => tool.definition.function.name);
     const toolsetHash = createHash('sha256').update(JSON.stringify(builtInTools.map((tool: any) => tool.definition))).digest('hex');
-    return { snapshotId: randomUUID(), sessionId, sessionRevision, builtInTools, mcpTools: [], orderedToolNames, toolsetHash };
+    return { snapshotId: randomUUID(), sessionId, sessionRevision, scenarioId, builtInTools, mcpTools: [], orderedToolNames, toolsetHash };
   }
 
   private BuildModuleSnapshot(sessionId: string, sessionRevision: number): any {
@@ -466,22 +631,24 @@ export class AgentHost {
   }
 
   /** 创建完整会话前缀快照并原子写入会话表；普通 Run 只复用，不重编译。 */
-  private async CreateAndPersistSnapshots(sessionId: string, sessionRevision: number, refreshReason: 'session_created' | 'ttl_elapsed' | 'user_reload'): Promise<any> {
+  private async CreateAndPersistSnapshots(sessionId: string, sessionRevision: number, refreshReason: 'session_created' | 'ttl_elapsed' | 'user_reload', scenarioId: 'default' | 'application'): Promise<any> {
     const session = await this.modules.contextBuilder.BuildSessionContextSnapshot(sessionId, sessionRevision, {
       now: Date.now(), ttlMs: SessionSnapshotTtlMs, refreshReason,
     });
     const module = this.BuildModuleSnapshot(sessionId, sessionRevision);
-    const tool = this.BuildToolSnapshot(sessionId, sessionRevision);
-    const instructions = BuildDefaultCompiledInstructions(tool.toolsetHash);
-    const entry = { session, module, tool, instructions };
-    await this.business?.SetConversationSnapshots?.(sessionId, { sessionSnapshotJson: JSON.stringify(session), toolSnapshotJson: JSON.stringify({ module, tool, instructions }) });
+    const tool = this.BuildToolSnapshot(sessionId, sessionRevision, scenarioId);
+    const instructions = this.compileInstructions(scenarioId, tool.toolsetHash);
+    const entry = { session, module, tool, instructions, scenarioId };
+    await this.business?.SetConversationSnapshots?.(sessionId, { sessionSnapshotJson: JSON.stringify(session), toolSnapshotJson: JSON.stringify({ module, tool, instructions, scenarioId }) });
     this.sessionSnapshots.set(sessionId, entry);
+    this.sessionScenarios.set(sessionId, scenarioId);
+    this.SaveState();
     return entry;
   }
 
   /** 持久化 JSON 不包含执行函数；按名称接回当前同版本注册表，同时保留快照中的协议定义。 */
-  private HydrateToolSnapshot(toolSnapshot: any): any[] {
-    const activeTools = this.modules.tools.GetToolDefinitions();
+  private HydrateToolSnapshot(toolSnapshot: any, scenarioId: 'default' | 'application'): any[] {
+    const activeTools = this.modules.tools.GetToolDefinitions(scenarioId);
     const activeByName = new Map(activeTools.map((tool: any) => [tool.definition.function.name, tool]));
     const storedTools = Array.isArray(toolSnapshot?.builtInTools) ? toolSnapshot.builtInTools : [];
     return storedTools.map((stored: any) => {
@@ -533,37 +700,54 @@ export class AgentHost {
   }
 
   /** 读取或惰性创建会话快照：内存缓存优先，其次会话表，最后新建并持久化。 */
-  private async LoadOrCreateSnapshots(sessionId: string): Promise<any> {
+  private async LoadOrCreateSnapshots(sessionId: string, requestedScenarioId?: 'default' | 'application'): Promise<any> {
     const cached = this.sessionSnapshots.get(sessionId);
-    if (cached && this.IsUsableSessionSnapshot(cached.session) && this.HasCompleteToolBundle(cached.tool, cached.instructions)) return cached;
+    const cachedScenarioId = cached?.scenarioId ?? cached?.tool?.scenarioId ?? this.sessionScenarios.get(sessionId) ?? 'default';
+    if (requestedScenarioId && cached && requestedScenarioId !== cachedScenarioId) throw new Error('A scenario is already bound to this conversation. Create a new conversation to switch scenarios.');
+    if (cached && this.IsUsableSessionSnapshot(cached.session) && this.HasCompleteToolBundle(cached.tool, cached.instructions)) return { ...cached, scenarioId: cachedScenarioId };
     if (cached) {
       const expiredCompleteBundle = this.HasCompleteSessionSnapshot(cached.session) && this.HasCompleteToolBundle(cached.tool, cached.instructions);
-      return this.CreateAndPersistSnapshots(sessionId, (cached.session?.sessionRevision ?? 0) + 1, expiredCompleteBundle ? 'ttl_elapsed' : 'session_created');
+      return this.CreateAndPersistSnapshots(sessionId, (cached.session?.sessionRevision ?? 0) + 1, expiredCompleteBundle ? 'ttl_elapsed' : 'session_created', cachedScenarioId);
     }
     const stored = await this.business?.GetConversationSnapshots?.(sessionId);
     let session: any = null;
     let module: any = null;
     let tool: any = null;
     let instructions: any = null;
+    let storedScenarioId: 'default' | 'application' = 'default';
+    let hasStoredSnapshot = false;
     if (stored?.sessionSnapshotJson) {
-      try { session = JSON.parse(stored.sessionSnapshotJson); } catch { session = null; }
+      try {
+        session = JSON.parse(stored.sessionSnapshotJson);
+        hasStoredSnapshot = session !== null;
+      } catch { session = null; }
     }
     if (stored?.toolSnapshotJson) {
       try {
         const combined = JSON.parse(stored.toolSnapshotJson);
-        module = combined?.module ?? null;
-        tool = combined?.tool ?? combined;
-        instructions = combined?.instructions ?? null;
+        // 新建会话的数据库默认值是 `[]`，它只是“尚未生成快照”的占位符，不能冻结为默认场景。
+        // 其他非空值即使结构损坏也视为已有快照并保持场景冻结，避免借损坏快照切换权限边界。
+        const isUninitializedPlaceholder = Array.isArray(combined) && combined.length === 0;
+        if (!isUninitializedPlaceholder) {
+          hasStoredSnapshot = true;
+          module = combined?.module ?? null;
+          tool = combined?.tool ?? combined;
+          instructions = combined?.instructions ?? null;
+          storedScenarioId = combined?.scenarioId === 'application' || tool?.scenarioId === 'application' ? 'application' : 'default';
+        }
       } catch { tool = null; }
     }
+    if (requestedScenarioId && requestedScenarioId !== storedScenarioId && hasStoredSnapshot) throw new Error('A scenario is already bound to this conversation. Create a new conversation to switch scenarios.');
+    const scenarioId = requestedScenarioId ?? storedScenarioId;
     if (this.IsUsableSessionSnapshot(session) && this.HasCompleteToolBundle(tool, instructions)) {
-      const entry = { session, module: module ?? this.BuildModuleSnapshot(sessionId, session.sessionRevision ?? 1), tool, instructions };
+      const entry = { session, module: module ?? this.BuildModuleSnapshot(sessionId, session.sessionRevision ?? 1), tool, instructions, scenarioId };
       this.sessionSnapshots.set(sessionId, entry);
+      this.sessionScenarios.set(sessionId, scenarioId);
       return entry;
     }
     const nextRevision = Math.max(1, (session?.sessionRevision ?? 0) + 1);
     const hadCompleteBundle = this.HasCompleteSessionSnapshot(session) && this.HasCompleteToolBundle(tool, instructions);
-    return this.CreateAndPersistSnapshots(sessionId, nextRevision, hadCompleteBundle ? 'ttl_elapsed' : 'session_created');
+    return this.CreateAndPersistSnapshots(sessionId, nextRevision, hadCompleteBundle ? 'ttl_elapsed' : 'session_created', scenarioId);
   }
 
   /** 空闲时原子重载会话上下文与 Tool 快照；任一步失败保留旧快照。 */
@@ -573,7 +757,7 @@ export class AgentHost {
     const current = this.sessionSnapshots.get(sessionId) ?? await this.LoadOrCreateSnapshots(sessionId);
     const nextRevision = (current.session?.sessionRevision ?? 0) + 1;
     try {
-      const { session } = await this.CreateAndPersistSnapshots(sessionId, nextRevision, 'user_reload');
+      const { session } = await this.CreateAndPersistSnapshots(sessionId, nextRevision, 'user_reload', current.scenarioId ?? 'default');
       return { reloaded: true, sessionRevision: session.sessionRevision };
     } catch (error) {
       return { reloaded: false, reason: error instanceof Error ? error.message : 'reload failed' };
@@ -586,6 +770,19 @@ export class AgentHost {
     const requestId = RequireString(input?.requestId, 'requestId', 200);
     const sessionId = RequireString(input?.sessionId, 'sessionId', 200);
     const userContent = RequireString(input?.content, 'content');
+    const requestedScenario = ResolveScenario(input?.scenarioId);
+    const scenario = this.scenarioOverride ?? requestedScenario;
+    if (this.scenarioOverride && requestedScenario.id !== this.scenarioOverride.id) {
+      throw Object.assign(new Error('Evaluation scenario does not match the frozen host scenario.'), { code: 'VALIDATION_ERROR' });
+    }
+    const scenarioId = scenario.id as 'default' | 'application';
+    if (scenarioId === 'application' && this.browserRunId) throw Object.assign(new Error('Another browser Agent run is already active.'), { code: 'AGENT_BUSY' });
+    if (scenarioId === 'application') {
+      this.browserRunId = requestId;
+      // 页面元素引用不得跨 Run 复用；用户可能在两次发送之间接管可见浏览器并改变 DOM。
+      this.browserRuntime.ResetPageReferences();
+    }
+    try {
     const status = await this.modules.modelProvider.GetStatus();
     if (!status.configured) throw new Error('API Key is not configured.');
     const model = this.modules.modelProvider.ResolveRequestModel(input?.model);
@@ -616,21 +813,21 @@ export class AgentHost {
     this.modules.observability.RecordLog('INFO', 'conversation.send', `session=${sessionId}`);
     this.modules.observability.StartTrace(requestId, sessionId, model);
     this.pendingQuestions.delete(sessionId);
-    const snapshots = await this.LoadOrCreateSnapshots(sessionId);
+    const snapshots = await this.LoadOrCreateSnapshots(sessionId, scenarioId);
     this.EnsureModuleSnapshotCompatible(snapshots.module);
-    const activeTools = this.HydrateToolSnapshot(snapshots.tool);
+    const activeTools = this.HydrateToolSnapshot(snapshots.tool, scenarioId)
+      .filter((tool: any) => scenario.toolNames.includes(tool.definition.function.name));
     const activeToolNames = activeTools.map((tool: any) => tool.definition.function.name);
-    const missingScenarioTools = DefaultScenario.toolNames.filter((name) => !activeToolNames.includes(name));
-    const unexpectedTools = activeToolNames.filter((name: string) => !DefaultScenario.toolNames.includes(name));
-    if (missingScenarioTools.length || unexpectedTools.length) {
-      throw new Error(`Active tool registry does not match the default scenario: missing=${missingScenarioTools.join(',') || 'none'}; unexpected=${unexpectedTools.join(',') || 'none'}.`);
+    const missingScenarioTools = scenario.toolNames.filter((name) => !activeToolNames.includes(name));
+    if (missingScenarioTools.length) {
+      throw new Error(`Active tool registry does not match the ${scenario.id} scenario: missing=${missingScenarioTools.join(',') || 'none'}.`);
     }
     const { contextLimit, threshold } = this.modules.modelProvider.GetRuntimeLimits();
     const runSnapshot = CreateRunSnapshot({
       snapshotId: randomUUID(),
       sessionId,
       sessionRevision: snapshots.session.sessionRevision,
-      scenario: DefaultScenario,
+      scenario,
       instructions: snapshots.instructions,
       tools: activeTools,
       dataScope: {
@@ -684,13 +881,16 @@ export class AgentHost {
             return { count: saved.count };
           },
         },
+        browser: scenarioId === 'application' ? this.browserRuntime : undefined,
       },
       tasks: sessionTasks,
       pendingEdits: this.pendingEdits,
       pendingQuestions: this.pendingQuestions,
+      pendingBrowserActions: this.pendingBrowserActions,
       ledger: this.CreateToolLedgerPort(),
       runId: requestId,
       scenarioSnapshotId: runSnapshot.snapshotId,
+      scenarioId,
       emit: (event: unknown) => this.Emit(event),
       persistSessionState: () => this.SaveState(),
     };
@@ -740,6 +940,9 @@ export class AgentHost {
     } finally {
       this.controllers.delete(requestId);
       this.runtimeControls.delete(requestId);
+    }
+    } finally {
+      if (this.browserRunId === requestId) this.browserRunId = null;
     }
   }
 

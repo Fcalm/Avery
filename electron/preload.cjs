@@ -6,6 +6,14 @@ const invoke = (channel, ...args) => electron_1.ipcRenderer.invoke(channel, ...a
 function invokeWorkspaceWrite(channel, payload, options) {
     return invoke(channel, { idempotencyKey: options?.idempotencyKey, payload });
 }
+/** Agent 的高风险确认和身份清理同样使用写命令信封，避免 Renderer 绕过幂等协议。 */
+function invokeAgentWrite(channel, payload) {
+    return invoke(channel, { idempotencyKey: globalThis.crypto.randomUUID(), payload });
+}
+/** 测评写命令使用独立命名空间和稳定信封，不得混入 Agent Tool Bridge。 */
+function invokeEvaluationWrite(channel, payload) {
+    return invoke(channel, { idempotencyKey: globalThis.crypto.randomUUID(), payload });
+}
 const agentBridge = {
     Configure: (config) => invoke('agent:configure', config),
     TestConnection: (config) => invoke('agent:test-connection', config),
@@ -15,6 +23,9 @@ const agentBridge = {
     Cancel: (requestId) => invoke('agent:cancel', requestId),
     UpdateConfirmationMode: (requestId, confirmationMode) => invoke('agent:update-confirmation-mode', requestId, confirmationMode),
     ConfirmResumeEdit: (id, accepted) => invoke('agent:confirm-resume-edit', id, accepted),
+    ConfirmBrowserAction: (id, accepted) => invokeAgentWrite('agent:confirm-browser-action', [id, accepted]),
+    GetBrowserRuntimeStatus: () => invoke('agent:browser-runtime-status'),
+    ClearBrowserProfile: () => invokeAgentWrite('agent:browser-clear-profile', []),
     AcquireResumeEditLock: (id) => invoke('agent:acquire-resume-lock', id),
     ReleaseResumeEditLock: (id) => invoke('agent:release-resume-lock', id),
     GetStatus: () => invoke('agent:status'),
@@ -73,16 +84,30 @@ const workspaceBridge = {
     ExportResume: (resume, format) => invoke('workspace:export-resume', resume, format),
     Migrate: () => invoke('workspace:migrate'),
 };
+const evaluationBridge = {
+    CreateProject: (input) => invokeEvaluationWrite('evaluation:project-create', [input]),
+    UpdateProject: (id, input, revision) => invokeEvaluationWrite('evaluation:project-update', [id, input, revision]),
+    ReadProject: (id) => invoke('evaluation:project-read', id),
+    ListProjects: () => invoke('evaluation:projects-list'),
+    DeleteProject: (id) => invokeEvaluationWrite('evaluation:project-delete', [id]),
+    ImportDataset: (id, jsonl, rubric, revision) => invokeEvaluationWrite('evaluation:dataset-import', [id, jsonl, rubric, revision]),
+    ValidateProject: (id) => invoke('evaluation:project-validate', id),
+    PreviewProject: (id) => invoke('evaluation:project-preview', id),
+    StartRun: (id) => invokeEvaluationWrite('evaluation:run-start', [id]),
+    CancelRun: (id) => invokeEvaluationWrite('evaluation:run-cancel', [id]),
+    ReadRun: (id) => invoke('evaluation:run-read', id),
+    ListRuns: (projectId) => invoke('evaluation:runs-list', projectId),
+    ReadCaseResult: (id) => invoke('evaluation:case-read', id),
+    CompareRuns: (left, right) => invoke('evaluation:runs-compare', left, right),
+    OnEvent: (listener) => {
+        const handler = (_event, payload) => listener(payload);
+        electron_1.ipcRenderer.on('evaluation:event', handler);
+        return () => electron_1.ipcRenderer.removeListener('evaluation:event', handler);
+    },
+};
 electron_1.contextBridge.exposeInMainWorld('offergetAgent', agentBridge);
 electron_1.contextBridge.exposeInMainWorld('offergetWorkspace', workspaceBridge);
+electron_1.contextBridge.exposeInMainWorld('offergetEvaluation', evaluationBridge);
 electron_1.contextBridge.exposeInMainWorld('offergetWindow', {
     Minimize: () => invoke('window:minimize'), ToggleMaximize: () => invoke('window:toggle-maximize'), Close: () => invoke('window:close'),
-});
-electron_1.contextBridge.exposeInMainWorld('offergetBrowser', {
-    Show: (bounds) => invoke('browser:show', bounds),
-    Hide: () => invoke('browser:hide'),
-    Navigate: (address) => invoke('browser:navigate', address),
-    GoBack: () => invoke('browser:back'),
-    GoForward: () => invoke('browser:forward'),
-    Reload: () => invoke('browser:reload'),
 });

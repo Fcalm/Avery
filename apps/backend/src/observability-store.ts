@@ -53,6 +53,52 @@ export class ObservabilityStore {
         UNIQUE(request_id, ordinal)
       );
       CREATE INDEX IF NOT EXISTS idx_agent_trace_events_request ON agent_trace_events(request_id, ordinal);
+      CREATE TABLE IF NOT EXISTS evaluation_projects (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        runner_type TEXT NOT NULL,
+        config_json TEXT NOT NULL,
+        dataset_jsonl TEXT NOT NULL DEFAULT '',
+        dataset_version TEXT,
+        dataset_case_count INTEGER NOT NULL DEFAULT 0,
+        rubric TEXT NOT NULL DEFAULT '',
+        revision INTEGER NOT NULL DEFAULT 1,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_evaluation_projects_updated ON evaluation_projects(updated_at DESC);
+      CREATE TABLE IF NOT EXISTS evaluation_runs (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL,
+        project_name TEXT NOT NULL,
+        runner_type TEXT NOT NULL,
+        status TEXT NOT NULL,
+        snapshot_hash TEXT NOT NULL,
+        snapshot_json TEXT NOT NULL,
+        summary_json TEXT,
+        error_json TEXT,
+        created_at INTEGER NOT NULL,
+        started_at INTEGER,
+        completed_at INTEGER
+      );
+      CREATE INDEX IF NOT EXISTS idx_evaluation_runs_project ON evaluation_runs(project_id, created_at DESC);
+      CREATE TABLE IF NOT EXISTS evaluation_case_runs (
+        id TEXT PRIMARY KEY,
+        run_id TEXT NOT NULL,
+        candidate_id TEXT NOT NULL,
+        candidate_name TEXT NOT NULL,
+        case_id TEXT NOT NULL,
+        repeat_index INTEGER NOT NULL,
+        status TEXT NOT NULL,
+        final_response TEXT NOT NULL DEFAULT '',
+        score_json TEXT,
+        metrics_json TEXT NOT NULL DEFAULT '{}',
+        error_json TEXT,
+        created_at INTEGER NOT NULL,
+        completed_at INTEGER,
+        UNIQUE(run_id, candidate_id, case_id, repeat_index)
+      );
+      CREATE INDEX IF NOT EXISTS idx_evaluation_case_runs_run ON evaluation_case_runs(run_id, created_at);
     `);
     try {
       this.db.exec('ALTER TABLE agent_trace_events ADD COLUMN token_count INTEGER NOT NULL DEFAULT 0');
@@ -192,6 +238,143 @@ export class ObservabilityStore {
   /** 将进程崩溃遗留的 running Trace 标记为 interrupted，供 Backend 启动时恢复观测一致性。 */
   RecoverInterruptedTraces(): any {
     const result = this.db.prepare("UPDATE agent_traces SET state = 'interrupted', completed_at = ? WHERE state = 'running'").run(GetNow());
+    return { recovered: result.changes };
+  }
+
+  /** 创建开发者测评项目索引；配置与测试集仍由 EvalService 完成 Schema 校验。 */
+  CreateEvalProjectRecord(record: any): any {
+    this.db.prepare(`INSERT INTO evaluation_projects(
+      id, name, runner_type, config_json, dataset_jsonl, dataset_version, dataset_case_count, rubric, revision, created_at, updated_at
+    ) VALUES(?, ?, ?, ?, '', NULL, 0, ?, 1, ?, ?)`)
+      .run(record.id, record.name, record.runnerType, JSON.stringify(record.config), record.rubric ?? '', record.createdAt, record.updatedAt);
+    return this.ReadEvalProjectRecord(record.id);
+  }
+
+  /** 以 revision 乐观锁更新项目，防止两个开发者页面互相覆盖候选和 Rubric。 */
+  UpdateEvalProjectRecord(id: string, record: any, expectedRevision: number): any {
+    const result = this.db.prepare(`UPDATE evaluation_projects SET name = ?, runner_type = ?, config_json = ?, rubric = ?, revision = revision + 1, updated_at = ?
+      WHERE id = ? AND revision = ?`)
+      .run(record.name, record.runnerType, JSON.stringify(record.config), record.rubric ?? '', record.updatedAt, id, expectedRevision);
+    if (result.changes !== 1) {
+      const exists = this.db.prepare('SELECT revision FROM evaluation_projects WHERE id = ?').get(id);
+      if (!exists) throw Object.assign(new Error('Evaluation project was not found.'), { code: 'NOT_FOUND' });
+      throw Object.assign(new Error('Evaluation project revision conflict.'), { code: 'REVISION_CONFLICT', details: { expectedRevision, actualRevision: exists.revision } });
+    }
+    return this.ReadEvalProjectRecord(id);
+  }
+
+  /** 原子替换测试集索引；正文只保存在受控 Artifact 目录，数据库不承载大文本。 */
+  ImportEvalDatasetRecord(id: string, datasetKey: string, rubric: string, datasetVersion: string, caseCount: number, expectedRevision: number, updatedAt: number): any {
+    const result = this.db.prepare(`UPDATE evaluation_projects SET dataset_jsonl = ?, dataset_version = ?, dataset_case_count = ?, rubric = ?, revision = revision + 1, updated_at = ?
+      WHERE id = ? AND revision = ?`)
+      .run(datasetKey, datasetVersion, caseCount, rubric, updatedAt, id, expectedRevision);
+    if (result.changes !== 1) {
+      const exists = this.db.prepare('SELECT revision FROM evaluation_projects WHERE id = ?').get(id);
+      if (!exists) throw Object.assign(new Error('Evaluation project was not found.'), { code: 'NOT_FOUND' });
+      throw Object.assign(new Error('Evaluation project revision conflict.'), { code: 'REVISION_CONFLICT', details: { expectedRevision, actualRevision: exists.revision } });
+    }
+    return this.ReadEvalProjectRecord(id);
+  }
+
+  /** 返回项目配置及内部数据集逻辑键；Renderer DTO 由 EvalService 剔除 datasetJsonl。 */
+  ReadEvalProjectRecord(id: string): any {
+    const row = this.db.prepare('SELECT * FROM evaluation_projects WHERE id = ?').get(id);
+    if (!row) throw Object.assign(new Error('Evaluation project was not found.'), { code: 'NOT_FOUND' });
+    return {
+      schemaVersion: 1, id: row.id, name: row.name, runnerType: row.runner_type, config: JSON.parse(row.config_json),
+      datasetJsonl: row.dataset_jsonl, datasetVersion: row.dataset_version, datasetCaseCount: row.dataset_case_count,
+      rubric: row.rubric, revision: row.revision, createdAt: row.created_at, updatedAt: row.updated_at,
+    };
+  }
+
+  ListEvalProjectRecords(): any[] {
+    return this.db.prepare('SELECT * FROM evaluation_projects ORDER BY updated_at DESC, id').all().map((row: any) => ({
+      schemaVersion: 1, id: row.id, name: row.name, runnerType: row.runner_type, config: JSON.parse(row.config_json),
+      datasetVersion: row.dataset_version, datasetCaseCount: row.dataset_case_count, rubric: row.rubric,
+      revision: row.revision, createdAt: row.created_at, updatedAt: row.updated_at,
+    }));
+  }
+
+  DeleteEvalProjectRecord(id: string): any {
+    const active = this.db.prepare("SELECT 1 FROM evaluation_runs WHERE project_id = ? AND status NOT IN ('completed', 'failed', 'cancelled')").get(id);
+    if (active) throw Object.assign(new Error('Evaluation project has an active run.'), { code: 'RESOURCE_LOCKED' });
+    const result = this.db.prepare('DELETE FROM evaluation_projects WHERE id = ?').run(id);
+    return { deleted: result.changes === 1 };
+  }
+
+  CreateEvalRunRecord(record: any): any {
+    this.db.prepare(`INSERT INTO evaluation_runs(
+      id, project_id, project_name, runner_type, status, snapshot_hash, snapshot_json, summary_json, error_json, created_at, started_at, completed_at
+    ) VALUES(?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, NULL, NULL)`)
+      .run(record.id, record.projectId, record.projectName, record.runnerType, record.status, record.snapshotHash, JSON.stringify(record.snapshot), record.createdAt);
+    return this.ReadEvalRunRecord(record.id);
+  }
+
+  UpdateEvalRunRecord(id: string, patch: any): any {
+    const current = this.db.prepare('SELECT * FROM evaluation_runs WHERE id = ?').get(id);
+    if (!current) throw Object.assign(new Error('Evaluation run was not found.'), { code: 'NOT_FOUND' });
+    this.db.prepare(`UPDATE evaluation_runs SET status = ?, summary_json = ?, error_json = ?, started_at = ?, completed_at = ? WHERE id = ?`)
+      .run(patch.status ?? current.status,
+        patch.summary === undefined ? current.summary_json : JSON.stringify(patch.summary),
+        patch.error === undefined ? current.error_json : patch.error === null ? null : JSON.stringify(patch.error),
+        patch.startedAt === undefined ? current.started_at : patch.startedAt,
+        patch.completedAt === undefined ? current.completed_at : patch.completedAt,
+        id);
+    return this.ReadEvalRunRecord(id);
+  }
+
+  ReadEvalRunRecord(id: string): any {
+    const row = this.db.prepare('SELECT * FROM evaluation_runs WHERE id = ?').get(id);
+    if (!row) throw Object.assign(new Error('Evaluation run was not found.'), { code: 'NOT_FOUND' });
+    const parse = (value: string | null) => value ? JSON.parse(value) : null;
+    return {
+      schemaVersion: 1, id: row.id, projectId: row.project_id, projectName: row.project_name, runnerType: row.runner_type,
+      status: row.status, snapshotHash: row.snapshot_hash, snapshot: parse(row.snapshot_json), summary: parse(row.summary_json),
+      ...(row.error_json ? { error: parse(row.error_json) } : {}), createdAt: row.created_at, startedAt: row.started_at, completedAt: row.completed_at,
+    };
+  }
+
+  ListEvalRunRecords(projectId?: string): any[] {
+    const rows = projectId
+      ? this.db.prepare('SELECT id FROM evaluation_runs WHERE project_id = ? ORDER BY created_at DESC').all(projectId)
+      : this.db.prepare('SELECT id FROM evaluation_runs ORDER BY created_at DESC').all();
+    return rows.map((row: any) => this.ReadEvalRunRecord(row.id));
+  }
+
+  UpsertEvalCaseRunRecord(record: any): any {
+    this.db.prepare(`INSERT INTO evaluation_case_runs(
+      id, run_id, candidate_id, candidate_name, case_id, repeat_index, status, final_response, score_json, metrics_json, error_json, created_at, completed_at
+    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET status = excluded.status, final_response = excluded.final_response,
+      score_json = excluded.score_json, metrics_json = excluded.metrics_json, error_json = excluded.error_json, completed_at = excluded.completed_at`)
+      .run(record.id, record.runId, record.candidateId, record.candidateName, record.caseId, record.repeatIndex, record.status,
+        record.finalResponse ?? '', record.score ? JSON.stringify(record.score) : null, JSON.stringify(record.metrics ?? {}),
+        record.error ? JSON.stringify(record.error) : null, record.createdAt, record.completedAt ?? null);
+    return this.ReadEvalCaseRunRecord(record.id);
+  }
+
+  ReadEvalCaseRunRecord(id: string): any {
+    const row = this.db.prepare('SELECT * FROM evaluation_case_runs WHERE id = ?').get(id);
+    if (!row) throw Object.assign(new Error('Evaluation case run was not found.'), { code: 'NOT_FOUND' });
+    return {
+      schemaVersion: 1, id: row.id, runId: row.run_id, candidateId: row.candidate_id, candidateName: row.candidate_name,
+      caseId: row.case_id, repeatIndex: row.repeat_index, status: row.status, finalResponse: row.final_response,
+      score: row.score_json ? JSON.parse(row.score_json) : null, metrics: JSON.parse(row.metrics_json),
+      ...(row.error_json ? { error: JSON.parse(row.error_json) } : {}), createdAt: row.created_at, completedAt: row.completed_at,
+    };
+  }
+
+  ListEvalCaseRunRecords(runId: string): any[] {
+    return this.db.prepare('SELECT id FROM evaluation_case_runs WHERE run_id = ? ORDER BY rowid').all(runId)
+      .map((row: any) => this.ReadEvalCaseRunRecord(row.id));
+  }
+
+  /** Backend 异常退出后不伪造续跑：所有非终态测评进入 failed，保留已有 Case 与 Artifact。 */
+  RecoverInterruptedEvalRuns(): any {
+    const now = GetNow();
+    const error = JSON.stringify({ code: 'INTERRUPTED', message: 'Evaluation run was interrupted when the application stopped.' });
+    const result = this.db.prepare("UPDATE evaluation_runs SET status = 'failed', error_json = ?, completed_at = ? WHERE status NOT IN ('completed', 'failed', 'cancelled')").run(error, now);
+    this.db.prepare("UPDATE evaluation_case_runs SET status = 'failed', error_json = ?, completed_at = ? WHERE status NOT IN ('completed', 'failed', 'cancelled', 'not_run')").run(error, now);
     return { recovered: result.changes };
   }
 

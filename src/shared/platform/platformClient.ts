@@ -1,5 +1,5 @@
 import {
-  ErrorCode, type ErrorCodeValue, type ResultEnvelope, type DesktopAgentBridge, type WorkspaceBridge, type SettingsDto, type WriteCommandOptions,
+  ErrorCode, type ErrorCodeValue, type ResultEnvelope, type DesktopAgentBridge, type DesktopEvaluationBridge, type WorkspaceBridge, type SettingsDto, type WriteCommandOptions,
 } from '@offerget/contracts';
 
 /** 统一业务错误：携带稳定错误码与可选诊断明细，页面只消费 code，不再解析异常字符串。 */
@@ -42,14 +42,19 @@ export async function Unwrap<T>(envelope: ResultEnvelope<T> | Promise<ResultEnve
 
 /** 只读访问 Agent Bridge；未在桌面客户端时抛统一业务错误。 */
 function RequireAgent(): DesktopAgentBridge {
-  if (!window.offergetAgent) throw new AppError(ErrorCode.INTERNAL_ERROR, '请使用桌面客户端启动 OfferGet。');
+  if (!window.offergetAgent) throw new AppError(ErrorCode.INTERNAL_ERROR, '请使用 Avery 桌面客户端启动。');
   return window.offergetAgent;
 }
 
 /** 只读访问 Workspace Bridge；未在桌面客户端时抛统一业务错误。 */
 function RequireWorkspace(): WorkspaceBridge {
-  if (!window.offergetWorkspace) throw new AppError(ErrorCode.INTERNAL_ERROR, '请使用桌面客户端启动 OfferGet。');
+  if (!window.offergetWorkspace) throw new AppError(ErrorCode.INTERNAL_ERROR, '请使用 Avery 桌面客户端启动。');
   return window.offergetWorkspace;
+}
+
+function RequireEvaluation(): DesktopEvaluationBridge {
+  if (!window.offergetEvaluation) throw new AppError(ErrorCode.INTERNAL_ERROR, '请使用 Avery 桌面客户端启动测评系统。');
+  return window.offergetEvaluation;
 }
 
 /**
@@ -71,6 +76,9 @@ export const platformClient = {
     Cancel: (requestId: string) => CallBridge(() => RequireAgent().Cancel(requestId)),
     UpdateConfirmationMode: (requestId: string, confirmationMode: Parameters<DesktopAgentBridge['UpdateConfirmationMode']>[1]) => CallBridge(() => RequireAgent().UpdateConfirmationMode(requestId, confirmationMode)),
     ConfirmResumeEdit: (confirmationId: string, accepted: boolean) => CallBridge(() => RequireAgent().ConfirmResumeEdit(confirmationId, accepted)),
+    ConfirmBrowserAction: (confirmationId: string, accepted: boolean) => CallBridge(() => RequireAgent().ConfirmBrowserAction(confirmationId, accepted)),
+    GetBrowserRuntimeStatus: () => CallBridge(() => RequireAgent().GetBrowserRuntimeStatus()),
+    ClearBrowserProfile: () => CallBridge(() => RequireAgent().ClearBrowserProfile()),
     AcquireResumeEditLock: (resumeId: string) => CallBridge(() => RequireAgent().AcquireResumeEditLock(resumeId)),
     ReleaseResumeEditLock: (resumeId: string) => CallBridge(() => RequireAgent().ReleaseResumeEditLock(resumeId)),
     GetStatus: () => CallBridge(() => RequireAgent().GetStatus()),
@@ -125,6 +133,23 @@ export const platformClient = {
     ExportResume: (resume: { name: string; summary: string; content: string }, format: 'pdf' | 'docx' | 'png') => CallBridge(() => RequireWorkspace().ExportResume(resume, format)),
     Migrate: () => CallBridge(() => RequireWorkspace().Migrate()),
   },
+  evaluation: {
+    CreateProject: (input: Parameters<DesktopEvaluationBridge['CreateProject']>[0]) => CallBridge(() => RequireEvaluation().CreateProject(input)),
+    UpdateProject: (id: string, input: Parameters<DesktopEvaluationBridge['UpdateProject']>[1], revision: number) => CallBridge(() => RequireEvaluation().UpdateProject(id, input, revision)),
+    ReadProject: (id: string) => CallBridge(() => RequireEvaluation().ReadProject(id)),
+    ListProjects: () => CallBridge(() => RequireEvaluation().ListProjects()),
+    DeleteProject: (id: string) => CallBridge(() => RequireEvaluation().DeleteProject(id)),
+    PreviewProject: (id: string) => CallBridge(() => RequireEvaluation().PreviewProject(id)),
+    ImportDataset: (id: string, jsonl: string, rubric: string, revision: number) => CallBridge(() => RequireEvaluation().ImportDataset(id, jsonl, rubric, revision)),
+    ValidateProject: (id: string) => CallBridge(() => RequireEvaluation().ValidateProject(id)),
+    StartRun: (id: string) => CallBridge(() => RequireEvaluation().StartRun(id)),
+    CancelRun: (id: string) => CallBridge(() => RequireEvaluation().CancelRun(id)),
+    ReadRun: (id: string) => CallBridge(() => RequireEvaluation().ReadRun(id)),
+    ListRuns: (projectId?: string) => CallBridge(() => RequireEvaluation().ListRuns(projectId)),
+    ReadCaseResult: (id: string) => CallBridge(() => RequireEvaluation().ReadCaseResult(id)),
+    CompareRuns: (left: string, right: string) => CallBridge(() => RequireEvaluation().CompareRuns(left, right)),
+    OnEvent: (listener: Parameters<DesktopEvaluationBridge['OnEvent']>[0]) => RequireEvaluation().OnEvent(listener),
+  },
 };
 
 /**
@@ -134,6 +159,7 @@ export const platformClient = {
 const bridgeClientCompleteness: {
   agent: Record<keyof DesktopAgentBridge, unknown>;
   workspace: Record<keyof WorkspaceBridge, unknown>;
+  evaluation: Record<keyof DesktopEvaluationBridge, unknown>;
 } = platformClient;
 void bridgeClientCompleteness;
 

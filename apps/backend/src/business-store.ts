@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { copyFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync, unlinkSync, rmdirSync } from 'node:fs';
 import { basename, join } from 'node:path';
+import { ResolveBusinessMigrationRoot } from './migration-paths';
 import { GetNow, CreateId } from './electron/repositories/helpers';
 import { ConversationRepository } from './electron/repositories/conversation-repository';
 import { ResumeRepository } from './electron/repositories/resume-repository';
@@ -20,8 +21,8 @@ import { WorkspaceOperationService } from './electron/backend/services/workspace
 // better-sqlite3 为原生模块，仅 Worker 进程加载（组合根不持有连接）；require 形态返回 any。
 const Database = require('better-sqlite3') as any;
 
-/** 业务迁移文件目录：从 dist 回退三级到仓库根，再进入 migrations/business。 */
-const MigrationRoot = join(__dirname, '..', '..', '..', 'migrations', 'business');
+/** 业务迁移文件目录兼容仓库和打包后的 workspace 依赖位置。 */
+const MigrationRoot = ResolveBusinessMigrationRoot(__dirname);
 
 interface MigrationManifestEntry {
   version: number;

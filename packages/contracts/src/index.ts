@@ -23,6 +23,11 @@ export type {
 export { BridgeNamespaces } from './bridge';
 export type { BridgeNamespaceName } from './bridge';
 export type {
-  AgentConfiguration, AgentModuleConfiguration, AgentObservability, AgentSendRequest, AgentSessionAssistantState, AgentStreamEvent, AgentTraceEvent, ConfirmationMode,
-  BrowserPanelBounds, DesktopAgentBridge, DesktopBrowserBridge, WorkspaceBridge,
+  AgentBrowserRuntimeStatus, AgentConfiguration, AgentModuleConfiguration, AgentObservability, AgentSendRequest, AgentSessionAssistantState, AgentStreamEvent, AgentTraceEvent, BrowserActionState, ConfirmationMode,
+  DesktopAgentBridge, WorkspaceBridge,
 } from './bridge';
+export type {
+  DesktopEvaluationBridge, EvalCaseRun, EvalCaseRunStatus, EvalCaseScore, EvalComparison, EvalDatasetCase, EvalDatasetImportResult,
+  EvalEvent, EvalExpectedResult, EvalProject, EvalProjectConfig, EvalProjectInput, EvalPromptCandidate,
+  EvalRunnerType, EvalRun, EvalRunDetail, EvalRunStatus, EvalRunSummary, EvalUserSimulatorStrategy,
+} from './evaluation';

@@ -1,12 +1,14 @@
 # Dependencies and package-manager state
 node_modules/
 .npm/
+.npm-cache/
 .pnpm-store/
 
 # Generated renderer and release artifacts
 /dist/
 /release-rebuild/
 /output/
+/artifacts/
 *.asar
 *.blockmap
 

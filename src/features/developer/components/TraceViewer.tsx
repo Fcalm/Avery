@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { AgentObservability, AgentTraceEvent } from '@offerget/contracts';
 import { Icon } from '../../../shared/components/Icon';
-import { Modal, Button } from '../../../shared/components/UI';
+import { Modal, Button, Select } from '../../../shared/components/UI';
 
 type TraceSummary = AgentObservability['traces'][number];
 
@@ -21,6 +21,8 @@ interface TimelineEvent extends AgentTraceEvent {
   detail: string;
   tone: 'is-neutral' | 'is-accent' | 'is-success' | 'is-warning' | 'is-danger';
 }
+
+type EventFilter = 'all' | TimelineEvent['title'] | 'Success' | 'Failed';
 
 const StateLabels: Record<string, string> = { completed: '已完成', running: '进行中', failed: '失败', cancelled: '已取消', circuit_open: '已暂停', interrupted: '已中断' };
 
@@ -97,8 +99,7 @@ function BuildTimeline(requestId: string, requestIndex: number, events: AgentTra
 function EventRow({ event, expanded, onToggle }: { event: TimelineEvent; expanded: boolean; onToggle: () => void }) {
   return <article className={`trace-event ${expanded ? 'open' : ''}`}>
     <button className="trace-event-summary" type="button" aria-expanded={expanded} onClick={onToggle}>
-      <span className={`trace-event-marker ${event.tone}`} aria-hidden="true" />
-      <span className="trace-event-copy"><b>{event.title}</b><small>{event.detail}</small></span>
+      <span className="trace-event-copy"><b className={`trace-event-role trace-event-role-${event.title.toLowerCase()}`}>{event.title}</b><small>{event.detail}</small></span>
       <span className="trace-event-tokens">{event.tokenCount.toLocaleString()} tokens</span>
       <time>{FormatTime(event.createdAt)}</time>
     </button>
@@ -107,14 +108,15 @@ function EventRow({ event, expanded, onToggle }: { event: TimelineEvent; expande
 }
 
 /** 按会话聚合 Trace；每次模型请求在右侧时间线中以 Request-n 分隔。 */
-function TraceViewer({ traces, conversations, onSelectTrace, onDeleteTraces }: { traces: TraceSummary[]; conversations: ConversationOption[]; onSelectTrace: (requestId: string) => Promise<AgentTraceEvent[]>; onDeleteTraces: (sessionIds: string[]) => Promise<void> }) {
+function TraceViewer({ traces, conversations, onSelectTrace, onDeleteTraces, focusConversationId }: { traces: TraceSummary[]; conversations: ConversationOption[]; onSelectTrace: (requestId: string) => Promise<AgentTraceEvent[]>; onDeleteTraces?: (sessionIds: string[]) => Promise<void>; focusConversationId?: string | null }) {
+  const isCurrentConversationMode = focusConversationId !== undefined;
   const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<ConversationTrace | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [eventsByRequest, setEventsByRequest] = useState<Record<string, AgentTraceEvent[]>>({});
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [query, setQuery] = useState('');
-  const [eventFilter, setEventFilter] = useState<'all' | TimelineEvent['title']>('all');
+  const [eventFilter, setEventFilter] = useState<EventFilter>('all');
 
   const conversationTraces = useMemo<ConversationTrace[]>(() => {
     const titles = new Map(conversations.map((conversation) => [conversation.id, conversation.title]));
@@ -125,8 +127,8 @@ function TraceViewer({ traces, conversations, onSelectTrace, onDeleteTraces }: {
       title: titles.get(id) || '未命名对话',
       traces: [...items].sort((left, right) => left.createdAt - right.createdAt),
       latestAt: Math.max(...items.map((item) => item.createdAt)),
-    })).sort((left, right) => right.latestAt - left.latestAt);
-  }, [conversations, traces]);
+    })).filter((conversation) => !isCurrentConversationMode || conversation.id === focusConversationId).sort((left, right) => right.latestAt - left.latestAt);
+  }, [conversations, focusConversationId, isCurrentConversationMode, traces]);
 
   const selectedConversation = conversationTraces.find((conversation) => conversation.id === selectedConversationId) ?? null;
 
@@ -151,19 +153,19 @@ function TraceViewer({ traces, conversations, onSelectTrace, onDeleteTraces }: {
   const timeline = useMemo(() => selectedConversation?.traces.flatMap((trace, index) => BuildTimeline(trace.requestId, index + 1, eventsByRequest[trace.requestId] ?? [])) ?? [], [eventsByRequest, selectedConversation]);
   const visibleTimeline = useMemo(() => {
     const needle = query.toLowerCase();
-    return timeline.filter((event) => (eventFilter === 'all' || event.title === eventFilter) && (!needle || `${event.title} ${event.detail} ${PayloadText(event.payload)}`.toLowerCase().includes(needle)));
+    const MatchesFilter = (event: TimelineEvent) => eventFilter === 'all'
+      || event.title === eventFilter
+      || (eventFilter === 'Success' && event.tone === 'is-success')
+      || (eventFilter === 'Failed' && event.tone === 'is-danger');
+    return timeline.filter((event) => MatchesFilter(event) && (!needle || `${event.title} ${event.detail} ${PayloadText(event.payload)}`.toLowerCase().includes(needle)));
   }, [eventFilter, query, timeline]);
 
   function ToggleEvent(id: string) {
     setExpanded((current) => { const next = new Set(current); next.has(id) ? next.delete(id) : next.add(id); return next; });
   }
 
-  function CopyRequestId(requestId: string) {
-    void navigator.clipboard?.writeText(requestId);
-  }
-
   async function ConfirmDeleteTraces() {
-    if (!deleteTarget) return;
+    if (!deleteTarget || !onDeleteTraces) return;
     try {
       await onDeleteTraces([deleteTarget.id]);
       setDeleteTarget(null);
@@ -173,9 +175,9 @@ function TraceViewer({ traces, conversations, onSelectTrace, onDeleteTraces }: {
     }
   }
 
-  return <div className="trace-window">
+  return <div className={`trace-window ${isCurrentConversationMode ? 'trace-window-current-conversation' : ''}`}>
     <div className="trace-workbench">
-      <aside aria-label="对话记录">
+      {!isCurrentConversationMode && <aside aria-label="对话记录">
         <div className="trace-list-heading"><b>对话记录</b><small>{conversationTraces.length} 条</small></div>
         <div className="trace-request-list">{conversationTraces.map((conversation) => {
           const latest = conversation.traces.at(-1)!;
@@ -185,7 +187,7 @@ function TraceViewer({ traces, conversations, onSelectTrace, onDeleteTraces }: {
             <time>{FormatTime(conversation.latestAt)}</time>
           </button></div>;
         })}</div>
-      </aside>
+      </aside>}
       <main>
         {selectedConversation ? <>
           <div className="trace-detail-header">
@@ -193,15 +195,15 @@ function TraceViewer({ traces, conversations, onSelectTrace, onDeleteTraces }: {
               <span><b>{FormatDateTime(selectedConversation.traces[0].createdAt)}</b></span>
               <span><b>{selectedConversation.traces.at(-1)?.model}</b></span>
               <span><b>{selectedConversation.traces.length} requests</b></span>
-              <span className="trace-scene"><b>求职助手</b></span><button className="trace-detail-delete" type="button" aria-label={`删除${selectedConversation.title}的 Trace`} title="删除此对话的 Trace" onClick={() => { setDeleteError(null); setDeleteTarget(selectedConversation); }}><Icon name="delete" size={14} /></button>
+              <span className="trace-scene"><b>求职助手</b></span>{onDeleteTraces && <button className="trace-detail-delete" type="button" aria-label={`删除${selectedConversation.title}的 Trace`} title="删除此对话的 Trace" onClick={() => { setDeleteError(null); setDeleteTarget(selectedConversation); }}><Icon name="delete" size={14} /></button>}
             </div>
-            <div className="trace-detail-controls"><div className="trace-search"><Icon name="search" size={14} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索事件内容" aria-label="搜索事件内容" /></div><select value={eventFilter} onChange={(event) => setEventFilter(event.target.value as 'all' | TimelineEvent['title'])} aria-label="筛选事件"><option value="all">全部事件</option><option value="System">System</option><option value="User">User</option><option value="Tool">Tool</option><option value="Assistant">Assistant</option></select></div>
+            <div className="trace-detail-controls"><div className="trace-search"><Icon name="search" size={14} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索事件内容" aria-label="搜索事件内容" /></div><Select className="trace-event-filter" value={eventFilter} onChange={(value) => setEventFilter(value as EventFilter)} ariaLabel="筛选事件" options={[{ value: 'all', label: '全部事件' }, { value: 'System', label: 'System' }, { value: 'User', label: 'User' }, { value: 'Tool', label: 'Tool' }, { value: 'Assistant', label: 'Assistant' }, { value: 'Success', label: 'Success' }, { value: 'Failed', label: 'Failed' }]} /></div>
           </div>
-          {visibleTimeline.length ? <div className="trace-event-list">{visibleTimeline.map((event, index) => <div key={event.id} className="trace-request-group">{(index === 0 || visibleTimeline[index - 1].requestId !== event.requestId) && <div className="trace-request-divider"><span>Request-{event.requestIndex}</span><code title={event.requestId}>{event.requestId}</code><button type="button" title="复制 Request ID" aria-label="复制 Request ID" onClick={() => CopyRequestId(event.requestId)}><Icon name="window-restore" size={13} /></button><small>{FormatTime(selectedConversation.traces[event.requestIndex - 1].createdAt)}</small></div>}<EventRow event={event} expanded={expanded.has(event.id)} onToggle={() => ToggleEvent(event.id)} /></div>)}</div> : <p className="empty-copy">此对话暂时没有可显示的 System、User、Tool 或 Assistant 事件。</p>}
+          {visibleTimeline.length ? <div className="trace-event-list">{visibleTimeline.map((event, index) => <div key={event.id} className="trace-request-group">{(index === 0 || visibleTimeline[index - 1].requestId !== event.requestId) && <div className="trace-request-divider"><span>TURN-{event.requestIndex}</span><small>{FormatTime(selectedConversation.traces[event.requestIndex - 1].createdAt)}</small></div>}<EventRow event={event} expanded={expanded.has(event.id)} onToggle={() => ToggleEvent(event.id)} /></div>)}</div> : <p className="empty-copy">此对话暂时没有可显示的 System、User、Tool 或 Assistant 事件。</p>}
         </> : <p className="empty-copy">发送一条消息后，这里会按对话归纳 Trace 记录。</p>}
       </main>
     </div>
-    <Modal open={Boolean(deleteTarget)} title="删除当前对话 Trace？" onClose={() => { setDeleteTarget(null); setDeleteError(null); }}><p className="modal-copy">将删除此对话的 {deleteTarget?.traces.length ?? 0} 条请求 Trace 与事件；对话消息和运行日志会保留。</p>{deleteError && <p className="modal-copy trace-delete-error">{deleteError}</p>}<div className="modal-actions"><Button onClick={() => { setDeleteTarget(null); setDeleteError(null); }}>取消</Button><Button variant="danger" onClick={() => void ConfirmDeleteTraces()}>确认删除</Button></div></Modal>
+    {onDeleteTraces && <Modal open={Boolean(deleteTarget)} title="删除当前对话 Trace？" onClose={() => { setDeleteTarget(null); setDeleteError(null); }}><p className="modal-copy">将删除此对话的 {deleteTarget?.traces.length ?? 0} 条请求 Trace 与事件；对话消息和运行日志会保留。</p>{deleteError && <p className="modal-copy trace-delete-error">{deleteError}</p>}<div className="modal-actions"><Button onClick={() => { setDeleteTarget(null); setDeleteError(null); }}>取消</Button><Button variant="danger" onClick={() => void ConfirmDeleteTraces()}>确认删除</Button></div></Modal>}
   </div>;
 }
 

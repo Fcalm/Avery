@@ -9,10 +9,15 @@ describe('contracts Agent 相关契约', () => {
     const eventTypes = [
       'thinking_delta', 'content_delta', 'completed', 'cancelled', 'error',
       'waiting_user_input', 'waiting_confirmation', 'paused',
+      'browser_confirmation', 'browser_action_completed', 'browser_user_action',
     ] satisfies AgentStreamEvent['type'][];
 
     expect(eventTypes).toContain('completed');
     expect(eventTypes).toContain('waiting_confirmation');
+  });
+
+  it('会话状态显式冻结默认或投递场景', () => {
+    expectTypeOf<AgentSessionAssistantState['scenarioId']>().toEqualTypeOf<'default' | 'application'>();
   });
 
   it('Usage 来源显式支持 unavailable，不能把估算伪装成真实值', () => {

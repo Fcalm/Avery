@@ -22,6 +22,61 @@ afterEach(() => {
 });
 
 describe('AgentHost 会话前缀快照', () => {
+  it('新会话的空工具占位不应阻止首次绑定投递场景', async () => {
+    const userDataPath = mkdtempSync(join(tmpdir(), 'offerget-application-session-'));
+    directories.push(userDataPath);
+    const observability = new ObservabilityStore(userDataPath);
+    const storedSnapshots = new Map<string, any>([
+      ['application-session', { sessionSnapshotJson: null, toolSnapshotJson: '[]' }],
+    ]);
+    const requestBodies: any[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
+      requestBodies.push(JSON.parse(String(init?.body)));
+      return CompletionResponse('已进入投递场景');
+    }));
+    const host = new AgentHost({
+      userDataPath,
+      workspacePath: userDataPath,
+      Emit: () => undefined,
+      business: {
+        GetStoredSettings: async () => ({}),
+        GetProfiles: async () => ({ items: [] }),
+        ResolveAttachmentUri: async () => null,
+        GetConversationSnapshots: async (sessionId: string) => storedSnapshots.get(sessionId) ?? null,
+        SetConversationSnapshots: async (sessionId: string, value: unknown) => { storedSnapshots.set(sessionId, value); },
+      },
+      observability,
+      credentialPort: {
+        Load: async () => ({
+          provider: 'DeepSeek', baseUrl: 'https://api.deepseek.com', model: 'deepseek-v4-flash', thinkingEnabled: false,
+          contextLimit: 64_000, compressionThreshold: 80, apiKey: 'test-key',
+        }),
+        Save: async () => undefined,
+      },
+    });
+
+    try {
+      await expect(host.Send({
+        requestId: 'application-request', sessionId: 'application-session', scenarioId: 'application',
+        content: '帮我搜索合适的岗位', confirmationMode: 'always_confirm',
+      })).resolves.toMatchObject({ accepted: true });
+
+      const persisted = JSON.parse(storedSnapshots.get('application-session').toolSnapshotJson);
+      expect(persisted.scenarioId).toBe('application');
+      expect(persisted.tool.orderedToolNames).toContain('BrowserNavigate');
+      expect(requestBodies[0].tools.map((tool: any) => tool.function.name)).toContain('BrowserNavigate');
+
+      await expect(host.Send({
+        requestId: 'invalid-scenario-switch', sessionId: 'application-session', scenarioId: 'default',
+        content: '在原会话切回默认场景', confirmationMode: 'always_confirm',
+      })).rejects.toThrow('A scenario is already bound to this conversation');
+      expect(requestBodies).toHaveLength(1);
+    } finally {
+      await host.Close();
+      observability.Close();
+    }
+  });
+
   it('跨 Run 复用完整快照并保留旧 runtime reminder，满 24 小时后才重建', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-08-22T02:08:00.000Z'));

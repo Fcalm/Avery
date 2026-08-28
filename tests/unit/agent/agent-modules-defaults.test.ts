@@ -4,7 +4,7 @@ import { CreateCompactionModule } from '../../../packages/agent-modules-defaults
 import { CreateContextBuilderModule } from '../../../packages/agent-modules-defaults/src/context';
 import { CreateInteractionModule } from '../../../packages/agent-modules-defaults/src/interaction';
 import { CreateObservabilityModule } from '../../../packages/agent-modules-defaults/src/observability';
-import { ApplicationScenarioPlaceholder, BuildDefaultCompiledInstructions, BuildDefaultPromptFragments, DefaultScenario } from '../../../packages/agent-modules-defaults/src/prompts';
+import { ApplicationScenario, ApplicationScenarioPlaceholder, BuildApplicationCompiledInstructions, BuildDefaultCompiledInstructions, BuildDefaultPromptFragments, DefaultScenario } from '../../../packages/agent-modules-defaults/src/prompts';
 import { CreateToolsModule } from '../../../packages/agent-modules-defaults/src/tools';
 import type { AgentDefaultPorts } from '../../../packages/agent-modules-defaults/src/ports';
 import { CreateToolContext } from './test-helpers';
@@ -39,7 +39,20 @@ describe('agent-modules-defaults', () => {
     expect(names).not.toEqual(expect.arrayContaining(['SearchJobs', 'ReadUrl', 'Shell', 'Browser', 'SubmitApplication']));
     expect(DefaultScenario.budgets?.maxModelTurns).toBe(30);
     expect(ApplicationScenarioPlaceholder.budgets?.maxModelTurns).toBe(100);
-    expect(ApplicationScenarioPlaceholder.enabled).toBe(false);
+    expect(ApplicationScenarioPlaceholder.enabled).toBe(true);
+    const applicationNames = CreateToolsModule(CreatePorts()).GetToolDefinitions('application').map((tool) => tool.definition.function.name);
+    expect(new Set(applicationNames)).toEqual(new Set(ApplicationScenario.toolNames));
+    expect(applicationNames).toHaveLength(21);
+    expect(applicationNames).not.toEqual(expect.arrayContaining(['CreateResume', 'UpdateResume', 'UpdateProfile', 'SearchJobs']));
+    const instructions = BuildApplicationCompiledInstructions('application-tools');
+    expect(instructions.compiled).toContain('BrowserSelect');
+    expect(instructions.compiled).toContain('invalidate all refs');
+    expect(instructions.compiled).toContain('next Run must also start browser work with a fresh BrowserSnapshot');
+    expect(instructions.compiled).toContain('exact attachment path shown in runtime-context');
+    expect(instructions.compiled).toContain('last and only browser action');
+    const applicationDefinitions = CreateToolsModule(CreatePorts()).GetToolDefinitions('application');
+    expect(applicationDefinitions.find((tool) => tool.definition.function.name === 'BrowserWait')?.definition.function.description).toContain('domcontentloaded');
+    expect(applicationDefinitions.find((tool) => tool.definition.function.name === 'BrowserUploadFile')?.definition.function.description).toContain('attachment path exposed in runtime-context');
   });
 
   it('工具模块拒绝直接猜测未启用的网络工具名', async () => {

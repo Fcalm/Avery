@@ -33,6 +33,7 @@ const { AgentRunService } = require('./electron/backend/services/agent-run-servi
 const { DeveloperService } = require('./electron/backend/services/developer-service.js') as any;
 const { AgentHost } = require('./electron/backend/agent-host.js') as any;
 const { ResumeLockStore } = require('./electron/backend/resume-lock-store.js') as any;
+const { EvalService, AssertEvaluationDeveloperModePreserved } = require('./electron/backend/evaluation/eval-service.js') as any;
 
 /** 组装业务/可观测性 DB Worker、Agent 运行时与 Router，经 parentPort 服务 Main 命令；桌面能力与凭据经反向 RPC 交由 Main 适配器执行。 */
 async function Bootstrap(): Promise<void> {
@@ -42,6 +43,9 @@ async function Bootstrap(): Promise<void> {
   const userDataPath = String(app.userDataPath ?? '');
   const defaultWorkspacePath = String(app.defaultWorkspacePath ?? '');
   let currentWorkspacePath = String(app.workspacePath || defaultWorkspacePath);
+  const agentBrowserExecutablePath = String(app.agentBrowserExecutablePath ?? '');
+  const browserCompanionExecutablePath = String(app.browserCompanionExecutablePath ?? '');
+  const browserCompanionAppPath = typeof app.browserCompanionAppPath === 'string' && app.browserCompanionAppPath ? app.browserCompanionAppPath : undefined;
   const smoke = Boolean(app.smoke);
 
   const desktop = CreateDesktopCapabilityClient(PostMessage);
@@ -63,16 +67,30 @@ async function Bootstrap(): Promise<void> {
     credentialPort,
     resolveProjectEnvironment: (projectId: string) => projectEnvironments.get(projectId) || null,
     resumeLockStore,
+    agentBrowserExecutablePath,
+    browserCompanionExecutablePath,
+    browserCompanionAppPath,
   });
 
   const agentRunService = new AgentRunService({ agentHost: agent, selectModuleDirectory: () => desktop.Call('SelectModuleDirectory') });
   const developerService = new DeveloperService({ agentHost: agent });
+  const evaluationService = new EvalService({
+    userDataPath,
+    store: host.observability,
+    credentialPort,
+    agentBrowserExecutablePath,
+    browserCompanionExecutablePath,
+    browserCompanionAppPath,
+    getStoredSettings: async () => (await host.business.GetStoredSettings()) ?? {},
+    Emit: (event: unknown) => PostMessage({ kind: 'event', channel: 'evaluation:event', payload: { type: 'evaluation_event', event } }),
+  });
+  await evaluationService.Initialize();
 
   let migrating = false;
 
   /** 工作空间迁移编排：Agent 空闲校验、弹目录选择、复制校验并切换业务 Worker；迁移全程门禁写命令，原目录保留为安全副本。 */
   async function MigrateWorkspace(): Promise<any> {
-    if (agent.IsBusy()) throw new Error('Cannot migrate the workspace while the Agent is running.');
+    if (agent.IsBusy() || evaluationService.HasActiveRuns()) throw new Error('Cannot migrate the workspace while an Agent or evaluation run is active.');
     migrating = true;
     try {
       const destinationPath = await desktop.Call('SelectWorkspaceDirectory');
@@ -114,13 +132,20 @@ async function Bootstrap(): Promise<void> {
   const jobs = Facade(['UpsertJob', 'SetJobFavorite', 'DeleteJob']);
   const applications = Facade(['UpsertApplication', 'MoveApplicationStatus', 'DeleteApplication']);
   const profiles = Facade(['GetProfiles', 'SaveProfiles', 'ReloadProfiles']);
-  const settings = Facade(['GetStoredSettings', 'SaveSettings']);
+  const settings = {
+    GetStoredSettings: () => guardedBusiness.GetStoredSettings(),
+    SaveSettings: async (nextSettings: any) => {
+      AssertEvaluationDeveloperModePreserved(nextSettings, evaluationService.HasActiveRuns());
+      return guardedBusiness.SaveSettings(nextSettings);
+    },
+  };
   const workspace = Facade(['GetStatus', 'LoadViewModel', 'ImportAttachment', 'CleanupAttachments', 'GetWorkspaceRecoveryStatus', 'RecoverWorkspaceOperations', 'GetDatabaseRecoveryStatus', 'RestoreLatestBackup', 'RestoreBackup', 'ExportRecoveryDiagnostic', 'CreateBackup']);
 
   const backend = CreateBackend({
     container: {
       agent: agentRunService,
       developer: developerService,
+      evaluation: evaluationService,
       conversations,
       resumes,
       jobs,
@@ -178,6 +203,7 @@ async function Bootstrap(): Promise<void> {
       return;
     }
     if (typed.kind === 'shutdown') {
+      await evaluationService.Close();
       await agent.Close();
       host.Close();
       setTimeout(() => process.exit(0), 50);

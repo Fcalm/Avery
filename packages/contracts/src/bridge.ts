@@ -3,6 +3,7 @@ import type {
   ResumeDto, ResumeRevisionDto, SettingsDto, WorkspaceStatusDto, WorkspaceViewModel,
 } from './dto';
 import type { WriteCommandOptions } from './envelope';
+import type { DesktopEvaluationBridge } from './evaluation';
 
 /** Agent 确认级别；完全信任仍受场景白名单、Schema、资源授权与幂等约束。 */
 export type ConfirmationMode = 'always_confirm' | 'allow_low_risk' | 'fully_trusted';
@@ -18,11 +19,34 @@ export interface AgentSendRequest {
   attachments?: Array<{ name: string; path: string }>;
   projectId?: string;
   resumeId?: string;
+  /** 会话首次发送时冻结场景；后续不得在同一会话切换。 */
+  scenarioId?: 'default' | 'application';
+}
+
+export interface BrowserActionState {
+  confirmationId?: string;
+  toolName?: string;
+  summary?: string;
+  url?: string;
+  risk?: 'low' | 'medium' | 'high';
+  status?: 'rejected' | 'succeeded' | 'failed' | 'status_unknown' | 'user_action_required';
+  message?: string;
+  receipt?: { receiptId: string; toolDefinitionId: string; resourceIds: string[]; idempotencyKey?: string };
+}
+
+export interface AgentBrowserRuntimeStatus {
+  available: boolean;
+  profileExists: boolean;
+  running: boolean;
+  pageRevision: number;
+  state: 'not_installed' | 'stopped' | 'ready' | 'unhealthy';
+  message?: string;
+  currentUrl?: string;
 }
 
 /** Agent 流式事件：preload 单通道 `agent:stream` 的全部事件类型。 */
 export interface AgentStreamEvent {
-  type: 'thinking_delta' | 'content_delta' | 'completed' | 'cancelled' | 'error' | 'resume_updated' | 'resume_created' | 'resume_confirmation' | 'task_created' | 'task_updated' | 'question_requested' | 'waiting_user_input' | 'waiting_confirmation' | 'paused';
+  type: 'thinking_delta' | 'content_delta' | 'completed' | 'cancelled' | 'error' | 'resume_updated' | 'resume_created' | 'resume_confirmation' | 'task_created' | 'task_updated' | 'question_requested' | 'waiting_user_input' | 'waiting_confirmation' | 'paused' | 'browser_confirmation' | 'browser_action_completed' | 'browser_user_action';
   requestId?: string;
   delta?: string;
   content?: string;
@@ -34,6 +58,7 @@ export interface AgentStreamEvent {
   task?: { id: string; title: string; description: string; status: string };
   confirmationId?: string;
   questions?: Array<{ id: string; question: string; options: string[] }>;
+  browserAction?: BrowserActionState;
 }
 
 /** Agent 模型配置：API Key 仅经 IPC 进入主进程 safeStorage。 */
@@ -73,6 +98,7 @@ export interface AgentSessionAssistantState {
     unreportedRequestCount: number;
   };
   project: { projectId: string | null; name: string } | null;
+  scenarioId: 'default' | 'application';
 }
 
 /** 高级用户模块配置只返回目录掩码和校验状态，绝不向 Renderer 暴露绝对路径。 */
@@ -105,6 +131,9 @@ export interface DesktopAgentBridge {
   Cancel: (requestId: string) => Promise<{ cancelled: boolean }>;
   UpdateConfirmationMode: (requestId: string, confirmationMode: ConfirmationMode) => Promise<{ updated: boolean; confirmationMode?: ConfirmationMode; reason?: string }>;
   ConfirmResumeEdit: (confirmationId: string, accepted: boolean) => Promise<{ applied: boolean }>;
+  ConfirmBrowserAction: (confirmationId: string, accepted: boolean) => Promise<BrowserActionState>;
+  GetBrowserRuntimeStatus: () => Promise<AgentBrowserRuntimeStatus>;
+  ClearBrowserProfile: () => Promise<{ cleared: boolean }>;
   /** 用户开始编辑简历前获取互斥锁；Agent 占用时返回未获取及原因。 */
   AcquireResumeEditLock: (resumeId: string) => Promise<{ acquired: boolean; reason?: string }>;
   /** 用户保存或取消编辑后释放简历锁。 */
@@ -126,24 +155,6 @@ export interface DesktopAgentBridge {
   SelectModuleDirectory: () => Promise<AgentModuleConfiguration>;
   ResetModules: () => Promise<AgentModuleConfiguration>;
   OnStream: (listener: (event: AgentStreamEvent) => void) => () => void;
-}
-
-/** 渲染层只能请求受限的浏览器动作，网页实例与导航策略始终由主进程持有。 */
-export interface DesktopBrowserBridge {
-  Show: (bounds: BrowserPanelBounds) => Promise<{ shown: boolean }>;
-  Hide: () => Promise<{ hidden: boolean }>;
-  Navigate: (address: string) => Promise<{ accepted: boolean; url?: string; reason?: string }>;
-  GoBack: () => Promise<{ navigated: boolean }>;
-  GoForward: () => Promise<{ navigated: boolean }>;
-  Reload: () => Promise<{ reloaded: boolean }>;
-}
-
-/** 内嵌网页区域相对于主窗口内容区的逻辑像素；主进程会再次校验边界。 */
-export interface BrowserPanelBounds {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
 }
 
 /** preload `offergetWorkspace` 命名空间的类型化 Bridge 接口；形状与当前实现保持一致。 */
@@ -189,6 +200,7 @@ export interface WorkspaceBridge {
 export const BridgeNamespaces = {
   agent: [
     'Configure', 'TestConnection', 'GetBalance', 'GetModels', 'Send', 'Cancel', 'UpdateConfirmationMode', 'ConfirmResumeEdit',
+    'ConfirmBrowserAction', 'GetBrowserRuntimeStatus', 'ClearBrowserProfile',
     'AcquireResumeEditLock', 'ReleaseResumeEditLock', 'GetStatus',
     'GetObservability', 'GetTraceEvents', 'DeleteTraces', 'SetTraceRetention', 'ClearObservability',
     'ReloadSession', 'SelectProjectDirectory', 'GetSessionAssistantState', 'BindProjectEnvironment',
@@ -204,8 +216,12 @@ export const BridgeNamespaces = {
     'RestoreLatestBackup', 'RestoreBackup', 'ExportRecoveryDiagnostic', 'CreateBackup', 'GetResumeRevisions', 'SetResumeRevisionPinned',
     'ExportResume', 'Migrate',
   ] as const,
-  browser: ['Show', 'Hide', 'Navigate', 'GoBack', 'GoForward', 'Reload'] as const,
+  evaluation: [
+    'CreateProject', 'UpdateProject', 'ReadProject', 'ListProjects', 'DeleteProject',
+    'ImportDataset', 'ValidateProject', 'PreviewProject', 'StartRun', 'CancelRun', 'ReadRun', 'ListRuns',
+    'ReadCaseResult', 'CompareRuns', 'OnEvent',
+  ] as const satisfies readonly (keyof DesktopEvaluationBridge)[],
 } as const;
 
-/** Bridge 命名空间名：agent → offergetAgent，workspace → offergetWorkspace。 */
+/** Bridge 命名空间名：evaluation 对应独立的 offergetEvaluation，不进入 Agent Tool。 */
 export type BridgeNamespaceName = keyof typeof BridgeNamespaces;

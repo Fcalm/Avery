@@ -58,6 +58,44 @@ export interface UrlReadPort {
   }>;
 }
 
+export type BrowserToolName =
+  | 'BrowserNavigate'
+  | 'BrowserSnapshot'
+  | 'BrowserReadPage'
+  | 'BrowserClick'
+  | 'BrowserFill'
+  | 'BrowserSelect'
+  | 'BrowserSetChecked'
+  | 'BrowserPressKey'
+  | 'BrowserUploadFile'
+  | 'BrowserWait'
+  | 'BrowserSwitchTab'
+  | 'BrowserGoBack';
+
+/** 浏览器动作提案由宿主根据当前页面引用生成；模型不能自行构造哈希或内部路径。 */
+export interface BrowserActionProposal {
+  proposalHash: string;
+  toolName: BrowserToolName;
+  canonicalArguments: Record<string, unknown>;
+  summary: string;
+  risk: 'low' | 'medium' | 'high';
+  forceConfirmation: boolean;
+  pageRevision: number;
+  url?: string;
+  resourceIds: string[];
+}
+
+/** agent-browser 窄端口：准备阶段只校验并分类，执行阶段只接受冻结提案。 */
+export interface BrowserAutomationPort {
+  Prepare(input: { toolName: BrowserToolName; arguments: Record<string, unknown> }): Promise<BrowserActionProposal>;
+  Execute(input: { proposal: BrowserActionProposal; signal?: AbortSignal; deadline?: number }): Promise<{ data: unknown; status: 'succeeded' | 'status_unknown' }>;
+  GetStatus(): Promise<{ available: boolean; profileExists: boolean; running: boolean; pageRevision: number; currentUrl?: string }>;
+  ClearProfile(): Promise<{ cleared: boolean }>;
+  /** 新 Run 或用户接管后废弃全部元素引用，强制先重新 Snapshot。 */
+  ResetPageReferences(): void;
+  Close(): Promise<void>;
+}
+
 /** 文件读取端口：由宿主注入（agent-file-reader）；路径校验与资源边界由宿主持有，模块不可绕过。 */
 export interface FileReadPort {
   ReadAuthorizedFile(filePath: string, sourceName?: string, execution?: { signal?: AbortSignal; deadline?: number }): Promise<{
@@ -118,6 +156,7 @@ export interface ToolPorts {
   profileWrite?: ProfileWritePort;
   jobSearch?: JobSearchPort;
   urlRead?: UrlReadPort;
+  browser?: BrowserAutomationPort;
 }
 
 /** 宿主逐会话构造的工具执行上下文：承载只读快照、交互态、持久化回调与事件出口。 */
@@ -138,6 +177,8 @@ export interface ToolContext {
   pendingEdits: Map<string, unknown>;
   /** 澄清提问状态：宿主持有的 Map 引用。 */
   pendingQuestions: Map<string, unknown>;
+  /** 待确认浏览器动作；仅宿主可以执行其中冻结的提案。 */
+  pendingBrowserActions?: Map<string, unknown>;
   emit: (event: AgentStreamEvent) => void;
   /** 工具改动会话状态后回调宿主持久化（如任务保存）。 */
   persistSessionState: () => void;
@@ -151,4 +192,6 @@ export interface ToolContext {
   ledger?: ToolLedgerPort;
   /** 当前 Run 的场景快照 ID；用于工具白名单校验与审计。 */
   scenarioSnapshotId?: string;
+  /** 当前 Run 的冻结场景 ID；工具模块在执行入口再次校验。 */
+  scenarioId?: string;
 }

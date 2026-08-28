@@ -3,8 +3,9 @@ import {
   copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync,
 } from 'node:fs';
 import * as path from 'node:path';
+import { ResolveBusinessMigrationRoot } from '../../../migration-paths';
 
-const MigrationManifest = JSON.parse(readFileSync(path.join(__dirname, '..', '..', '..', '..', '..', '..', 'migrations', 'business', 'manifest.json'), 'utf8')) as {
+const MigrationManifest = JSON.parse(readFileSync(path.join(ResolveBusinessMigrationRoot(__dirname), 'manifest.json'), 'utf8')) as {
   migrations: Array<{ version: number; checksumSeed: string; kind: string; file: string }>;
 };
 

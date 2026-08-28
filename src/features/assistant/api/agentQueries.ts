@@ -64,6 +64,21 @@ export async function GetAgentTraceEvents(requestId: string) {
   return result.ok ? result.data : [];
 }
 
+/** 确认或拒绝冻结的浏览器动作；接受后由 Host 重新校验并执行原提案。 */
+export async function ConfirmBrowserAction(confirmationId: string, accepted: boolean) {
+  return Unwrap(await platformClient.agent.ConfirmBrowserAction(confirmationId, accepted));
+}
+
+/** 读取不包含本地路径的 agent-browser Runtime 状态。 */
+export async function GetBrowserRuntimeStatus() {
+  return Unwrap(await platformClient.agent.GetBrowserRuntimeStatus());
+}
+
+/** 清除 Avery 独立浏览器身份；UI 必须先完成破坏性确认。 */
+export async function ClearBrowserProfile() {
+  return Unwrap(await platformClient.agent.ClearBrowserProfile());
+}
+
 /** 更新在途 Run 的确认权限；无在途 Run 时由下一次 Send 携带当前值。 */
 export async function UpdateAgentConfirmationMode(requestId: string, confirmationMode: ConfirmationMode) {
   return Unwrap(await platformClient.agent.UpdateConfirmationMode(requestId, confirmationMode));

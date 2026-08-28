@@ -2,8 +2,8 @@
   "name": "offerget",
   "private": true,
   "version": "0.1.0",
-  "description": "OfferGet 本地优先的 AI 求职与简历助手（灾后重建工作区）",
-  "author": "OfferGet",
+  "description": "Avery 本地优先的 AI 求职与简历助手（灾后重建工作区）",
+  "author": "Avery",
   "license": "UNLICENSED",
   "type": "module",
   "workspaces": [
@@ -14,16 +14,24 @@
   "scripts": {
     "dev": "node node_modules/vite/bin/vite.js --host 127.0.0.1",
     "start": "node node_modules/electron/cli.js .",
-    "build:packages": "npm run build --workspace @offerget/contracts && npm run build --workspace @offerget/agent-sdk && npm run build --workspace @offerget/agent-core && npm run build --workspace @offerget/agent-module-host && npm run build --workspace @offerget/agent-modules-defaults && npm run build --workspace @offerget/backend",
+    "build:packages": "npm run build --workspace @offerget/contracts && npm run build --workspace @offerget/agent-sdk && npm run build --workspace @offerget/agent-core && npm run build --workspace @offerget/agent-module-host && npm run build --workspace @offerget/agent-modules-defaults && npm run build --workspace @offerget/backend && npm run build --workspace @offerget/desktop",
     "build:renderer": "node node_modules/vite/bin/vite.js build",
     "build": "npm run build:packages && npm run build:renderer",
     "test": "npm run test:vitest && npm run test --workspaces --if-present",
     "test:vitest": "node node_modules/vitest/vitest.mjs run --config vitest.config.ts",
     "smoke": "node scripts/smoke-packaged-app.mjs",
+    "smoke:browser-companion": "node scripts/smoke-browser-companion.mjs",
+    "smoke:agent-application": "node scripts/smoke-agent-application.mjs",
+    "smoke:packaged-agent-application": "node scripts/smoke-packaged-agent-application.mjs",
+    "evaluate:deepseek-application": "node scripts/evaluate-deepseek-application.mjs",
+    "evaluate:system-baseline": "node scripts/run-evaluation-system-baseline.mjs",
+    "audit:system-baseline": "node scripts/audit-evaluation-system-baseline.mjs",
+    "smoke:evaluation-ui": "node scripts/smoke-evaluation-ui.mjs",
     "pack:dir": "npm run build && node node_modules/electron-builder/out/cli/cli.js --dir",
     "pack:win": "npm run build && node node_modules/electron-builder/out/cli/cli.js --win"
   },
   "dependencies": {
+    "@napi-rs/canvas": "0.1.80",
     "@offerget/agent-core": "0.1.0",
     "@offerget/agent-module-host": "0.1.0",
     "@offerget/agent-modules-defaults": "0.1.0",
@@ -31,10 +39,10 @@
     "@offerget/backend": "0.1.0",
     "@offerget/contracts": "0.1.0",
     "@offerget/desktop": "0.1.0",
-    "@napi-rs/canvas": "0.1.80",
     "@tanstack/react-query": "^5.59.0",
     "@tesseract.js-data/chi_sim": "1.0.0",
     "@tesseract.js-data/eng": "1.0.0",
+    "agent-browser": "0.34.0",
     "ajv": "^8.20.0",
     "better-sqlite3": "13.0.3",
     "drizzle-orm": "^0.45.2",
@@ -59,7 +67,7 @@
   },
   "build": {
     "appId": "com.offerget.app",
-    "productName": "OfferGet",
+    "productName": "Avery",
     "icon": "build/icon.ico",
     "asar": true,
     "npmRebuild": false,
@@ -73,7 +81,11 @@
       "electron/**",
       "migrations/**",
       "node_modules/@offerget/**",
+      "node_modules/agent-browser/**",
       "package.json"
+    ],
+    "asarUnpack": [
+      "node_modules/agent-browser/bin/**"
     ]
   }
 }

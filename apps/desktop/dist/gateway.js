@@ -84,8 +84,13 @@ function RegisterGateway({ backendHost, webContentsGetter, ipcMainApi = electron
     }
     backendHost.OnEvent((event) => {
         const window = webContentsGetter();
-        if (window && !window.isDestroyed())
-            window.webContents.send('agent:stream', event);
+        if (!window || window.isDestroyed())
+            return;
+        if (event && typeof event === 'object' && event.type === 'evaluation_event') {
+            window.webContents.send('evaluation:event', event.event);
+            return;
+        }
+        window.webContents.send('agent:stream', event);
     });
 }
 /** 无边框窗口控制也必须经过相同来源验证，绝不把 BrowserWindow 暴露给 Renderer。 */
