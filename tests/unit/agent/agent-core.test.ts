@@ -307,6 +307,28 @@ describe('agent-core RunAgentLoop', () => {
     expect(harness.input.toolContext.confirmationMode).toBe('fully_trusted');
   });
 
+  it('BrowserFillForm 的 Trace 保留字段结构但逐项移除输入正文', async () => {
+    const tool = CreateRegisteredTool('BrowserFillForm', { sideEffect: 'external_action', isConcurrencySafe: false });
+    const secretName = '张三-敏感姓名';
+    const secretEmail = 'private@example.com';
+    const harness = CreateKernelHarness({
+      tools: [tool],
+      completions: [
+        { content: '', toolCalls: [{ id: 'fill-form-1', type: 'function', function: { name: 'BrowserFillForm', arguments: JSON.stringify({ pageRevision: 2, fields: [{ ref: '@e1', text: secretName }, { ref: '@e2', text: secretEmail }] }) } }] },
+        { content: 'done', toolCalls: [] },
+      ],
+    });
+
+    await RunAgentLoop(harness.input);
+
+    const traceCall = harness.trace.append.mock.calls.find((call) => call[1] === 'tool_call');
+    const serialized = JSON.stringify(traceCall?.[2]);
+    expect(serialized).toContain('@e1');
+    expect(serialized).toContain('[REDACTED_BROWSER_INPUT]');
+    expect(serialized).not.toContain(secretName);
+    expect(serialized).not.toContain(secretEmail);
+  });
+
   it('最后一轮返回工具调用时不执行工具并显式暂停', async () => {
     const write = CreateRegisteredTool('UpdateProfile', { isConcurrencySafe: false, sideEffect: 'local_write' });
     const execute = vi.fn(async (call: ToolCallFragment) => ({ role: 'tool' as const, tool_call_id: call.id, content: '{"ok":true}' }));

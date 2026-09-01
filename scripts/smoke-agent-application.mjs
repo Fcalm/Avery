@@ -39,7 +39,7 @@ function CreateScriptedProvider(origin, fileId) {
   let latestSnapshot = null;
   const expectedTools = new Set([
     'Read','Glob','Grep','ReadProfile','ReadResume','CreateTodo','UpdateTodo','ReadTodo','AskUserQuestion',
-    'BrowserNavigate','BrowserSnapshot','BrowserReadPage','BrowserClick','BrowserFill','BrowserSelect','BrowserSetChecked','BrowserPressKey','BrowserUploadFile','BrowserWait','BrowserSwitchTab','BrowserGoBack',
+    'BrowserNavigate','BrowserSnapshot','BrowserReadPage','BrowserClick','BrowserFill','BrowserFillForm','BrowserSelect','BrowserSetChecked','BrowserPressKey','BrowserUploadFile','BrowserWait','BrowserSwitchTab','BrowserGoBack',
   ]);
   const forbidden = new Set(['UpdateProfile','CreateResume','UpdateResume','SearchJobs','ReadUrl']);
 
@@ -98,27 +98,32 @@ function CreateScriptedProvider(origin, fileId) {
         case 6: return Action('BrowserSnapshot');
         case 7: return Action('BrowserClick', { ref: Ref(/申请这个岗位/), pageRevision: latestSnapshot.pageRevision });
         case 8: return Action('BrowserSnapshot');
-        case 9: return Action('BrowserFill', { ref: Ref(/姓名/), pageRevision: latestSnapshot.pageRevision, text: '测试用户' });
-        case 10: return Action('BrowserFill', { ref: Ref(/邮箱/), pageRevision: latestSnapshot.pageRevision, text: 'candidate@example.com' });
-        case 11: return Action('BrowserFill', { ref: Ref(/手机号/), pageRevision: latestSnapshot.pageRevision, text: '13800000000' });
-        case 12: return Action('BrowserFill', { ref: Ref(/自我介绍/), pageRevision: latestSnapshot.pageRevision, text: '具备 Agent 工具编排与安全验证经验。' });
-        case 13: return Action('BrowserSelect', { ref: Ref(/工作方式/), pageRevision: latestSnapshot.pageRevision, value: 'hybrid' });
-        case 14: return Action('BrowserSnapshot');
-        case 15: return Action('BrowserSelect', { ref: Ref(/省份|直辖市/), pageRevision: latestSnapshot.pageRevision, value: '浙江' });
-        case 16: return Action('BrowserSnapshot');
-        case 17: return Action('BrowserSelect', { ref: Ref(/城市/), pageRevision: latestSnapshot.pageRevision, value: '杭州' });
-        case 18: return Action('BrowserSnapshot');
-        case 19: return Action('BrowserSelect', { ref: Ref(/职类/), pageRevision: latestSnapshot.pageRevision, value: '技术' });
-        case 20: return Action('BrowserSnapshot');
-        case 21: return Action('BrowserSelect', { ref: Ref(/具体方向/), pageRevision: latestSnapshot.pageRevision, value: 'Agent 工程' });
-        case 22: return Action('BrowserSnapshot');
-        case 23: return Action('BrowserUploadFile', { ref: Ref(/简历文件/), pageRevision: latestSnapshot.pageRevision, fileId });
-        case 24: return Action('BrowserSnapshot');
-        case 25: return Action('BrowserSetChecked', { ref: Ref(/同意申请条款/), pageRevision: latestSnapshot.pageRevision, checked: true });
-        case 26: return Action('BrowserSnapshot');
-        case 27: return Action('BrowserClick', { ref: Ref(/提交申请/), pageRevision: latestSnapshot.pageRevision });
-        case 28: return Action('BrowserSnapshot');
-        case 29: return Action('BrowserReadPage');
+        case 9: return Action('BrowserFillForm', {
+          pageRevision: latestSnapshot.pageRevision,
+          fields: [
+            { ref: Ref(/姓名/), text: '测试用户' },
+            { ref: Ref(/邮箱/), text: 'candidate@example.com' },
+            { ref: Ref(/手机号/), text: '13800000000' },
+            { ref: Ref(/自我介绍/), text: '具备 Agent 工具编排与安全验证经验。' },
+          ],
+        });
+        case 10: return Action('BrowserSelect', { ref: Ref(/工作方式/), pageRevision: latestSnapshot.pageRevision, value: 'hybrid' });
+        case 11: return Action('BrowserSnapshot');
+        case 12: return Action('BrowserSelect', { ref: Ref(/省份|直辖市/), pageRevision: latestSnapshot.pageRevision, value: '浙江' });
+        case 13: return Action('BrowserSnapshot');
+        case 14: return Action('BrowserSelect', { ref: Ref(/城市/), pageRevision: latestSnapshot.pageRevision, value: '杭州' });
+        case 15: return Action('BrowserSnapshot');
+        case 16: return Action('BrowserSelect', { ref: Ref(/职类/), pageRevision: latestSnapshot.pageRevision, value: '技术' });
+        case 17: return Action('BrowserSnapshot');
+        case 18: return Action('BrowserSelect', { ref: Ref(/具体方向/), pageRevision: latestSnapshot.pageRevision, value: 'Agent 工程' });
+        case 19: return Action('BrowserSnapshot');
+        case 20: return Action('BrowserUploadFile', { ref: Ref(/简历文件/), pageRevision: latestSnapshot.pageRevision, fileId });
+        case 21: return Action('BrowserSnapshot');
+        case 22: return Action('BrowserSetChecked', { ref: Ref(/同意申请条款/), pageRevision: latestSnapshot.pageRevision, checked: true });
+        case 23: return Action('BrowserSnapshot');
+        case 24: return Action('BrowserClick', { ref: Ref(/提交申请/), pageRevision: latestSnapshot.pageRevision });
+        case 25: return Action('BrowserSnapshot');
+        case 26: return Action('BrowserReadPage');
         default: {
           const content = '已根据投递回执完成 Agent 平台工程师的申请。'; onDelta({ reasoning: '', content }); step += 1; return { content, toolCalls: [] };
         }
@@ -167,19 +172,19 @@ try {
   await Send(1, '搜索工程师岗位，选择 Agent 平台工程师并完成投递。');
   Assert(fixture.getState().submissionCount === 0, 'application changed before upload confirmation');
   await ConfirmLatest('BrowserUploadFile', false);
-  scriptedProvider.setStep(22);
+  scriptedProvider.setStep(19);
   await Send(2, '重新准备上传并继续任务');
   await ConfirmLatest('BrowserUploadFile', true);
   await Send(3, '继续任务');
   await ConfirmLatest('BrowserSetChecked', false);
-  scriptedProvider.setStep(24);
+  scriptedProvider.setStep(21);
   await Send(4, '重新准备协议确认并继续任务');
   await ConfirmLatest('BrowserSetChecked', true);
   await Send(5, '继续任务');
   Assert(fixture.getState().submissionCount === 0, 'application submitted before final confirmation');
   await ConfirmLatest('BrowserClick', false);
   Assert(fixture.getState().submissionCount === 0, 'rejected final submission changed the fixture state');
-  scriptedProvider.setStep(26);
+  scriptedProvider.setStep(23);
   await Send(6, '重新准备最终提交并继续任务');
   await ConfirmLatest('BrowserClick', true);
   await Send(7, '继续任务并核对投递回执');
@@ -191,7 +196,7 @@ try {
   Assert(state.submission?.workMode === 'hybrid' && state.submission?.province === '浙江' && state.submission?.city === '杭州', 'ordinary/location selections were not persisted');
   Assert(state.submission?.jobFamily === '技术' && state.submission?.jobTrack === 'Agent 工程', 'cascading job selections were not persisted');
   Assert(state.submission?.resumeName === 'authorized-resume.txt' && state.submission?.terms === true, 'upload or agreement was not persisted');
-  Assert(scriptedProvider.getStep() >= 31, 'scripted provider did not reach receipt-based final response');
+  Assert(scriptedProvider.getStep() >= 28, 'scripted provider did not reach receipt-based final response');
   console.log(JSON.stringify({ passed: true, entry: 'AgentHost.Send', jobs: 6, ordinarySelect: true, cascadingSelects: 2, confirmations: 6, rejectedConfirmations: 3, submissionCount: state.submissionCount, receipt: state.receipt }));
 } catch (error) {
   console.error(JSON.stringify({ passed: false, message: error instanceof Error ? error.message : String(error), providerStep: scriptedProvider.getStep(), fixtureState: fixture.getState(), recentHistory: host.histories?.get?.('application-session')?.slice?.(-4), recentEvents: events.slice(-12) }));

@@ -42,7 +42,7 @@ describe('agent-modules-defaults', () => {
     expect(ApplicationScenarioPlaceholder.enabled).toBe(true);
     const applicationNames = CreateToolsModule(CreatePorts()).GetToolDefinitions('application').map((tool) => tool.definition.function.name);
     expect(new Set(applicationNames)).toEqual(new Set(ApplicationScenario.toolNames));
-    expect(applicationNames).toHaveLength(21);
+    expect(applicationNames).toHaveLength(22);
     expect(applicationNames).not.toEqual(expect.arrayContaining(['CreateResume', 'UpdateResume', 'UpdateProfile', 'SearchJobs']));
     const instructions = BuildApplicationCompiledInstructions('application-tools');
     expect(instructions.compiled).toContain('BrowserSelect');
@@ -53,6 +53,10 @@ describe('agent-modules-defaults', () => {
     const applicationDefinitions = CreateToolsModule(CreatePorts()).GetToolDefinitions('application');
     expect(applicationDefinitions.find((tool) => tool.definition.function.name === 'BrowserWait')?.definition.function.description).toContain('domcontentloaded');
     expect(applicationDefinitions.find((tool) => tool.definition.function.name === 'BrowserUploadFile')?.definition.function.description).toContain('attachment path exposed in runtime-context');
+    const fillForm = applicationDefinitions.find((tool) => tool.definition.function.name === 'BrowserFillForm');
+    expect(fillForm?.definition.function.description).toContain('1 to 30 ordinary input fields');
+    expect((fillForm?.definition.function.parameters.properties?.fields as { maxItems?: number })?.maxItems).toBe(30);
+    expect(names).not.toContain('BrowserFillForm');
   });
 
   it('工具模块拒绝直接猜测未启用的网络工具名', async () => {
@@ -67,6 +71,36 @@ describe('agent-modules-defaults', () => {
 
     expect(search).not.toHaveBeenCalled();
     expect(JSON.parse(result.content)).toMatchObject({ ok: false, code: 'TOOL_NOT_ALLOWED' });
+  });
+
+  it('BrowserFillForm 只在投递场景接受非空字段并复用浏览器执行端口', async () => {
+    const prepare = vi.fn(async ({ toolName, arguments: args }: any) => ({
+      proposalHash: 'fill-form-hash', toolName, canonicalArguments: args, summary: '填写 2 个输入框', risk: 'medium' as const,
+      forceConfirmation: false, pageRevision: 3, resourceIds: ['browser:offerget-default'],
+    }));
+    const execute = vi.fn(async () => ({ status: 'succeeded' as const, data: { filledCount: 2, pageRevision: 3 } }));
+    const applicationContext = CreateToolContext({
+      scenarioId: 'application', confirmationMode: 'fully_trusted',
+      ports: { ...CreateToolContext().ports, browser: { Prepare: prepare, Execute: execute } },
+    });
+    const defaultContext = CreateToolContext({
+      scenarioId: 'default', ports: { ...CreateToolContext().ports, browser: { Prepare: prepare, Execute: execute } },
+    });
+    const module = CreateToolsModule(CreatePorts());
+    const call = {
+      id: 'fill-form-1', type: 'function' as const,
+      function: { name: 'BrowserFillForm', arguments: JSON.stringify({ pageRevision: 3, fields: [{ ref: '@e1', text: '张三' }, { ref: '@e2', text: 'x@example.com' }] }) },
+    };
+
+    const denied = await module.ExecuteToolCall(call, defaultContext);
+    const empty = await module.ExecuteToolCall({ ...call, id: 'fill-form-empty', function: { ...call.function, arguments: JSON.stringify({ pageRevision: 3, fields: [] }) } }, applicationContext);
+    const succeeded = await module.ExecuteToolCall(call, applicationContext);
+
+    expect(JSON.parse(denied.content)).toMatchObject({ ok: false, code: 'TOOL_NOT_ALLOWED' });
+    expect(JSON.parse(empty.content)).toMatchObject({ ok: false, code: 'INVALID_TOOL_ARGUMENTS' });
+    expect(prepare).toHaveBeenCalledOnce();
+    expect(execute).toHaveBeenCalledOnce();
+    expect(JSON.parse(succeeded.content)).toMatchObject({ ok: true, data: { filledCount: 2, pageRevision: 3 } });
   });
 
   it('默认 Prompt 固定禁止补造身份类硬事实，并要求推测内容带待确认标签', () => {

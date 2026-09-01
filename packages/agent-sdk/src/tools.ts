@@ -64,6 +64,7 @@ export type BrowserToolName =
   | 'BrowserReadPage'
   | 'BrowserClick'
   | 'BrowserFill'
+  | 'BrowserFillForm'
   | 'BrowserSelect'
   | 'BrowserSetChecked'
   | 'BrowserPressKey'

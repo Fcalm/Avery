@@ -23,10 +23,15 @@ function EstimateTraceTokens(value: unknown): number {
 
 /** 浏览器填写与上传参数可能包含简历、联系方式或附件标识；Trace 只记录结构，不保存敏感明文。 */
 function ScrubToolArguments(toolName: string, value: string): string {
-  if (!['BrowserFill', 'BrowserUploadFile'].includes(toolName)) return ScrubTraceContent(value);
+  if (!['BrowserFill', 'BrowserFillForm', 'BrowserUploadFile'].includes(toolName)) return ScrubTraceContent(value);
   try {
     const parsed = JSON.parse(value) as Record<string, unknown>;
     if ('text' in parsed) parsed.text = '[REDACTED_BROWSER_INPUT]';
+    if (Array.isArray(parsed.fields)) {
+      parsed.fields = parsed.fields.map((field) => field && typeof field === 'object' && !Array.isArray(field)
+        ? { ...(field as Record<string, unknown>), text: '[REDACTED_BROWSER_INPUT]' }
+        : '[REDACTED_BROWSER_FIELD]');
+    }
     if ('fileId' in parsed) parsed.fileId = '[REDACTED_FILE_ID]';
     return ScrubTraceContent(JSON.stringify(parsed));
   } catch {

@@ -447,7 +447,8 @@ export class AgentHost {
       startedAt: Date.now(),
     });
     try {
-      const outcome = await this.browserRuntime.Execute({ proposal: pending.proposal, signal: execution.signal, deadline: Date.now() + 30_000 });
+      const timeoutMs = pending.proposal.toolName === 'BrowserFillForm' ? 60_000 : 30_000;
+      const outcome = await this.browserRuntime.Execute({ proposal: pending.proposal, signal: execution.signal, deadline: Date.now() + timeoutMs });
       if (execution.signal?.aborted) throw Object.assign(new Error('Browser action completion arrived after cancellation.'), { code: 'CANCELLED' });
       if (outcome.status === 'status_unknown') {
         await ledger.Finish(ledgerId, 'status_unknown', { errorCode: 'BROWSER_STATUS_UNKNOWN', finishedAt: Date.now() });

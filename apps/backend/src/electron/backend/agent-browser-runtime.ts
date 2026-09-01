@@ -101,6 +101,10 @@ function ExtractJson(stdout: string): CliEnvelope {
   for (let index = lines.length - 1; index >= 0; index -= 1) {
     try {
       const value = JSON.parse(lines[index]);
+      if (Array.isArray(value)) {
+        const failed = value.find((item) => item && typeof item === 'object' && item.success === false);
+        return { success: !failed, data: { results: value }, ...(failed ? { error: String(failed.error ?? failed.message ?? 'Browser batch failed.') } : {}) };
+      }
       if (value && typeof value === 'object') return value;
     } catch { /* 继续查找最后一个合法 JSON 行。 */ }
   }
@@ -117,7 +121,7 @@ export interface AgentBrowserRuntimeOptions {
   /** 仅供宿主构造期注入更窄的导航策略；生产默认始终执行公开 URL 与 DNS 校验。 */
   normalizeNavigationUrl?: (value: unknown) => Promise<string>;
   /** 仅供契约测试注入受控子进程替身；生产路径始终使用 spawn + shell:false。 */
-  runProcess?: (input: { args: string[]; cwd: string; env: NodeJS.ProcessEnv; signal?: AbortSignal; deadline: number; json: boolean }) => Promise<CliEnvelope>;
+  runProcess?: (input: { args: string[]; cwd: string; env: NodeJS.ProcessEnv; signal?: AbortSignal; deadline: number; json: boolean; stdin?: string }) => Promise<CliEnvelope>;
   /** 仅供契约测试注入隔离 Electron 伴随进程；生产路径始终启动应用自身的 companion 模式。 */
   launchCompanion?: (input: { profilePath: string; runtimeRoot: string }) => Promise<{ port: number; close: () => Promise<void>; isAlive?: () => boolean; homeUrl?: string; internalUrls?: string[] }>;
 }
@@ -312,17 +316,17 @@ export class AgentBrowserRuntime implements BrowserAutomationPort {
     throw new AgentBrowserError('BROWSER_PROFILE_BUSY', 'The browser profile lock could not be acquired.');
   }
 
-  private async InvokeCli(args: string[], options: { signal?: AbortSignal; deadline?: number; json?: boolean } = {}): Promise<CliEnvelope> {
+  private async InvokeCli(args: string[], options: { signal?: AbortSignal; deadline?: number; json?: boolean; stdin?: string } = {}): Promise<CliEnvelope> {
     if (options.signal?.aborted) throw new AgentBrowserError('CANCELLED', 'Browser command was cancelled.');
     const deadline = Math.min(options.deadline ?? Number.POSITIVE_INFINITY, this.now() + DefaultCommandTimeoutMs);
     const timeoutMs = Math.max(1, deadline - this.now());
-    if (this.runProcess) return this.runProcess({ args, cwd: this.runtimeRoot, env: this.SanitizedEnvironment(), signal: options.signal, deadline, json: options.json !== false });
+    if (this.runProcess) return this.runProcess({ args, cwd: this.runtimeRoot, env: this.SanitizedEnvironment(), signal: options.signal, deadline, json: options.json !== false, ...(options.stdin === undefined ? {} : { stdin: options.stdin }) });
     return await new Promise<CliEnvelope>((resolvePromise, rejectPromise) => {
       let settled = false;
       let stdout = Buffer.alloc(0);
       let stderr = Buffer.alloc(0);
       // CLI 本身是后台控制进程；用户可见窗口由 companion 提供，隐藏控制台可避免 Windows PTY/控制台附着拖住命令退出。
-      const child = spawn(this.executablePath, args, { cwd: this.runtimeRoot, env: this.SanitizedEnvironment(), shell: false, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+      const child = spawn(this.executablePath, args, { cwd: this.runtimeRoot, env: this.SanitizedEnvironment(), shell: false, windowsHide: true, stdio: [options.stdin === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'] });
       this.activeChild = child;
       const Finish = (error?: Error, value?: CliEnvelope) => {
         if (settled) return;
@@ -349,6 +353,7 @@ export class AgentBrowserRuntime implements BrowserAutomationPort {
         if (stderr.length >= MaxStderrBytes) return;
         stderr = Buffer.concat([stderr, chunk.subarray(0, MaxStderrBytes - stderr.length)]);
       });
+      if (options.stdin !== undefined) child.stdin?.end(options.stdin, 'utf8');
       child.once('error', (error) => Finish(new AgentBrowserError('BROWSER_START_FAILED', error.message)));
       // agent-browser 会派生长寿命 daemon；Windows 上 daemon 可能暂时继承管道句柄，`close` 会等到所有句柄关闭而误报超时。
       // CLI 进程的 `exit` 才是单次命令终态，JSON 已在退出前写入 stdout。
@@ -371,7 +376,7 @@ export class AgentBrowserRuntime implements BrowserAutomationPort {
     });
   }
 
-  private async RunNow(command: string[], options: { signal?: AbortSignal; deadline?: number; json?: boolean } = {}): Promise<CliEnvelope> {
+  private async RunNow(command: string[], options: { signal?: AbortSignal; deadline?: number; json?: boolean; stdin?: string } = {}): Promise<CliEnvelope> {
     if (!existsSync(this.executablePath)) throw new AgentBrowserError('BROWSER_NOT_INSTALLED', `agent-browser ${basename(this.executablePath)} is unavailable.`);
     if (options.signal?.aborted) throw new AgentBrowserError('CANCELLED', 'Browser command was cancelled.');
     await mkdir(this.runtimeRoot, { recursive: true });
@@ -389,7 +394,7 @@ export class AgentBrowserRuntime implements BrowserAutomationPort {
     return this.InvokeCli(args, options);
   }
 
-  private RunCommand(command: string[], options: { signal?: AbortSignal; deadline?: number; json?: boolean } = {}): Promise<CliEnvelope> {
+  private RunCommand(command: string[], options: { signal?: AbortSignal; deadline?: number; json?: boolean; stdin?: string } = {}): Promise<CliEnvelope> {
     const task = this.commandTail.then(() => this.RunNow(command, options));
     this.commandTail = task.then(() => undefined, () => undefined);
     return task;
@@ -427,6 +432,31 @@ export class AgentBrowserRuntime implements BrowserAutomationPort {
     let metadata: Record<string, unknown> = {};
     if (toolName === 'BrowserNavigate') args.url = await this.normalizeNavigationUrl(args.url);
     else if (this.running) await this.RefreshCurrentUrl();
+    if (toolName === 'BrowserFillForm') {
+      if (!Array.isArray(args.fields) || args.fields.length < 1 || args.fields.length > 30) throw new AgentBrowserError('BROWSER_ARGUMENT_INVALID', 'BrowserFillForm requires one to thirty fields.');
+      const seen = new Set<string>();
+      let totalTextLength = 0;
+      const labels: string[] = [];
+      args.fields = args.fields.map((value) => {
+        if (!value || typeof value !== 'object' || Array.isArray(value)) throw new AgentBrowserError('BROWSER_ARGUMENT_INVALID', 'Each BrowserFillForm field must be an object.');
+        const field = value as Record<string, unknown>;
+        const resolved = this.RefMetadata(field.ref, args.pageRevision);
+        if (seen.has(resolved.ref)) throw new AgentBrowserError('BROWSER_ARGUMENT_INVALID', 'BrowserFillForm field refs must be unique.');
+        seen.add(resolved.ref);
+        const role = String(resolved.metadata.role ?? '').toLowerCase();
+        const type = String(resolved.metadata.type ?? '').toLowerCase();
+        if (!['textbox', 'searchbox', 'spinbutton'].includes(role) || type === 'password') {
+          throw new AgentBrowserError('BROWSER_ARGUMENT_INVALID', 'BrowserFillForm only accepts ordinary non-password input fields.');
+        }
+        const text = typeof field.text === 'string' && field.text.length <= 20_000 ? field.text : null;
+        if (text === null) throw new AgentBrowserError('BROWSER_ARGUMENT_INVALID', 'BrowserFillForm field text is invalid.');
+        totalTextLength += text.length;
+        if (totalTextLength > 100_000) throw new AgentBrowserError('BROWSER_ARGUMENT_INVALID', 'BrowserFillForm total text exceeds 100000 characters.');
+        if (typeof resolved.metadata.name === 'string' && resolved.metadata.name) labels.push(resolved.metadata.name.slice(0, 80));
+        return { ref: resolved.ref, text };
+      });
+      metadata = { labels };
+    }
     if (['BrowserClick', 'BrowserFill', 'BrowserSelect', 'BrowserSetChecked', 'BrowserUploadFile'].includes(toolName)) {
       const resolved = this.RefMetadata(args.ref, args.pageRevision);
       args.ref = resolved.ref;
@@ -441,15 +471,18 @@ export class AgentBrowserRuntime implements BrowserAutomationPort {
       args.tabId = RequireString(args.tabId, 'tabId', 200);
       if (!this.tabs.has(args.tabId as string)) throw new AgentBrowserError('BROWSER_TAB_NOT_FOUND', 'The browser tab is not registered in this session.');
     }
-    const targetText = [metadata.name, metadata.description, metadata.role, metadata.type].filter((value) => typeof value === 'string').join(' ');
+    const targetText = toolName === 'BrowserFillForm'
+      ? ((metadata.labels as string[] | undefined) ?? []).slice(0, 5).join('、')
+      : [metadata.name, metadata.description, metadata.role, metadata.type].filter((value) => typeof value === 'string').join(' ');
     const strongAction = /submit|apply|send|authorize|delete|withdraw|agree|投递|提交|发送|授权|删除|撤回|同意/i.test(targetText);
     const agreement = toolName === 'BrowserSetChecked' && /terms|privacy|agreement|协议|隐私|条款/i.test(targetText);
     const enter = toolName === 'BrowserPressKey' && /^(enter|return)$/i.test(String(args.key));
     const forceConfirmation = toolName === 'BrowserUploadFile' || strongAction || agreement || enter;
     const risk: BrowserActionProposal['risk'] = forceConfirmation ? 'high'
-      : ['BrowserFill', 'BrowserSelect', 'BrowserSetChecked', 'BrowserClick'].includes(toolName) ? 'medium' : 'low';
+      : ['BrowserFill', 'BrowserFillForm', 'BrowserSelect', 'BrowserSetChecked', 'BrowserClick'].includes(toolName) ? 'medium' : 'low';
     const summary = toolName === 'BrowserNavigate' ? `打开 ${String(args.url)}`
       : toolName === 'BrowserUploadFile' ? `向 ${targetText || String(args.ref)} 上传已授权文件`
+        : toolName === 'BrowserFillForm' ? `填写 ${(args.fields as unknown[]).length} 个输入框${targetText ? `：${targetText}` : ''}`
         : `${toolName} ${targetText || String(args.ref ?? args.key ?? args.tabId ?? '')}`.trim();
     return {
       proposalHash: HashProposal(toolName, args, this.pageRevision, this.currentUrl),
@@ -469,12 +502,19 @@ export class AgentBrowserRuntime implements BrowserAutomationPort {
     if (refreshed.proposalHash !== proposal.proposalHash) throw new AgentBrowserError('BROWSER_PROPOSAL_STALE', 'The browser page changed after the action was prepared.');
     const args = proposal.canonicalArguments;
     let command: string[];
+    let stdin: string | undefined;
     switch (proposal.toolName) {
       case 'BrowserNavigate': command = ['open', String(args.url)]; break;
       case 'BrowserSnapshot': command = ['snapshot', '-i', '-c', '--urls']; break;
       case 'BrowserReadPage': command = ['read']; break;
       case 'BrowserClick': command = ['click', String(args.ref)]; break;
       case 'BrowserFill': command = ['fill', String(args.ref), String(args.text)]; break;
+      case 'BrowserFillForm': {
+        const fields = args.fields as Array<{ ref: string; text: string }>;
+        command = ['batch', '--bail'];
+        stdin = JSON.stringify(fields.map((field) => ['fill', field.ref, field.text]));
+        break;
+      }
       case 'BrowserSelect': command = ['select', String(args.ref), String(args.value)]; break;
       case 'BrowserSetChecked': command = [args.checked ? 'check' : 'uncheck', String(args.ref)]; break;
       case 'BrowserPressKey': command = ['press', String(args.key)]; break;
@@ -527,8 +567,12 @@ export class AgentBrowserRuntime implements BrowserAutomationPort {
       throw lastError;
     }
     try {
-      const response = await this.RunCommand(command, { signal, deadline });
+      const response = await this.RunCommand(command, { signal, deadline, ...(stdin === undefined ? {} : { stdin }) });
       this.running = true;
+      if (proposal.toolName === 'BrowserFillForm') {
+        await this.RefreshCurrentUrl(signal, deadline);
+        return { data: { filledCount: (args.fields as unknown[]).length, pageRevision: this.pageRevision, currentUrl: this.currentUrl }, status: 'succeeded' };
+      }
       if (proposal.toolName === 'BrowserSnapshot') {
         this.pageRevision += 1;
         const rawRefs = response.data?.refs && typeof response.data.refs === 'object' ? response.data.refs : {};

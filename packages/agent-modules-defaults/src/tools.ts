@@ -187,6 +187,22 @@ function BuildRegistry(): RegisteredAgentTool[] {
     },
     {
       ...BrowserBase,
+      definition: CreateDefinition('BrowserFillForm', 'Fill 1 to 30 ordinary input fields from one stable BrowserSnapshot in a single bounded batch. Only ref and text are accepted; this tool cannot click, select, upload, submit, wait, navigate, or execute scripts.', {
+        type: 'object',
+        properties: {
+          pageRevision: { type: 'integer', minimum: 1 },
+          fields: {
+            type: 'array', minItems: 1, maxItems: 30,
+            items: { type: 'object', properties: { ref: { type: 'string', pattern: '^@e[0-9]+$' }, text: { type: 'string', maxLength: 20000 } }, required: ['ref', 'text'], additionalProperties: false },
+          },
+        },
+        required: ['pageRevision', 'fields'],
+        additionalProperties: false,
+      }),
+      timeoutMs: 60_000, sideEffect: 'external_action', risk: 'medium', confirmation: 'scenario_policy', idempotency: 'required',
+    },
+    {
+      ...BrowserBase,
       definition: CreateDefinition('BrowserSelect', 'Select a value in a dropdown from the latest BrowserSnapshot.', { type: 'object', properties: { ...RefParameters.properties, value: { type: 'string', maxLength: 2000 } }, required: ['ref', 'pageRevision', 'value'], additionalProperties: false }),
       sideEffect: 'external_action', risk: 'medium', confirmation: 'scenario_policy', idempotency: 'required',
     },
@@ -783,7 +799,7 @@ export function CreateToolsModule(ports: AgentDefaultPorts): ToolsModule {
     version: '0.1.0',
     sdkVersion: '0.1.0',
     slot: 'tools',
-    capabilities: ['tools:default:12', 'tools:application:21', 'browser:atomic'],
+    capabilities: ['tools:default:12', 'tools:application:22', 'browser:atomic', 'browser:fill-batch'],
     /** 返回设计文档 MVP 白名单工具；旧名仅兼容旧快照，不再向新模型暴露。 */
     GetToolDefinitions(scenarioId = 'default') { return registry.filter((tool) => tool.allowedScenarios?.includes(scenarioId)); },
     /** 统一执行管道：Schema 校验与一次修复、写工具幂等账本、按工具超时、结构化错误码、统一 disposition。 */
@@ -829,7 +845,7 @@ export function CreateToolsModule(ports: AgentDefaultPorts): ToolsModule {
           case 'ReadTodo': return ReadTodo(executionContext, call.id);
           case 'SearchJobs': return await SearchJobs(executionContext, call.id, args);
           case 'ReadUrl': return await ReadUrl(executionContext, call.id, args);
-          case 'BrowserNavigate': case 'BrowserSnapshot': case 'BrowserReadPage': case 'BrowserClick': case 'BrowserFill': case 'BrowserSelect':
+          case 'BrowserNavigate': case 'BrowserSnapshot': case 'BrowserReadPage': case 'BrowserClick': case 'BrowserFill': case 'BrowserFillForm': case 'BrowserSelect':
           case 'BrowserSetChecked': case 'BrowserPressKey': case 'BrowserUploadFile': case 'BrowserWait': case 'BrowserSwitchTab': case 'BrowserGoBack':
             return await ExecuteBrowserTool(executionContext, call.id, toolName as BrowserToolName, args);
           default: return CreateToolResult(call.id, { ok: false, code: 'TOOL_NOT_ALLOWED', message: 'This tool is not available in the current scenario.' });

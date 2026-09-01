@@ -40,6 +40,27 @@ async function RunCli(baseArgs, ...command) {
   return envelope.data;
 }
 
+async function RunBatch(baseArgs, commands) {
+  return await new Promise((resolveBatch, rejectBatch) => {
+    const child = spawn(agentBrowserExecutable, [...baseArgs, 'batch', '--bail', '--json'], {
+      cwd: projectRoot, windowsHide: true, shell: false, stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (chunk) => { stdout += chunk; });
+    child.stderr.on('data', (chunk) => { stderr += chunk; });
+    child.once('error', rejectBatch);
+    child.once('exit', (code) => {
+      if (code !== 0) { rejectBatch(new Error(stderr.trim() || stdout.trim() || `agent-browser batch exited with code ${code}`)); return; }
+      const line = stdout.trim().split(/\r?\n/).filter(Boolean).at(-1);
+      const results = JSON.parse(line || '[]');
+      if (!Array.isArray(results) || results.some((result) => result?.success === false)) { rejectBatch(new Error('agent-browser batch returned a failed result')); return; }
+      resolveBatch(results);
+    });
+    child.stdin.end(JSON.stringify(commands), 'utf8');
+  });
+}
+
 const root = await mkdtemp(join(tmpdir(), 'offerget-browser-companion-smoke-'));
 const profilePath = join(root, 'profile');
 const env = { ...process.env };
@@ -48,7 +69,7 @@ for (const key of Object.keys(env)) if (/^OFFERGET_(DESKTOP_SMOKE|SMOKE_|LIFECYC
 
 const server = createServer((_request, response) => {
   response.setHeader('content-type', 'text/html; charset=utf-8');
-  response.end('<!doctype html><title>Companion Fixture</title><label>Keyword<input id="keyword" aria-label="Keyword"></label><button id="search" onclick="document.querySelector(\'#result\').textContent=\'result:\'+document.querySelector(\'#keyword\').value">Search</button><p id="result">idle</p>');
+  response.end('<!doctype html><title>Companion Fixture</title><label>Keyword<input id="keyword" aria-label="Keyword"></label><label>Email<input id="email" aria-label="Email"></label><button id="search" onclick="document.querySelector(\'#result\').textContent=\'result:\'+document.querySelector(\'#keyword\').value+\'|\'+document.querySelector(\'#email\').value">Search</button><p id="result">idle</p>');
 });
 await new Promise((resolveListen) => server.listen(0, '127.0.0.1', resolveListen));
 const address = server.address();
@@ -76,15 +97,15 @@ try {
   const initialTargets = await WaitFor(async () => {
     const response = await fetch(`http://127.0.0.1:${cdpPort}/json/list`);
     const targets = await response.json();
-    return Array.isArray(targets) && targets.length >= 2 ? targets : null;
+    return Array.isArray(targets) && targets.length >= 1 ? targets : null;
   }, 10_000, 'companion CDP target');
-  Assert(initialTargets.length === 2, `expected two isolated companion targets, received ${initialTargets.length}`);
+  Assert(initialTargets.length === 1, `expected one isolated companion target, received ${initialTargets.length}`);
   Assert(initialTargets.every((target) => String(target.url || '').startsWith('http://127.0.0.1:')), 'companion exposed a non-internal initial target');
 
   const namespace = `offerget-companion-smoke-${process.pid}`;
-  const discoveryArgs = ['--namespace', namespace, '--session', 'companion-smoke', '--cdp', String(cdpPort), '--no-auto-dialog', '--content-boundaries', '--max-output', '50000', '--idle-timeout', '10s'];
+  const discoveryArgs = ['--namespace', namespace, '--session', 'companion-smoke', '--cdp', String(cdpPort), '--no-auto-dialog', '--content-boundaries', '--max-output', '50000', '--idle-timeout', '1h'];
   const tabs = await RunCli(discoveryArgs, 'tab');
-  Assert(Array.isArray(tabs.tabs) && tabs.tabs.length === 2, 'agent-browser did not discover both companion targets');
+  Assert(Array.isArray(tabs.tabs) && tabs.tabs.length === 1, 'agent-browser did not discover the companion target');
   const readyTab = tabs.tabs.find((tab) => String(tab.url || '').endsWith('/ready'));
   Assert(readyTab?.tabId, 'agent-browser did not discover the companion page target');
   if (readyTab.active !== true) await RunCli(discoveryArgs, 'tab', readyTab.tabId);
@@ -92,15 +113,18 @@ try {
   await RunCli(baseArgs, 'open', `http://127.0.0.1:${fixturePort}/`);
   const snapshot = await RunCli(baseArgs, 'snapshot', '-i');
   Assert(String(snapshot.snapshot || '').includes('Keyword'), 'snapshot did not read the companion page');
-  await RunCli(baseArgs, 'fill', '#keyword', 'isolated-browser');
+  const keywordRef = Object.entries(snapshot.refs || {}).find(([, metadata]) => metadata?.name === 'Keyword')?.[0];
+  const emailRef = Object.entries(snapshot.refs || {}).find(([, metadata]) => metadata?.name === 'Email')?.[0];
+  Assert(keywordRef && emailRef, 'snapshot did not issue refs for both input fields');
+  await RunBatch(baseArgs, [['fill', `@${keywordRef}`, 'isolated-browser'], ['fill', `@${emailRef}`, 'batch@example.com']]);
   await RunCli(baseArgs, 'click', '#search');
   const result = await RunCli(baseArgs, 'get', 'text', '#result');
-  Assert(result.text === 'result:isolated-browser', `click result mismatch: ${result.text}`);
+  Assert(result.text === 'result:isolated-browser|batch@example.com', `click result mismatch: ${result.text}`);
 
   const finalTargets = await (await fetch(`http://127.0.0.1:${cdpPort}/json/list`)).json();
-  Assert(Array.isArray(finalTargets) && finalTargets.length === 2, 'companion exposed an unexpected target count');
+  Assert(Array.isArray(finalTargets) && finalTargets.length === 1, 'companion exposed an unexpected target count');
   Assert(!finalTargets.some((target) => String(target.title || '').includes('OfferGet Main')), 'OfferGet main target leaked into companion CDP');
-  console.log(JSON.stringify({ passed: true, cdpTargetCount: finalTargets.length, internalShellTarget: true, snapshot: true, fill: true, click: true, mainTargetExposed: false }));
+  console.log(JSON.stringify({ passed: true, cdpTargetCount: finalTargets.length, internalShellTarget: true, snapshot: true, fillBatch: true, click: true, mainTargetExposed: false }));
 } finally {
   try { child.kill(); } catch { /* 已退出时无需重复终止。 */ }
   await new Promise((resolveClose) => server.close(resolveClose));

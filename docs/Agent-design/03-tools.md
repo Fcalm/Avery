@@ -233,6 +233,7 @@ ReadUrl
 | `BrowserReadPage` | 读取当前页面的正文内容 | `agent-browser read` |
 | `BrowserClick` | 点击指定页面元素 | `agent-browser click <selector>` |
 | `BrowserFill` | 清空并填写指定输入框 | `agent-browser fill <selector> <text>` |
+| `BrowserFillForm` | 使用同一份页面快照一次填写 1～30 个普通输入框；不允许点击、选择、上传、提交或执行脚本 | Host 校验后通过 stdin 映射为 `agent-browser batch --bail --json` 中的多个 `fill` 命令 |
 | `BrowserSelect` | 选择指定下拉选项 | `agent-browser select <selector> <value>` |
 | `BrowserSetChecked` | 设置复选框或单选项的选中状态 | 选中：`agent-browser check <selector>`；取消选中：`agent-browser uncheck <selector>` |
 | `BrowserPressKey` | 在当前页面按下指定按键 | `agent-browser press <key>` |
@@ -240,6 +241,8 @@ ReadUrl
 | `BrowserWait` | 等待元素、页面状态或 URL 变化 | `agent-browser wait <selector>`、`wait --text <text>`、`wait --url <pattern>` 或 `wait --load <state>` |
 | `BrowserSwitchTab` | 切换到指定浏览器标签页 | `agent-browser tab <tabId或label>` |
 | `BrowserGoBack` | 返回当前标签页的上一历史页面 | `agent-browser back` |
+
+`BrowserFillForm` 是唯一允许使用 `agent-browser batch` 的模型工具封装。模型输入只包含同一 `pageRevision` 下的 `fields: Array<{ ref, text }>`；Host 必须验证字段数量、总文本长度、引用唯一性及元素为非密码类输入框，并通过 JSON stdin 传递参数，禁止拼接命令字符串。Batch 只包含 `fill`，不接受 `click`、`select`、`check`、`upload`、`wait`、导航、提交、任意 selector 或 JavaScript。执行结果只返回填写数量和结构化失败，不回显字段正文；任一字段失败即停止后续字段，但已成功填写的字段不回滚。
 
 ### 5.5 Todo
 
@@ -420,7 +423,7 @@ interface ToolEnvelope<T> {
 - 模型可见工具名全部符合 PascalCase 规则且跨 Provider 可接受。
 - 默认场景按意图进一步收窄工具，不暴露任何投递或浏览器能力。
 - 0.2.0 默认场景不注册、不展示也不执行 `SearchJobs`、`ReadUrl`。
-- 投递场景只暴露冻结的 21 个工具，不包含 `CreateResume`、`UpdateResume`、`UpdateProfile`、`SearchJobs` 或 `ReadUrl`。
+- 投递场景只暴露冻结的 22 个工具，不包含 `CreateResume`、`UpdateResume`、`UpdateProfile`、`SearchJobs` 或 `ReadUrl`。
 - `Read`、`Glob`、`Grep` 可以访问授权虚拟挂载，但不能路径逃逸、读取非法 UTF-8 或敏感文件。
 - 模型直接请求未进入冻结快照的已注册/草案工具时，执行入口返回 `TOOL_NOT_ALLOWED`，实现函数调用次数为 0。
 - 0.3.0 fixture 必须证明 `ReadUrl` 只接受用户明确 URL，并拒绝 localhost、内网、文件协议、凭据、Cookie 和未校验重定向。
@@ -435,4 +438,4 @@ interface ToolEnvelope<T> {
 
 ## 14. 总结
 
-MVP 工具集优先使用少量、高辨识度的 PascalCase 工具。`Read`、`Glob`、`Grep` 是通用 UTF-8 文件只读能力，来源差异由虚拟挂载和端口授权处理；简历、档案和 Todo 只在权限、Schema 或副作用真正不同的地方拆分。默认场景不注册岗位网络工具；投递场景使用 12 个原子浏览器工具完成自主岗位发现、JD 阅读和投递，不包装 `SearchJobs` 高层工具。确认阶段属于 Harness，Todo 先在无自动注入条件下验证模型自身的进度管理能力。
+MVP 工具集优先使用少量、高辨识度的 PascalCase 工具。`Read`、`Glob`、`Grep` 是通用 UTF-8 文件只读能力，来源差异由虚拟挂载和端口授权处理；简历、档案和 Todo 只在权限、Schema 或副作用真正不同的地方拆分。默认场景不注册岗位网络工具；投递场景使用 12 个原子浏览器工具和 1 个受限批量输入工具完成自主岗位发现、JD 阅读和投递，不包装 `SearchJobs` 高层工具。确认阶段属于 Harness，Todo 先在无自动注入条件下验证模型自身的进度管理能力。

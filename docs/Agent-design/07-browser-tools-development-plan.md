@@ -14,7 +14,7 @@
 - Browser Profile、浏览器 Runtime、Agent Session 和 Agent Run 是不同生命周期，不能复用同一个 ID 代替。
 - 提交申请、发送消息和敏感文件上传仍由 OfferGet Harness 判断与确认，`agent-browser` 不拥有最终授权。
 - 第一阶段只做应用层安全限制，不声明具备进程级网络出口隔离。
-- 不增加模型可见的 `BrowserBatch`；若未来需要批量执行，只能作为经过基准和取消验证后的 Host 内部优化。
+- 不增加模型可见的原始 `BrowserBatch`；仅开放语义明确的 `BrowserFillForm`，由 Host 校验并映射为纯 `fill` Batch。
 
 投递场景和浏览器工具已进入首版 Tool Registry，但仍受本文复审与发布门禁约束。
 
@@ -36,7 +36,7 @@
 - 不自动绕过验证码、反自动化机制或站点访问限制。
 - 不实现进程级受控代理或完整网络出口限制。
 - 不允许多个浏览器 Runtime 并发写入同一个 Profile。
-- 不承诺 Batch 的事务性；第一阶段不使用 `agent-browser batch` 执行模型工具。
+- 不承诺 Batch 的事务性；只允许 `BrowserFillForm` 在 Host 校验后用 JSON stdin 执行纯 `fill` Batch，其他模型工具不得使用 Batch。
 
 ## 3. 总体架构与生命周期
 
@@ -77,6 +77,7 @@ Isolated Electron Companion + Visible Browser Window
 | `BrowserReadPage` | 可选正文范围 | `agent-browser read` | 页面内容按不可信数据处理并限长 |
 | `BrowserClick` | `ref`、`pageRevision` | `agent-browser click <selector>` | 提交、发送、授权等目标可能需要确认 |
 | `BrowserFill` | `ref`、`pageRevision`、`text` | `agent-browser fill <selector> <text>` | 不在 Trace 中记录敏感明文 |
+| `BrowserFillForm` | `pageRevision`、1～30 个 `{ref,text}` | `agent-browser batch --bail --json`，stdin 仅含 `fill` 数组 | 同页普通输入框批量填写；禁止脚本、点击、提交、上传和动态级联 |
 | `BrowserSelect` | `ref`、`pageRevision`、`value` | `agent-browser select <selector> <value>` | 只允许 Snapshot 中的有效引用 |
 | `BrowserSetChecked` | `ref`、`pageRevision`、`checked` | `check <selector>` / `uncheck <selector>` | 同意协议等字段可能需要确认 |
 | `BrowserPressKey` | `key` | `agent-browser press <key>` | 使用按键枚举；禁止注入任意 CLI 参数 |
@@ -85,7 +86,7 @@ Isolated Electron Companion + Visible Browser Window
 | `BrowserSwitchTab` | `tabId` | `agent-browser tab <tabId>` | 只接受当前 browser session 已登记标签页 |
 | `BrowserGoBack` | 无 | `agent-browser back` | 执行后废弃旧页面元素引用 |
 
-工具名称和职责以 `03-tools.md` 为协议来源。`BrowserSnapshot` 的结构化输出应包含当前 URL、标题、`pageRevision`、活动标签页和当前 Runtime 已登记的标签页摘要，使 `BrowserSwitchTab` 不依赖额外的模型可见列表工具。滚动第一阶段通过受限的 `BrowserPressKey` 键值完成；若目标站点验收证明不足，再单独评审 `BrowserScroll`，不能临时开放原始 CLI。
+工具名称和职责以 `03-tools.md` 为协议来源。`BrowserSnapshot` 的结构化输出应包含当前 URL、标题、`pageRevision`、活动标签页和当前 Runtime 已登记的标签页摘要，使 `BrowserSwitchTab` 不依赖额外的模型可见列表工具。`BrowserFillForm` 只优化同一稳定 DOM 中普通输入框的填写；级联下拉、动态新增经历、上传、协议与最终提交继续拆成原子工具，并在 DOM 改变后重新 Snapshot。滚动第一阶段通过受限的 `BrowserPressKey` 键值完成；若目标站点验收证明不足，再单独评审 `BrowserScroll`，不能临时开放原始 CLI。
 
 ## 5. 开发部分
 
@@ -324,11 +325,11 @@ test(browser): 覆盖取消迟到与提交对账
 
 | ID | 开发部分 | 状态 | 当前证据 | 下一步 |
 | --- | --- | --- | --- | --- |
-| BP-00 | 方案与工具命名冻结 | 已完成 | `03-tools.md` 和本文已记录 12 个工具、CLI 执行层、Profile 与轻量安全边界 | 文档复审 |
+| BP-00 | 方案与工具命名冻结 | 已完成 | `03-tools.md` 和本文已冻结 12 个原子工具与 `BrowserFillForm` 受限纯填写 Batch | 后续变更另行评审 |
 | BT-01 | 依赖、版本与发布物 | 待复审 | 已固定 `agent-browser@0.34.0`；开发态和 Windows 目录包均使用 Electron 43.3.0 companion，不下载 Chromium | 复审依赖许可、漏洞与正式签名配置 |
 | BT-02 | CLI 执行器与错误协议 | 待复审 | 随机 CDP、无 pin 发现 target、精确选择 `/ready` 后启用 sticky pin；固定参数、错误与限长测试通过 | 复审握手错误映射和输出限长 |
 | BT-03 | Profile、Runtime 与登录持久化 | 进行中 | 已实现独立 Profile、固定 namespace/session、父进程跟随、用户关闭后重启和清理生命周期 | 补真实账号跨应用重启登录保持验证 |
-| BT-04 | 工具契约、页面引用与注册表 | 待复审 | 12 个原子工具已进入 application 白名单；Schema、场景隔离和陈旧引用测试通过 | 复审跨 Provider Tool Schema |
+| BT-04 | 工具契约、页面引用与注册表 | 已完成 | 12 个原子工具和第 13 个受限批量输入工具已进入 application 白名单；Batch stdin、Schema、陈旧引用和 Trace 脱敏回归通过 | 真实站点差异继续纳入 BT-09 验证 |
 | BT-05 | 导航、内容与文件安全 | 待复审 | URL/DNS 私网拒绝、重定向复检、Run 附件授权、25 MB 限额和敏感 Trace 清理已实现，安全单测通过 | 复审应用层网络限制的剩余风险 |
 | BT-06 | Harness 风险、确认与用户接管 | 待复审 | proposal 冻结、三类确认拒绝、页面变化、登录/CAPTCHA 接管与恢复回归通过 | 复审真实界面确认卡与人工接管体验 |
 | BT-07 | 调度、取消、超时与对账 | 进行中 | 浏览器动作复用现有 Scheduler/Ledger；取消或超时的已开始写入标记 `status_unknown` | 补迟到结果、并发、幂等和崩溃恢复测试 |

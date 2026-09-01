@@ -98,6 +98,67 @@ describe('AgentBrowserRuntime', () => {
     expect(closeCompanion).toHaveBeenCalledOnce();
   });
 
+  it('BrowserFillForm 仅以 JSON stdin 批量填写同页普通输入框且不回显正文', async () => {
+    const runtimeRoot = await mkdtemp(join(tmpdir(), 'offerget-browser-fill-form-'));
+    temporaryRoots.push(runtimeRoot);
+    const calls: Array<{ args: string[]; stdin?: string }> = [];
+    const runProcess = vi.fn(async ({ args, stdin }: { args: string[]; stdin?: string }) => {
+      calls.push({ args, ...(stdin === undefined ? {} : { stdin }) });
+      const command = args.find((arg) => ['open', 'get', 'snapshot', 'tab', 'batch', 'close'].includes(arg));
+      if (command === 'get') return { success: true, data: { url: 'https://93.184.216.34/application' } };
+      if (command === 'snapshot') return { success: true, data: { snapshot: 'fixture', refs: {
+        e1: { role: 'textbox', name: '姓名', type: 'text' },
+        e2: { role: 'textbox', name: '邮箱', type: 'email' },
+        e3: { role: 'button', name: '提交' },
+        e4: { role: 'textbox', name: '密码', type: 'password' },
+        e5: { role: 'textbox', name: '字段 5', type: 'text' },
+        e6: { role: 'textbox', name: '字段 6', type: 'text' },
+        e7: { role: 'textbox', name: '字段 7', type: 'text' },
+        e8: { role: 'textbox', name: '字段 8', type: 'text' },
+      } } };
+      if (command === 'tab') return { success: true, data: { tabs: [
+        { tabId: 'home', url: 'https://93.184.216.34/ready', active: true },
+        { tabId: 't1', url: 'https://93.184.216.34/application', active: false },
+      ] } };
+      if (command === 'batch') return { success: true, data: { results: [{ success: true }, { success: true }] } };
+      return { success: true, data: {} };
+    });
+    const runtime = new AgentBrowserRuntime({
+      executablePath: process.execPath, companionExecutablePath: process.execPath, runtimeRoot, resolveUploadFile: vi.fn(), runProcess,
+      launchCompanion: vi.fn(async () => ({ port: 9630, homeUrl: 'https://93.184.216.34/ready', isAlive: () => true, close: vi.fn(async () => undefined) })),
+    });
+
+    const navigate = await runtime.Prepare({ toolName: 'BrowserNavigate', arguments: { url: 'https://93.184.216.34/application' } });
+    await runtime.Execute({ proposal: navigate });
+    const snapshot = await runtime.Prepare({ toolName: 'BrowserSnapshot', arguments: {} });
+    const observed = await runtime.Execute({ proposal: snapshot });
+    const pageRevision = (observed.data as { pageRevision: number }).pageRevision;
+    const name = '张三 "Agent"\n第二行';
+    const email = 'x@example.com"], ["click", "@e3';
+    const proposal = await runtime.Prepare({ toolName: 'BrowserFillForm', arguments: { pageRevision, fields: [{ ref: '@e1', text: name }, { ref: '@e2', text: email }] } });
+    const outcome = await runtime.Execute({ proposal });
+
+    const batchCalls = calls.filter((call) => call.args.includes('batch'));
+    expect(batchCalls).toHaveLength(1);
+    expect(batchCalls[0].args).toEqual(expect.arrayContaining(['batch', '--bail', '--json']));
+    expect(batchCalls[0].args.join(' ')).not.toContain(name);
+    expect(batchCalls[0].args.join(' ')).not.toContain(email);
+    expect(JSON.parse(batchCalls[0].stdin ?? '')).toEqual([['fill', '@e1', name], ['fill', '@e2', email]]);
+    expect(outcome).toMatchObject({ status: 'succeeded', data: { filledCount: 2, pageRevision, currentUrl: 'https://93.184.216.34/application' } });
+    expect(JSON.stringify(outcome)).not.toContain(name);
+    expect(JSON.stringify(outcome)).not.toContain(email);
+    await expect(runtime.Prepare({ toolName: 'BrowserFillForm', arguments: { pageRevision, fields: [{ ref: '@e1', text: 'a' }, { ref: '@e1', text: 'b' }] } })).rejects.toMatchObject({ code: 'BROWSER_ARGUMENT_INVALID' });
+    await expect(runtime.Prepare({ toolName: 'BrowserFillForm', arguments: { pageRevision, fields: [{ ref: '@e3', text: 'submit' }] } })).rejects.toMatchObject({ code: 'BROWSER_ARGUMENT_INVALID' });
+    await expect(runtime.Prepare({ toolName: 'BrowserFillForm', arguments: { pageRevision, fields: [{ ref: '@e4', text: 'secret' }] } })).rejects.toMatchObject({ code: 'BROWSER_ARGUMENT_INVALID' });
+    await expect(runtime.Prepare({
+      toolName: 'BrowserFillForm',
+      arguments: { pageRevision, fields: ['@e1', '@e2', '@e5', '@e6', '@e7', '@e8'].map((ref) => ({ ref, text: 'x'.repeat(20_000) })) },
+    })).rejects.toMatchObject({ code: 'BROWSER_ARGUMENT_INVALID' });
+    await expect(runtime.Prepare({ toolName: 'BrowserFillForm', arguments: { pageRevision: pageRevision - 1, fields: [{ ref: '@e1', text: 'stale' }] } })).rejects.toMatchObject({ code: 'BROWSER_STALE_PAGE_REF' });
+    expect(calls.filter((call) => call.args.includes('batch'))).toHaveLength(1);
+    await runtime.Close();
+  });
+
   it('companion 异常退出后重启并拒绝崩溃前的页面引用', async () => {
     const runtimeRoot = await mkdtemp(join(tmpdir(), 'offerget-browser-recovery-'));
     temporaryRoots.push(runtimeRoot);
