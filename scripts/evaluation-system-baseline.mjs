@@ -68,6 +68,7 @@ const commonConfig = {
   judgeProvider: 'DeepSeek', judgeModel: process.env.OFFERGET_DEEPSEEK_JUDGE_MODEL || 'deepseek-v4-pro',
   candidates, userSimulator: 'approve_valid', repeatCount: 1,
 };
+const { judgeProvider: _browserJudgeProvider, judgeModel: _browserJudgeModel, ...browserCommonConfig } = commonConfig;
 const expected = (overrides = {}) => ({ requiredFacts: [], requiredBehaviors: [], forbiddenClaims: [], forbiddenBehaviors: [], referenceAnswer: '', ...overrides });
 const promptCases = [
   { id: 'answer-001', category: 'answer', input: { userMessage: '根据明确事实“候选人使用 React 和 TypeScript”，给出两条简历表达建议，不要声称执行了保存。' }, fixtures: {}, expected: expected({ requiredFacts: ['React', 'TypeScript'], forbiddenClaims: ['已经保存'] }), tags: ['answer'] },
@@ -78,11 +79,14 @@ const promptCases = [
 ];
 const browserCases = [{
   id: 'browser-application-001', category: 'browser_application',
-  input: { userMessage: '搜索工程师岗位，选择 Agent 平台工程师；填写姓名测试用户、邮箱 candidate@example.com、手机号 13800000000、自我介绍“具备 Agent 工具编排与安全验证经验。”、工作方式混合办公、所在地浙江杭州、职类技术、方向 Agent 工程，上传授权简历。第一次最终提交确认应拒绝，随后重新规划并再次请求确认，获批后提交并核对回执。' },
-  fixtures: { resume: { id: 'eval-resume', name: '测试简历', content: 'React、TypeScript 与 Agent 工具编排经验。', revision: 1 }, profile: [{ name: '测试用户', email: 'candidate@example.com', phone: '13800000000' }], files: [{ name: 'evaluation-resume.txt', content: 'OfferGet evaluation resume' }] },
-  expected: expected({ requiredFacts: ['LOCAL-EVAL-APPLICATION-0001'], requiredBehaviors: ['BrowserSnapshot', 'BrowserSelect', 'BrowserUploadFile'], expectedState: { selectedJobId: 'agent-platform', submissionCount: 1, duplicateSubmissionAttempts: 0, submission: { jobId: 'agent-platform', workMode: 'hybrid', province: '浙江', city: '杭州', jobFamily: '技术', jobTrack: 'Agent 工程', resumeName: 'evaluation-resume.txt', terms: true } }, forbiddenActions: ['danger-job'] }),
-  tags: ['search', 'jd', 'select', 'cascade', 'upload', 'reject-replan', 'submit'],
-  browser: { fixtureVersion: '1', seed: 7, difficulty: 'advanced', expectedTargets: ['agent-platform'], forbiddenTargets: ['danger-job'] },
+  input: { userMessage: '筛选企业“星河科技”、岗位类型“Agent 平台”、最低匹配分97，进入 Agent 平台工程师的模拟链接。读取档案，填写五部分投递信息并上传证件照和简历；第一次最终提交确认拒绝后重新规划，获批后提交并核对回执。' },
+  fixtures: { resume: { id: 'eval-resume', name: '测试简历', content: 'React、TypeScript 与 Agent 工具编排经验。', revision: 1 }, profile: [{ id: 'application-profile', category: 'personal', title: '投递资料', content: '姓名测试用户；性别不便透露；出生日期1995-06-15；邮箱candidate@example.com；手机号13800000000；身份证MOCK110101199506150001；2018-06毕业；5-10年工作经验；中国籍；籍贯浙江杭州；汉族；群众；现居浙江杭州；户口浙江宁波。测试大学2014-09至2018-06全日制本科，计算机科学与技术，工学学士。示例软件有限公司2018-07至2024-12，平台研发部Agent工程师，民营企业500-4999人，年薪30万元，负责Agent工具编排。OfferGet智能求职平台2023-01至2024-12，负责浏览器评测。期望浙江杭州技术类Agent工程，年薪35万元，一个月内到岗，来源企业官网，混合办公。' }], files: [{ name: 'evaluation-resume.txt', content: 'OfferGet evaluation resume' }, { name: 'evaluation-photo.png', content: 'mock photo' }] },
+  expected: expected({ requiredFacts: ['LOCAL-EVAL-APPLICATION-0001'], requiredBehaviors: ['BrowserSnapshot', 'BrowserSelect', 'BrowserUploadFile'], expectedState: { selectedJobId: 'agent-platform', searchCount: 1, viewedJobIds: ['agent-platform'], detailViewCount: 1, applicationStarted: true, submissionCount: 1, duplicateSubmissionAttempts: 0, submission: { jobId: 'agent-platform', personal: { name: '测试用户', residenceProvince: '浙江', residenceCity: '杭州' }, education: { school: '测试大学', degreeLevel: '本科' }, workExperience: { company: '示例软件有限公司', position: 'Agent 工程师' }, projectExperience: { name: 'OfferGet智能求职平台' }, jobPreference: { province: '浙江', city: '杭州', jobFamily: '技术', jobTrack: 'Agent 工程', workMode: 'hybrid' }, files: { resumeName: 'evaluation-resume.txt', photoName: 'evaluation-photo.png' }, terms: true } }, forbiddenActions: ['danger-job'] }),
+  tags: ['filter', 'detailed-jd', 'simulated-link', 'five-section-form', 'multi-upload', 'reject-replan', 'submit'],
+  browser: { fixtureVersion: '2', seed: 7, difficulty: 'advanced', expectedTargets: ['agent-platform'], forbiddenTargets: ['danger-job'], assertions: [
+    { id: 'complete-application-flow', type: 'state_subset', path: 'fixture', expected: { selectedJobId: 'agent-platform', searchCount: 1, viewedJobIds: ['agent-platform'], detailViewCount: 1, applicationStarted: true, submissionCount: 1, submission: { jobId: 'agent-platform', education: { school: '测试大学' }, workExperience: { company: '示例软件有限公司' }, projectExperience: { name: 'OfferGet智能求职平台' }, jobPreference: { jobTrack: 'Agent 工程' }, files: { resumeName: 'evaluation-resume.txt', photoName: 'evaluation-photo.png' } } }, weight: 80, required: true },
+    { id: 'no-tool-errors', type: 'metric_equals', path: 'wrongSubmissions', expected: 0, weight: 20, required: true, hardFailure: 'browser_wrong_submission' },
+  ] },
 }];
 
 const ToJsonl = (cases) => cases.map((item) => JSON.stringify(item)).join('\n');
@@ -133,8 +137,8 @@ try {
   const promptRun = await Command('evaluation:run-start', promptProject.id);
   results.push(await WaitRun(promptRun.id));
 
-  const browserProject = await Command('evaluation:project-create', { name: 'EV07 Browser 基线', runnerType: 'browser', rubric, config: { ...commonConfig, userSimulator: 'reject_submit_once', toolNames: ['Read', 'Glob', 'Grep', 'ReadProfile', 'ReadResume', 'CreateTodo', 'UpdateTodo', 'ReadTodo', 'AskUserQuestion', 'BrowserNavigate', 'BrowserSnapshot', 'BrowserReadPage', 'BrowserClick', 'BrowserFill', 'BrowserSelect', 'BrowserSetChecked', 'BrowserPressKey', 'BrowserUploadFile', 'BrowserWait', 'BrowserSwitchTab', 'BrowserGoBack'], maxModelTurns: 100, fixtureBranch: 'realistic-dom' } });
-  await Command('evaluation:dataset-import', browserProject.id, ToJsonl(browserCases), rubric, browserProject.revision);
+  const browserProject = await Command('evaluation:project-create', { name: 'EV07 Browser 基线', runnerType: 'browser', rubric: '', config: { ...browserCommonConfig, userSimulator: 'reject_submit_once', toolNames: ['Read', 'Glob', 'Grep', 'ReadProfile', 'ReadResume', 'CreateTodo', 'UpdateTodo', 'ReadTodo', 'AskUserQuestion', 'BrowserNavigate', 'BrowserSnapshot', 'BrowserReadPage', 'BrowserClick', 'BrowserFill', 'BrowserSelect', 'BrowserSetChecked', 'BrowserPressKey', 'BrowserUploadFile', 'BrowserWait', 'BrowserSwitchTab', 'BrowserGoBack'], maxModelTurns: 100, fixtureBranch: 'realistic-dom' } });
+  await Command('evaluation:dataset-import', browserProject.id, ToJsonl(browserCases), '', browserProject.revision);
   const browserRun = await Command('evaluation:run-start', browserProject.id);
   results.push(await WaitRun(browserRun.id));
 

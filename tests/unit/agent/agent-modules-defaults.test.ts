@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { AgentMessage, ToolLedgerEntry, ToolReceipt } from '../../../packages/agent-sdk/src/index';
-import { CreateCompactionModule } from '../../../packages/agent-modules-defaults/src/compaction';
+import type { AgentMessage, ReasoningEffort, ToolLedgerEntry, ToolReceipt } from '../../../packages/agent-sdk/src/index';
+import { CreateCompactionModule, SplitTurnGroups } from '../../../packages/agent-modules-defaults/src/compaction';
 import { CreateContextBuilderModule } from '../../../packages/agent-modules-defaults/src/context';
 import { CreateInteractionModule } from '../../../packages/agent-modules-defaults/src/interaction';
 import { CreateObservabilityModule } from '../../../packages/agent-modules-defaults/src/observability';
@@ -29,12 +29,66 @@ afterEach(() => {
 });
 
 describe('agent-modules-defaults', () => {
-  it('0.2 默认场景只暴露 12 个 PascalCase 本地工具，网络与投递能力不混入白名单', () => {
+  it('上下文自动限制默认 256K，并在模型能力更小时取模型上限', async () => {
+    const { DefaultContextLimit, ResolveContextLimit, ResolveDeepSeekReasoningEffort } = await import('../../../packages/agent-modules-defaults/src/provider');
+
+    expect(DefaultContextLimit).toBe(256_000);
+    expect(ResolveContextLimit({ mode: 'default' })).toBe(256_000);
+    expect(ResolveContextLimit({ mode: 'default', modelMaximum: 128_000 })).toBe(128_000);
+    expect(ResolveContextLimit({ mode: 'default', modelMaximum: 1_000_000 })).toBe(256_000);
+    const efforts: ReasoningEffort[] = ['low', 'medium', 'high', 'xhigh', 'max'];
+    expect(efforts.map(ResolveDeepSeekReasoningEffort))
+      .toEqual(['low', 'high', 'high', 'high', 'max']);
+  });
+
+  it('Provider 保存自定义上下文限制，并拒绝超过已知模型上限的值', async () => {
+    let persisted: any = null;
+    const saveConfig = vi.fn(async () => undefined);
+    const { CreateProviderModule } = await import('../../../packages/agent-modules-defaults/src/provider');
+    const provider = CreateProviderModule(CreatePorts({ saveConfig }));
+
+    await provider.Configure({
+      provider: 'DeepSeek', model: 'deepseek-v4-flash', apiKey: 'test-key', thinkingEnabled: false,
+      contextLimitMode: 'custom', contextLength: '128K', compressionThreshold: 80,
+    });
+
+    expect(provider.GetRuntimeLimits()).toEqual({ contextLimit: 128_000, threshold: 80 });
+    await expect(provider.GetStatus()).resolves.toMatchObject({
+      provider: 'DeepSeek', model: 'deepseek-v4-flash', contextLimit: 128_000, contextLimitMode: 'custom', compressionThreshold: 80,
+    });
+    expect(saveConfig).toHaveBeenCalledWith(expect.objectContaining({ contextLimit: 128_000, contextLimitMode: 'custom' }));
+    persisted = saveConfig.mock.calls[0][0];
+    const reloaded = CreateProviderModule(CreatePorts({ getConfig: vi.fn(async () => persisted) }));
+    await expect(reloaded.GetStatus()).resolves.toMatchObject({ contextLimit: 128_000, contextLimitMode: 'custom' });
+    await expect(provider.Configure({
+      provider: 'DeepSeek', model: 'deepseek-v4-flash', apiKey: 'test-key', thinkingEnabled: false,
+      contextLimitMode: 'custom', contextLength: '1001K', compressionThreshold: 80,
+    })).rejects.toThrow(/不能超过当前模型/);
+  });
+
+  it('旧 DeepSeek 64K 配置迁移为自动 256K，旧自定义 Provider 保留原限制', async () => {
+    const { CreateProviderModule } = await import('../../../packages/agent-modules-defaults/src/provider');
+    const legacyDeepSeek = CreateProviderModule(CreatePorts({
+      getConfig: vi.fn(async () => ({ provider: 'DeepSeek', baseUrl: 'https://api.deepseek.com', model: 'deepseek-v4-flash', thinkingEnabled: false, contextLimit: 64_000, compressionThreshold: 80, apiKey: 'test-key' })),
+    }));
+    const legacyCustom = CreateProviderModule(CreatePorts({
+      getConfig: vi.fn(async () => ({ provider: '自定义', baseUrl: 'https://example.com/v1', model: 'custom-model', thinkingEnabled: false, contextLimit: 96_000, compressionThreshold: 80, apiKey: 'test-key' })),
+    }));
+
+    await legacyDeepSeek.GetStatus();
+    await legacyCustom.GetStatus();
+
+    expect(legacyDeepSeek.GetRuntimeLimits().contextLimit).toBe(256_000);
+    expect(legacyCustom.GetRuntimeLimits().contextLimit).toBe(96_000);
+  });
+
+  it('默认场景暴露 18 个 PascalCase 本地工具，网络与投递能力不混入白名单', () => {
     const tools = CreateToolsModule(CreatePorts()).GetToolDefinitions();
     const names = tools.map((tool) => tool.definition.function.name);
 
     expect(new Set(names)).toEqual(new Set(DefaultScenario.toolNames));
-    expect(names).toHaveLength(12);
+    expect(names).toHaveLength(18);
+    expect(names).toContain('DeleteTodo');
     expect(names.every((name) => /^[A-Z][A-Za-z0-9]{0,63}$/.test(name))).toBe(true);
     expect(names).not.toEqual(expect.arrayContaining(['SearchJobs', 'ReadUrl', 'Shell', 'Browser', 'SubmitApplication']));
     expect(DefaultScenario.budgets?.maxModelTurns).toBe(30);
@@ -42,7 +96,9 @@ describe('agent-modules-defaults', () => {
     expect(ApplicationScenarioPlaceholder.enabled).toBe(true);
     const applicationNames = CreateToolsModule(CreatePorts()).GetToolDefinitions('application').map((tool) => tool.definition.function.name);
     expect(new Set(applicationNames)).toEqual(new Set(ApplicationScenario.toolNames));
-    expect(applicationNames).toHaveLength(22);
+    expect(applicationNames).toHaveLength(30);
+    expect(applicationNames).toContain('DeleteTodo');
+    expect(applicationNames).toEqual(expect.arrayContaining(['CreateCronTask', 'ReadCronTask', 'UpdateCronTask', 'DeleteCronTask', 'ReadApplicationStatus', 'UpdateApplicationStatus']));
     expect(applicationNames).not.toEqual(expect.arrayContaining(['CreateResume', 'UpdateResume', 'UpdateProfile', 'SearchJobs']));
     const instructions = BuildApplicationCompiledInstructions('application-tools');
     expect(instructions.compiled).toContain('BrowserSelect');
@@ -50,6 +106,7 @@ describe('agent-modules-defaults', () => {
     expect(instructions.compiled).toContain('next Run must also start browser work with a fresh BrowserSnapshot');
     expect(instructions.compiled).toContain('exact attachment path shown in runtime-context');
     expect(instructions.compiled).toContain('last and only browser action');
+    expect(instructions.compiled).toContain('ReadApplicationStatus');
     const applicationDefinitions = CreateToolsModule(CreatePorts()).GetToolDefinitions('application');
     expect(applicationDefinitions.find((tool) => tool.definition.function.name === 'BrowserWait')?.definition.function.description).toContain('domcontentloaded');
     expect(applicationDefinitions.find((tool) => tool.definition.function.name === 'BrowserUploadFile')?.definition.function.description).toContain('attachment path exposed in runtime-context');
@@ -84,7 +141,8 @@ describe('agent-modules-defaults', () => {
       ports: { ...CreateToolContext().ports, browser: { Prepare: prepare, Execute: execute } },
     });
     const defaultContext = CreateToolContext({
-      scenarioId: 'default', ports: { ...CreateToolContext().ports, browser: { Prepare: prepare, Execute: execute } },
+      scenarioId: 'default',
+      ports: { ...CreateToolContext().ports, browser: { Prepare: prepare, Execute: execute } },
     });
     const module = CreateToolsModule(CreatePorts());
     const call = {
@@ -101,6 +159,66 @@ describe('agent-modules-defaults', () => {
     expect(prepare).toHaveBeenCalledOnce();
     expect(execute).toHaveBeenCalledOnce();
     expect(JSON.parse(succeeded.content)).toMatchObject({ ok: true, data: { filledCount: 2, pageRevision: 3 } });
+  });
+
+  it('定时投递缺少授权附件时转为人工接管，不尝试绕过上传授权', async () => {
+    const prepare = vi.fn();
+    const context = CreateToolContext({
+      scenarioId: 'application', unattended: true, attachments: [],
+      ports: { ...CreateToolContext().ports, browser: { Prepare: prepare, Execute: vi.fn() } },
+    });
+
+    const result = await CreateToolsModule(CreatePorts()).ExecuteToolCall({
+      id: 'scheduled-upload-1', type: 'function',
+      function: { name: 'BrowserUploadFile', arguments: JSON.stringify({ ref: '@e1', pageRevision: 1, fileId: 'D:\\\\resume.pdf' }) },
+    }, context);
+
+    expect(prepare).not.toHaveBeenCalled();
+    expect(JSON.parse(result.content)).toMatchObject({ ok: false, code: 'BROWSER_FILE_NOT_AUTHORIZED' });
+    expect(result.disposition).toBe('wait_user_input');
+    expect(context.emit).toHaveBeenCalledWith(expect.objectContaining({ type: 'browser_user_action' }));
+  });
+
+  it('投递防重读取把目标公司、岗位和 URL 传给持久化检索端口', async () => {
+    const read = vi.fn(async () => ({ jobs: [], applications: [], truncated: false }));
+    const context = CreateToolContext({
+      scenarioId: 'application',
+      ports: { ...CreateToolContext().ports, applicationTracking: { Read: read, Update: vi.fn() } },
+    });
+
+    const result = await CreateToolsModule(CreatePorts()).ExecuteToolCall({
+      id: 'read-application-1', type: 'function',
+      function: { name: 'ReadApplicationStatus', arguments: JSON.stringify({ company: '示例科技', title: 'Agent 工程师', url: 'https://jobs.example.com/42' }) },
+    }, context);
+
+    expect(read).toHaveBeenCalledWith({ company: '示例科技', title: 'Agent 工程师', url: 'https://jobs.example.com/42' });
+    expect(JSON.parse(result.content)).toMatchObject({ ok: true, truncated: false });
+  });
+
+  it('LoadSkill 返回匹配的 tool result 与独立 user 正文，并在主 Skill 未加载时拒绝资源', async () => {
+    const skillMessage: AgentMessage = {
+      role: 'user', content: '<loaded-skill id="ResumeTailoring">body</loaded-skill>',
+      metadata: { source: 'runtime', visibility: 'hidden', kind: 'loaded_skill', skillId: 'ResumeTailoring', skillVersion: '1.0.0' },
+    };
+    const load = vi.fn(async () => ({ skillId: 'ResumeTailoring', skillVersion: '1.0.0', message: skillMessage }));
+    const context = CreateToolContext({
+      ports: { ...CreateToolContext().ports, skill: { Load: load } },
+      loadedSkills: new Map(), loadedSkillResources: new Set(), pendingSkillLoads: new Set(),
+    });
+    const module = CreateToolsModule(CreatePorts());
+
+    const result = await module.ExecuteToolCall({
+      id: 'skill-1', type: 'function', function: { name: 'LoadSkill', arguments: '{"skillId":"ResumeTailoring"}' },
+    }, context);
+    const resourceBeforeMain = await module.ExecuteToolCall({
+      id: 'skill-resource-1', type: 'function', function: { name: 'LoadSkill', arguments: '{"skillId":"ResumeTailoring","resource":"references/check.md"}' },
+    }, context);
+
+    expect(JSON.parse(result.content)).toMatchObject({ ok: true, code: 'SKILL_LOADED', skillId: 'ResumeTailoring' });
+    expect(result.followupMessages).toEqual([skillMessage]);
+    expect(result.role).toBe('tool');
+    expect(JSON.parse(resourceBeforeMain.content)).toMatchObject({ ok: false, code: 'SKILL_NOT_LOADED' });
+    expect(load).toHaveBeenCalledOnce();
   });
 
   it('默认 Prompt 固定禁止补造身份类硬事实，并要求推测内容带待确认标签', () => {
@@ -152,6 +270,29 @@ describe('agent-modules-defaults', () => {
     expect(recent.some((message) => message.content.includes('【待确认】'))).toBe(true);
     expect(recent.filter((message) => message.role === 'assistant')).toHaveLength(5);
     expect(recent.filter((message) => message.role === 'tool')).toHaveLength(5);
+  });
+
+  it('压缩不把 Skill 合成消息当用户轮次，并固定保留最新索引与已加载正文', () => {
+    const compaction = CreateCompactionModule();
+    const index: AgentMessage = {
+      role: 'user', content: '<skill-index>index</skill-index>',
+      metadata: { source: 'runtime', visibility: 'hidden', kind: 'skill_index', snapshotId: 'snapshot-1', sessionRevision: 1 },
+    };
+    const loaded: AgentMessage = {
+      role: 'user', content: '<loaded-skill>body</loaded-skill>',
+      metadata: { source: 'runtime', visibility: 'hidden', kind: 'loaded_skill', skillId: 'ResumeTailoring', skillVersion: '1.0.0' },
+    };
+    const history: AgentMessage[] = [index];
+    for (let turn = 1; turn <= 7; turn += 1) history.push({ role: 'user', content: `user-${turn}` }, { role: 'assistant', content: `answer-${turn}` });
+    history.splice(5, 0, loaded);
+
+    expect(SplitTurnGroups(history)).toHaveLength(7);
+    const { earlier, recent } = compaction.SplitRecentTurns(history);
+
+    expect(earlier).not.toContain(index);
+    expect(earlier).not.toContain(loaded);
+    expect(recent.slice(0, 2)).toEqual([index, loaded]);
+    expect(recent.filter((message) => message.role === 'user' && message.metadata?.source !== 'runtime')).toHaveLength(5);
   });
 
   it('确认阶段重新加锁并校验冻结 revision，等待期间不持锁', async () => {
@@ -209,6 +350,49 @@ describe('agent-modules-defaults', () => {
     expect(JSON.parse(replay.content)).toMatchObject({ ok: true, saved: true, replayed: true });
     expect(saveProfile).toHaveBeenCalledOnce();
     expect(replay.receipt?.idempotencyKey).toBeTruthy();
+  });
+
+  it('DeleteTodo 删除当前 Run 条目、通知界面并支持幂等重放', async () => {
+    const context = CreateToolContext();
+    context.tasks.set('todo-1', { id: 'todo-1', title: '过期步骤', description: '不再属于当前范围', status: 'pending' });
+    const tools = CreateToolsModule(CreatePorts());
+    const first = await tools.ExecuteToolCall({
+      id: 'delete-todo-1', type: 'function', function: { name: 'DeleteTodo', arguments: '{"todoId":"todo-1"}' },
+    }, context);
+    const replay = await tools.ExecuteToolCall({
+      id: 'delete-todo-replay', type: 'function', function: { name: 'DeleteTodo', arguments: '{"todoId":"todo-1"}' },
+    }, context);
+
+    expect(JSON.parse(first.content)).toMatchObject({ ok: true, deletedTodoId: 'todo-1', tasks: [] });
+    expect(JSON.parse(replay.content)).toMatchObject({ ok: true, replayed: true, deletedTodoId: 'todo-1', tasks: [] });
+    expect(context.tasks.has('todo-1')).toBe(false);
+    expect(context.persistSessionState).toHaveBeenCalledOnce();
+    expect(context.emit).toHaveBeenCalledWith(expect.objectContaining({ type: 'task_deleted', task: expect.objectContaining({ id: 'todo-1' }) }));
+  });
+
+  it('CreateCronTask 只生成待确认提案，确认前不执行持久化写入', async () => {
+    const prepare = vi.fn(async () => ({ confirmationId: 'cron-confirmation-1', summary: '无人值守授权', scenarioId: 'default' as const }));
+    const events: any[] = [];
+    const base = CreateToolContext();
+    const context = CreateToolContext({ ports: { ...base.ports, cronTask: { PrepareCreate: prepare, Read: vi.fn(), Update: vi.fn(), Delete: vi.fn() } }, emit: (event) => events.push(event) });
+    const result = await CreateToolsModule(CreatePorts()).ExecuteToolCall({
+      id: 'cron-create-1', type: 'function', function: { name: 'CreateCronTask', arguments: JSON.stringify({ title: '晨间复盘', message: '总结岗位进展', scenarioId: 'default', schedule: { type: 'once', executeAt: '2030-01-01T09:00:00+08:00', timeZone: 'Asia/Shanghai' } }) },
+    }, context);
+    expect(prepare).toHaveBeenCalledOnce();
+    expect(JSON.parse(result.content)).toMatchObject({ ok: false, code: 'CONFIRMATION_REQUIRED', confirmationId: 'cron-confirmation-1' });
+    expect(result.disposition).toBe('wait_confirmation');
+    expect(events).toContainEqual(expect.objectContaining({ type: 'cron_task_confirmation', confirmationId: 'cron-confirmation-1' }));
+  });
+
+  it('无人值守 Run 即使旧快照含 Cron 工具，执行入口仍拒绝递归调度', async () => {
+    const prepare = vi.fn();
+    const base = CreateToolContext();
+    const context = CreateToolContext({ unattended: true, ports: { ...base.ports, cronTask: { PrepareCreate: prepare, Read: vi.fn(), Update: vi.fn(), Delete: vi.fn() } } });
+    const result = await CreateToolsModule(CreatePorts()).ExecuteToolCall({
+      id: 'cron-recursive-1', type: 'function', function: { name: 'CreateCronTask', arguments: JSON.stringify({ title: '递归', message: '再次创建', scenarioId: 'default', schedule: { type: 'once', executeAt: '2030-01-01T09:00:00+08:00', timeZone: 'Asia/Shanghai' } }) },
+    }, context);
+    expect(prepare).not.toHaveBeenCalled();
+    expect(JSON.parse(result.content)).toMatchObject({ ok: false, code: 'TOOL_NOT_ALLOWED' });
   });
 
   it('写工具缺少持久化 ledger 时安全暂停且不执行底层写入', async () => {
@@ -305,6 +489,27 @@ describe('agent-modules-defaults', () => {
 
     expect(result).toMatchObject({ content: 'hello ', reasoningContent: 'reason', usage: { promptTokens: 11, completionTokens: 7, totalTokens: 18 } });
     expect(deltas).toEqual([{ reasoning: '', content: 'hello ' }, { reasoning: 'reason', content: '' }]);
+  });
+
+  it('DeepSeek 按官方协议映射会话思考强度，并在关闭思考时不发送 effort', async () => {
+    const requestBodies: Array<Record<string, unknown>> = [];
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
+      requestBodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return SseResponse([{ choices: [{ delta: { content: '完成' } }] }, '[DONE]']);
+    }));
+    vi.resetModules();
+    const { CreateProviderModule } = await import('../../../packages/agent-modules-defaults/src/provider');
+    const baseConfig = { provider: 'DeepSeek', baseUrl: 'https://api.deepseek.com', model: 'deepseek-v4-flash', contextLimit: 256_000, contextLimitMode: 'default' as const, compressionThreshold: 80, apiKey: 'test-key' };
+    const enabled = CreateProviderModule(CreatePorts({ getConfig: vi.fn(async () => ({ ...baseConfig, thinkingEnabled: true })) }));
+    const disabled = CreateProviderModule(CreatePorts({ getConfig: vi.fn(async () => ({ ...baseConfig, thinkingEnabled: false })) }));
+    const common = { requestId: 'reasoning-request', model: 'deepseek-v4-flash', history: [], tools: [], signal: new AbortController().signal, instructions: BuildDefaultCompiledInstructions(), onDelta: vi.fn() };
+
+    await enabled.StreamCompletion({ ...common, reasoningEffort: 'xhigh' });
+    await disabled.StreamCompletion({ ...common, requestId: 'reasoning-disabled', reasoningEffort: 'max' });
+
+    expect(requestBodies[0]).toMatchObject({ thinking: { type: 'enabled' }, reasoning_effort: 'high' });
+    expect(requestBodies[1]).toMatchObject({ thinking: { type: 'disabled' } });
+    expect(requestBodies[1]).not.toHaveProperty('reasoning_effort');
   });
 
   it('Provider 按 DeepSeek 官方协议发送视觉内容块且不透传宿主附件元数据', async () => {

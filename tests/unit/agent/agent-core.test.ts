@@ -280,6 +280,107 @@ describe('agent-core RunAgentLoop', () => {
     expect(finalReminders[1].content).toContain('Do not start new tool calls.');
   });
 
+  it('首次索引位于真实 user 前，显式 Skill 正文位于其后并在首轮 reminder 中生效', async () => {
+    const requestHistories: Array<Array<{ role: string; content: string }>> = [];
+    const harness = CreateKernelHarness({
+      streamCompletion: vi.fn(async ({ history }) => {
+        requestHistories.push(history.map((message) => ({ role: message.role, content: message.content })));
+        return { content: 'done', toolCalls: [] };
+      }),
+    });
+    const loadedSkills = new Map<string, string>();
+    harness.input.toolContext.loadedSkills = loadedSkills;
+    harness.input.runtimeReminder.getLoadedSkillIds = () => [...loadedSkills.keys()];
+    harness.input.messagesBeforeUser = [{
+      role: 'user', content: '<skill-index>index</skill-index>',
+      metadata: { source: 'runtime', visibility: 'hidden', kind: 'skill_index', snapshotId: 'snapshot-1', sessionRevision: 1 },
+    }];
+    harness.input.messagesAfterUser = [{
+      role: 'user', content: '<loaded-skill>body</loaded-skill>',
+      metadata: { source: 'runtime', visibility: 'hidden', kind: 'loaded_skill', skillId: 'ResumeTailoring', skillVersion: '1.0.0' },
+    }];
+
+    await RunAgentLoop(harness.input);
+
+    const messages = requestHistories[0];
+    expect(messages.findIndex((message) => message.content.includes('<skill-index>'))).toBeLessThan(messages.findIndex((message) => message.content === 'test request'));
+    expect(messages.findIndex((message) => message.content === 'test request')).toBeLessThan(messages.findIndex((message) => message.content.includes('<loaded-skill>')));
+    expect(messages.find((message) => message.content.includes('<runtime-reminder>'))?.content).toContain('Loaded skills: ResumeTailoring.');
+    expect(loadedSkills.get('ResumeTailoring')).toBe('1.0.0');
+  });
+
+  it('LoadSkill 的 tool result 先完整匹配 tool call，再追加独立 user 正文并更新 reminder', async () => {
+    const loadSkill = CreateRegisteredTool('LoadSkill', { isConcurrencySafe: false, sideEffect: 'none' });
+    let modelTurn = 0;
+    const requestHistories: Array<Array<{ role: string; content: string; toolCallId?: string }>> = [];
+    const harness = CreateKernelHarness({
+      tools: [loadSkill],
+      executeTool: vi.fn(async (call) => ({
+        role: 'tool' as const,
+        tool_call_id: call.id,
+        content: '{"ok":true,"code":"SKILL_LOADED"}',
+        followupMessages: [{
+          role: 'user' as const,
+          content: '<loaded-skill id="JobDiscovery">body</loaded-skill>',
+          metadata: { source: 'runtime' as const, visibility: 'hidden' as const, kind: 'loaded_skill' as const, skillId: 'JobDiscovery', skillVersion: '1.0.0' },
+        }],
+      })),
+      streamCompletion: vi.fn(async ({ history }) => {
+        requestHistories.push(history.map((message) => ({ role: message.role, content: message.content, toolCallId: message.tool_call_id })));
+        modelTurn += 1;
+        return modelTurn === 1 ? { content: '', toolCalls: [ToolCall('skill-call-1', 'LoadSkill')] } : { content: 'done', toolCalls: [] };
+      }),
+    });
+    const loadedSkills = new Map<string, string>();
+    harness.input.toolContext.loadedSkills = loadedSkills;
+    harness.input.toolContext.loadedSkillResources = new Set();
+    harness.input.toolContext.pendingSkillLoads = new Set();
+    harness.input.runtimeReminder.interval = 1;
+    harness.input.runtimeReminder.getLoadedSkillIds = () => [...loadedSkills.keys()];
+
+    const result = await RunAgentLoop(harness.input);
+
+    const secondRequest = requestHistories[1];
+    const resultIndex = secondRequest.findIndex((message) => message.role === 'tool' && message.toolCallId === 'skill-call-1');
+    const bodyIndex = secondRequest.findIndex((message) => message.content.includes('<loaded-skill'));
+    expect(resultIndex).toBeGreaterThan(-1);
+    expect(bodyIndex).toBeGreaterThan(resultIndex);
+    expect(secondRequest.filter((message) => message.content.includes('<runtime-reminder>')).at(-1)?.content).toContain('Loaded skills: JobDiscovery.');
+    expect(result.transcript.find((message) => message.role === 'tool')).not.toHaveProperty('followupMessages');
+  });
+
+  it('LoadSkill 与其他动作同批出现时形成屏障，其他工具不执行并要求下一轮重排', async () => {
+    const loadSkill = CreateRegisteredTool('LoadSkill', { isConcurrencySafe: false, sideEffect: 'none' });
+    const updateProfile = CreateRegisteredTool('UpdateProfile', { isConcurrencySafe: false, sideEffect: 'local_write' });
+    const execute = vi.fn(async (call: ToolCallFragment) => ({
+      role: 'tool' as const,
+      tool_call_id: call.id,
+      content: '{"ok":true}',
+      ...(call.function.name === 'LoadSkill' ? {
+        followupMessages: [{
+          role: 'user' as const, content: '<loaded-skill>body</loaded-skill>',
+          metadata: { source: 'runtime' as const, visibility: 'hidden' as const, kind: 'loaded_skill' as const, skillId: 'ResumeTailoring', skillVersion: '1.0.0' },
+        }],
+      } : {}),
+    }));
+    const harness = CreateKernelHarness({
+      tools: [loadSkill, updateProfile],
+      executeTool: execute,
+      completions: [
+        { content: '', toolCalls: [ToolCall('skill-1', 'LoadSkill'), ToolCall('write-1', 'UpdateProfile')] },
+        { content: 'done', toolCalls: [] },
+      ],
+    });
+    harness.input.toolContext.loadedSkills = new Map();
+
+    const result = await RunAgentLoop(harness.input);
+
+    expect(execute).toHaveBeenCalledOnce();
+    expect(execute.mock.calls[0][0].function.name).toBe('LoadSkill');
+    expect(result.transcript.find((message) => message.tool_call_id === 'write-1')?.content).toContain('SKIPPED_FOR_SKILL_LOAD');
+    expect(result.transcript.some((message) => message.content.includes('<loaded-skill>'))).toBe(true);
+  });
+
   it('确认权限变化时在下一模型轮次追加提醒并更新工具上下文', async () => {
     const read = CreateRegisteredTool('Read');
     let mode: 'always_confirm' | 'fully_trusted' = 'always_confirm';

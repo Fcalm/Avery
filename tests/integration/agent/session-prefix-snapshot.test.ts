@@ -15,6 +15,15 @@ function CompletionResponse(content = '完成'): Response {
   return new Response(body, { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
 }
 
+function ToolCallResponse(id: string, name: string, argumentsText: string): Response {
+  const body = [
+    `data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id, type: 'function', function: { name, arguments: argumentsText } }] } }] })}\n\n`,
+    `data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: 'tool_calls' }] })}\n\n`,
+    'data: [DONE]\n\n',
+  ].join('');
+  return new Response(body, { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
+}
+
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.useRealTimers();
@@ -22,6 +31,117 @@ afterEach(() => {
 });
 
 describe('AgentHost 会话前缀快照', () => {
+  it('模型调用 LoadSkill 后保持 assistant/tool/user 协议顺序并加载冻结正文', async () => {
+    const userDataPath = mkdtempSync(join(tmpdir(), 'offerget-skill-tool-session-'));
+    directories.push(userDataPath);
+    const observability = new ObservabilityStore(userDataPath);
+    const storedSnapshots = new Map<string, any>();
+    const requestBodies: any[] = [];
+    let fetchIndex = 0;
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
+      requestBodies.push(JSON.parse(String(init?.body)));
+      fetchIndex += 1;
+      return fetchIndex === 1
+        ? ToolCallResponse('load-skill-1', 'LoadSkill', '{"skillId":"job-discovery"}')
+        : CompletionResponse('已加载并继续');
+    }));
+    const host = new AgentHost({
+      userDataPath, workspacePath: userDataPath, skillRootPath: join(process.cwd(), 'skills'), Emit: () => undefined,
+      business: {
+        GetStoredSettings: async () => ({}), GetProfiles: async () => ({ items: [] }), ResolveAttachmentUri: async () => null,
+        GetConversationSnapshots: async (sessionId: string) => storedSnapshots.get(sessionId) ?? null,
+        SetConversationSnapshots: async (sessionId: string, value: unknown) => { storedSnapshots.set(sessionId, value); },
+      },
+      observability,
+      credentialPort: {
+        Load: async () => ({ provider: 'DeepSeek', baseUrl: 'https://api.deepseek.com', model: 'deepseek-v4-flash', thinkingEnabled: false, contextLimit: 64_000, compressionThreshold: 80, apiKey: 'test-key' }),
+        Save: async () => undefined,
+      },
+    });
+
+    try {
+      await host.Send({ requestId: 'skill-tool-request', sessionId: 'skill-tool-session', scenarioId: 'application', content: '帮我搜索岗位', confirmationMode: 'always_confirm' });
+
+      expect(requestBodies).toHaveLength(2);
+      const messages = requestBodies[1].messages as Array<{ role: string; content: string; tool_call_id?: string }>;
+      const toolIndex = messages.findIndex((message) => message.role === 'tool' && message.tool_call_id === 'load-skill-1');
+      const skillIndex = messages.findIndex((message) => message.role === 'user' && message.content.startsWith('<loaded-skill id="job-discovery"'));
+      expect(toolIndex).toBeGreaterThan(-1);
+      expect(skillIndex).toBeGreaterThan(toolIndex);
+      expect(JSON.parse(messages[toolIndex].content)).toMatchObject({ ok: true, code: 'SKILL_LOADED' });
+      expect(messages[skillIndex].content).toContain('# Job discovery');
+    } finally {
+      await host.Close();
+      observability.Close();
+    }
+  });
+
+  it('首次发送以 user role 注入 Skill 索引，显式指令正文位于真实用户消息之后且跨 Run 幂等', async () => {
+    const userDataPath = mkdtempSync(join(tmpdir(), 'offerget-skill-session-'));
+    directories.push(userDataPath);
+    const observability = new ObservabilityStore(userDataPath);
+    const storedSnapshots = new Map<string, any>();
+    const requestBodies: any[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
+      requestBodies.push(JSON.parse(String(init?.body)));
+      return CompletionResponse('已处理');
+    }));
+    const host = new AgentHost({
+      userDataPath,
+      workspacePath: userDataPath,
+      skillRootPath: join(process.cwd(), 'skills'),
+      Emit: () => undefined,
+      business: {
+        GetStoredSettings: async () => ({}),
+        GetProfiles: async () => ({ items: [] }),
+        ResolveAttachmentUri: async () => null,
+        GetConversationSnapshots: async (sessionId: string) => storedSnapshots.get(sessionId) ?? null,
+        SetConversationSnapshots: async (sessionId: string, value: unknown) => { storedSnapshots.set(sessionId, value); },
+      },
+      observability,
+      credentialPort: {
+        Load: async () => ({
+          provider: 'DeepSeek', baseUrl: 'https://api.deepseek.com', model: 'deepseek-v4-flash', thinkingEnabled: false,
+          contextLimit: 64_000, compressionThreshold: 80, apiKey: 'test-key',
+        }),
+        Save: async () => undefined,
+      },
+    });
+
+    try {
+      await host.Send({ requestId: 'skill-request-1', sessionId: 'skill-session', content: '/ResumeTailoring 优化简历', confirmationMode: 'always_confirm' });
+      await host.Send({ requestId: 'skill-request-2', sessionId: 'skill-session', content: '继续处理', confirmationMode: 'always_confirm' });
+
+      const firstMessages = requestBodies[0].messages as Array<{ role: string; content: string }>;
+      const indexPosition = firstMessages.findIndex((message) => message.content.startsWith('<skill-index>'));
+      const userPosition = firstMessages.findIndex((message) => message.content === '/ResumeTailoring 优化简历');
+      const bodyPosition = firstMessages.findIndex((message) => message.content.includes('<loaded-skill id="resume-tailoring"'));
+      expect(indexPosition).toBeGreaterThan(-1);
+      expect(firstMessages[indexPosition].role).toBe('user');
+      expect(indexPosition).toBeLessThan(userPosition);
+      expect(bodyPosition).toBeGreaterThan(userPosition);
+      expect(requestBodies[0].messages[0].content).not.toMatch(/^<skill-index>/);
+
+      const secondMessages = requestBodies[1].messages as Array<{ content: string }>;
+      expect(secondMessages.filter((message) => message.content.startsWith('<skill-index>'))).toHaveLength(1);
+      expect(secondMessages.filter((message) => message.content.includes('<loaded-skill id="resume-tailoring"'))).toHaveLength(1);
+      expect(secondMessages.filter((message) => message.content.includes('<runtime-reminder>')).at(-1)?.content).toContain('Loaded skills: resume-tailoring.');
+
+      await expect(host.ReloadSession('skill-session')).resolves.toMatchObject({ reloaded: true, sessionRevision: 2 });
+      await host.Send({ requestId: 'skill-request-3', sessionId: 'skill-session', content: '/ResumeTailoring 再次优化', confirmationMode: 'always_confirm' });
+      const reloadedMessages = requestBodies[2].messages as Array<{ content: string }>;
+      expect(reloadedMessages.filter((message) => message.content.startsWith('<skill-index>'))).toHaveLength(2);
+      expect(reloadedMessages.filter((message) => message.content.includes('<loaded-skill id="resume-tailoring"'))).toHaveLength(2);
+      const resetPosition = reloadedMessages.findIndex((message) => message.content.startsWith('<skill-state-reset>'));
+      const newIndexPosition = reloadedMessages.map((message) => message.content.startsWith('<skill-index>')).lastIndexOf(true);
+      expect(resetPosition).toBeGreaterThan(-1);
+      expect(newIndexPosition).toBeGreaterThan(resetPosition);
+    } finally {
+      await host.Close();
+      observability.Close();
+    }
+  });
+
   it('新会话的空工具占位不应阻止首次绑定投递场景', async () => {
     const userDataPath = mkdtempSync(join(tmpdir(), 'offerget-application-session-'));
     directories.push(userDataPath);

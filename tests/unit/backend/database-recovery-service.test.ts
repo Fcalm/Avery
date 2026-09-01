@@ -29,10 +29,11 @@ describe('ValidateRecoverySet', () => {
     const seeds = [
       'business-store-v1-initial', 'business-store-v1-state-bridge', 'business-store-v1-attachments',
       'business-store-v1-entity-revision', 'business-store-v1-attachment-lifecycle-7-days', 'business-store-v1-workspace-operations',
+      'business-store-v1-cron-tasks-unattended',
     ];
     const insert = db.prepare('INSERT INTO schema_migrations(version, checksum) VALUES(?, ?)');
     seeds.forEach((seed, index) => insert.run(index + 1, createHash('sha256').update(seed).digest('hex')));
-    db.prepare("INSERT INTO workspace_meta(id, schema_version) VALUES('workspace', 7)").run();
+    db.prepare("INSERT INTO workspace_meta(id, schema_version) VALUES('workspace', 8)").run();
     db.close();
 
     expect(() => ValidateRecoverySet(databasePath, join(directory, 'profile.json'))).toThrow('schema version is unsupported');

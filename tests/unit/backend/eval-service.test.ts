@@ -3,9 +3,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ObservabilityStore } from '../../../apps/backend/src/observability-store';
-import { AssertEvaluationDeveloperModePreserved, EvalService, ParseEvalDataset } from '../../../apps/backend/src/electron/backend/evaluation/eval-service';
+import { AssertEvaluationDeveloperModePreserved, EvalService, FindEvalSnapshotDifferences, ParseEvalDataset } from '../../../apps/backend/src/electron/backend/evaluation/eval-service';
 import { EvalArtifactStore } from '../../../apps/backend/src/electron/backend/evaluation/eval-artifact-store';
 import { CountEvalModelTurns } from '../../../apps/backend/src/electron/backend/evaluation/eval-runner-metrics';
+import { BuildBrowserEvalPromptFragments } from '../../../apps/backend/src/electron/backend/evaluation/browser-eval-runner';
 
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
@@ -41,6 +42,11 @@ async function WaitForTerminal(service: EvalService, runId: string) {
 }
 
 describe('Agent evaluation service', () => {
+  it('Browser Runner 的实际片段使用 application 场景并应用候选覆盖', () => {
+    const fragments = BuildBrowserEvalPromptFragments({ id: 'browser-a', name: 'Browser A', promptOverrides: { 'scenario/application': 'APPLICATION OVERRIDE' } });
+    expect(fragments.find((fragment) => fragment.id === 'scenario/application')?.content).toBe('APPLICATION OVERRIDE');
+    expect(fragments.some((fragment) => fragment.id === 'scenario/default')).toBe(false);
+  });
   it('模型轮数以 Kernel loop_turn 为事实源，不依赖不存在的 model_request 事件', () => {
     expect(CountEvalModelTurns([{ type: 'loop_turn' }, { type: 'tool_call' }, { type: 'loop_turn' }])).toBe(2);
   });
@@ -49,6 +55,11 @@ describe('Agent evaluation service', () => {
     expect(() => AssertEvaluationDeveloperModePreserved({ developerMode: false }, true)).toThrow(/Cannot disable developer mode/);
     expect(() => AssertEvaluationDeveloperModePreserved({ developerMode: true }, true)).not.toThrow();
     expect(() => AssertEvaluationDeveloperModePreserved({}, false)).not.toThrow();
+  });
+  it('并发数不同的历史 Run 不能标记为严格可比', () => {
+    const base = { runnerType: 'prompt', datasetVersion: 'v1', toolsetHash: 'tools', versions: { snapshot: 2 }, config: { executionModel: 'model', judgeModel: 'judge', toolNames: ['ReadResume'], maxModelTurns: 30, userSimulator: 'approve_valid' }, environment: { repeatCount: 1, maxConcurrency: 1 } };
+    expect(FindEvalSnapshotDifferences(base, { ...base, environment: { ...base.environment, maxConcurrency: 2 } })).toContain('environment.maxConcurrency');
+    expect(FindEvalSnapshotDifferences(base, structuredClone(base))).toEqual([]);
   });
   it('JSONL 任一坏行或重复 ID 会整体拒绝并报告行号', () => {
     expect(() => ParseEvalDataset(`${dataset}\n{bad`)).toThrow(/line 2/);
@@ -75,13 +86,19 @@ describe('Agent evaluation service', () => {
     store.Close();
   });
 
-  it('冻结多候选快照并在隔离 Runner 中串行完成案例矩阵', async () => {
+  it('冻结多候选快照并以最大并发 2 完成默认场景案例矩阵', async () => {
     const root = await mkdtemp(join(tmpdir(), 'offerget-eval-run-')); roots.push(root);
     const store = new ObservabilityStore(root);
-    const execute = vi.fn(async ({ candidate }: any) => ({
-      finalResponse: `answer:${candidate.id}`, events: [{ type: 'completed', createdAt: Date.now(), payload: {} }],
-      finalState: { profiles: [], resumes: [] }, metrics: { modelTurns: 1, toolCalls: 1, toolErrors: 0, promptTokens: 10, completionTokens: 5, totalTokens: 15, completed: true },
-    }));
+    let activeExecutions = 0; let peakExecutions = 0;
+    const execute = vi.fn(async ({ candidate }: any) => {
+      activeExecutions += 1; peakExecutions = Math.max(peakExecutions, activeExecutions);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      activeExecutions -= 1;
+      return {
+        finalResponse: `answer:${candidate.id}`, events: [{ type: 'completed', createdAt: Date.now(), payload: {} }],
+        finalState: { profiles: [], resumes: [] }, metrics: { modelTurns: 1, toolCalls: 1, toolErrors: 0, promptTokens: 10, completionTokens: 5, totalTokens: 15, completed: true },
+      };
+    });
     const service = new EvalService({
       userDataPath: root, store, credentialPort: {}, getStoredSettings: async () => ({ developerMode: true }), Emit: vi.fn(),
       promptRunner: { Execute: execute } as any,
@@ -100,16 +117,24 @@ describe('Agent evaluation service', () => {
     expect(completed.caseRuns).toHaveLength(2);
     expect(completed.caseRuns.map((item) => item.finalResponse)).toEqual(['answer:a', 'answer:b']);
     expect(execute).toHaveBeenCalledTimes(2);
+    expect(peakExecutions).toBe(2);
     expect(completed.snapshot).toMatchObject({ projectRevision: project.revision, datasetVersion: project.datasetVersion });
     const snapshotText = await readFile(join(root, 'evaluation-data', 'runs', run.id, 'snapshot.json'), 'utf8');
     expect(snapshotText).toContain('compiledPrompt');
     expect(snapshotText).not.toContain(root);
     const frozen = completed.snapshot as any;
+    expect(frozen.environment.maxConcurrency).toBe(2);
     expect(frozen.toolDefinitions.map((definition: any) => definition.function.name)).toEqual(['ReadResume']);
     expect(frozen.config.candidates[0].compiledPrompt.manifest.toolPolicyHash).toBe(frozen.toolsetHash);
     const preview = await service.PreviewProject(project.id);
     expect(preview.candidates).toHaveLength(2);
-    expect(preview.candidates[0].compiledPrompt).toContain('OfferGet');
+    expect(preview.fragments.map((fragment: any) => fragment.id)).toContain('scenario/default');
+    expect(preview.candidates[0].compiledPrompt).toContain('Avery');
+    const caseDetail = await service.ReadCaseResult(completed.caseRuns[0].id);
+    expect(caseDetail.trace.at(-1)).toMatchObject({ kind: 'fixture_state' });
+    expect(caseDetail.scoreDetails).toBeTruthy();
+    const resultArtifact = JSON.parse(await readFile(join(root, 'evaluation-data', 'runs', run.id, 'cases', completed.caseRuns[0].id, 'result.json'), 'utf8'));
+    expect(resultArtifact.promptCompiledHash).toBe(frozen.config.candidates[0].compiledPrompt.manifest.compiledHash);
     await service.UpdateProject(project.id, { ...projectInput, name: '源项目已变化' }, project.revision);
     const historical = await service.ReadRun(run.id);
     expect(historical.snapshot).toEqual(completed.snapshot);
@@ -118,6 +143,27 @@ describe('Agent evaluation service', () => {
     expect((await service.ReadRun(run.id)).snapshot).toEqual(completed.snapshot);
     await service.Close();
     store.Close();
+  });
+
+  it('Runner 中途失败仍保存已形成的 Trace 证据', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'offerget-eval-partial-trace-')); roots.push(root);
+    const store = new ObservabilityStore(root);
+    const execute = vi.fn(async () => {
+      throw Object.assign(new Error('fixture failed'), { code: 'FIXTURE_FAILED', evalEvidence: { events: [{ type: 'tool_call', createdAt: 1, payload: { name: 'ReadResume' } }], finalState: { partial: true } } });
+    });
+    const service = new EvalService({
+      userDataPath: root, store, credentialPort: {}, getStoredSettings: async () => ({ developerMode: true }), Emit: vi.fn(),
+      promptRunner: { Execute: execute } as any, scorer: scorer as any,
+    });
+    await service.Initialize();
+    let project = await service.CreateProject({ ...projectInput, config: { ...projectInput.config, candidates: [projectInput.config.candidates[0]] } });
+    await service.ImportDataset(project.id, dataset, project.rubric, project.revision); project = await service.ReadProject(project.id);
+    const run = await service.StartRun(project.id); const completed = await WaitForTerminal(service, run.id);
+    const caseRun = completed.caseRuns[0];
+    expect(caseRun.status).toBe('failed');
+    const detail = await service.ReadCaseResult(caseRun.id);
+    expect(detail.trace.map((node) => node.kind)).toEqual(['tool_call', 'fixture_state']);
+    await service.Close(); store.Close();
   });
 
   it('取消后忽略 AbortSignal 的迟到 Runner 结果不能写成完成', async () => {
@@ -140,20 +186,21 @@ describe('Agent evaluation service', () => {
     await service.Initialize();
     let project = await service.CreateProject({ ...projectInput, config: { ...projectInput.config, candidates: [projectInput.config.candidates[0]] } });
     const secondCase = JSON.stringify({ ...JSON.parse(dataset), id: 'case-2' });
-    await service.ImportDataset(project.id, `${dataset}\n${secondCase}`, project.rubric, project.revision);
+    const thirdCase = JSON.stringify({ ...JSON.parse(dataset), id: 'case-3' });
+    await service.ImportDataset(project.id, `${dataset}\n${secondCase}\n${thirdCase}`, project.rubric, project.revision);
     project = await service.ReadProject(project.id);
     const run = await service.StartRun(project.id);
     const deadline = Date.now() + 1000;
-    while (execute.mock.calls.length === 0 && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 5));
-    expect(execute).toHaveBeenCalledTimes(1);
+    while (execute.mock.calls.length < 2 && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(execute).toHaveBeenCalledTimes(2);
     await expect(service.CancelRun(run.id)).resolves.toEqual({ cancelled: true });
     release();
     const cancelled = await WaitForTerminal(service, run.id);
     expect(cancelled.status).toBe('cancelled');
-    expect(cancelled.caseRuns).toHaveLength(2);
-    expect(cancelled.caseRuns.map((item) => item.status).sort()).toEqual(['cancelled', 'not_run']);
+    expect(cancelled.caseRuns).toHaveLength(3);
+    expect(cancelled.caseRuns.map((item) => item.status).sort()).toEqual(['cancelled', 'cancelled', 'not_run']);
     expect(cancelled.caseRuns.find((item) => item.status === 'cancelled')).toMatchObject({ status: 'cancelled', finalResponse: '' });
-    expect(cancelled.summary).toMatchObject({ totalCaseRuns: 2, cancelledCaseRuns: 1 });
+    expect(cancelled.summary).toMatchObject({ totalCaseRuns: 3, cancelledCaseRuns: 2 });
     await service.Close();
     store.Close();
   });
@@ -214,16 +261,23 @@ describe('Agent evaluation service', () => {
       browserRunner: { Execute: browserExecute } as any, scorer: scorer as any,
     });
     await service.Initialize();
+    scorer.Score.mockClear();
     const browserInput = {
       ...projectInput, runnerType: 'browser' as const,
-      config: { ...projectInput.config, candidates: [projectInput.config.candidates[0]], toolNames: ['BrowserNavigate', 'BrowserSnapshot'], fixtureBranch: 'realistic-dom' as const, maxModelTurns: 100 },
+      rubric: '',
+      config: { executionProvider: 'DeepSeek' as const, executionModel: 'deepseek-v4-flash', candidates: [{ ...projectInput.config.candidates[0], promptOverrides: { 'scenario/application': 'Browser evaluation scenario.' } }], toolNames: ['BrowserNavigate', 'BrowserSnapshot'], fixtureBranch: 'realistic-dom' as const, maxModelTurns: 100, repeatCount: 1, userSimulator: 'approve_valid' as const },
     };
     let project = await service.CreateProject(browserInput);
-    const browserDataset = JSON.stringify({ ...JSON.parse(dataset), browser: { fixtureVersion: '1', seed: 1 }, expected: { ...JSON.parse(dataset).expected, expectedState: { submissionCount: 1 } } });
+    const preview = await service.PreviewProject(project.id);
+    expect(preview.fragments.map((fragment: any) => fragment.id)).toContain('scenario/application');
+    expect(preview.fragments.map((fragment: any) => fragment.id)).not.toContain('scenario/default');
+    const browserDataset = JSON.stringify({ ...JSON.parse(dataset), browser: { fixtureVersion: '1', seed: 1, assertions: [{ id: 'submitted', type: 'state_equals', path: 'fixture.submissionCount', expected: 1, weight: 100, required: true }] }, expected: { ...JSON.parse(dataset).expected, expectedState: { submissionCount: 1 } } });
     await service.ImportDataset(project.id, browserDataset, project.rubric, project.revision); project = await service.ReadProject(project.id);
     const run = await service.StartRun(project.id); const completed = await WaitForTerminal(service, run.id);
     expect(completed.status).toBe('completed'); expect(browserExecute).toHaveBeenCalledTimes(1);
+    expect((completed.snapshot as any).environment.maxConcurrency).toBe(1);
     expect(completed.summary?.taskCompletionRate).toBe(1);
+    expect(scorer.Score).not.toHaveBeenCalled();
     await service.Close();
     store.Close();
   });

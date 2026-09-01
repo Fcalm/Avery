@@ -56,7 +56,7 @@ describe('Agent Usage 三方对账', () => {
         source: 'actual', promptTokens: 11, completionTokens: 7, totalTokens: 18,
         reportedRequestCount: 1, unreportedRequestCount: 0,
       };
-      expect(host.GetSessionAssistantState('session-usage-1').usage).toMatchObject(expected);
+      expect((await host.GetSessionAssistantState('session-usage-1')).usage).toMatchObject(expected);
       expect(observability.GetTraces()[0]?.usage).toEqual({
         source: 'provider', promptTokens: 11, completionTokens: 7, totalTokens: 18,
         reportedRequestCount: 1, unreportedRequestCount: 0,

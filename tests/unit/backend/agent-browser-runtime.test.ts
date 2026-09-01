@@ -17,6 +17,36 @@ describe('AgentBrowserRuntime', () => {
       'D:\\Offer Get\\app', '--offerget-browser-companion', '--offerget-browser-profile=D:\\Profiles\\name;&unsafe',
       '--offerget-browser-parent-pid=42', '--remote-debugging-address=127.0.0.1', '--remote-debugging-port=0', '--user-data-dir=D:\\Profiles\\name;&unsafe',
     ]);
+    expect(BuildBrowserCompanionArgs({ profilePath: 'D:\\Profiles\\scheduled', parentPid: 42, unattended: true })).toContain('--offerget-browser-hidden');
+  });
+
+  it('交互与无人值守模式切换时淘汰旧 companion，不交叉复用可见性属性', async () => {
+    const runtimeRoot = await mkdtemp(join(tmpdir(), 'offerget-browser-visibility-'));
+    temporaryRoots.push(runtimeRoot);
+    const closeCompanions: Array<ReturnType<typeof vi.fn>> = [];
+    const launchCompanion = vi.fn(async () => {
+      const close = vi.fn(async () => undefined);
+      closeCompanions.push(close);
+      return { port: 9600 + closeCompanions.length, homeUrl: 'https://93.184.216.34/ready', isAlive: () => true, close };
+    });
+    const runProcess = vi.fn(async ({ args }: { args: string[] }) => {
+      const command = args.find((arg) => ['open', 'get', 'tab', 'close'].includes(arg));
+      if (command === 'tab') return { success: true, data: { tabs: [{ tabId: 't1', url: 'https://93.184.216.34/ready', active: true }] } };
+      if (command === 'get') return { success: true, data: { url: 'https://93.184.216.34/jobs' } };
+      return { success: true, data: {} };
+    });
+    const runtime = new AgentBrowserRuntime({ executablePath: process.execPath, companionExecutablePath: process.execPath, runtimeRoot, resolveUploadFile: vi.fn(), runProcess, launchCompanion });
+
+    const first = await runtime.Prepare({ toolName: 'BrowserNavigate', arguments: { url: 'https://93.184.216.34/jobs' } });
+    await runtime.Execute({ proposal: first });
+    await runtime.SetUnattended(true);
+    expect(closeCompanions[0]).toHaveBeenCalledOnce();
+    const scheduled = await runtime.Prepare({ toolName: 'BrowserNavigate', arguments: { url: 'https://93.184.216.34/scheduled' } });
+    await runtime.Execute({ proposal: scheduled });
+    expect(launchCompanion).toHaveBeenCalledTimes(2);
+    await runtime.SetUnattended(false);
+    expect(closeCompanions[1]).toHaveBeenCalledOnce();
+    await runtime.Close();
   });
 
   it.each([
@@ -106,16 +136,24 @@ describe('AgentBrowserRuntime', () => {
       calls.push({ args, ...(stdin === undefined ? {} : { stdin }) });
       const command = args.find((arg) => ['open', 'get', 'snapshot', 'tab', 'batch', 'close'].includes(arg));
       if (command === 'get') return { success: true, data: { url: 'https://93.184.216.34/application' } };
-      if (command === 'snapshot') return { success: true, data: { snapshot: 'fixture', refs: {
-        e1: { role: 'textbox', name: '姓名', type: 'text' },
-        e2: { role: 'textbox', name: '邮箱', type: 'email' },
-        e3: { role: 'button', name: '提交' },
-        e4: { role: 'textbox', name: '密码', type: 'password' },
-        e5: { role: 'textbox', name: '字段 5', type: 'text' },
-        e6: { role: 'textbox', name: '字段 6', type: 'text' },
-        e7: { role: 'textbox', name: '字段 7', type: 'text' },
-        e8: { role: 'textbox', name: '字段 8', type: 'text' },
-      } } };
+      if (command === 'snapshot') {
+        return {
+          success: true,
+          data: {
+            snapshot: '- textbox "姓名" [ref=e1]\n- textbox "邮箱" [ref=e2]\n- button "提交" [ref=e3]\n- textbox "密码" [ref=e4]',
+            refs: {
+              e1: { role: 'textbox', name: '姓名', type: 'text' },
+              e2: { role: 'textbox', name: '邮箱', type: 'email' },
+              e3: { role: 'button', name: '提交' },
+              e4: { role: 'textbox', name: '密码', type: 'password' },
+              e5: { role: 'textbox', name: '字段 5', type: 'text' },
+              e6: { role: 'textbox', name: '字段 6', type: 'text' },
+              e7: { role: 'textbox', name: '字段 7', type: 'text' },
+              e8: { role: 'textbox', name: '字段 8', type: 'text' },
+            },
+          },
+        };
+      }
       if (command === 'tab') return { success: true, data: { tabs: [
         { tabId: 'home', url: 'https://93.184.216.34/ready', active: true },
         { tabId: 't1', url: 'https://93.184.216.34/application', active: false },
@@ -124,7 +162,11 @@ describe('AgentBrowserRuntime', () => {
       return { success: true, data: {} };
     });
     const runtime = new AgentBrowserRuntime({
-      executablePath: process.execPath, companionExecutablePath: process.execPath, runtimeRoot, resolveUploadFile: vi.fn(), runProcess,
+      executablePath: process.execPath,
+      companionExecutablePath: process.execPath,
+      runtimeRoot,
+      resolveUploadFile: vi.fn(),
+      runProcess,
       launchCompanion: vi.fn(async () => ({ port: 9630, homeUrl: 'https://93.184.216.34/ready', isAlive: () => true, close: vi.fn(async () => undefined) })),
     });
 
@@ -147,6 +189,7 @@ describe('AgentBrowserRuntime', () => {
     expect(outcome).toMatchObject({ status: 'succeeded', data: { filledCount: 2, pageRevision, currentUrl: 'https://93.184.216.34/application' } });
     expect(JSON.stringify(outcome)).not.toContain(name);
     expect(JSON.stringify(outcome)).not.toContain(email);
+
     await expect(runtime.Prepare({ toolName: 'BrowserFillForm', arguments: { pageRevision, fields: [{ ref: '@e1', text: 'a' }, { ref: '@e1', text: 'b' }] } })).rejects.toMatchObject({ code: 'BROWSER_ARGUMENT_INVALID' });
     await expect(runtime.Prepare({ toolName: 'BrowserFillForm', arguments: { pageRevision, fields: [{ ref: '@e3', text: 'submit' }] } })).rejects.toMatchObject({ code: 'BROWSER_ARGUMENT_INVALID' });
     await expect(runtime.Prepare({ toolName: 'BrowserFillForm', arguments: { pageRevision, fields: [{ ref: '@e4', text: 'secret' }] } })).rejects.toMatchObject({ code: 'BROWSER_ARGUMENT_INVALID' });

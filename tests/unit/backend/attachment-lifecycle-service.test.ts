@@ -14,7 +14,9 @@ function createService(): { db: any; service: AttachmentLifecycleService; worksp
   const workspace = mkdtempSync(join(tmpdir(), 'offerget-attachment-'));
   workspaces.push(workspace);
   mkdirSync(join(workspace, 'attachments'));
+  mkdirSync(join(workspace, 'derived', 'markdown'), { recursive: true });
   writeFileSync(join(workspace, 'attachments', hash), 'attachment');
+  writeFileSync(join(workspace, 'derived', 'markdown', `${hash}.md`), '# snapshot');
   const db = new Database(':memory:');
   db.exec(`
     CREATE TABLE attachments (id TEXT PRIMARY KEY, sha256 TEXT, original_name TEXT, mime_type TEXT, byte_size INTEGER, storage_key TEXT, created_at INTEGER, orphaned_at INTEGER, deleted_at INTEGER, cleanup_attempted_at INTEGER, cleanup_error TEXT);
@@ -51,7 +53,8 @@ describe('AttachmentLifecycleService', () => {
     expect(() => require('node:fs').statSync(join(workspace, 'attachments', hash))).not.toThrow();
 
     const cleaned = service.Cleanup({ now: orphanedAt + ThirtyDaysMs });
-    expect(cleaned).toMatchObject({ scanned: 1, logicallyDeleted: 1, filesDeleted: 1, failed: 0 });
+    expect(cleaned).toMatchObject({ scanned: 1, logicallyDeleted: 1, filesDeleted: 1, snapshotFilesDeleted: 1, failed: 0 });
+    expect(() => require('node:fs').statSync(join(workspace, 'derived', 'markdown', `${hash}.md`))).toThrow();
     expect(db.prepare('SELECT deleted_at FROM attachments WHERE id = ?').get('attachment-1').deleted_at).toBe(orphanedAt + ThirtyDaysMs);
   });
 });

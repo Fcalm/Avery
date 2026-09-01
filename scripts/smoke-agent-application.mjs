@@ -38,7 +38,8 @@ function CreateScriptedProvider(origin, fileId) {
   let attempt = 0;
   let latestSnapshot = null;
   const expectedTools = new Set([
-    'Read','Glob','Grep','ReadProfile','ReadResume','CreateTodo','UpdateTodo','ReadTodo','AskUserQuestion',
+    'Read','Glob','Grep','ReadProfile','ReadResume','AskUserQuestion','CreateTodo','UpdateTodo','DeleteTodo','ReadTodo','LoadSkill',
+    'CreateCronTask','ReadCronTask','UpdateCronTask','DeleteCronTask','ReadApplicationStatus','UpdateApplicationStatus',
     'BrowserNavigate','BrowserSnapshot','BrowserReadPage','BrowserClick','BrowserFill','BrowserFillForm','BrowserSelect','BrowserSetChecked','BrowserPressKey','BrowserUploadFile','BrowserWait','BrowserSwitchTab','BrowserGoBack',
   ]);
   const forbidden = new Set(['UpdateProfile','CreateResume','UpdateResume','SearchJobs','ReadUrl']);

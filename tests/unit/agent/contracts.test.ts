@@ -18,6 +18,7 @@ describe('contracts Agent 相关契约', () => {
 
   it('会话状态显式冻结默认或投递场景', () => {
     expectTypeOf<AgentSessionAssistantState['scenarioId']>().toEqualTypeOf<'default' | 'application'>();
+    expectTypeOf<AgentSessionAssistantState['reasoningEffort']>().toEqualTypeOf<'low' | 'medium' | 'high' | 'xhigh' | 'max'>();
   });
 
   it('Usage 来源显式支持 unavailable，不能把估算伪装成真实值', () => {

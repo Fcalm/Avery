@@ -11,7 +11,7 @@ afterEach(() => {
 });
 
 describe('AgentHost 会话 usage 恢复', () => {
-  it('重启后恢复同一会话的 Provider usage，不回退为估算值或其他会话数据', () => {
+  it('重启后恢复同一会话的 Provider usage，不回退为估算值或其他会话数据', async () => {
     const userDataPath = mkdtempSync(join(tmpdir(), 'offerget-agent-state-'));
     directories.push(userDataPath);
     const usage = {
@@ -30,10 +30,10 @@ describe('AgentHost 会话 usage 恢复', () => {
       credentialPort: { Load: async () => null, Save: async () => undefined },
     });
 
-    expect(host.GetSessionAssistantState('session-restored').usage).toMatchObject({
+    expect((await host.GetSessionAssistantState('session-restored')).usage).toMatchObject({
       source: 'actual', inputTokens: 11, contextLimit: 64_000, compressionCount: 2, compressionThreshold: 80,
       promptTokens: 20, completionTokens: 8, totalTokens: 28, reportedRequestCount: 2, unreportedRequestCount: 1,
     });
-    expect(host.GetSessionAssistantState('another-session').usage).toMatchObject({ source: 'unavailable', promptTokens: 0, completionTokens: 0, totalTokens: 0 });
+    expect((await host.GetSessionAssistantState('another-session')).usage).toMatchObject({ source: 'unavailable', promptTokens: 0, completionTokens: 0, totalTokens: 0 });
   });
 });
