@@ -23,6 +23,7 @@
 - [投递 Agent 发布验证](./10-application-release-validation.md)：打包桌面/浏览器证据边界、DeepSeek 10 次评估运行器和真实招聘站人工安全门禁。
 - [拟真浏览器 Agent 测评分支需求](./11-realistic-browser-evaluation-branch.md)：记录后续复杂 DOM、动态组件、安全干扰、可复现用例和测评指标需求；当前不开发。
 - [Agent 测评系统开发规划](./12-agent-evaluation-system-development-plan.md)：定义开发者模式下的应用内测评控制台、Prompt/Browser Runner、多候选快照、评分、存储、页面和分阶段验收。
+- [Agent 测评系统评分与 Trace 修正方案](./13-evaluation-system-scoring-and-trace-revision.md)：记录 Prompt Judge 主评分、浏览器函数评分、Trace 可视化、页面分流和 Judge 原因展示的修正依据。
 
 对应产品与总体架构依据：
 
@@ -60,7 +61,7 @@
 
 `SearchJobs` 仅是未承诺版本的候选设计。启用前必须另行更新 PRD 和路线图，并通过来源白名单、SSRF、预算、取消、超时、脱敏、审计和站点条款专项验收。无界翻页、后台监控、周期搜索和持续全网爬取永久禁止。
 
-投递场景已进入开发态：新会话可冻结独立的 Prompt、100 轮预算和 22 个工具白名单，并通过隔离浏览器执行原子动作和受限批量输入；确定性本地 AgentHost E2E 与打包浏览器冒烟已通过，但 DeepSeek 10 次基线和真实站点发布门禁尚未通过，因此不能标记为正式开放。场景切换仍须新建会话，不能临时继承默认场景权限。
+投递场景已进入开发态：新会话可冻结独立的 Prompt、100 轮预算和 30 个工具白名单，并通过隔离浏览器执行原子动作、受限批量输入、读取/更新投递状态及管理 CronTask；确定性本地 AgentHost E2E 与打包浏览器冒烟已通过，但真实站点发布门禁仍需持续验证。场景切换仍须新建会话，不能临时继承默认场景权限。
 
 ## 3. 边界与数据流
 

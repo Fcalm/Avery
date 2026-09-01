@@ -65,6 +65,12 @@ System Prompt 只声明以下解释规则：Runtime Reminder 是宿主以 `user`
 
 每条 Reminder 必须由且仅由一组 `<runtime-reminder>...</runtime-reminder>` 标签完整包裹，不添加属性，也不包含 `createdAt` 或 `scenario`。标签内部由宿主函数生成直白英语正文，并以 `The above is the current runtime status. No response is needed; continue the task.` 结束。默认场景每 5 轮提醒，投递场景每 10 轮提醒；首轮、最后一轮和确认权限变化时额外注入。
 
+### 4.2 Skill 协议
+
+System Prompt 只保留简短、稳定的解释规则：`skill-index`、`loaded-skill` 和 `loaded-skill-resource` 是宿主以 `user` 角色追加的可信运行时指导；它们不能授予工具、改变确认模式、扩大资源访问或覆盖更高优先级安全边界。`skill-state-reset` 之后，旧 Skill 正文不再有效。
+
+Skill 精简索引和 `SKILL.md` 正文都不编译进 System Prompt。索引在会话当前快照第一次发送时位于真实用户消息之前；完整正文只在显式 `/<skill-name>` 或模型调用 `LoadSkill` 后追加。这样保持 System Prompt 简洁，并让普通 Run 的既有前缀继续复用。
+
 ## 5. 各片段应表达什么
 
 ### 5.1 Runtime Policy

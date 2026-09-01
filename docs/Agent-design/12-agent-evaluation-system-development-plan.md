@@ -6,6 +6,8 @@
 > 第一版 Provider：DeepSeek
 > 关联需求：[拟真浏览器 Agent 测评分支](./11-realistic-browser-evaluation-branch.md)
 
+> 2026-08-30 复审：实测发现 Prompt 关键词误判、Browser Prompt 编译不一致、未完成任务仍可能高分、Judge 原因不可见和 Browser Trace 缺失。后续评分与页面修改以 [Agent 测评系统评分与 Trace 修正方案](./13-evaluation-system-scoring-and-trace-revision.md) 为准；本文既有评分章节仅保留第一版历史设计依据。
+
 ## 1. 背景与已确认决策
 
 OfferGet 需要在不污染生产会话和真实用户数据的前提下，回答两类问题：
@@ -142,9 +144,9 @@ queued → preparing → running → scoring → completed
 ### 6.2 并发与顺序
 
 - 第一版全局同时只运行一个 `EvalRun`。
-- Run 内默认按“案例 → 候选”的稳定顺序串行执行，避免模型限流、浏览器 Profile 争用和本机资源竞争。
+- Run 内保持“案例 → 候选”的稳定任务顺序；默认场景最多并发执行 2 个 CaseRun，浏览器场景仍串行执行，避免浏览器 Profile 争用和本机资源竞争。
 - 同一案例的多个候选使用相同 Fixture 版本、seed、输入和模拟用户策略。
-- 底层保留 `maxConcurrency`，第一版固定为 `1`，不在 UI 开放。
+- 底层通过快照固化 `maxConcurrency`，默认场景固定为 `2`、浏览器场景固定为 `1`，暂不在 UI 开放。
 - 浏览器案例之间使用独立 Profile 或执行后重置的专用测试 Profile，不能共享登录、Cookie、表单或 tab 状态。
 
 ### 6.3 取消
@@ -481,7 +483,7 @@ evaluation-data/
 | Runner | Prompt、Browser | Resume、Search 等新 Runner |
 | 候选 | UI 支持简单多候选 | 实验矩阵与自动生成候选 |
 | 重复 | 默认 1 次 | `repeatCount` 与方差分析 |
-| 并发 | 固定 1 | 本机并发与远程 Worker |
+| 并发 | 默认场景固定 2、浏览器固定 1 | 本机可配置并发与远程 Worker |
 | Scorer | 确定性 + 单 Judge | 多 Judge、人工复审 |
 | Provider | DeepSeek | OpenAI、MiMo 或其他独立 Adapter |
 | Fixture | clean、realistic-dom | 多站点风格与难度分层 |
@@ -556,11 +558,11 @@ evaluation-data/
 
 ### EV-06：运行协调、实时事件与取消
 
-开发内容：实现单 Run 队列、CaseRun 串行调度、实时进度、应用退出处理和稳定取消。
+开发内容：实现单 Run 队列、CaseRun 有界并发调度、实时进度、应用退出处理和稳定取消。
 
 验收标准：
 
-- 第一版全局并发固定为 1，第二个 Run 进入 `queued`。
+- 第一版全局仍只运行一个 Run，第二个 Run 进入 `queued`；Run 内默认场景最多并发 2 个 CaseRun，浏览器场景最多 1 个。
 - Renderer 关闭或切换页面不影响后台 Run。
 - 取消在 Provider completion 处理前和工具入口双重检查。
 - `completed`、`failed`、`cancelled` 互斥，刷新页面后状态一致。
@@ -600,7 +602,7 @@ evaluation-data/
 | 工具污染真实数据 | 测试端口、临时工作区和独立 Fixture；生产端口不得注入 |
 | UI 隐藏被绕过 | Backend 对所有测评 IPC 强制检查开发者模式 |
 | 模型波动造成错误结论 | 保存 seed 和完整快照；展示逐案例差异，不把单一均分当作结论 |
-| 多候选成本失控 | 第一版串行、运行前显示案例×候选数量并提示成本 |
+| 多候选成本失控 | 默认场景并发上限 2、浏览器串行，运行前显示案例×候选数量并提示成本 |
 | 浏览器最终回复与真实状态不一致 | Fixture 后端与动作账本为唯一完成证据 |
 | 大日志拖慢数据库和 UI | 数据库只存索引与摘要，大内容写 Artifact 并按需加载 |
 | 取消后迟到结果污染记录 | completion 处理前和工具入口双重取消校验 |
@@ -616,7 +618,7 @@ evaluation-data/
 | EV-01～EV-03 Bug 审查 | 已通过 | 修复迟到取消结果、结构化脱敏、数据集 Artifact 化等问题；完整构建通过，Vitest 107 通过/1 跳过，Backend Node 测试 8/8 通过 |
 | EV-04 评分与多候选对比 | 已完成 | 确定性硬失败、DeepSeek Judge 一次纠正、评分 Artifact、Run 内候选和历史 Run 对比已实现 |
 | EV-05 BrowserEvalRunner 与用户模拟 | 已完成 | clean/realistic-dom 本地 Fixture、独立 Profile、动作状态、三种用户模拟策略和严格 origin 限制已实现 |
-| EV-06 运行协调、事件与取消 | 已完成 | 单 Run 队列、CaseRun 串行、事件追加链、排队/活动取消和退出冲刷已实现 |
+| EV-06 运行协调、事件与取消 | 已完成 | 单 Run 队列、默认 CaseRun 并发 2/浏览器并发 1、事件追加链、排队/活动取消和退出冲刷已实现 |
 | EV-04～EV-06 Bug 审查 | 已通过 | 完整构建通过；Vitest 117 通过/1 跳过，Backend Node 测试 8/8；真实浏览器投递烟测通过 |
 | EV-07 统一验证与首份基线 | 已完成 | 完整测试、应用内/源码/打包浏览器冒烟与真实 DeepSeek 双 Runner 基线均通过；正式基线已通过 Artifact 自动审计 |
 
@@ -652,6 +654,24 @@ evaluation-data/
 - 修复后的正式 DeepSeek 基线位于 `artifacts/evaluation-system-baseline/2026-08-28T07-00-53.005Z`：Prompt 10/10 完成，平均分 98.16，任务完成率 100%，23 个模型轮次，Usage 77,238 tokens；浏览器 2/2 完成，平均分 97.6，任务完成率 100%，81 个模型轮次，Usage 1,965,620 tokens。
 - 浏览器正式基线的 5 次工具错误全部为可恢复的 `BROWSER_STALE_PAGE_REF`；没有错误提交、未授权上传、重复提交或硬失败。`npm run audit:system-baseline -- <baseline-dir>` 已审计 2 个 Run、12 个 CaseRun、11,817 条事件和 43 个文件，快照哈希、评分 ID、轮数、工具错误、Usage 与摘要全部一致，敏感信息扫描无发现。
 
+### 17.4 Fixture v2 拟真岗位与完整投递链路
+
+- 本地 Fixture 岗位库扩展为 30 个岗位，覆盖 6 家模拟企业和 10 种岗位类型；匹配分从 98 到 40 严格递减，便于稳定验证筛选与排序。
+- 每个岗位具有稳定的同源模拟链接和 200～300 字详细 JD，正文明确包含“岗位职责”和“任职资格/要求”。所有链接最终进入同一个随机端口隔离环境，不访问真实招聘网站。
+- Agent 必须依次完成岗位筛选、进入岗位详情、启动申请、填写表单和提交；Fixture 分别记录筛选条件、已查看岗位、详情访问次数、申请启动和最终提交状态，跳步会被函数判定拒绝。
+- 投递表单覆盖个人信息、教育经历、工作经历、项目经历和求职意向五部分，并加入照片与简历上传、普通下拉、省市级联和岗位方向级联。缺少任一必填部分时返回 `422`，重复提交继续由唯一回执与状态机阻止。
+- 默认浏览器测评数据集与基线脚本已升级到 `fixtureVersion: 2`，目标任务包含完整测试档案和授权附件，不依赖 LLM Judge 判断流程完成情况。
+- 自动化验收覆盖岗位数量、企业与类型覆盖、匹配分顺序、JD 长度与结构、同源链接、跳步拒绝、缺失字段拒绝、完整提交和重复提交。统一验证中 `npm test` 为 Vitest 160 通过/1 跳过、Backend Node 8/8，`npm run build` 通过。真实浏览器完成筛选、详情、五部分填写、两类附件上传和唯一提交，获得回执 `LOCAL-EVAL-APPLICATION-0001`，控制台 0 错误。
+
+### 17.5 默认场景 CaseRun 并发审查
+
+- 默认场景的不可变快照将 `maxConcurrency` 固化为 `2`，浏览器场景继续固化为 `1`；全局仍只执行一个 Run，未改变 Run 级队列边界。
+- 调度器使用固定 Worker Pool，不以无界 `Promise.all` 启动案例。任务结果按计划顺序归位；任一基础设施异常后停止领取新任务，并等待已经启动的任务退出后再提交 Run 终态。
+- 两个并发 CaseRun 继续使用独立 Session、临时工作区、业务内存副本、Trace 与 Artifact 目录。共享 Run 事件通过既有追加链串行落盘，SQLite 操作仍在同一 Backend 线程内执行。
+- 取消回归覆盖两个同时在途且忽略 AbortSignal 的迟到 Runner：二者最终均为 `cancelled`，尚未启动的案例为 `not_run`，不能迟到写成 `completed`。浏览器 Runner 的快照回归确认并发上限仍为 `1`。
+- 审查发现历史 Run 对比曾遗漏并发控制变量；现已将 `environment.maxConcurrency`、`environment.repeatCount`、最大模型轮数和用户模拟策略纳入严格可比性判断，旧并发 1 基线与新并发 2 Run 不会被误标为严格 A/B。
+- 统一验证：`npm test` 为 Vitest 161 通过/1 跳过、Backend Node 8/8；`npm run build` 通过。
+
 ## 18. 总结
 
-第一版 Agent 测评系统以应用内开发者工具为控制台，使用统一快照、运行、评分和 Artifact 模型承载 Prompt 与浏览器两类测评。它允许工具执行和多个 Prompt 候选，但所有写入都被隔离在测试环境；浏览器任务由本地 Fixture 的真实状态判定，Judge 只补充软质量评分。第一版选择串行执行、单 Judge、默认单次运行和有限页面能力，同时通过版本化 Runner、Scorer、Snapshot、seed 与 `repeatCount` 为后续扩展保留稳定边界。
+第一版 Agent 测评系统以应用内开发者工具为控制台，使用统一快照、运行、评分和 Artifact 模型承载 Prompt 与浏览器两类测评。它允许工具执行和多个 Prompt 候选，但所有写入都被隔离在测试环境；浏览器任务由本地 Fixture 的真实状态判定，Judge 只补充软质量评分。默认场景采用上限为 2 的有界并发，浏览器场景保持串行；系统继续使用单 Judge、默认单次运行和有限页面能力，并通过版本化 Runner、Scorer、Snapshot、seed 与 `repeatCount` 为后续扩展保留稳定边界。

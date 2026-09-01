@@ -14,7 +14,7 @@
 - Browser Profile、浏览器 Runtime、Agent Session 和 Agent Run 是不同生命周期，不能复用同一个 ID 代替。
 - 提交申请、发送消息和敏感文件上传仍由 OfferGet Harness 判断与确认，`agent-browser` 不拥有最终授权。
 - 第一阶段只做应用层安全限制，不声明具备进程级网络出口隔离。
-- 不增加模型可见的原始 `BrowserBatch`；仅开放语义明确的 `BrowserFillForm`，由 Host 校验并映射为纯 `fill` Batch。
+- 不增加模型可见的 `BrowserBatch`；若未来需要批量执行，只能作为经过基准和取消验证后的 Host 内部优化。
 
 投递场景和浏览器工具已进入首版 Tool Registry，但仍受本文复审与发布门禁约束。
 
@@ -325,11 +325,11 @@ test(browser): 覆盖取消迟到与提交对账
 
 | ID | 开发部分 | 状态 | 当前证据 | 下一步 |
 | --- | --- | --- | --- | --- |
-| BP-00 | 方案与工具命名冻结 | 已完成 | `03-tools.md` 和本文已冻结 12 个原子工具与 `BrowserFillForm` 受限纯填写 Batch | 后续变更另行评审 |
+| BP-00 | 方案与工具命名冻结 | 已完成 | `03-tools.md` 和本文已冻结 `BrowserFillForm` 受限纯填写 Batch，模型仍不可访问原始 CLI 或脚本 | 后续变更另行评审 |
 | BT-01 | 依赖、版本与发布物 | 待复审 | 已固定 `agent-browser@0.34.0`；开发态和 Windows 目录包均使用 Electron 43.3.0 companion，不下载 Chromium | 复审依赖许可、漏洞与正式签名配置 |
 | BT-02 | CLI 执行器与错误协议 | 待复审 | 随机 CDP、无 pin 发现 target、精确选择 `/ready` 后启用 sticky pin；固定参数、错误与限长测试通过 | 复审握手错误映射和输出限长 |
 | BT-03 | Profile、Runtime 与登录持久化 | 进行中 | 已实现独立 Profile、固定 namespace/session、父进程跟随、用户关闭后重启和清理生命周期 | 补真实账号跨应用重启登录保持验证 |
-| BT-04 | 工具契约、页面引用与注册表 | 已完成 | 12 个原子工具和第 13 个受限批量输入工具已进入 application 白名单；Batch stdin、Schema、陈旧引用和 Trace 脱敏回归通过 | 真实站点差异继续纳入 BT-09 验证 |
+| BT-04 | 工具契约、页面引用与注册表 | 已完成 | 12 个原子工具和第 13 个受限批量输入工具 `BrowserFillForm` 已启用；Batch stdin、Schema、陈旧引用、类型/长度边界和 Trace 脱敏回归通过 | 真实站点差异继续纳入 BT-09 验证 |
 | BT-05 | 导航、内容与文件安全 | 待复审 | URL/DNS 私网拒绝、重定向复检、Run 附件授权、25 MB 限额和敏感 Trace 清理已实现，安全单测通过 | 复审应用层网络限制的剩余风险 |
 | BT-06 | Harness 风险、确认与用户接管 | 待复审 | proposal 冻结、三类确认拒绝、页面变化、登录/CAPTCHA 接管与恢复回归通过 | 复审真实界面确认卡与人工接管体验 |
 | BT-07 | 调度、取消、超时与对账 | 进行中 | 浏览器动作复用现有 Scheduler/Ledger；取消或超时的已开始写入标记 `status_unknown` | 补迟到结果、并发、幂等和崩溃恢复测试 |
@@ -384,7 +384,7 @@ test(browser): 覆盖取消迟到与提交对账
 浏览器工具只有同时满足以下条件才能加入启用的投递场景快照：
 
 - BT-01 至 BT-09 全部复审通过。
-- 12 个工具在模型可见注册表和执行入口使用同一份冻结 ScenarioSnapshot。
+- 13 个工具在模型可见注册表和执行入口使用同一份冻结 ScenarioSnapshot。
 - Profile 持久化、身份隔离、清除和打包态运行通过验证。
 - 高风险动作确认、取消迟到、超时状态未知和崩溃恢复回归全部通过。
 - Prompt injection、命令注入、路径逃逸、受限 URL 和 Trace 脱敏测试通过。

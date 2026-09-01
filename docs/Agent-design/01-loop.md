@@ -128,6 +128,12 @@ interface RunLease {
 
 终态不允许转出。需要“继续”时创建新 Run，并通过 `parentRunId` 关联，而不是篡改已完成记录。
 
+### 4.1 CronTask 后台 Run
+
+`CreateCronTask` 的确认是针对整个 occurrence 周期的一次性授权，不属于某次浏览器动作确认。系统调度器只唤醒应用；Backend 从数据库原子 claim 到期 occurrence，创建独立 Session，把保存的消息作为真实 `user` 消息，再通过内部 `SendScheduled` 入口执行。该入口固定 `fully_trusted + unattended`，移除四个 CronTask 工具，并自行持久化 assistant 输出，不能依赖 Renderer 消费流事件。
+
+多个逾期 occurrence 只 claim 最近一次，更早项写为 `missed(superseded_by_latest)`；同任务前次仍运行时写为 `missed(previous_run_active)`。登录、验证码、短信或必要信息缺失写为 `needsAttention`，不弹阻塞确认框。completed、failed、missed、needsAttention 都消费次数，单次失败不取消后续计划。
+
 ## 5. 主循环伪代码
 
 ```ts
@@ -238,8 +244,9 @@ interface PendingConfirmation {
 5. 用户接受时核对 `proposalHash`，重新读取资源并获取锁。
 6. revision 一致才使用业务幂等键提交；不一致则进入 `paused`，展示新旧差异。
 7. 成功后写 Tool Receipt；拒绝或过期后提案失效，不能复用。
+8. 复用 `AskUserQuestion` 的恢复路径，把用户决定和实际执行结果整理为普通文本，以 `user` 角色保存并启动延续 Run；不使用额外标签或隐藏消息格式。
 
-接受确认后不再让模型重新生成工具参数。Harness 直接把冻结提案交给 Tool Scheduler；执行成功后，Loop 才把 receipt 作为结果请求模型生成说明。这样可以保证用户看到的 diff 与真正执行的参数完全一致。
+接受确认后不再让模型重新生成工具参数。Harness 直接把冻结提案交给 Tool Scheduler；执行结束后再以普通 `user` 消息向模型说明确认决定和执行结果。该消息与 `AskUserQuestion` 的答案一样进入会话历史和新 Trace，使模型能够继续任务，同时保证用户看到的 diff 与真正执行的参数完全一致。
 
 这比“等待期间一直持锁”更安全，也更适合桌面应用重启恢复。
 
@@ -269,10 +276,17 @@ interface PendingConfirmation {
 
 - 使用 `user` 角色追加，Provider 只接收 `role/content`；内部 metadata 不进入 API。
 - 默认场景在首轮、每 5 个已使用模型轮次、最后一轮以及确认权限变化时注入；投递场景采用每 10 轮。
-- 整条状态栏必须由且仅由一组 `<runtime-reminder>...</runtime-reminder>` 标签包裹；标签内部使用直白英语，例如 `Today is ...`、`Used turns: 20 of 30.`、`Current confirmation mode: ...`。
+- 整条状态栏必须由且仅由一组 `<runtime-reminder>...</runtime-reminder>` 标签包裹；标签内部使用直白英语，例如 `Today is ...`、`Used turns: 20 of 30.`、`Current confirmation mode: ...`、`Loaded skills: ...`。
 - 结尾固定表达：`The above is the current runtime status. No response is needed; continue the task.`
 - 同一 Session 的正常追加过程中不得删除、替换或就地改写旧 reminder；最新一条代表当前状态，旧消息用于保持历史和前缀缓存稳定。
 - reminder 是状态提示，不授予工具、资源或外部账号权限。
+
+### 10.1 Skill 加载时序
+
+- 会话当前 Skill 快照的索引只在该快照第一次真正发送时注入，顺序为 `skill_index user → 真实 user → 可选 loaded_skill user`。
+- 模型自主加载时必须保持 `assistant tool_call → 匹配的 tool result → loaded_skill user`。含 `LoadSkill` 的批次只执行第一个 Skill 加载，其余调用返回 `SKIPPED_FOR_SKILL_LOAD`；下一轮读取正文后再规划动作。
+- Kernel 只有在正文成功追加到 Transcript 后才更新会话级 `loadedSkills`；取消或失败且 Transcript 未保存时回滚本 Run 的临时状态。
+- 同一版本重复加载是幂等操作，不重复追加正文。Skill 正文只能提供执行知识，不能扩大冻结工具、确认权限或资源范围。
 
 ## 11. 恢复策略
 
@@ -297,6 +311,7 @@ interface PendingConfirmation {
 - 应用在每个 checkpoint 后崩溃，重启均不会重复写入或丢失确认卡。
 - 达到预算时保存可恢复状态，不产生无限循环。
 - runtime reminder 始终以 user 角色追加，权限变化会在下一模型轮次反映，旧 reminder 保持不变。
+- Skill 索引和正文均以带内部来源的 user 角色追加，不会被计为真实用户轮次；reminder 显示当前会话已加载 Skill ID。
 - 最后一轮的新工具调用不会进入 Tool Scheduler。
 
 ## 13. 总结

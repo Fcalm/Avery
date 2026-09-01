@@ -84,6 +84,14 @@ interface ModelCapabilities {
 
 模型列表接口返回“存在”不代表支持当前 Agent 场景。运行前 Harness 必须检查所需能力，例如工具调用、上下文长度和流式 Usage。
 
+### 3.1 上下文限制解析
+
+- 自动模式的运行时限制为 `min(256_000, model.contextLimit)`；模型上限不足 256K 时使用其最大值。
+- DeepSeek `/models` 只返回模型 ID，不提供上下文元数据，因此官方已知模型的上限由 Adapter 版本化维护；当前 V4 Flash、V4 Pro 与视觉实验模型均按官方 1M 上限登记。
+- API 设置允许用户开启自定义上下文限制。自定义值必须在 8K–2000K 内，且不得超过已知模型上限；未知的自定义 Provider 无法自动发现上限，由用户配置承担能力声明职责。
+- 旧 DeepSeek 64K 属于历史默认值，迁移到自动 256K；旧自定义 Provider 的既有值继续按用户自定义处理。
+- Kernel、压缩器、Usage 展示只能消费 Provider 解析后的单一 `contextLimit`，不得各自重复推断。
+
 ## 4. 供应商范围
 
 ### 4.1 0.2.0 正式支持
@@ -99,6 +107,10 @@ interface ModelCapabilities {
 - 流式文本、工具调用、Usage、取消和错误映射。
 - Prompt、工具 Schema 和 Provider Continuation 的契约测试。
 - Mock/fixture、真实联调开关和发布回归门禁。
+
+DeepSeek Chat Completions 的思考参数由 Adapter 统一生成：全局思考模式关闭时发送 `thinking.type=disabled`；开启时发送 `thinking.type=enabled`，并把会话级 `reasoningEffort` 映射为 `reasoning_effort`。前端保留 `low/medium/high/xhigh/max` 五档，官方实际映射为 `low/high/high/high/max`。该选择随会话助手状态持久化，普通 Run 只读取启动时值，不在同一 Run 中途改变。
+
+Agent 请求始终携带工具定义，因此历史 assistant 消息的 `reasoning_content` 必须完整回传；Provider Adapter 不得因上一轮没有工具调用而删除该字段。
 
 ### 4.2 OpenAI 后续独立 Adapter
 
@@ -233,7 +245,7 @@ interface ProviderError {
 - Provider/Adapter ID 与协议版本。
 - Base URL 的脱敏标识。
 - 模型 ID 与能力快照。
-- thinking、max output、tool schema 方言。
+- thinking 开关、会话级 reasoning effort、max output、tool schema 方言。
 - Prompt 编译策略版本。
 
 会话可以在完整 Run 边界切换模型；运行中或未完成工具链中不切换。模型下线时，新 Run 提示用户选择替代模型，不静默映射到另一个模型后继续高风险写入。

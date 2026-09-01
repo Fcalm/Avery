@@ -65,7 +65,21 @@ Session 首次实际使用时一次性生成完整稳定前缀，包含编译后
 
 Runtime Reminder 位于稳定前缀之后，以 `user` 角色 append-only 追加。正常追加不得删除或替换旧 reminder，否则会同时破坏语义历史和 Provider 前缀缓存。只有显式 Context 压缩会重写后续消息视图，并明确造成缓存失效。
 
+Skill 完整快照与 Session revision 一起冻结，但索引不进入 system role。当前快照第一次真正发送时，宿主在真实用户消息前追加一次 `<skill-index>` user 消息；显式 `/<skill-name>` 的正文位于真实用户消息后。TTL 到期或 `/reload` 后追加 `skill-state-reset`，下一次发送再追加新版索引，旧消息不就地修改。
+
+### 3.2 Skill 三级披露
+
+1. 索引层只包含标准 `name`、内容派生版本和 `description`，不包含正文与资源内容。
+2. 主说明层通过 `/<skill-name>` 或 `LoadSkill({ skillId })` 加载冻结的 `SKILL.md`。
+3. 资源层只有在主说明已加载后，才能通过 `LoadSkill({ skillId, resource })` 读取该 Skill 的 `references/` 冻结资源。
+
+项目内 Skill 遵循通用目录格式：目录名使用小写连字符并与 `SKILL.md` frontmatter 的 `name` 一致；`name` 和 `description` 是必填字段，不再使用额外的 `manifest.json`。OfferGet 特有的场景限制放在可选的 `metadata.offerget.scenarios` 中，缺省时只在 `default` 场景披露。`references/` 下的 UTF-8 文件由宿主自动发现并随会话快照冻结。
+
+Snapshot 保存完整正文、资源和内容哈希，普通 Run 不重新读取磁盘。Skill ID 使用小写字母、数字和连字符；资源只能来自该 Skill 的 `references/` 目录。Backend 通过 realpath、UTF-8、文件数量、单文件和聚合大小限制阻止目录逃逸与无界上下文。Skill 是知识包而不是权限包，实际能力仍由冻结场景白名单、确认策略、资源授权和 Harness 共同决定。
+
 ## 4. Token 预算
+
+`contextLimit` 由 Provider 统一解析：默认目标为 256K，并以模型能力上限钳制；用户在 API 配置中开启自定义限制时使用经 Provider 校验的自定义值。Context 与 Kernel 不维护第二份模型能力表。
 
 ```text
 inputBudget = contextLimit
@@ -160,6 +174,8 @@ assistant continuation
 - 仅按最后 40 条消息截取。
 - 在一个未完成工具链中间生成摘要并移除 Provider 必需状态。
 
+`skill_index`、`loaded_skill`、`loaded_skill_resource`、`skill_state_reset` 和 Runtime Reminder 都是合成 user 消息，不建立新的真实用户 TurnGroup。位于首条真实用户消息之前的合成消息作为 `prefixMessages` 保持原顺序附着于该组。
+
 ## 8. 结构化记忆
 
 压缩前先维护可验证的结构化记忆：
@@ -197,6 +213,8 @@ Run 存在待确认简历草稿时，Context 必须保留 `draftId`、`contentHa
 6. 保存 `MemoryVersion`、摘要、覆盖事件范围、Prompt 版本和哈希。
 7. 重新构建 Context 并复测 token。
 
+压缩还必须固定保留最新 Skill 索引、最近一次 `skill-state-reset`，以及 reset 之后每个已加载 Skill/资源的最新完整正文。不能只保留 reminder 中的 `Loaded skills` 列表而丢掉实际指令。
+
 摘要不得直接覆盖原始历史；原始事件仍保存在本地，用于恢复、审计和重新压缩。
 
 ## 10. 压缩失败
@@ -224,6 +242,8 @@ Run 存在待确认简历草稿时，Context 必须保留 `draftId`、`contentHa
 - 同一 Session 的普通 Run 复用同一 `SessionPrefixSnapshot`；24 小时和 `/reload` 之外不重建。
 - Provider 缓存过期或模型切换不修改本地快照；场景切换创建新 Session。
 - 旧 Runtime Reminder 在未压缩 transcript 中保持 append-only，Provider 请求中 metadata 已剥离。
+- Skill 索引只在当前快照首次发送时注入；普通 Run 不重复，且不进入 system role。
+- 压缩后仍保留有效 Skill 的最新正文，Skill 合成消息不增加真实用户 TurnGroup 数量。
 - Scenario/Prompt/Tool/DataScope/Provider 使用相同 Run snapshot revision；运行中重载不会混入当前请求。
 - 0.2.0 Context 不包含 `SearchJobs`、`ReadUrl` Schema 或任何岗位网络结果。
 - 预算计算为 Prompt、工具 Schema、消息和协议开销分别记账。

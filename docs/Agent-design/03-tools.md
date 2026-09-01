@@ -23,6 +23,8 @@ UpdateResume
 SearchJobs
 ReadUrl
 CreateTodo
+DeleteTodo
+LoadSkill
 ```
 
 其中 `SearchJobs`、`ReadUrl` 仅用于说明未来草案也遵循同一命名规则，不代表 0.2.0 已注册。
@@ -82,22 +84,24 @@ interface AgentToolDefinition<TInput, TOutput> {
 
 ### 4.1 默认场景
 
-0.2.0 默认场景 `default` 是当前唯一启用的场景。
+默认场景 `default` 负责本地简历、档案和项目材料工作，不包含浏览器或岗位网络工具。
 
 | 能力 | 模型可见工具 |
 | --- | --- |
 | UTF-8 文件读取 | `Read`、`Glob`、`Grep` |
 | 档案 | `ReadProfile`、`UpdateProfile` |
 | 简历 | `ReadResume`、`CreateResume`、`UpdateResume` |
-| Run Todo | `CreateTodo`、`UpdateTodo`、`ReadTodo` |
+| Run Todo | `CreateTodo`、`UpdateTodo`、`DeleteTodo`、`ReadTodo` |
+| Skill 渐进披露 | `LoadSkill` |
 | 用户交互 | `AskUserQuestion` |
+| 定时任务 | `CreateCronTask`、`ReadCronTask`、`UpdateCronTask`、`DeleteCronTask` |
 
 明确禁止：
 
 - 填写申请表、上传投递材料、操作登录态或提交申请。
 - `SearchJobs`、`ReadUrl`、Shell、任意 HTTP、任意 Header、任意浏览器或脚本执行。
 - 项目文件写入、未授权路径访问和敏感文件读取。
-- 后台搜索、定时搜索、URL 提取、跨来源聚合和自动写入岗位库。
+- 未经 `CreateCronTask` 周期级确认的后台搜索、定时执行、URL 提取、跨来源聚合和自动写入岗位库。
 
 白名单存在不等于本轮必须把全部工具发给模型。Host 可以根据当前意图进一步收窄，但不得加入 0.2.0 注册表之外的工具。执行入口必须再次按冻结快照校验，不能只依赖“没有把定义发给模型”。
 
@@ -123,7 +127,9 @@ interface AgentToolDefinition<TInput, TOutput> {
   status: 'active',
   toolNames: [
     'Read', 'Glob', 'Grep', 'ReadProfile', 'ReadResume',
-    'CreateTodo', 'UpdateTodo', 'ReadTodo', 'AskUserQuestion',
+    'CreateTodo', 'UpdateTodo', 'DeleteTodo', 'ReadTodo', 'AskUserQuestion', 'LoadSkill',
+    'CreateCronTask', 'ReadCronTask', 'UpdateCronTask', 'DeleteCronTask',
+    'ReadApplicationStatus', 'UpdateApplicationStatus',
     'BrowserNavigate', 'BrowserSnapshot', 'BrowserReadPage', 'BrowserClick',
     'BrowserFill', 'BrowserSelect', 'BrowserSetChecked', 'BrowserPressKey',
     'BrowserUploadFile', 'BrowserWait', 'BrowserSwitchTab', 'BrowserGoBack'
@@ -132,6 +138,17 @@ interface AgentToolDefinition<TInput, TOutput> {
 ```
 
 场景在会话首次发送时冻结；切换场景必须新建会话。浏览器工具名称与执行边界见 5.4 节和 `07-browser-tools-development-plan.md`，确认权限只改变普通动作的确认频率，不扩大工具、文件或网络权限。
+
+投递防重由 Agent 负责：执行前必须调用 `ReadApplicationStatus` 检查持久化记录，只有浏览器返回有效成功回执后才能调用 `UpdateApplicationStatus(status='applied')`。Harness 不猜测公司、岗位和 URL 指纹，也不把“点击过提交按钮”当成已投递事实。
+`ReadApplicationStatus` 支持按公司、岗位名和 URL 定向检索；无条件读取或匹配过多时每类最多返回 200 条并显式标记 `truncated`，既避免漏查旧投递，也防止工具结果无界增长。
+
+### 4.4 CronTask 定时任务
+
+四个 CronTask 工具同时存在于默认和投递场景。`CreateCronTask` 只冻结提案并展示一次周期级无人值守确认；确认前不写数据库、不注册系统任务。确认后每次 occurrence 创建独立会话，以真实 `user` 消息执行，并使用 `fully_trusted + unattended`，但仍受冻结场景、Schema、资源授权、网络边界与 Tool Ledger 约束。
+
+支持 `once`、`daily` 和带 `daysOfWeek` 的 `weekly` 调度；重复时间按 IANA 时区的本地日历计算。关机或休眠导致多次逾期时只补最近一次，其余写为 `missed`。系统只维护一个 `OfferGet Cron Runner` 唤醒任务，业务数据库保存全部计划与运行历史。无人值守 Run 不暴露四个 CronTask 工具，防止递归调度。
+创建确认会明示系统可在计划时间唤醒或后台启动应用。Windows 唤醒允许电池供电时启动，且切换到电池后不中止已开始的 Run。
+第一版 CronTask 不继承交互 Run 的临时附件；投递 Run 可读取创建时绑定的简历内容，但页面强制上传本地文件时必须转为 `needsAttention`，不得绕过 Run 级文件授权。
 
 ## 5. MVP 工具定义
 
@@ -251,6 +268,7 @@ Todo 是当前 Run 的执行清单，不属于整个 Session，避免旧目标�
 ```text
 CreateTodo
 UpdateTodo
+DeleteTodo
 ReadTodo
 ```
 
@@ -286,7 +304,15 @@ inProgress → completed | cancelled
 
 `completed` 和 `cancelled` 为终态。Todo 不设置 `blocked`；缺少用户输入时由 Run 进入 `waiting_user_input`，需要确认时进入 `waiting_confirmation`，其他阻断进入 `paused`，当前 Todo 可以继续保持 `inProgress`。
 
-`ReadTodo` 不拆成 List/Get。Todo 数量有界，因此一次返回当前 Run 的完整列表、revision 和各状态计数。`CreateTodo`、`UpdateTodo` 成功后也返回最新完整列表，避免模型立即重复读取。
+`DeleteTodo` 接收 `todoId`，用于彻底移除已经不属于当前任务范围的条目；如果只是放弃执行但仍需保留过程记录，应使用 `UpdateTodo` 将状态改为 `cancelled`。删除成功后返回被删除条目和最新完整列表，并写入 Tool Ledger 以支持幂等重放。
+
+`ReadTodo` 不拆成 List/Get。Todo 数量有界，因此一次返回当前 Run 的完整列表、revision 和各状态计数。`CreateTodo`、`UpdateTodo`、`DeleteTodo` 成功后也返回最新完整列表，避免模型立即重复读取。
+
+### 5.6 Skill 加载工具
+
+`LoadSkill` 参数为 `skillId` 和可选 `resource`。不传 `resource` 时加载冻结快照中的 `SKILL.md`；只有主 Skill 已加载后，才能加载同一标准 Skill 目录中 `references/` 下已冻结的 UTF-8 参考资源。模型不能传入物理路径，也不能读取快照以外的 Skill。
+
+`LoadSkill` 应作为当前工具批次的唯一调用。若 Provider 同批返回其他调用，Kernel 只执行第一个 `LoadSkill`，其余结果标记 `SKIPPED_FOR_SKILL_LOAD`，等待模型读取正文后重新规划。工具先完整读取并校验内容，再返回匹配 tool call 的成功结果；Kernel 随后以独立 `user` 消息追加正文。工具结果本身不嵌入正文，避免破坏 Provider tool-call 配对。重复加载同一版本或同一资源返回幂等状态，不重复占用上下文。
 
 第一阶段不把 Todo 状态自动注入 Context，也不由 Harness 强制模型调用 `ReadTodo`。通过 Trace 观察：
 
@@ -297,7 +323,7 @@ inProgress → completed | cancelled
 
 在得到基线数据前，不增加自动注入或强制读取，以免掩盖模型的自然 Todo 管理能力。
 
-### 5.6 用户交互
+### 5.7 用户交互
 
 `AskUserQuestion` 是结构化等待入口。工具返回统一 wait disposition，Loop 持久化问题后进入 `waiting_user_input`，而不是继续请求模型或保持悬空 Promise。
 
@@ -423,7 +449,10 @@ interface ToolEnvelope<T> {
 - 模型可见工具名全部符合 PascalCase 规则且跨 Provider 可接受。
 - 默认场景按意图进一步收窄工具，不暴露任何投递或浏览器能力。
 - 0.2.0 默认场景不注册、不展示也不执行 `SearchJobs`、`ReadUrl`。
-- 投递场景只暴露冻结的 22 个工具，不包含 `CreateResume`、`UpdateResume`、`UpdateProfile`、`SearchJobs` 或 `ReadUrl`。
+- 默认场景暴露冻结的 18 个工具；投递场景暴露冻结的 29 个工具，不包含 `CreateResume`、`UpdateResume`、`UpdateProfile`、`SearchJobs` 或 `ReadUrl`。
+- CronTask 创建确认前数据库与 OS 调度均无新增记录；无人值守 Run 即使恢复旧快照也不能调用 CronTask 工具。
+- 多次逾期只执行最近 occurrence；既有 Run 活跃、浏览器长期占用、登录或验证码接管均写入明确的 `missed`/`needsAttention` 原因。
+- 投递 Agent 在浏览器执行前读取投递状态，并只在有效回执后更新 `applied`。
 - `Read`、`Glob`、`Grep` 可以访问授权虚拟挂载，但不能路径逃逸、读取非法 UTF-8 或敏感文件。
 - 模型直接请求未进入冻结快照的已注册/草案工具时，执行入口返回 `TOOL_NOT_ALLOWED`，实现函数调用次数为 0。
 - 0.3.0 fixture 必须证明 `ReadUrl` 只接受用户明确 URL，并拒绝 localhost、内网、文件协议、凭据、Cookie 和未校验重定向。
@@ -438,4 +467,4 @@ interface ToolEnvelope<T> {
 
 ## 14. 总结
 
-MVP 工具集优先使用少量、高辨识度的 PascalCase 工具。`Read`、`Glob`、`Grep` 是通用 UTF-8 文件只读能力，来源差异由虚拟挂载和端口授权处理；简历、档案和 Todo 只在权限、Schema 或副作用真正不同的地方拆分。默认场景不注册岗位网络工具；投递场景使用 12 个原子浏览器工具和 1 个受限批量输入工具完成自主岗位发现、JD 阅读和投递，不包装 `SearchJobs` 高层工具。确认阶段属于 Harness，Todo 先在无自动注入条件下验证模型自身的进度管理能力。
+MVP 工具集优先使用少量、高辨识度的 PascalCase 工具。`Read`、`Glob`、`Grep` 是通用 UTF-8 文件只读能力，来源差异由虚拟挂载和端口授权处理；简历、档案、Todo、投递状态和 CronTask 只在权限、Schema 或副作用真正不同的地方拆分。默认场景不注册岗位网络工具；投递场景使用 12 个原子浏览器工具和 1 个受限批量输入工具完成自主岗位发现、JD 阅读和投递，不包装 `SearchJobs` 高层工具。确认阶段属于 Harness；CronTask 以一次周期授权换取无人值守执行，但不扩展场景能力。
