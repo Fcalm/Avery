@@ -1,4 +1,4 @@
-import type { AgentConfiguration, AgentModuleConfiguration, AgentSendRequest, AgentSessionAssistantState, AgentStreamEvent, ConfirmationMode } from '@offerget/contracts';
+import type { AgentConfiguration, AgentModuleConfiguration, AgentSendRequest, AgentSessionAssistantState, AgentStreamEvent, ConfirmationMode, ReasoningEffort } from '@offerget/contracts';
 import { platformClient, Unwrap } from '../../../shared/platform/platformClient';
 
 /** 判断当前页面是否由带安全桥接的桌面客户端承载。 */
@@ -14,6 +14,11 @@ export async function ConfigureAgent(config: AgentConfiguration) {
 /** 使用表单中的临时 API 配置进行连通性测试，不保存任何字段。 */
 export async function TestAgentConnection(config: AgentConfiguration) {
   return Unwrap(await platformClient.agent.TestConnection(config));
+}
+
+/** 读取 Provider 的实际运行配置；不包含 API Key，用于避免设置副本与 Kernel 状态漂移。 */
+export async function GetAgentStatus() {
+  return Unwrap(await platformClient.agent.GetStatus());
 }
 
 /** 读取主进程中的真实 DeepSeek 余额；API Key 不会进入渲染层。 */
@@ -64,6 +69,11 @@ export async function GetAgentTraceEvents(requestId: string) {
   return result.ok ? result.data : [];
 }
 
+/** 提交用户对周期级无人值守 CronTask 的一次性授权决定。 */
+export async function ConfirmCronTask(confirmationId: string, accepted: boolean) {
+  return Unwrap(await platformClient.agent.ConfirmCronTask(confirmationId, accepted));
+}
+
 /** 确认或拒绝冻结的浏览器动作；接受后由 Host 重新校验并执行原提案。 */
 export async function ConfirmBrowserAction(confirmationId: string, accepted: boolean) {
   return Unwrap(await platformClient.agent.ConfirmBrowserAction(confirmationId, accepted));
@@ -82,6 +92,11 @@ export async function ClearBrowserProfile() {
 /** 更新在途 Run 的确认权限；无在途 Run 时由下一次 Send 携带当前值。 */
 export async function UpdateAgentConfirmationMode(requestId: string, confirmationMode: ConfirmationMode) {
   return Unwrap(await platformClient.agent.UpdateConfirmationMode(requestId, confirmationMode));
+}
+
+/** 立即持久化会话思考强度；当前 Run 不变，下一 Run 使用新值。 */
+export async function UpdateAgentReasoningEffort(sessionId: string, reasoningEffort: ReasoningEffort) {
+  return Unwrap(await platformClient.agent.UpdateReasoningEffort(sessionId, reasoningEffort));
 }
 
 /** 按会话删除对应的全部 Trace 与事件；运行日志和会话消息保持不变。 */

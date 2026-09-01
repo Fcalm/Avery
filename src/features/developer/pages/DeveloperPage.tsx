@@ -1,16 +1,17 @@
 import { useEffect, useState } from 'react';
 import type { AgentObservability } from '@offerget/contracts';
 import { GetAgentObservability } from '../../../features/assistant/api/agentQueries';
+import { useUiStore } from '../../../app/UiStore';
 import { Icon } from '../../../shared/components/Icon';
 import { Button } from '../../../shared/components/UI';
 import { EvaluationConsole } from '../components/EvaluationConsole';
 
-const EmptyObservability: AgentObservability = { configured: false, model: '—', historySessions: 0, taskCount: 0, contextUsage: { inputTokens: 0, contextLimit: 64000, compressionCount: 0, compressionThreshold: 80 }, logs: [], traces: [] };
+const EmptyObservability: AgentObservability = { configured: false, model: '—', historySessions: 0, taskCount: 0, contextUsage: { inputTokens: 0, contextLimit: 256000, compressionCount: 0, compressionThreshold: 80 }, logs: [], traces: [] };
 
 /** 开发者工具仅保留本地运行日志；会话轨迹统一在求职助手中查看。 */
 function DeveloperPage() {
   const [observability, setObservability] = useState<AgentObservability>(EmptyObservability);
-  const [view, setView] = useState<'logs' | 'evaluation'>('logs');
+  const { developerView } = useUiStore();
 
   async function RefreshObservability() {
     setObservability((await GetAgentObservability()) ?? EmptyObservability);
@@ -19,8 +20,7 @@ function DeveloperPage() {
   useEffect(() => { void RefreshObservability(); }, []);
 
   return <div className="standard-page developer-page">
-    <div className="developer-view-tabs" role="tablist" aria-label="开发者工具"><button type="button" role="tab" aria-selected={view === 'logs'} className={view === 'logs' ? 'selected' : ''} onClick={() => setView('logs')}>运行日志</button><button type="button" role="tab" aria-selected={view === 'evaluation'} className={view === 'evaluation' ? 'selected' : ''} onClick={() => setView('evaluation')}>Agent 测评</button></div>
-    {view === 'logs' ? <section className="developer-console" aria-label="本地运行记录">
+    {developerView === 'logs' ? <section className="developer-console" aria-label="本地运行记录">
       <header className="developer-console-header">
         <div className="developer-console-title"><Icon name="logs" size={16} /><span>运行日志</span></div>
         <div className="developer-console-actions">

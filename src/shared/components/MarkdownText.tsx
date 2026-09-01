@@ -1,5 +1,7 @@
 import { Fragment, type ReactNode } from 'react';
 
+type MarkdownTableAlignment = 'left' | 'center' | 'right';
+
 function SafeHref(value: string) {
   try {
     const url = new URL(value, 'https://offerget.local');
@@ -31,6 +33,49 @@ function IsBlockStart(line: string) {
   return /^#{1,3}\s|^[-*]\s|^\d+\.\s|^>\s|^```|^---$/.test(line);
 }
 
+/** 分割 GFM 表格行，并保留单元格内用反斜杠转义的竖线。 */
+function SplitTableRow(line: string): string[] {
+  let value = line.trim();
+  if (value.startsWith('|')) value = value.slice(1);
+  if (value.endsWith('|') && !value.endsWith('\\|')) value = value.slice(0, -1);
+  const cells: string[] = [];
+  let cell = '';
+  for (let index = 0; index < value.length; index += 1) {
+    const character = value[index];
+    if (character === '\\' && value[index + 1] === '|') { cell += '|'; index += 1; continue; }
+    if (character === '|') { cells.push(cell.trim()); cell = ''; continue; }
+    cell += character;
+  }
+  cells.push(cell.trim());
+  return cells;
+}
+
+function GetTableAlignment(value: string): MarkdownTableAlignment | null {
+  const normalized = value.trim();
+  if (!/^:?-{3,}:?$/.test(normalized)) return null;
+  if (normalized.startsWith(':') && normalized.endsWith(':')) return 'center';
+  return normalized.endsWith(':') ? 'right' : 'left';
+}
+
+function ParseMarkdownTable(lines: string[], startIndex: number): { headers: string[]; alignments: MarkdownTableAlignment[]; rows: string[][]; endIndex: number } | null {
+  const headerLine = lines[startIndex] ?? '';
+  const dividerLine = lines[startIndex + 1] ?? '';
+  // GFM 表格必须使用竖线分列，避免把“标题\n---”误识别为单列表格。
+  if (!headerLine.includes('|') || !dividerLine.includes('|')) return null;
+  const headers = SplitTableRow(headerLine);
+  const divider = SplitTableRow(dividerLine);
+  if (!headers.length || headers.length !== divider.length || divider.some((cell) => GetTableAlignment(cell) === null)) return null;
+
+  const rows: string[][] = [];
+  let index = startIndex + 2;
+  while (index < lines.length && lines[index].trim() && lines[index].includes('|') && !IsBlockStart(lines[index])) {
+    const row = SplitTableRow(lines[index]);
+    rows.push(headers.map((_, columnIndex) => row[columnIndex] ?? ''));
+    index += 1;
+  }
+  return { headers, alignments: divider.map((cell) => GetTableAlignment(cell) ?? 'left'), rows, endIndex: index };
+}
+
 function MarkdownText({ content, className = '' }: { content: string; className?: string }) {
   const lines = content.replace(/\r\n?/g, '\n').split('\n');
   const nodes: ReactNode[] = [];
@@ -46,6 +91,12 @@ function MarkdownText({ content, className = '' }: { content: string; className?
       while (index < lines.length && !lines[index].startsWith('```')) code.push(lines[index++]);
       if (index < lines.length) index += 1;
       nodes.push(<pre key={nodes.length} data-language={language || undefined}><code>{code.join('\n')}</code></pre>);
+      continue;
+    }
+    const table = ParseMarkdownTable(lines, index);
+    if (table) {
+      nodes.push(<div className="markdown-table-wrap" key={nodes.length}><table><thead><tr>{table.headers.map((header, columnIndex) => <th key={columnIndex} className={`is-align-${table.alignments[columnIndex]}`}><InlineText value={header} /></th>)}</tr></thead><tbody>{table.rows.map((row, rowIndex) => <tr key={rowIndex}>{row.map((cell, columnIndex) => <td key={columnIndex} className={`is-align-${table.alignments[columnIndex]}`}><InlineText value={cell} /></td>)}</tr>)}</tbody></table></div>);
+      index = table.endIndex;
       continue;
     }
     if (line === '---') { nodes.push(<hr key={nodes.length} />); index += 1; continue; }

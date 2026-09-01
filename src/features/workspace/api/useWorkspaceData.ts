@@ -9,10 +9,22 @@ async function LoadWorkspaceData(): Promise<WorkspaceData> {
     Unwrap(platformClient.workspace.GetProfiles()),
     Unwrap(platformClient.workspace.GetSettings()),
   ]);
+  const provider = settings.provider ?? DefaultSettings.provider;
+  const contextLimitMode = settings.contextLimitMode ?? (provider === '自定义' ? 'custom' : 'default');
+  const storedContextLength = settings.contextLength ?? DefaultSettings.contextLength;
+  const contextLength = provider === 'DeepSeek' && contextLimitMode === 'default' && storedContextLength === '64K'
+    ? DefaultSettings.contextLength : storedContextLength;
   return {
     ...viewModel,
     profiles: profiles.items,
-    settings: { ...DefaultSettings, ...settings, apiKey: '' },
+    settings: {
+      ...DefaultSettings,
+      ...settings,
+      // 旧 DeepSeek 配置的 64K 是历史默认；旧自定义 Provider 的值由用户填写，应继续视为自定义。
+      contextLength,
+      contextLimitMode,
+      apiKey: '',
+    },
   };
 }
 

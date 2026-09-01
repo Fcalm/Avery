@@ -75,7 +75,9 @@ export const platformClient = {
     Send: (request: Parameters<DesktopAgentBridge['Send']>[0]) => CallBridge(() => RequireAgent().Send(request)),
     Cancel: (requestId: string) => CallBridge(() => RequireAgent().Cancel(requestId)),
     UpdateConfirmationMode: (requestId: string, confirmationMode: Parameters<DesktopAgentBridge['UpdateConfirmationMode']>[1]) => CallBridge(() => RequireAgent().UpdateConfirmationMode(requestId, confirmationMode)),
+    UpdateReasoningEffort: (sessionId: string, reasoningEffort: Parameters<DesktopAgentBridge['UpdateReasoningEffort']>[1]) => CallBridge(() => RequireAgent().UpdateReasoningEffort(sessionId, reasoningEffort)),
     ConfirmResumeEdit: (confirmationId: string, accepted: boolean) => CallBridge(() => RequireAgent().ConfirmResumeEdit(confirmationId, accepted)),
+    ConfirmCronTask: (confirmationId: string, accepted: boolean) => CallBridge(() => RequireAgent().ConfirmCronTask(confirmationId, accepted)),
     ConfirmBrowserAction: (confirmationId: string, accepted: boolean) => CallBridge(() => RequireAgent().ConfirmBrowserAction(confirmationId, accepted)),
     GetBrowserRuntimeStatus: () => CallBridge(() => RequireAgent().GetBrowserRuntimeStatus()),
     ClearBrowserProfile: () => CallBridge(() => RequireAgent().ClearBrowserProfile()),
@@ -130,7 +132,7 @@ export const platformClient = {
     CreateBackup: (options?: WriteCommandOptions) => CallBridge(() => RequireWorkspace().CreateBackup(ResolveWriteOptions(options))),
     GetResumeRevisions: (resumeId: string) => CallBridge(() => RequireWorkspace().GetResumeRevisions(resumeId)),
     SetResumeRevisionPinned: (revisionId: string, pinned: boolean, options?: WriteCommandOptions) => CallBridge(() => RequireWorkspace().SetResumeRevisionPinned(revisionId, pinned, ResolveWriteOptions(options))),
-    ExportResume: (resume: { name: string; summary: string; content: string }, format: 'pdf' | 'docx' | 'png') => CallBridge(() => RequireWorkspace().ExportResume(resume, format)),
+    ExportResume: (resume: { name: string; summary: string; content: string }, format: 'html' | 'pdf' | 'docx' | 'png') => CallBridge(() => RequireWorkspace().ExportResume(resume, format)),
     Migrate: () => CallBridge(() => RequireWorkspace().Migrate()),
   },
   evaluation: {

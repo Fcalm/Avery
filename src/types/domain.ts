@@ -30,6 +30,7 @@ export interface OnboardingDraft {
   baseUrl?: string;
   model?: string;
   contextLength?: string;
+  contextLimitMode?: 'default' | 'custom';
   jobType?: string;
   experience?: string;
   education?: string;

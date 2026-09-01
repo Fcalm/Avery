@@ -12,5 +12,6 @@ export const StartEvalRun = (id: string) => Unwrap(platformClient.evaluation.Sta
 export const CancelEvalRun = (id: string) => Unwrap(platformClient.evaluation.CancelRun(id));
 export const ListEvalRuns = (projectId?: string) => Unwrap(platformClient.evaluation.ListRuns(projectId));
 export const ReadEvalRun = (id: string) => Unwrap(platformClient.evaluation.ReadRun(id));
+export const ReadEvalCaseResult = (id: string) => Unwrap(platformClient.evaluation.ReadCaseResult(id));
 export const CompareEvalRuns = (left: string, right: string) => Unwrap(platformClient.evaluation.CompareRuns(left, right));
 export const SubscribeEvalEvents = (listener: (event: EvalEvent) => void) => platformClient.evaluation.OnEvent(listener);

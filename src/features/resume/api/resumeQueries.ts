@@ -56,6 +56,6 @@ export async function SetResumeRevisionPinned(revisionId: string, pinned: boolea
 }
 
 /** 导出简历文件到工作空间 exports；失败抛统一业务错误。 */
-export async function ExportResumeFile(resume: { name: string; summary: string; content: string }, format: 'pdf' | 'docx' | 'png') {
+export async function ExportResumeFile(resume: { name: string; summary: string; content: string }, format: 'html' | 'pdf' | 'docx' | 'png') {
   return Unwrap(await platformClient.workspace.ExportResume(resume, format));
 }

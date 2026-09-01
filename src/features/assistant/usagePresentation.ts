@@ -9,9 +9,9 @@ export interface SessionUsagePresentationInput {
 }
 
 export interface SessionUsagePresentation {
-  display: string;
+  /** 仅在已拿到 Provider usage 时显示黑色进度；否则维持灰色空环。 */
+  progress: number;
   title: string;
-  tone: 'is-safe' | 'is-warning' | 'is-danger';
 }
 
 /**
@@ -22,20 +22,19 @@ export function CreateSessionUsagePresentation(usage: SessionUsagePresentationIn
   if (usage.source === 'actual') {
     const percent = Math.min(100, Math.round((usage.inputTokens / Math.max(1, usage.contextLimit)) * 100));
     return {
-      display: `${percent}%`,
-      title: `真实 Usage：prompt_tokens ${usage.inputTokens.toLocaleString()} / context_limit ${usage.contextLimit.toLocaleString()}；压缩阈值 ${usage.compressionThreshold}%`,
-      tone: percent < 50 ? 'is-safe' : percent < 70 ? 'is-warning' : 'is-danger',
+      progress: percent,
+      // 详情刻意不暴露具体 token 数；阈值和进度仍足以表达压缩时机。
+      title: `上下文进度 ${percent}%；压缩阈值 ${usage.compressionThreshold}%`,
     };
   }
-  if (usage.source === 'loading') return { display: '—', title: '正在恢复此会话的 Usage', tone: 'is-safe' };
+  if (usage.source === 'loading') return { progress: 0, title: '正在恢复上下文进度' };
   if (usage.source === 'unavailable' && usage.reportedRequestCount === 0 && usage.unreportedRequestCount === 0) {
-    return { display: '—', title: '新会话尚无已完成请求', tone: 'is-safe' };
+    return { progress: 0, title: '新会话尚无上下文进度' };
   }
   return {
-    display: '未知',
+    progress: 0,
     title: usage.source === 'legacy_estimate'
-      ? '历史版本只保存了估算值，不能作为真实 Usage 使用'
-      : '当前会话未收到 Provider 返回的 Usage；不会用本地估算替代',
-    tone: 'is-safe',
+      ? '历史会话没有可用的真实上下文进度'
+      : '当前会话未收到 Provider 返回的上下文进度',
   };
 }

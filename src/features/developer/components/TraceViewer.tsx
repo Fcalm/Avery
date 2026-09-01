@@ -45,6 +45,29 @@ function PayloadText(payload: unknown) {
   return JSON.stringify(payload ?? '');
 }
 
+/** 将结构化载荷转换为可阅读的键值内容，避免详情中出现 JSON 字符串引号。 */
+function FormatPayload(payload: unknown, depth = 0): string {
+  const indent = '  '.repeat(depth);
+  if (payload === null || payload === undefined) return 'null';
+  if (typeof payload === 'string' || typeof payload === 'number' || typeof payload === 'boolean') return String(payload);
+  if (Array.isArray(payload)) {
+    if (!payload.length) return '[]';
+    return payload.map((item) => {
+      if (item && typeof item === 'object') return `${indent}-\n${FormatPayload(item, depth + 1)}`;
+      return `${indent}- ${FormatPayload(item, depth + 1)}`;
+    }).join('\n');
+  }
+  if (typeof payload === 'object') {
+    const entries = Object.entries(payload as Record<string, unknown>);
+    if (!entries.length) return '{}';
+    return entries.map(([key, value]) => {
+      if (value && typeof value === 'object') return `${indent}${key}:\n${FormatPayload(value, depth + 1)}`;
+      return `${indent}${key}: ${FormatPayload(value, depth + 1)}`;
+    }).join('\n');
+  }
+  return String(payload);
+}
+
 function EstimateTokenCount(payload: unknown) {
   const content = PayloadText(payload);
   if (!content) return 0;
@@ -103,7 +126,26 @@ function EventRow({ event, expanded, onToggle }: { event: TimelineEvent; expande
       <span className="trace-event-tokens">{event.tokenCount.toLocaleString()} tokens</span>
       <time>{FormatTime(event.createdAt)}</time>
     </button>
-    {expanded && <pre>{JSON.stringify(event.payload, null, 2)}</pre>}
+    {expanded && <pre>{FormatPayload(event.payload)}</pre>}
+  </article>;
+}
+
+function EventThumbnail({ event, selected, onSelect }: { event: TimelineEvent; selected: boolean; onSelect: () => void }) {
+  return <button className={`trace-event-thumbnail ${selected ? 'selected' : ''}`} type="button" aria-current={selected ? 'true' : undefined} onClick={onSelect}>
+    <b className={`trace-event-role trace-event-role-${event.title.toLowerCase()}`}>{event.title}</b>
+    <small>{event.detail}</small>
+    <time>{FormatTime(event.createdAt)}</time>
+  </button>;
+}
+
+function EventDetail({ event }: { event: TimelineEvent }) {
+  return <article className="trace-event-detail-card">
+    <header>
+      <span className="trace-event-copy"><b className={`trace-event-role trace-event-role-${event.title.toLowerCase()}`}>{event.title}</b><small>{event.detail}</small></span>
+      <span className="trace-event-tokens">{event.tokenCount.toLocaleString()} tokens</span>
+      <time>{FormatTime(event.createdAt)}</time>
+    </header>
+    <pre>{FormatPayload(event.payload)}</pre>
   </article>;
 }
 
@@ -115,6 +157,7 @@ function TraceViewer({ traces, conversations, onSelectTrace, onDeleteTraces, foc
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [eventsByRequest, setEventsByRequest] = useState<Record<string, AgentTraceEvent[]>>({});
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [selectedEventId, setSelectedEventId] = useState<string | null>(null);
   const [query, setQuery] = useState('');
   const [eventFilter, setEventFilter] = useState<EventFilter>('all');
 
@@ -160,6 +203,13 @@ function TraceViewer({ traces, conversations, onSelectTrace, onDeleteTraces, foc
     return timeline.filter((event) => MatchesFilter(event) && (!needle || `${event.title} ${event.detail} ${PayloadText(event.payload)}`.toLowerCase().includes(needle)));
   }, [eventFilter, query, timeline]);
 
+  const selectedEvent = isCurrentConversationMode ? visibleTimeline.find((event) => event.id === selectedEventId) ?? null : null;
+
+  useEffect(() => {
+    if (!isCurrentConversationMode) return;
+    setSelectedEventId((current) => visibleTimeline.some((event) => event.id === current) ? current : visibleTimeline[0]?.id ?? null);
+  }, [isCurrentConversationMode, visibleTimeline]);
+
   function ToggleEvent(id: string) {
     setExpanded((current) => { const next = new Set(current); next.has(id) ? next.delete(id) : next.add(id); return next; });
   }
@@ -188,18 +238,22 @@ function TraceViewer({ traces, conversations, onSelectTrace, onDeleteTraces, foc
           </button></div>;
         })}</div>
       </aside>}
+      {isCurrentConversationMode && <aside className="trace-event-list-aside" aria-label="当前对话轨迹事件">
+        <div className="trace-list-heading"><b>当前轨迹</b><small>{visibleTimeline.length} 条</small></div>
+        {visibleTimeline.length ? <div className="trace-request-list">{visibleTimeline.map((event) => <EventThumbnail key={event.id} event={event} selected={selectedEvent?.id === event.id} onSelect={() => setSelectedEventId(event.id)} />)}</div> : <p className="empty-copy">没有符合筛选条件的轨迹事件。</p>}
+      </aside>}
       <main>
         {selectedConversation ? <>
           <div className="trace-detail-header">
             <div className="trace-detail-metadata">
-              <span><b>{FormatDateTime(selectedConversation.traces[0].createdAt)}</b></span>
-              <span><b>{selectedConversation.traces.at(-1)?.model}</b></span>
-              <span><b>{selectedConversation.traces.length} requests</b></span>
+              <span><b>{FormatDateTime(selectedEvent?.createdAt ?? selectedConversation.traces[0].createdAt)}</b></span>
+              <span><b>{selectedEvent ? selectedConversation.traces[selectedEvent.requestIndex - 1]?.model : selectedConversation.traces.at(-1)?.model}</b></span>
+              <span><b>{selectedEvent ? `TURN-${selectedEvent.requestIndex}` : `${selectedConversation.traces.length} requests`}</b></span>
               <span className="trace-scene"><b>求职助手</b></span>{onDeleteTraces && <button className="trace-detail-delete" type="button" aria-label={`删除${selectedConversation.title}的 Trace`} title="删除此对话的 Trace" onClick={() => { setDeleteError(null); setDeleteTarget(selectedConversation); }}><Icon name="delete" size={14} /></button>}
             </div>
             <div className="trace-detail-controls"><div className="trace-search"><Icon name="search" size={14} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索事件内容" aria-label="搜索事件内容" /></div><Select className="trace-event-filter" value={eventFilter} onChange={(value) => setEventFilter(value as EventFilter)} ariaLabel="筛选事件" options={[{ value: 'all', label: '全部事件' }, { value: 'System', label: 'System' }, { value: 'User', label: 'User' }, { value: 'Tool', label: 'Tool' }, { value: 'Assistant', label: 'Assistant' }, { value: 'Success', label: 'Success' }, { value: 'Failed', label: 'Failed' }]} /></div>
           </div>
-          {visibleTimeline.length ? <div className="trace-event-list">{visibleTimeline.map((event, index) => <div key={event.id} className="trace-request-group">{(index === 0 || visibleTimeline[index - 1].requestId !== event.requestId) && <div className="trace-request-divider"><span>TURN-{event.requestIndex}</span><small>{FormatTime(selectedConversation.traces[event.requestIndex - 1].createdAt)}</small></div>}<EventRow event={event} expanded={expanded.has(event.id)} onToggle={() => ToggleEvent(event.id)} /></div>)}</div> : <p className="empty-copy">此对话暂时没有可显示的 System、User、Tool 或 Assistant 事件。</p>}
+          {isCurrentConversationMode ? selectedEvent ? <EventDetail event={selectedEvent} /> : <p className="empty-copy">此对话暂时没有可显示的 System、User、Tool 或 Assistant 事件。</p> : visibleTimeline.length ? <div className="trace-event-list">{visibleTimeline.map((event, index) => <div key={event.id} className="trace-request-group">{(index === 0 || visibleTimeline[index - 1].requestId !== event.requestId) && <div className="trace-request-divider"><span>TURN-{event.requestIndex}</span><small>{FormatTime(selectedConversation.traces[event.requestIndex - 1].createdAt)}</small></div>}<EventRow event={event} expanded={expanded.has(event.id)} onToggle={() => ToggleEvent(event.id)} /></div>)}</div> : <p className="empty-copy">此对话暂时没有可显示的 System、User、Tool 或 Assistant 事件。</p>}
         </> : <p className="empty-copy">发送一条消息后，这里会按对话归纳 Trace 记录。</p>}
       </main>
     </div>

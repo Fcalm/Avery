@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type CSSProperties, type KeyboardEvent, type MouseEvent } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useLayoutEffect } from 'react';
-import type { AgentObservability, AgentStreamEvent, BrowserActionState, ConfirmationMode } from '@offerget/contracts';
+import type { AgentObservability, AgentStreamEvent, BrowserActionState, ConfirmationMode, ReasoningEffort } from '@offerget/contracts';
+import { CreateResumeDocumentMarkup } from '@offerget/contracts';
 import { useUiStore } from '../../../app/UiStore';
 import { WORKSPACE_QUERY_KEY } from '../../../features/workspace/api/workspaceData';
 import {
@@ -12,8 +13,8 @@ import { useResumes, useUpsertResume } from '../../../features/resume/api/resume
 import { useProfiles } from '../../../features/profile/api/profileQueries';
 import { useSettings } from '../../../features/settings/api/settingsQueries';
 import {
-  AcquireResumeEditLock, BindProjectEnvironment, CancelAgentRequest, ConfirmBrowserAction, ConfirmResumeEdit, GetAgentObservability, GetAgentTraceEvents, GetDeepSeekModels, GetSessionAssistantState, ImportAttachmentFile,
-  ReleaseResumeEditLock, ReloadAgentSession, SelectAgentProjectDirectory, SendAgentRequest, SubscribeAgentStream, UpdateAgentConfirmationMode,
+  AcquireResumeEditLock, BindProjectEnvironment, CancelAgentRequest, ConfirmBrowserAction, ConfirmCronTask, ConfirmResumeEdit, GetAgentObservability, GetAgentTraceEvents, GetDeepSeekModels, GetSessionAssistantState, ImportAttachmentFile,
+  ReleaseResumeEditLock, ReloadAgentSession, SelectAgentProjectDirectory, SendAgentRequest, SubscribeAgentStream, UpdateAgentConfirmationMode, UpdateAgentReasoningEffort,
 } from '../../../features/assistant/api/agentQueries';
 import { Button, Modal, Select } from '../../../shared/components/UI';
 import { Icon, type IconName } from '../../../shared/components/Icon';
@@ -29,51 +30,31 @@ const ScenarioOptions: Array<{ id: 'default' | 'application'; label: string; ico
   { id: 'application', label: '浏览器投递', icon: 'applications', description: '使用独立持久化浏览器搜索与投递' },
 ];
 const FallbackDeepSeekModels = ['deepseek-v4-flash', 'deepseek-v4-pro', 'deepseek-v4-flash-vision-exp'];
+const FallbackReasoningEfforts: ReasoningEffort[] = ['low', 'medium', 'high', 'xhigh', 'max'];
+const ReasoningEffortLabels: Record<ReasoningEffort, string> = {
+  low: '低', medium: '中', high: '高', xhigh: '超高', max: '最高',
+};
 const ConfirmationOptions: Array<{ id: ConfirmationMode; label: string; description: string }> = [
   { id: 'always_confirm', label: '始终确认', description: '执行任何外部修改前都征求同意' },
   { id: 'allow_low_risk', label: '允许低风险', description: '低风险操作自动执行，其他操作仍确认' },
   { id: 'fully_trusted', label: '完全信任', description: '在当前工具与数据授权范围内自动执行' },
 ];
 
-const ResumeHtmlTags = new Set(['a', 'b', 'blockquote', 'br', 'div', 'em', 'h1', 'h2', 'h3', 'h4', 'hr', 'i', 'li', 'ol', 'p', 'span', 'strong', 'table', 'tbody', 'td', 'th', 'thead', 'tr', 'ul']);
-const ResumeHtmlDiscardTags = new Set(['embed', 'iframe', 'link', 'meta', 'object', 'script', 'style']);
-
 function TruncateResumeTitle(title: string) {
   const characters = Array.from(title.trim() || '未命名简历');
   return characters.slice(0, 8).join('');
 }
 
-/** 仅保留简历展示所需的基础 HTML，移除脚本、事件属性和非安全链接。 */
-function SanitizeResumeHtml(content: string) {
-  const documentNode = new DOMParser().parseFromString(content, 'text/html');
-  for (const element of [...documentNode.body.querySelectorAll('*')]) {
-    const tagName = element.tagName.toLowerCase();
-    if (ResumeHtmlDiscardTags.has(tagName)) { element.remove(); continue; }
-    if (!ResumeHtmlTags.has(tagName)) { element.replaceWith(...element.childNodes); continue; }
-    for (const attribute of [...element.attributes]) {
-      if (tagName === 'a' && attribute.name === 'href') {
-        try {
-          const url = new URL(attribute.value, 'https://offerget.local');
-          if (url.protocol === 'http:' || url.protocol === 'https:' || url.protocol === 'mailto:') continue;
-        } catch { /* 无效链接按普通文本展示。 */ }
-      }
-      element.removeAttribute(attribute.name);
-    }
-    if (tagName === 'a' && element.hasAttribute('href')) { element.setAttribute('target', '_blank'); element.setAttribute('rel', 'noreferrer'); }
-  }
-  return documentNode.body.innerHTML;
-}
-
-function ResumePreview({ content }: { content: string }) {
-  if (!/<\/?[a-z][^>]*>/i.test(content)) return <pre>{content}</pre>;
-  return <div className="resume-html-preview" dangerouslySetInnerHTML={{ __html: SanitizeResumeHtml(content) }} />;
+/** 侧栏预览始终复用导出模板：历史内容会安全降级为段落和列表。 */
+function ResumePreview({ name, content }: { name: string; content: string }) {
+  return <div className="resume-html-preview" dangerouslySetInnerHTML={{ __html: CreateResumeDocumentMarkup({ name, summary: '', content }) }} />;
 }
 type SessionUsageView = {
   percent: number; threshold: number; compressionCount: number; tokens: number; limit: number;
   source: 'actual' | 'unavailable' | 'legacy_estimate' | 'loading'; promptTokens: number; completionTokens: number; totalTokens: number; reportedRequestCount: number; unreportedRequestCount: number;
 };
 const EmptyUsage: SessionUsageView = {
-  percent: 0, threshold: 80, compressionCount: 0, tokens: 0, limit: 64000,
+  percent: 0, threshold: 80, compressionCount: 0, tokens: 0, limit: 256000,
   source: 'loading', promptTokens: 0, completionTokens: 0, totalTokens: 0, reportedRequestCount: 0, unreportedRequestCount: 0,
 };
 const ComposerCompactWidth = 640;
@@ -82,7 +63,73 @@ function UpgradeDeepSeekModel(model: string | undefined) {
   return model === 'deepseek-chat' || model === 'deepseek-reasoner' || !model ? 'deepseek-v4-flash' : model;
 }
 
+/** 当前模型列表只返回名称，没有随模型返回可用思考档位；后续接入元数据时仅需在此处替换回退列表。 */
+function GetReasoningEffortOptions(_model: string): ReasoningEffort[] {
+  return FallbackReasoningEfforts;
+}
+
+function IsReasoningEffort(value: unknown): value is ReasoningEffort {
+  return typeof value === 'string' && FallbackReasoningEfforts.includes(value as ReasoningEffort);
+}
+
+function GetDefaultReasoningEffort(options: ReasoningEffort[]) {
+  return options.includes('medium') ? 'medium' : options[0] ?? 'medium';
+}
+
 interface ComposerAttachment { name: string; path: string; }
+interface AgentTodo { id: string; title: string; description: string; status: string; }
+
+function GetTodoPresentation(status: string) {
+  if (status === 'cancelled' || status === 'deleted') return { className: 'is-deleted', symbol: '×', label: '已删除' };
+  if (status === 'completed') return { className: 'is-completed', symbol: '✓', label: '已完成' };
+  if (status === 'inProgress' || status === 'in_progress') return { className: 'is-in-progress', symbol: '●', label: '进行中' };
+  return { className: 'is-pending', symbol: '○', label: '待办' };
+}
+
+/**
+ * 会话级 UI 配置暂存于 Renderer 本地存储：用于在切换会话或重新进入页面时恢复选择。
+ * 它不是权限授予凭据；实际执行仍由每次请求携带的 confirmationMode 和主进程校验决定。
+ */
+interface StoredConversationComposerState {
+  confirmationMode: ConfirmationMode;
+  model: string;
+  reasoningEffort: ReasoningEffort;
+}
+
+const ConversationComposerStateStorageKey = 'avery.assistant.conversation-composer-state.v1';
+
+function ReadConversationComposerStates(): Record<string, StoredConversationComposerState> {
+  try {
+    const raw = window.localStorage.getItem(ConversationComposerStateStorageKey);
+    if (!raw) return {};
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    const states: Record<string, StoredConversationComposerState> = {};
+    for (const [conversationId, value] of Object.entries(parsed)) {
+      if (!value || typeof value !== 'object' || Array.isArray(value)) continue;
+      const candidate = value as Partial<StoredConversationComposerState>;
+      if (!['always_confirm', 'allow_low_risk', 'fully_trusted'].includes(candidate.confirmationMode ?? '') || typeof candidate.model !== 'string' || !candidate.model.trim()) continue;
+      states[conversationId] = {
+        confirmationMode: candidate.confirmationMode as ConfirmationMode,
+        model: candidate.model,
+        // 兼容已有的会话缓存：旧缓存未保存档位时使用中档。
+        reasoningEffort: IsReasoningEffort(candidate.reasoningEffort) ? candidate.reasoningEffort : 'medium',
+      };
+    }
+    return states;
+  } catch {
+    // 本地缓存损坏时以安全默认值继续，不阻断会话功能。
+    return {};
+  }
+}
+
+function WriteConversationComposerStates(states: Record<string, StoredConversationComposerState>) {
+  try {
+    window.localStorage.setItem(ConversationComposerStateStorageKey, JSON.stringify(states));
+  } catch {
+    // 隐私模式或存储配额异常不影响本轮请求；状态仅无法跨页面恢复。
+  }
+}
 
 function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
   const { activeConversationId, setActiveConversationId, currentResumeId, setCurrentResumeId, resumePanelOpen, setResumePanelOpen, setRightPanelWidth, assistantView, ShowNotice } = useUiStore();
@@ -103,9 +150,11 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
   const [showPermission, setShowPermission] = useState(false);
   const [showFullyTrustedWarning, setShowFullyTrustedWarning] = useState(false);
   const [showModel, setShowModel] = useState(false);
+  const [showReasoningEffort, setShowReasoningEffort] = useState(false);
   const [showScenario, setShowScenario] = useState(false);
   const [scenarioId, setScenarioId] = useState<'default' | 'application'>('default');
   const [model, setModel] = useState(UpgradeDeepSeekModel(settings.model));
+  const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>('medium');
   const [deepSeekModels, setDeepSeekModels] = useState<string[]>(FallbackDeepSeekModels);
   const [isTaskActive, setIsTaskActive] = useState(false);
   const [panelWidth, setPanelWidth] = useState(430);
@@ -115,12 +164,14 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
   const [resumeText, setResumeText] = useState(resumes.find((item) => item.id === currentResumeId)?.content ?? '');
   const [savedText, setSavedText] = useState(resumeText);
   const [history, setHistory] = useState<string[]>([]);
-  const [agentTask, setAgentTask] = useState<{ id: string; title: string; description: string; status: string } | null>(null);
+  const [agentTodos, setAgentTodos] = useState<AgentTodo[]>([]);
   const [pendingEdit, setPendingEdit] = useState<{ confirmationId: string; name?: string; content: string; reason: string } | null>(null);
   const [pendingBrowserAction, setPendingBrowserAction] = useState<BrowserActionState | null>(null);
+  const [pendingCronTask, setPendingCronTask] = useState<{ confirmationId: string; title: string; message: string; scenarioId: 'default' | 'application'; schedule: unknown; summary: string } | null>(null);
   const [pendingQuestions, setPendingQuestions] = useState<Array<{ id: string; question: string; options: string[] }> | null>(null);
   const [questionAnswers, setQuestionAnswers] = useState<Record<string, string>>({});
   const [otherAnswers, setOtherAnswers] = useState<Record<string, string>>({});
+  const [pendingQuestionIndex, setPendingQuestionIndex] = useState(0);
   const [usage, setUsage] = useState(EmptyUsage);
   const [observability, setObservability] = useState<AgentObservability | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -165,6 +216,17 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
     reportedRequestCount: usage.reportedRequestCount,
     unreportedRequestCount: usage.unreportedRequestCount,
   });
+  const activeTodo = agentTodos.find((item) => GetTodoPresentation(item.status).className === 'is-in-progress') ?? agentTodos.find((item) => GetTodoPresentation(item.status).className === 'is-pending') ?? agentTodos.at(-1);
+  const PersistConversationComposerState = useCallback((conversationId: string | null, patch: Partial<StoredConversationComposerState>) => {
+    if (!conversationId) return;
+    const states = ReadConversationComposerStates();
+    const existing: StoredConversationComposerState = states[conversationId] ?? {
+      confirmationMode: 'always_confirm' as ConfirmationMode,
+      model: UpgradeDeepSeekModel(settings.model),
+      reasoningEffort: 'medium',
+    };
+    WriteConversationComposerStates({ ...states, [conversationId]: { ...existing, ...patch } });
+  }, [settings.model]);
   useEffect(() => { resumesRef.current = resumes; }, [resumes]);
 
   /** 仅在进入会话或一轮 Agent 成功结束时请求定位；不随流式增量抢占用户滚动位置。 */
@@ -248,6 +310,52 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
     return () => observer.disconnect();
   }, []);
 
+  useEffect(() => {
+    if (!showPermission && !showScenario && !showModel && !showReasoningEffort && !showResumeMenu) return undefined;
+    const CloseAssistantMenusOnOutsidePointer = (event: PointerEvent) => {
+      const target = event.target;
+      const composerMenu = target instanceof Element ? target.closest('.menu-wrap') : null;
+      const resumeSwitcher = resumeSideRef.current?.querySelector('.resume-switcher');
+      if (composerMenu?.querySelector('.permission-button')) {
+        setShowScenario(false);
+        setShowModel(false);
+        setShowReasoningEffort(false);
+      } else if (composerMenu?.querySelector('.scenario-button')) {
+        setShowPermission(false);
+        setShowModel(false);
+        setShowReasoningEffort(false);
+      } else if (composerMenu?.querySelector('.model-button')) {
+        setShowPermission(false);
+        setShowScenario(false);
+        setShowReasoningEffort(false);
+      } else if (composerMenu?.querySelector('.reasoning-effort-button')) {
+        setShowPermission(false);
+        setShowScenario(false);
+        setShowModel(false);
+      } else {
+        setShowPermission(false);
+        setShowScenario(false);
+        setShowModel(false);
+        setShowReasoningEffort(false);
+      }
+      if (!resumeSwitcher?.contains(target as Node)) setShowResumeMenu(false);
+    };
+    const CloseAssistantMenusOnEscape = (event: globalThis.KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      setShowPermission(false);
+      setShowScenario(false);
+      setShowModel(false);
+      setShowReasoningEffort(false);
+      setShowResumeMenu(false);
+    };
+    document.addEventListener('pointerdown', CloseAssistantMenusOnOutsidePointer);
+    document.addEventListener('keydown', CloseAssistantMenusOnEscape);
+    return () => {
+      document.removeEventListener('pointerdown', CloseAssistantMenusOnOutsidePointer);
+      document.removeEventListener('keydown', CloseAssistantMenusOnEscape);
+    };
+  }, [showModel, showPermission, showReasoningEffort, showResumeMenu, showScenario]);
+
   /** 读取会话专属状态。切换时先清空旧会话数据，迟到响应不得覆盖当前会话。 */
   const RefreshSessionAssistantState = useCallback(async (sessionId: string | null) => {
     const version = ++sessionLoadVersionRef.current;
@@ -272,17 +380,39 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
       });
       setProjectEnvironment(next.project);
       setScenarioId(next.scenarioId);
+      // 本地选择可能比后端上一次发送快照更新；仅在本地缓存缺失时使用后端恢复值。
+      // 这样页面重进不覆盖尚未发送的新选择，清理缓存后仍可由后端恢复。
+      const localComposerState = ReadConversationComposerStates()[sessionId];
+      if (!localComposerState) {
+        setPermission(next.confirmationMode);
+        setModel(UpgradeDeepSeekModel(next.model));
+        setReasoningEffort(next.reasoningEffort);
+        PersistConversationComposerState(sessionId, { confirmationMode: next.confirmationMode, model: next.model, reasoningEffort: next.reasoningEffort });
+      }
     } catch {
       if (version === sessionLoadVersionRef.current && activeConversationRef.current === sessionId) {
         setUsage({ ...EmptyUsage, source: 'unavailable' });
         ShowNotice('会话状态恢复失败，当前 usage 未知');
       }
     }
-  }, [ShowNotice]);
+  }, [PersistConversationComposerState, ShowNotice]);
 
   useEffect(() => { void RefreshSessionAssistantState(activeConversationId); }, [activeConversationId, RefreshSessionAssistantState]);
 
-  useEffect(() => { setModel(UpgradeDeepSeekModel(settings.model)); }, [settings.model]);
+  /** 会话切换、页面重进和设置更新时优先恢复会话选择；没有缓存的旧会话才使用安全默认值。 */
+  useEffect(() => {
+    const defaultModel = UpgradeDeepSeekModel(settings.model);
+    if (!activeConversationId) {
+      setPermission('always_confirm');
+      setModel(defaultModel);
+      setReasoningEffort('medium');
+      return;
+    }
+    const stored = ReadConversationComposerStates()[activeConversationId];
+    setPermission(stored?.confirmationMode ?? 'always_confirm');
+    setModel(stored?.model ?? defaultModel);
+    setReasoningEffort(stored?.reasoningEffort ?? 'medium');
+  }, [activeConversationId, settings.model]);
   useEffect(() => {
     if (settings.provider !== 'DeepSeek') return;
     void GetDeepSeekModels().then((result) => { if (result.models.length) setDeepSeekModels(result.models); }).catch(() => undefined);
@@ -318,18 +448,40 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
       setPendingBrowserAction(event.browserAction);
       return;
     }
+    if (event.type === 'cron_task_confirmation' && event.confirmationId && event.cronTask) {
+      setPendingCronTask({
+        confirmationId: event.confirmationId, title: event.cronTask.title ?? '定时任务', message: event.cronTask.message ?? '',
+        scenarioId: event.cronTask.scenarioId ?? 'default', schedule: event.cronTask.schedule, summary: event.cronTask.summary ?? '该任务将以无人值守模式定时执行。',
+      });
+      return;
+    }
+    if (event.type === 'cron_task_changed' || event.type === 'cron_run_completed') { queryClient.invalidateQueries({ queryKey: WORKSPACE_QUERY_KEY }); return; }
     if (event.type === 'browser_action_completed' && event.browserAction) {
       setPendingBrowserAction(null);
       if (event.browserAction.status === 'status_unknown') ShowNotice('浏览器动作结果未知，请先在目标网站核对，不要重复执行');
-      else if (event.browserAction.status === 'succeeded') ShowNotice('浏览器动作已执行；可发送“继续任务”让 Agent 重新读取页面');
+      else if (event.browserAction.status === 'succeeded') ShowNotice('浏览器动作已执行，Agent 将自动继续');
       return;
     }
     if (event.type === 'browser_user_action') {
       ShowNotice(event.browserAction?.summary ?? '请在可见浏览器中完成登录或验证，然后发送“继续任务”');
       return;
     }
-    if ((event.type === 'task_created' || event.type === 'task_updated') && event.task) { setAgentTask(event.task); setIsTaskActive(true); return; }
-    if (event.type === 'question_requested' && event.questions) { setPendingQuestions(event.questions); setQuestionAnswers(Object.fromEntries(event.questions.map((question) => [question.id, question.options[0] ?? '其他']))); setOtherAnswers({}); return; }
+    if ((event.type === 'task_created' || event.type === 'task_updated') && event.task) {
+      const task = event.task;
+      setAgentTodos((current) => {
+        const index = current.findIndex((item) => item.id === task.id);
+        if (index < 0) return [...current, task];
+        return current.map((item, itemIndex) => itemIndex === index ? task : item);
+      });
+      setIsTaskActive(true);
+      return;
+    }
+    if (event.type === 'task_deleted' && event.task) {
+      const deletedTaskId = event.task.id;
+      setAgentTodos((current) => current.filter((item) => item.id !== deletedTaskId));
+      return;
+    }
+    if (event.type === 'question_requested' && event.questions) { setPendingQuestions(event.questions); setQuestionAnswers(Object.fromEntries(event.questions.map((question) => [question.id, question.options[0] ?? '其他']))); setOtherAnswers({}); setPendingQuestionIndex(0); return; }
     if (event.type === 'waiting_user_input' || event.type === 'waiting_confirmation' || event.type === 'paused') {
       const waitingRequestId = activeRequestRef.current;
       if (!waitingRequestId || event.requestId !== waitingRequestId) return;
@@ -412,6 +564,8 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
     const placeholder: ChatMessage = { id: `reply-${requestId}`, role: 'assistant', content: '', thinkingContent: '', createdAt: Date.now() };
     patchConversations((current) => current.some((item) => item.id === targetId) ? current.map((item) => item.id === targetId ? { ...item, updatedAt: Date.now(), messages: [...item.messages, message, placeholder] } : item) : [{ id: targetId, title: text.slice(0, 18) || '新的求职会话', updatedAt: Date.now(), messages: [message, placeholder] }, ...current]);
     appendMessages.mutate({ conversationId: targetId, messages: [message, placeholder] });
+    // 新会话在首条请求前写入当前选择，后续切回该会话不再丢失模型和确认权限。
+    PersistConversationComposerState(targetId, { confirmationMode: permission, model, reasoningEffort });
     setActiveConversationId(targetId);
     activeRequestRef.current = requestId;
     try {
@@ -422,8 +576,8 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
         if (activeConversationRef.current === targetId) setProjectEnvironment(boundProject);
       }
       activePlaceholderRef.current = { conversationId: targetId, requestId, content: '', thinkingContent: '' };
-      setComposer(''); setAttachments([]); setAgentTask(null); setIsTaskActive(false);
-      await SendAgentRequest({ requestId, sessionId: targetId, content: message.content, model, confirmationMode: permission, attachments, projectId: boundProject?.projectId ?? undefined, resumeId: currentResumeId ?? undefined, scenarioId });
+      setComposer(''); setAttachments([]); setAgentTodos([]); setIsTaskActive(false);
+      await SendAgentRequest({ requestId, sessionId: targetId, content: message.content, model, reasoningEffort, confirmationMode: permission, attachments, projectId: boundProject?.projectId ?? undefined, resumeId: currentResumeId ?? undefined, scenarioId });
     } catch (error) {
       removeMessage.mutate({ conversationId: targetId, messageId: `reply-${requestId}` });
       activePlaceholderRef.current = null;
@@ -439,12 +593,32 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
   async function ApplyConfirmationMode(next: ConfirmationMode) {
     setPermission(next);
     setShowPermission(false);
+    PersistConversationComposerState(activeConversationId, { confirmationMode: next });
     const requestId = activeRequestRef.current;
     if (!requestId) return;
     try {
       await UpdateAgentConfirmationMode(requestId, next);
     } catch (error) {
       ShowNotice(error instanceof Error ? error.message : '确认权限同步失败，将在下一轮任务生效');
+    }
+  }
+
+  function HandleSelectModel(nextModel: string) {
+    const nextEffortOptions = GetReasoningEffortOptions(nextModel);
+    const nextReasoningEffort = nextEffortOptions.includes(reasoningEffort) ? reasoningEffort : GetDefaultReasoningEffort(nextEffortOptions);
+    setModel(nextModel);
+    setReasoningEffort(nextReasoningEffort);
+    setShowModel(false);
+    PersistConversationComposerState(activeConversationId, { model: nextModel, reasoningEffort: nextReasoningEffort });
+  }
+
+  function HandleSelectReasoningEffort(nextEffort: ReasoningEffort) {
+    setReasoningEffort(nextEffort);
+    // 拖动滑块时保持弹层展开，允许连续比较不同档位；点击外部或主按钮才关闭。
+    PersistConversationComposerState(activeConversationId, { reasoningEffort: nextEffort });
+    if (activeConversationId) {
+      void UpdateAgentReasoningEffort(activeConversationId, nextEffort)
+        .catch((error) => ShowNotice(error instanceof Error ? error.message : '思考强度保存失败，将在下一次发送时重试'));
     }
   }
 
@@ -552,7 +726,22 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
       const result = await ConfirmResumeEdit(pendingEdit.confirmationId, accepted);
       ShowNotice(result.applied ? '已确认并保存 Agent 修改' : '已拒绝 Agent 修改');
       setPendingEdit(null);
+      void HandleSend(result.applied
+        ? '我已确认并保存上述简历修改，请继续任务。'
+        : '我拒绝了上述简历修改，请根据我的决定调整方案并继续任务。');
     } catch (error) { ShowNotice(error instanceof Error ? error.message : '无法处理简历确认'); }
+  }
+
+  async function HandlePendingCronTask(accepted: boolean) {
+    if (!pendingCronTask) return;
+    try {
+      const result = await ConfirmCronTask(pendingCronTask.confirmationId, accepted);
+      ShowNotice(result.created ? '定时任务已保存并注册后台唤醒' : '已取消创建定时任务');
+      setPendingCronTask(null);
+      void HandleSend(result.created
+        ? '我已确认创建上述定时任务，任务已经保存，请继续。'
+        : '我拒绝创建上述定时任务，请根据我的决定调整方案并继续。');
+    } catch (error) { ShowNotice(error instanceof Error ? error.message : '无法处理定时任务确认'); }
   }
 
   async function HandlePendingBrowserAction(accepted: boolean) {
@@ -561,9 +750,19 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
     try {
       const result = await ConfirmBrowserAction(confirmationId, accepted);
       setPendingBrowserAction(null);
-      if (result.status === 'succeeded') ShowNotice('浏览器动作已执行；发送“继续任务”即可恢复 Agent');
-      else if (result.status === 'status_unknown') ShowNotice('动作结果未知，请在网站中核对后再继续');
-      else ShowNotice('已拒绝浏览器动作');
+      if (result.status === 'succeeded') {
+        ShowNotice('浏览器动作已执行，Agent 将自动继续');
+        void HandleSend('我已确认上述浏览器操作，操作已执行成功。请重新读取当前页面状态并继续任务。');
+      } else if (result.status === 'status_unknown') {
+        ShowNotice('动作结果未知，Agent 将重新核对页面');
+        void HandleSend('我已确认上述浏览器操作，但执行结果未知。请重新读取当前页面状态，不要重复执行该操作。');
+      } else if (result.status === 'failed') {
+        ShowNotice('浏览器动作执行失败，Agent 将根据结果继续');
+        void HandleSend(`我已确认上述浏览器操作，但执行失败${result.message ? `：${result.message}` : ''}。请根据结果调整方案并继续任务。`);
+      } else {
+        ShowNotice('已拒绝浏览器动作，Agent 将自动继续');
+        void HandleSend('我拒绝执行上述浏览器操作，请根据我的决定调整方案并继续任务。');
+      }
     } catch (error) { ShowNotice(error instanceof Error ? error.message : '无法处理浏览器确认'); }
   }
 
@@ -576,14 +775,31 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
     void HandleSend(answer);
   }
 
+  function CancelPendingQuestions() {
+    setPendingQuestions(null);
+    setQuestionAnswers({});
+    setOtherAnswers({});
+    setPendingQuestionIndex(0);
+  }
+
+  function ContinuePendingQuestions() {
+    if (!pendingQuestions) return;
+    if (pendingQuestionIndex < pendingQuestions.length - 1) { setPendingQuestionIndex((current) => current + 1); return; }
+    SubmitQuestionAnswers();
+  }
+
+  const isEmptyConversation = !conversation?.messages.length;
+  const hasComposerBlocker = Boolean(pendingQuestions || pendingEdit || pendingCronTask || pendingBrowserAction);
+  const reasoningEffortOptions = GetReasoningEffortOptions(model);
+  const reasoningEffortIndex = Math.max(0, reasoningEffortOptions.indexOf(reasoningEffort));
   return <div className={`assistant-layout ${isComposerCompact ? 'is-composer-compact' : ''}`} style={{ '--assistant-main-min-width': `${ASSISTANT_MAIN_MIN_WIDTH}px` } as CSSProperties}>
-    {assistantView === 'trace' ? <section className="assistant-main assistant-trace" aria-label="当前对话轨迹"><TraceViewer traces={observability?.traces ?? []} conversations={conversations} focusConversationId={activeConversationId} onSelectTrace={GetAgentTraceEvents} /></section> : <section className="assistant-main">
-      {conversation?.messages.length ? <div ref={messageListRef} className="message-list"><div className="message-thread">{conversation.messages.map((message) => <article key={message.id} className={`chat-message ${message.role}`}><div className="message-meta">{message.role === 'assistant' ? <><span className="agent-dot" />OFFERGET 回信</> : '你'}<time>{FormatTime(message.createdAt)}</time></div>{message.role === 'assistant' && settings.thinkingEnabled && message.thinkingContent && <details className="thinking-block"><summary>思考内容</summary><div className="thinking-content"><MarkdownText content={message.thinkingContent} /></div></details>}<MarkdownText content={message.content} /></article>)}</div></div> : <EmptyAssistant scenarioId={scenarioId} onUse={setComposer} onOpenApplication={() => HandleScenarioChange('application')} />}
+    {assistantView === 'trace' ? <section className="assistant-main assistant-trace" aria-label="当前对话轨迹"><TraceViewer traces={observability?.traces ?? []} conversations={conversations} focusConversationId={activeConversationId} onSelectTrace={GetAgentTraceEvents} /></section> : <section className={`assistant-main ${isEmptyConversation ? 'is-empty-conversation' : ''}`}>
+      {conversation?.messages.length ? <div ref={messageListRef} className="message-list"><div className="message-thread">{conversation.messages.map((message) => <article key={message.id} className={`chat-message ${message.role}`}><div className="message-meta">{message.role === 'assistant' ? <><span className="agent-dot" />OFFERGET 回信</> : '你'}<time>{FormatTime(message.createdAt)}</time></div>{message.role === 'assistant' && settings.thinkingEnabled && message.thinkingContent && <details className="thinking-block"><summary>思考内容</summary><div className="thinking-content"><MarkdownText content={message.thinkingContent} /></div></details>}<MarkdownText content={message.content} /></article>)}</div></div> : <EmptyAssistant scenarioId={scenarioId} />}
       <div className="composer-dock">
-        {isTaskActive && <div className="task-dock"><button className="task-summary" type="button" onClick={() => setIsTaskActive(false)}><span>●</span> 当前正在做：{agentTask?.title ?? '生成求职助手回复'} <small>{agentTask?.status === 'in_progress' ? '进行中' : '点击收起任务'}</small></button><div className="task-card"><div><strong>{agentTask?.title ?? '正在处理本轮请求'}</strong><em>{agentTask?.status === 'in_progress' ? '进行中' : '处理中'}</em></div><p className="doing">● {agentTask?.description || '正在根据当前简历与档案组织回复'}</p></div></div>}
-        {attachments.length > 0 && <div className="attachment-row">{attachments.map((attachment) => <span key={`${attachment.name}-${attachment.path}`}><Icon name="resume" size={14} />{attachment.name}<button type="button" aria-label={`移除 ${attachment.name}`} onClick={() => setAttachments((current) => current.filter((item) => item !== attachment))}><Icon name="close" size={13} /></button></span>)}</div>}
-        <div className="project-environment-row"><button type="button" onClick={() => void HandleSelectProject()}><Icon name="jobs" size={14} />{projectEnvironment ? projectEnvironment.name : '选择项目环境'}</button></div>
-        <div ref={composerRef} className="composer">
+        {isTaskActive && agentTodos.length > 0 && <div className="task-dock"><div className="task-summary"><span className={`task-status-icon ${GetTodoPresentation(activeTodo?.status ?? 'pending').className}`} aria-hidden="true">{GetTodoPresentation(activeTodo?.status ?? 'pending').symbol}</span><span className="task-summary-copy">{activeTodo?.title ?? '正在处理任务'}</span><span className={`task-summary-status ${GetTodoPresentation(activeTodo?.status ?? 'pending').className}`}>{GetTodoPresentation(activeTodo?.status ?? 'pending').label}</span></div><div className="task-card" aria-label="Todo 列表"><div className="task-card-heading">Todo · {agentTodos.length} 项</div><div className="task-list">{agentTodos.map((todo) => { const presentation = GetTodoPresentation(todo.status); return <div key={todo.id} className={`task-list-item ${presentation.className}`}><span className="task-status-icon" aria-hidden="true">{presentation.symbol}</span><span className="task-list-title">{todo.title}</span><span className="task-list-status">{presentation.label}</span></div>; })}</div></div></div>}
+        {!hasComposerBlocker && attachments.length > 0 && <div className="attachment-row">{attachments.map((attachment) => <span className="attachment-chip" key={`${attachment.name}-${attachment.path}`}><Icon name="resume" size={14} /><span className="attachment-name">{attachment.name}</span><button type="button" aria-label={`移除 ${attachment.name}`} onClick={() => setAttachments((current) => current.filter((item) => item !== attachment))}><Icon name="close" size={13} /></button></span>)}</div>}
+        {!hasComposerBlocker && !conversation?.messages.length && <div className="composer-context-tags"><button className="workspace-tag" type="button" onClick={() => void HandleSelectProject()}><Icon name="jobs" size={16} /><span>{projectEnvironment ? projectEnvironment.name : '选择工作区'}</span></button><div className="menu-wrap"><button className="scenario-button context-scenario-tag" type="button" disabled={Boolean(activeRequestRef.current)} aria-label={`场景：${ScenarioOptions.find((item) => item.id === scenarioId)?.label}`} aria-expanded={showScenario} onClick={() => setShowScenario((value) => !value)}><Icon name={scenarioId === 'application' ? 'applications' : 'assistant'} size={16} /><span className="context-tag-label">场景</span><span className="scenario-label">{ScenarioOptions.find((item) => item.id === scenarioId)?.label}</span><span className="chevron-indicator" aria-hidden="true" /></button>{showScenario && <div className="popup-menu scenario-menu" role="menu" aria-label="切换场景">{ScenarioOptions.map((item) => <button key={item.id} type="button" role="menuitem" className={item.id === scenarioId ? 'selected' : ''} onClick={() => HandleScenarioChange(item.id)}><b><Icon name={item.icon} size={15} />{item.label}</b><small>{item.description}</small></button>)}</div>}</div></div>}
+        {pendingQuestions ? <QuestionComposer questions={pendingQuestions} answers={questionAnswers} otherAnswers={otherAnswers} questionIndex={pendingQuestionIndex} onAnswer={(questionId, answer) => setQuestionAnswers((current) => ({ ...current, [questionId]: answer }))} onOtherAnswer={(questionId, answer) => setOtherAnswers((current) => ({ ...current, [questionId]: answer }))} onPrevious={() => setPendingQuestionIndex((current) => Math.max(0, current - 1))} onCancel={CancelPendingQuestions} onContinue={ContinuePendingQuestions} /> : pendingEdit ? <ConfirmationComposer title="确认 Agent 修改简历" description={pendingEdit.reason} preview={pendingEdit.content} confirmLabel="确认并保存" onCancel={() => void HandlePendingEdit(false)} onConfirm={() => void HandlePendingEdit(true)} /> : pendingCronTask ? <ConfirmationComposer title="确认创建无人值守定时任务" description={`${pendingCronTask.summary}\n任务消息：${pendingCronTask.message}`} preview={JSON.stringify(pendingCronTask.schedule, null, 2)} confirmLabel="确认整个周期" onCancel={() => void HandlePendingCronTask(false)} onConfirm={() => void HandlePendingCronTask(true)} /> : pendingBrowserAction ? <ConfirmationComposer title="确认浏览器外部动作" description={`${pendingBrowserAction.summary ?? pendingBrowserAction.toolName}${pendingBrowserAction.url ? `\n目标网站：${pendingBrowserAction.url}` : ''}\n风险级别：${pendingBrowserAction.risk === 'high' ? '高风险' : pendingBrowserAction.risk === 'medium' ? '中风险' : '低风险'}`} confirmLabel="确认执行" onCancel={() => void HandlePendingBrowserAction(false)} onConfirm={() => void HandlePendingBrowserAction(true)} /> : <div ref={composerRef} className="composer">
           <textarea value={composer} placeholder={scenarioId === 'application' ? '写下岗位关键词或粘贴招聘网址，如：搜索上海的前端开发岗位…' : '写下你的需求，如：把这段项目经历写得更突出成果…'} onChange={(event) => setComposer(event.target.value)} onKeyDown={HandleKeyDown} />
           <div className="composer-bar">
             <div>
@@ -595,35 +811,90 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
               </div>
             </div>
             <div>
-              <button className={`composer-usage ${usagePresentation.tone}`} type="button" title={usagePresentation.title} aria-label={usagePresentation.title}>{usage.source === 'actual' && <span className="usage-dot" aria-hidden="true">·</span>}{usagePresentation.display}</button>
-              <div className="menu-wrap">
-                <button className="scenario-button" type="button" disabled={Boolean(activeRequestRef.current)} aria-label={`场景：${ScenarioOptions.find((item) => item.id === scenarioId)?.label}`} aria-expanded={showScenario} onClick={() => setShowScenario((value) => !value)}><Icon name={scenarioId === 'application' ? 'applications' : 'assistant'} size={15} /><span className="scenario-label">{ScenarioOptions.find((item) => item.id === scenarioId)?.label}</span><span className="chevron-indicator" aria-hidden="true" /></button>
-                {showScenario && <div className="popup-menu right scenario-menu">{ScenarioOptions.map((item) => <button key={item.id} onClick={() => HandleScenarioChange(item.id)}><b><Icon name={item.icon} size={15} />{item.label}</b><small>{item.description}</small></button>)}</div>}
+              <div className="composer-usage-ring" role="status" title={usagePresentation.title} aria-label={usagePresentation.title}>
+                <svg viewBox="0 0 36 36" aria-hidden="true" focusable="false">
+                  <circle className="composer-usage-ring-track" cx="18" cy="18" r="11.75" pathLength="100" />
+                  <circle className="composer-usage-ring-progress" cx="18" cy="18" r="11.75" pathLength="100" style={{ strokeDashoffset: 100 - usagePresentation.progress }} />
+                </svg>
               </div>
               <div className="menu-wrap">
                 <button className={`model-button ${settings.provider === 'DeepSeek' ? 'is-deepseek' : ''}`} type="button" aria-label={`模型：${model}`} aria-expanded={showModel} onClick={() => setShowModel((value) => !value)}>{settings.provider === 'DeepSeek' && <Icon name="deepseek" size={15} />}<span className="model-label">{model}</span><span className="chevron-indicator" aria-hidden="true" /></button>
-                {showModel && <div className="popup-menu right">{settings.provider === 'DeepSeek' ? deepSeekModels.map((availableModel) => <button key={availableModel} onClick={() => { setModel(availableModel); setShowModel(false); }}>{availableModel}</button>) : <button onClick={() => setShowModel(false)}>{settings.model}</button>}</div>}
+                {showModel && <div className="popup-menu right">{settings.provider === 'DeepSeek' ? deepSeekModels.map((availableModel) => <button key={availableModel} onClick={() => HandleSelectModel(availableModel)}>{availableModel}</button>) : <button onClick={() => HandleSelectModel(settings.model ?? '')}>{settings.model}</button>}</div>}
+              </div>
+              <div className="menu-wrap reasoning-effort-wrap">
+                <button className="reasoning-effort-button" type="button" aria-label={`思考模式：${ReasoningEffortLabels[reasoningEffort]}`} aria-expanded={showReasoningEffort} title="思考强度按会话保存，并在下一轮模型请求生效" onClick={() => setShowReasoningEffort((value) => !value)}><span>{ReasoningEffortLabels[reasoningEffort]}</span><span className="chevron-indicator" aria-hidden="true" /></button>
+                {showReasoningEffort && <div className="popup-menu right reasoning-effort-menu" role="group" aria-label="选择思考强度">
+                  <span className="reasoning-effort-options" aria-hidden="true">{reasoningEffortOptions.map((effort, index) => <span key={effort} className={index === reasoningEffortIndex ? 'is-active' : ''}>{ReasoningEffortLabels[effort]}</span>)}</span>
+                  <div className="reasoning-effort-slider" style={{ '--reasoning-progress': `${(reasoningEffortIndex / Math.max(1, reasoningEffortOptions.length - 1)) * 100}%` } as CSSProperties}>
+                    <input type="range" min="0" max={reasoningEffortOptions.length - 1} step="1" value={reasoningEffortIndex} aria-label={`思考模式：${ReasoningEffortLabels[reasoningEffort]}`} aria-valuetext={ReasoningEffortLabels[reasoningEffort]} onChange={(event) => HandleSelectReasoningEffort(reasoningEffortOptions[Number(event.target.value)] ?? GetDefaultReasoningEffort(reasoningEffortOptions))} />
+                  </div>
+                </div>}
               </div>
               <button type="button" disabled title="即将支持" aria-label="语音输入，即将支持"><Icon name="music" size={16} /></button>
               {activeRequestRef.current ? <button className="send-plane" type="button" onClick={HandleStop} aria-label="停止生成"><Icon name="stop" size={15} /></button> : <button className="send-plane" type="button" onClick={() => void HandleSend()} aria-label="寄出"><Icon name="applications" size={17} /></button>}
             </div>
           </div>
-        </div>
+        </div>}
       </div>
+      {isEmptyConversation && <QuickStart scenarioId={scenarioId} onUse={setComposer} />}
     </section>}
-    <section ref={resumeSideRef} className={`resume-side ${resumePanelOpen ? 'open' : ''}`} aria-hidden={!resumePanelOpen} style={{ '--panel-width': `${panelWidth}px` } as CSSProperties}>{resumePanelOpen && <button className="resume-side-backdrop" aria-label="关闭简历栏" onClick={() => setResumePanelOpen(false)} />}<div className="resize-bar" onMouseDown={HandleResize} /><aside><div className="resume-paper">{editing ? <textarea value={resumeText} onChange={(event) => HandleEditChange(event.target.value)} /> : <ResumePreview content={savedText} />}</div><div className="resume-bottom-bar"><div className="resume-switcher"><button className="resume-switcher-trigger" type="button" disabled={!resumes.length} aria-haspopup="menu" aria-expanded={showResumeMenu} title={resume?.name ?? '选择简历'} onClick={() => setShowResumeMenu((value) => !value)}><span>{TruncateResumeTitle(resume?.name ?? '选择简历')}</span><Icon name={showResumeMenu ? 'chevron-up' : 'chevron-down'} size={15} /></button>{showResumeMenu && <div className="resume-switcher-menu" role="menu" aria-label="切换简历">{resumes.map((item) => <button key={item.id} type="button" role="menuitem" className={item.id === currentResumeId ? 'selected' : ''} title={item.name} onClick={() => HandleSelectResume(item.id)}>{TruncateResumeTitle(item.name)}</button>)}</div>}</div><div className="resume-action-row"><Button onClick={HandleStartEditing}>编辑</Button><Button disabled={!history.length} onClick={() => { const last = history.at(-1); if (last) { setResumeText(last); setHistory((current) => current.slice(0, -1)); } }}>撤销</Button><Button variant="primary" onClick={() => void HandleSaveResume()}>保存</Button></div></div></aside></section>
+    <section ref={resumeSideRef} className={`resume-side ${resumePanelOpen ? 'open' : ''}`} aria-hidden={!resumePanelOpen} style={{ '--panel-width': `${panelWidth}px` } as CSSProperties}>{resumePanelOpen && <button className="resume-side-backdrop" aria-label="关闭简历栏" onClick={() => setResumePanelOpen(false)} />}<div className="resize-bar" onMouseDown={HandleResize} /><aside><div className="resume-paper">{editing ? <textarea value={resumeText} onChange={(event) => HandleEditChange(event.target.value)} /> : <ResumePreview name={resume?.name ?? '未命名简历'} content={resumeText} />}</div><div className="resume-bottom-bar"><div className="resume-switcher"><button className="resume-switcher-trigger" type="button" disabled={!resumes.length} aria-haspopup="menu" aria-expanded={showResumeMenu} title={resume?.name ?? '选择简历'} onClick={() => setShowResumeMenu((value) => !value)}><span>{TruncateResumeTitle(resume?.name ?? '选择简历')}</span><Icon name={showResumeMenu ? 'chevron-up' : 'chevron-down'} size={15} /></button>{showResumeMenu && <div className="resume-switcher-menu" role="menu" aria-label="切换简历">{resumes.map((item) => <button key={item.id} type="button" role="menuitem" className={item.id === currentResumeId ? 'selected' : ''} title={item.name} onClick={() => HandleSelectResume(item.id)}>{TruncateResumeTitle(item.name)}</button>)}</div>}</div><div className="resume-action-row"><Button onClick={HandleStartEditing}>编辑</Button><Button disabled={!history.length} onClick={() => { const last = history.at(-1); if (last) { setResumeText(last); setHistory((current) => current.slice(0, -1)); } }}>撤销</Button><Button variant="primary" onClick={() => void HandleSaveResume()}>保存</Button></div></div></aside></section>
     <Modal open={showFullyTrustedWarning} title="开启完全信任模式" onClose={() => setShowFullyTrustedWarning(false)}><p className="modal-copy">开启后，Agent 可在当前场景的工具白名单与数据授权范围内自动执行操作，不再逐项请求确认。此设置不会授予新的工具、文件或账号权限。</p><div className="modal-actions"><Button onClick={() => setShowFullyTrustedWarning(false)}>取消</Button><Button variant="primary" onClick={() => { setShowFullyTrustedWarning(false); void ApplyConfirmationMode('fully_trusted'); }}>我了解风险，继续</Button></div></Modal>
-    <Modal open={Boolean(pendingEdit)} title="确认 Agent 修改简历" onClose={() => void HandlePendingEdit(false)}><p className="modal-copy">{pendingEdit?.reason}</p><pre className="confirmation-preview">{pendingEdit?.content}</pre><div className="modal-actions"><Button onClick={() => void HandlePendingEdit(false)}>拒绝</Button><Button variant="primary" onClick={() => void HandlePendingEdit(true)}>确认并保存</Button></div></Modal>
-    <Modal open={Boolean(pendingBrowserAction)} title="确认浏览器外部动作" onClose={() => void HandlePendingBrowserAction(false)}><div className="browser-confirmation-card"><p><strong>{pendingBrowserAction?.summary ?? pendingBrowserAction?.toolName}</strong></p>{pendingBrowserAction?.url && <p className="modal-copy">目标网站：{pendingBrowserAction.url}</p>}<p className="modal-copy">风险级别：{pendingBrowserAction?.risk === 'high' ? '高风险' : pendingBrowserAction?.risk === 'medium' ? '中风险' : '低风险'}。确认后只会执行这份已冻结的动作；若页面或目标元素改变，后端会拒绝执行。</p></div><div className="modal-actions"><Button onClick={() => void HandlePendingBrowserAction(false)}>拒绝</Button><Button variant="primary" onClick={() => void HandlePendingBrowserAction(true)}>确认执行</Button></div></Modal>
-    <Modal open={Boolean(pendingQuestions)} title="Agent 需要补充信息" onClose={() => setPendingQuestions(null)}><div className="question-card-list">{pendingQuestions?.map((question) => <label key={question.id} className="form-field"><span>{question.question}</span><Select value={questionAnswers[question.id] ?? question.options[0]} onChange={(answer) => setQuestionAnswers((current) => ({ ...current, [question.id]: answer }))} ariaLabel={question.question} options={question.options.map((option) => ({ value: option, label: option }))} />{questionAnswers[question.id] === '其他' && <input placeholder="请输入其他答案" value={otherAnswers[question.id] ?? ''} onChange={(event) => setOtherAnswers((current) => ({ ...current, [question.id]: event.target.value }))} />}</label>)}</div><div className="modal-actions"><Button onClick={() => setPendingQuestions(null)}>取消</Button><Button variant="primary" onClick={SubmitQuestionAnswers}>提交答案</Button></div></Modal>
   </div>;
 }
 
-function EmptyAssistant({ scenarioId, onUse, onOpenApplication }: { scenarioId: 'default' | 'application'; onUse: (prompt: string) => void; onOpenApplication: () => void }) {
+interface PendingQuestion {
+  id: string;
+  question: string;
+  options: string[];
+}
+
+/** Agent 等待用户输入时，使用输入区原位卡片阻断普通消息，避免答复串入另一条任务。 */
+function QuestionComposer({ questions, answers, otherAnswers, questionIndex, onAnswer, onOtherAnswer, onPrevious, onCancel, onContinue }: {
+  questions: PendingQuestion[];
+  answers: Record<string, string>;
+  otherAnswers: Record<string, string>;
+  questionIndex: number;
+  onAnswer: (questionId: string, answer: string) => void;
+  onOtherAnswer: (questionId: string, answer: string) => void;
+  onPrevious: () => void;
+  onCancel: () => void;
+  onContinue: () => void;
+}) {
+  const question = questions[questionIndex];
+  if (!question) return null;
+  const selectedAnswer = answers[question.id] ?? question.options[0] ?? '其他';
+  const needsOtherText = selectedAnswer === '其他';
+  const canContinue = !needsOtherText || Boolean(otherAnswers[question.id]?.trim());
+  const isFinalQuestion = questionIndex === questions.length - 1;
+  return <section className="composer confirmation-composer question-composer" aria-label="请先回答 Agent 的问题" aria-live="assertive">
+    <header><h2>{question.question}</h2></header>
+    <div className="question-choice-list" role="radiogroup" aria-label={question.question}>{question.options.map((option) => <button key={option} type="button" role="radio" aria-checked={selectedAnswer === option} className={selectedAnswer === option ? 'selected' : ''} onClick={() => onAnswer(question.id, option)}><span aria-hidden="true" />{option}</button>)}</div>
+    {needsOtherText && <input autoFocus placeholder="请输入其他答案" value={otherAnswers[question.id] ?? ''} onChange={(event) => onOtherAnswer(question.id, event.target.value)} />}
+    <footer><div className="confirmation-stepper"><button type="button" disabled={questionIndex === 0} aria-label="上一题" onClick={onPrevious}><Icon name="chevron-up" size={15} /></button><span>{questionIndex + 1}/{questions.length}</span><button type="button" disabled={isFinalQuestion} aria-label="下一题" onClick={onContinue}><Icon name="chevron-down" size={15} /></button></div><div><Button onClick={onCancel}>取消</Button><Button variant="primary" disabled={!canContinue} onClick={onContinue}>{isFinalQuestion ? '确认' : '继续'}</Button></div></footer>
+  </section>;
+}
+
+/** 外部动作与内容变更沿用同一输入区确认框，取消和确认都是唯一可用动作。 */
+function ConfirmationComposer({ title, description, preview, confirmLabel, onCancel, onConfirm }: { title: string; description: string; preview?: string; confirmLabel: string; onCancel: () => void; onConfirm: () => void }) {
+  return <section className="composer confirmation-composer" aria-label={title} aria-live="assertive">
+    <header><h2>{title}</h2></header>
+    <p>{description}</p>
+    {preview && <pre>{preview}</pre>}
+    <footer><span>请确认或取消后再继续对话。</span><div><Button onClick={onCancel}>取消</Button><Button variant="primary" onClick={onConfirm}>{confirmLabel}</Button></div></footer>
+  </section>;
+}
+
+function EmptyAssistant({ scenarioId }: { scenarioId: 'default' | 'application' }) {
   if (scenarioId === 'application') {
-    return <div className="assistant-empty application-assistant-empty"><div className="assistant-start-island"><p className="eyebrow">OFFERGET 投递助手 · 公开测试</p><h2>在真实招聘网站上开始求职</h2><p>Agent 可搜索岗位、读取 JD、填写表单和上传已授权材料。登录与验证码由你接管，发送消息、勾选协议和最终提交仍会请求确认。</p><div>{['根据我的简历搜索合适的岗位', '读取这个招聘网址并分析 JD', '帮我填写并投递这个岗位'].map((item) => <button key={item} type="button" onClick={() => onUse(item)}>{item}</button>)}</div></div></div>;
+    return <div className="assistant-empty application-assistant-empty"><div className="assistant-start-island"><p className="eyebrow">OFFERGET 投递助手 · 公开测试</p><h2>在真实招聘网站上开始求职</h2><p>Agent 可搜索岗位、读取 JD、填写表单和上传已授权材料。登录与验证码由你接管，发送消息、勾选协议和最终提交仍会请求确认。</p></div></div>;
   }
-  return <div className="assistant-empty"><div className="assistant-start-island"><p className="eyebrow">OFFERGET 简历助手</p><h2>今天想从哪里开始？</h2><p>写下一个求职目标，或从下面的常用任务开始。</p><div>{['优化现有简历', '为目标岗位定制简历', '分析一份 JD'].map((item) => <button key={item} type="button" onClick={() => onUse(item)}>{item}</button>)}</div><button className="application-scenario-entry" type="button" onClick={onOpenApplication}><Icon name="browser" size={17} /><span><b>进入真实网站投递</b><small>使用隔离浏览器搜索岗位、填写表单并投递</small></span></button></div></div>;
+  return <div className="assistant-empty"><div className="assistant-start-island"><p className="eyebrow">OFFERGET 简历助手</p><h2>今天想从哪里开始？</h2><p>写下一个求职目标，或从下面的常用任务开始。</p></div></div>;
+}
+
+function QuickStart({ scenarioId, onUse }: { scenarioId: 'default' | 'application'; onUse: (prompt: string) => void }) {
+  const prompts = scenarioId === 'application' ? ['根据我的简历搜索合适的岗位', '读取这个招聘网址并分析 JD', '帮我填写并投递这个岗位'] : ['优化现有简历', '为目标岗位定制简历', '分析一份 JD'];
+  return <div className="assistant-quick-start" aria-label="快捷开始">{prompts.map((item) => <button key={item} type="button" onClick={() => onUse(item)}>{item}</button>)}</div>;
 }
 
 export { AssistantPage };

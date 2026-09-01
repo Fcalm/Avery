@@ -48,7 +48,8 @@ export function useSettingsActions() {
     }
     const { apiKey: _apiKey, workspaceName: _workspaceName, ...safeSettings } = settings;
     await platformClient.workspace.SaveSettings(safeSettings);
+    queryClient.setQueryData<WorkspaceData>(WORKSPACE_QUERY_KEY, (old) => old ? { ...old, settings: { ...settings, apiKey: '' } } : old);
     latestSettings = null;
-  }, []);
+  }, [queryClient]);
   return { setSettings, saveSettingsNow };
 }

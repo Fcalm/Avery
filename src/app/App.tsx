@@ -30,7 +30,13 @@ function NativeTitlebar({ sidebarCollapsed, onToggleSidebar }: { sidebarCollapse
     setIsMaximized(await controls?.ToggleMaximize() ?? false);
   }
   return <div className="native-titlebar">
-    <button className="window-control titlebar-sidebar-toggle" type="button" aria-label={sidebarCollapsed ? '展开导航栏' : '隐藏导航栏'} aria-pressed={!sidebarCollapsed} title={sidebarCollapsed ? '展开导航栏' : '隐藏导航栏'} onClick={onToggleSidebar}><Icon name={sidebarCollapsed ? 'sidebar-expand' : 'sidebar-collapse'} size={18} /></button>
+    <div className="titlebar-brand">
+      <button className="titlebar-brand-toggle" type="button" aria-label={sidebarCollapsed ? '展开导航栏' : '隐藏导航栏'} aria-pressed={!sidebarCollapsed} title={sidebarCollapsed ? '展开导航栏' : '隐藏导航栏'} onClick={onToggleSidebar}>
+        <img src="./assets/avery-guiding-elf-icon-v2.png" alt="" />
+        <span className="titlebar-brand-toggle-icon" aria-hidden="true"><Icon name={sidebarCollapsed ? 'sidebar-expand' : 'sidebar-collapse'} size={18} /></span>
+      </button>
+      <span className="titlebar-brand-wordmark">Avery</span>
+    </div>
     {controls && <div className="window-controls" aria-label="窗口控制">
       <button className="window-control window-control-minimize" type="button" aria-label="最小化" onClick={() => void controls.Minimize()}><Icon name="window-minimize" size={14} /></button>
       <button className="window-control window-control-maximize" type="button" aria-label="最大化或还原" onClick={() => void ToggleMaximize()}><Icon name={isMaximized ? 'window-restore' : 'window-maximize'} size={14} /></button>
@@ -46,7 +52,7 @@ function App() {
 
 /** 应用启动阶段的加载占位，替代白屏。 */
 function LoadingScreen() {
-  return <div className="app-screen"><EmptyState className="app-state app-state-loading" role="status" ariaLive="polite" icon={<Icon name="loading" size={24} />} title="正在加载本地工作空间…" description="正在读取会话、简历、岗位、投递与档案。" /></div>;
+  return <div className="app-screen app-splash" role="status" aria-live="polite"><div className="app-splash-content"><svg className="app-splash-brand" viewBox="0 0 278 64" role="img" aria-label="Avery"><defs><linearGradient id="avery-splash-reveal-gradient" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stopColor="white" /><stop offset="0.76" stopColor="white" /><stop offset="1" stopColor="white" stopOpacity="0" /></linearGradient><mask id="avery-splash-reveal-mask" maskUnits="userSpaceOnUse" maskContentUnits="userSpaceOnUse"><rect x="-360" y="0" width="360" height="64" fill="url(#avery-splash-reveal-gradient)"><animate attributeName="x" from="-360" to="0" dur="1.2s" fill="freeze" /></rect></mask></defs><g mask="url(#avery-splash-reveal-mask)"><image href="./assets/avery-guiding-elf-icon-v2.png" x="0" y="0" width="64" height="64" preserveAspectRatio="xMidYMid meet" /><text x="78" y="46">Avery</text></g></svg></div></div>;
 }
 
 /** 应用启动加载失败的错误页，提供重试入口。 */

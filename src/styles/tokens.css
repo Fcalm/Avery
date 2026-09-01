@@ -17,8 +17,9 @@
 :root {
   --color-bg-start: rgba(236, 245, 228, .85);
   --color-bg-end: #cbe3bc;
-  --color-surface-glass: rgba(255, 255, 255, .15);
+  --color-surface-glass: color-mix(in srgb, var(--color-surface-card) 35%, transparent);
   --color-surface-card: #fff;
+  --color-surface-workspace: #eef4ea;
   --color-border: #c6c6c6;
   --color-border-glass: rgba(255, 255, 255, .4);
   --color-text-primary: #000;
@@ -26,7 +27,10 @@
   --color-brand-soft: #fbf4d5;
   --color-control-dark: #000;
   --color-control-light: #f3f3f1;
-  --app-background: linear-gradient(9deg, var(--color-bg-start) 52.7%, var(--color-bg-end) 107%);
+  --color-tag-surface: #e4efe7;
+  --color-tag-text: #2f7a4d;
+  /* 系统 Acrylic 上的 75% 浅绿染色层：保留模糊桌面可见性，不以实底遮蔽玻璃效果。 */
+  --app-background: linear-gradient(135deg, rgb(220 235 212 / 75%), rgb(142 199 122 / 75%));
   --paper: transparent;
   --titlebar-surface: var(--color-surface-glass);
   --titlebar-control: var(--color-surface-card);
@@ -73,7 +77,7 @@
   --font-serif: "SF Pro Display", "PingFang SC", "Microsoft YaHei", Arial, sans-serif;
   --font-heading-serif: "Noto Serif SC", "Source Han Serif SC", "Songti SC", "SimSun", serif;
   --font-sans: "SF Pro Display", "PingFang SC", "Microsoft YaHei", Arial, sans-serif;
-  --font-nav: "Anonymous Pro", "SFMono-Regular", Consolas, monospace;
+  --font-nav: var(--font-sans);
   --font-mono: "SFMono-Regular", "Cascadia Mono", Consolas, monospace;
   --font-developer: "Nunito", var(--font-sans);
   --font-brand: "Playwrite DE LA Guides", cursive;
@@ -99,14 +103,15 @@
   --space-7: 48px;
   --space-8: 64px;
 
-  --radius-mark: 4px;
-  --radius-control: 16px;
-  --radius-card: 24px;
-  --radius-overlay: 24px;
-  --radius-pill: 999px;
-  --radius-container: 24px;
+  --radius-mark: 0;
+  --radius-control: 4px;
+  --radius-card: 0;
+  --radius-surface: 0;
+  --radius-overlay: 4px;
+  --radius-pill: 4px;
+  --radius-container: 0;
   --blur-glass: 22.5px;
-  --blur-app-shell: 25px;
+  --blur-app-shell: var(--blur-glass);
   --shadow-glass: 2px 2px 10px -1px rgba(0, 0, 0, .25);
   --shadow-surface: 0 2px 8px rgba(0, 0, 0, .06);
   --shadow-raised: 0 3px 14px rgba(0, 0, 0, .09);
@@ -115,7 +120,7 @@
   --shadow-control: 0 1px 3px rgba(0, 0, 0, .2);
   --focus-ring: 0 0 0 3px rgba(0, 0, 0, .2);
   --transition-standard: 160ms ease;
-  --titlebar-height: 52px;
+  --titlebar-height: 40px;
 
   color: var(--ink);
   background: var(--paper);

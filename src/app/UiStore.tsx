@@ -14,6 +14,8 @@ interface UiStoreValue {
   setRightPanelExpanded: (expanded: boolean) => void;
   assistantView: 'chat' | 'trace';
   setAssistantView: (view: 'chat' | 'trace') => void;
+  developerView: 'logs' | 'evaluation';
+  setDeveloperView: (view: 'logs' | 'evaluation') => void;
   notice: string;
   ShowNotice: (message: string) => void;
   profileConflict: boolean;
@@ -29,6 +31,7 @@ function UiStoreProvider({ children }: { children: ReactNode }) {
   const [rightPanelWidth, setRightPanelWidth] = useState(430);
   const [rightPanelExpanded, setRightPanelExpanded] = useState(false);
   const [assistantView, setAssistantView] = useState<'chat' | 'trace'>('chat');
+  const [developerView, setDeveloperView] = useState<'logs' | 'evaluation'>('logs');
   const [notice, setNotice] = useState('');
   const [profileConflict, setProfileConflict] = useState(false);
 
@@ -44,8 +47,9 @@ function UiStoreProvider({ children }: { children: ReactNode }) {
     rightPanelWidth, setRightPanelWidth,
     rightPanelExpanded, setRightPanelExpanded,
     assistantView, setAssistantView,
+    developerView, setDeveloperView,
     notice, ShowNotice, profileConflict, setProfileConflict,
-  }), [activeConversationId, currentResumeId, resumePanelOpen, rightPanelWidth, rightPanelExpanded, assistantView, notice, profileConflict, ShowNotice]);
+  }), [activeConversationId, currentResumeId, resumePanelOpen, rightPanelWidth, rightPanelExpanded, assistantView, developerView, notice, profileConflict, ShowNotice]);
 
   return <UiStoreContext.Provider value={value}>{children}</UiStoreContext.Provider>;
 }
