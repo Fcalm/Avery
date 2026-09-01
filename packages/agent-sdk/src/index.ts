@@ -8,13 +8,13 @@ export type { KernelRunFunction, KernelRunInput, KernelRunResult } from './kerne
 export { DropOldestTurnGroups, IsUserTurn, KeepRecentTurnGroups, SplitTurnGroups } from './turn-group';
 export type {
   BrowserActionProposal, BrowserAutomationPort, BrowserToolName, FileReadPort, JobSearchPort, ProfileWritePort, RegisteredAgentTool, ResumeReadPort, ResumeWritePort,
-  ToolContext, ToolLedgerPort, ToolPorts, UrlReadPort,
+  SkillReadPort, ToolContext, ToolLedgerPort, ToolPorts, UrlReadPort,
 } from './tools';
 export type {
-  AgentMessage, AgentRole, AttachmentDescriptor, CompiledInstructions, ConfirmationMode, LogEntry, ModelCapabilities,
+  AgentMessage, AgentRole, AttachmentDescriptor, CompiledInstructions, ConfirmationMode, ReasoningEffort, LogEntry, ModelCapabilities,
   ModelCompletion, ModelDelta, ModelStreamEvent, ModelSummary, ModelUsage, NormalizedUsage, PendingConfirmation,
-  PendingInteraction, PendingQuestionInteraction, ProfileSnapshotItem, PromptFragment, PromptManifest,
+  FrozenSkill, LoadedSkillState, PendingInteraction, PendingQuestionInteraction, ProfileSnapshotItem, PromptFragment, PromptManifest,
   ProviderError, ProviderUsageFact, ResumeSnapshot, RunDisposition, RunState, RuntimeContext, ScenarioSnapshot, StructuredRunError,
-  TaskItem, ToolCallFragment, ToolDisposition, ToolExecutionResult, ToolLedgerEntry, ToolReceipt, TraceEntry,
+  SkillManifest, SkillSnapshot, TaskItem, ToolCallFragment, ToolDisposition, ToolExecutionResult, ToolLedgerEntry, ToolReceipt, TraceEntry,
   TraceEventEntry, TurnGroup,
 } from './types';

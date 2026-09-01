@@ -7,6 +7,8 @@ export interface ProviderConfig {
   model: string;
   thinkingEnabled: boolean;
   contextLimit: number;
+  /** default 使用模型能力钳制后的 256K；custom 使用用户明确配置的限制。旧配置可缺失。 */
+  contextLimitMode?: 'default' | 'custom';
   compressionThreshold: number;
   apiKey: string;
 }

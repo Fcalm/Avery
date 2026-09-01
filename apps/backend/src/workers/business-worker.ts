@@ -42,7 +42,7 @@ try {
 }
 
 /** 按方法名派发到生命周期逻辑或 Store 实例方法；未知方法以 INTERNAL_ERROR 拒绝。仅构造成功后注册监听器，因此 store 恒非空。 */
-function Dispatch(method: string, args: any[]): any {
+async function Dispatch(method: string, args: any[]): Promise<any> {
   const activeStore = store as BusinessStore | DatabaseRecoveryStore;
   if (method === 'SwitchWorkspace') {
     const [nextPath] = args as [string];
@@ -66,7 +66,7 @@ function Dispatch(method: string, args: any[]): any {
   }
   const callable = (activeStore as any)[method];
   if (typeof callable !== 'function') throw Object.assign(new Error(`Business worker method ${method} is not supported.`), { code: 'INTERNAL_ERROR' });
-  const result = callable.call(activeStore, ...args);
+  const result = await callable.call(activeStore, ...args);
   if ((method === 'RestoreLatestBackup' || method === 'RestoreBackup') && result?.restored === true) {
     store = new BusinessStore((workerData as any).workspacePath);
   }
@@ -77,15 +77,20 @@ if (store === null) {
   // 构造失败已通过 error 信封上报；不注册消息监听器，事件循环清空后 Worker 自然退出（父线程以启动失败处理，不自动重启）。
 } else {
   port.postMessage({ type: 'ready', methods: Methods });
-  port.on('message', (message: any) => {
+  /** MarkItDown 导入引入异步等待后仍维持业务 Worker 的单写者顺序，避免切换工作空间或关闭与附件落盘交错。 */
+  let dispatchQueue: Promise<void> = Promise.resolve();
+  const HandleRequest = async (message: any): Promise<void> => {
     if (!message || message.type !== 'request') return;
     const { id, method, args } = message;
     try {
-      const result = Dispatch(method, Array.isArray(args) ? args : []);
+      const result = await Dispatch(method, Array.isArray(args) ? args : []);
       port.postMessage({ type: 'response', id, ok: true, data: result });
     } catch (error) {
       const normalized = NormalizeError(error);
       port.postMessage({ type: 'response', id, ok: false, error: { code: normalized.code, message: normalized.message, ...(normalized.details ? { details: normalized.details } : {}), ...(normalized.retryable ? { retryable: true } : {}) } });
     }
+  };
+  port.on('message', (message: any) => {
+    dispatchQueue = dispatchQueue.then(() => HandleRequest(message));
   });
 }

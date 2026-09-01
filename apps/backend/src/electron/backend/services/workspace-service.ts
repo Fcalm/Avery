@@ -1,14 +1,15 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import {
   copyFileSync, cpSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync,
-  renameSync, rmdirSync, statSync, writeFileSync,
+  renameSync, rmdirSync, statSync, unlinkSync, writeFileSync,
 } from 'node:fs';
 import * as path from 'node:path';
 import { GetNow, CreateId } from '../../repositories/helpers';
+import { MarkItDownAttachmentConverter, type AttachmentMarkdownConverter } from '../markitdown-attachment-converter';
 
 /** 原子创建工作空间内需要的目录，避免附件和备份服务各自处理目录初始化。 */
 export function EnsureWorkspaceDirectories(workspacePath: string): void {
-  for (const directory of ['attachments', 'exports', 'backups', path.join('derived', 'ocr')]) {
+  for (const directory of ['attachments', 'exports', 'backups', path.join('derived', 'ocr'), path.join('derived', 'markdown')]) {
     mkdirSync(path.join(workspacePath, directory), { recursive: true });
   }
 }
@@ -25,9 +26,11 @@ export class WorkspaceService {
   private attachmentLifecycle: any;
   private workspaceOperations: any;
   private databasePath: string;
+  private attachmentConverter: AttachmentMarkdownConverter;
+  private pendingSnapshots = new Map<string, Promise<string>>();
   private integrityCache: { at: number; result: string } | null = null;
 
-  constructor({ db, conversationService, resumeService, jobService, applicationService, workspacePath, profilePath, attachmentLifecycle, workspaceOperations }: any) {
+  constructor({ db, conversationService, resumeService, jobService, applicationService, workspacePath, profilePath, attachmentLifecycle, workspaceOperations, attachmentConverter }: any) {
     this.db = db;
     this.conversations = conversationService;
     this.resumes = resumeService;
@@ -38,6 +41,7 @@ export class WorkspaceService {
     this.attachmentLifecycle = attachmentLifecycle;
     this.workspaceOperations = workspaceOperations;
     this.databasePath = path.join(workspacePath, 'offerget.db');
+    this.attachmentConverter = attachmentConverter ?? new MarkItDownAttachmentConverter();
   }
 
   /** 执行完整 integrity_check 并缓存 30 秒；未过期直接返回缓存结果，避免高频状态查询触发全库扫描。 */
@@ -90,7 +94,7 @@ export class WorkspaceService {
       const copiedDatabasePath = path.join(temporaryPath, 'offerget.db');
       this.db.exec(`VACUUM INTO '${copiedDatabasePath.replace(/'/g, "''")}'`);
       if (existsSync(this.profilePath)) copyFileSync(this.profilePath, path.join(temporaryPath, 'profile.json'));
-      for (const directory of ['attachments', 'exports', 'backups']) {
+      for (const directory of ['attachments', 'exports', 'backups', 'derived']) {
         const sourceDirectory = path.join(sourcePath, directory);
         if (existsSync(sourceDirectory)) cpSync(sourceDirectory, path.join(temporaryPath, directory), { recursive: true, force: true });
       }
@@ -118,8 +122,40 @@ export class WorkspaceService {
     }
   }
 
-  /** 复制用户主动选择的附件至工作空间内容寻址目录，并禁止向模型暴露源文件路径。 */
-  ImportAttachment(sourcePath: string, mimeType = 'application/octet-stream'): any {
+  private SnapshotPath(sha256: string): string {
+    return path.join(this.workspacePath, 'derived', 'markdown', `${sha256}.md`);
+  }
+
+  private ValidateMarkdownSnapshot(snapshotPath: string): string {
+    const stat = lstatSync(snapshotPath);
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 5 * 1024 * 1024) throw new Error('The attachment Markdown snapshot is unsafe or exceeds the 5 MB limit.');
+    return snapshotPath;
+  }
+
+  /** 转换结果先写临时文件再原子替换；相同内容并发导入时共用一次 MarkItDown 任务。 */
+  private EnsureMarkdownSnapshot(input: { sha256: string; sourcePath: string; originalName: string; mimeType: string }): Promise<string> {
+    const snapshotPath = this.SnapshotPath(input.sha256);
+    if (existsSync(snapshotPath)) return Promise.resolve(this.ValidateMarkdownSnapshot(snapshotPath));
+    const pending = this.pendingSnapshots.get(input.sha256);
+    if (pending) return pending;
+    const conversion = this.attachmentConverter.Convert(input).then((markdown) => {
+      const bytes = Buffer.from(markdown, 'utf8');
+      if (bytes.length > 5 * 1024 * 1024) throw Object.assign(new Error('The Markdown attachment snapshot exceeds the 5 MB limit.'), { code: 'ATTACHMENT_SNAPSHOT_TOO_LARGE' });
+      const temporary = `${snapshotPath}.${process.pid}.${randomUUID()}.tmp`;
+      writeFileSync(temporary, bytes, { flag: 'wx' });
+      try {
+        if (!existsSync(snapshotPath)) renameSync(temporary, snapshotPath);
+      } finally {
+        if (existsSync(temporary)) unlinkSync(temporary);
+      }
+      return this.ValidateMarkdownSnapshot(snapshotPath);
+    }).finally(() => this.pendingSnapshots.delete(input.sha256));
+    this.pendingSnapshots.set(input.sha256, conversion);
+    return conversion;
+  }
+
+  /** 复制用户主动选择的附件，并在入库前生成持久化 Markdown 快照；源物理路径不对模型暴露。 */
+  async ImportAttachment(sourcePath: string, mimeType = 'application/octet-stream'): Promise<any> {
     this.workspaceOperations.RequireWritable();
     const stat = statSync(sourcePath);
     if (!stat.isFile() || stat.size <= 0 || stat.size > 5 * 1024 * 1024) throw new Error('Attachment must be a non-empty file no larger than 5 MB.');
@@ -132,20 +168,31 @@ export class WorkspaceService {
     const name = path.basename(sourcePath);
     const createdAt = GetNow();
     const normalizedStorageKey = storageKey.replace(/\\/g, '/');
-    const operationId = this.workspaceOperations.Begin('import_attachment', { attachmentId: id, sha256, originalName: name, mimeType, byteSize: stat.size, storageKey: normalizedStorageKey, createdAt });
+    if (!existsSync(destination)) {
+      writeFileSync(destination, content, { flag: 'wx' });
+    } else {
+      const destinationStat = lstatSync(destination);
+      if (!destinationStat.isFile() || destinationStat.isSymbolicLink()) throw new Error('Attachment storage entry is unsafe.');
+      const destinationHash = createHash('sha256').update(readFileSync(destination)).digest('hex');
+      if (destinationHash !== sha256) throw new Error('Attachment storage content does not match its address.');
+    }
     try {
-      if (!existsSync(destination)) writeFileSync(destination, content, { flag: 'wx' });
-      else {
-        const destinationStat = lstatSync(destination);
-        if (!destinationStat.isFile() || destinationStat.isSymbolicLink()) throw new Error('Attachment storage entry is unsafe.');
-      }
+      await this.EnsureMarkdownSnapshot({ sha256, sourcePath: destination, originalName: name, mimeType });
+    } catch (error) {
+      if (!existing && existsSync(destination)) unlinkSync(destination);
+      throw error;
+    }
+    const snapshotKey = path.join('derived', 'markdown', `${sha256}.md`).replace(/\\/g, '/');
+    const snapshotSha256 = createHash('sha256').update(readFileSync(this.SnapshotPath(sha256))).digest('hex');
+    const operationId = this.workspaceOperations.Begin('import_attachment', { attachmentId: id, sha256, originalName: name, mimeType, byteSize: stat.size, storageKey: normalizedStorageKey, snapshotKey, snapshotSha256, createdAt });
+    try {
       this.workspaceOperations.Advance(operationId, 'file_written');
       if (!existing) {
-        this.db.prepare('INSERT INTO attachments(id, sha256, original_name, mime_type, byte_size, storage_key, created_at, orphaned_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?)')
+        this.db.prepare("INSERT INTO attachments(id, sha256, original_name, mime_type, byte_size, storage_key, parse_status, created_at, orphaned_at) VALUES(?, ?, ?, ?, ?, ?, 'ready', ?, ?)")
           .run(id, sha256, name, mimeType, stat.size, normalizedStorageKey, createdAt, createdAt);
       } else {
         this.db.prepare(`UPDATE attachments SET original_name = ?, mime_type = ?, byte_size = ?, storage_key = ?,
-          deleted_at = NULL, orphaned_at = ?, cleanup_attempted_at = NULL, cleanup_error = NULL WHERE id = ?`)
+          parse_status = 'ready', deleted_at = NULL, orphaned_at = ?, cleanup_attempted_at = NULL, cleanup_error = NULL WHERE id = ?`)
           .run(name, mimeType, stat.size, normalizedStorageKey, createdAt, id);
       }
       this.workspaceOperations.Advance(operationId, 'db_committed');
@@ -171,6 +218,35 @@ export class WorkspaceService {
     const realRelative = path.relative(attachmentRoot, physicalPath);
     if (!realRelative || realRelative.startsWith('..') || path.isAbsolute(realRelative)) throw new Error('The attachment storage entry escapes the workspace.');
     return { id: attachment.id, name: attachment.original_name, mimeType: attachment.mime_type, physicalPath };
+  }
+
+  /**
+   * Agent 文本工具只读取 MarkItDown 快照；图片保留原文件交给视觉/OCR 路径。
+   * 旧工作空间缺少快照时在首次读取时补建，后续 Run 复用同一内容寻址快照。
+   */
+  async ResolveAttachmentMarkdownUri(uri: string): Promise<any> {
+    const original = this.ResolveAttachmentUri(uri);
+    const attachment = this.db.prepare('SELECT sha256 FROM attachments WHERE id = ? AND deleted_at IS NULL').get(original.id);
+    if (!attachment?.sha256) throw new Error('The attachment snapshot metadata is unavailable.');
+    let snapshotPath: string;
+    try {
+      snapshotPath = await this.EnsureMarkdownSnapshot({
+        sha256: attachment.sha256,
+        sourcePath: original.physicalPath,
+        originalName: original.name,
+        mimeType: original.mimeType,
+      });
+    } catch (error) {
+      this.db.prepare("UPDATE attachments SET parse_status = 'error' WHERE id = ?").run(original.id);
+      throw error;
+    }
+    this.db.prepare("UPDATE attachments SET parse_status = 'ready' WHERE id = ?").run(original.id);
+    if (String(original.mimeType ?? '').toLowerCase().startsWith('image/')) return original;
+    const snapshotRoot = realpathSync(path.join(this.workspacePath, 'derived', 'markdown'));
+    const physicalPath = realpathSync(snapshotPath);
+    const relative = path.relative(snapshotRoot, physicalPath);
+    if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) throw new Error('The attachment snapshot escapes the workspace.');
+    return { ...original, name: `${original.name}.md`, mimeType: 'text/markdown', physicalPath };
   }
 
   /** 创建一致性的业务数据库和档案备份；附件以原始内容寻址文件继续由 manifest 引用；只返回掩码结果，不含备份目录路径。 */

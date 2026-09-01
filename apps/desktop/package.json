@@ -8,6 +8,7 @@
     "build": "node ../../node_modules/typescript/bin/tsc -p tsconfig.json && node ../../node_modules/typescript/bin/tsc -p tsconfig.preload.json"
   },
   "dependencies": {
-    "@offerget/backend": "0.1.0"
+    "@offerget/backend": "0.1.0",
+    "@offerget/contracts": "0.1.0"
   }
 }

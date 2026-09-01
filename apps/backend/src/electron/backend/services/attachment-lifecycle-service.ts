@@ -79,7 +79,7 @@ export class AttachmentLifecycleService {
   }
 
   SafeWorkspaceFile(rootName: string, fileName: string): string {
-    if (!/^[a-f0-9]{64}(?:-[A-Za-z0-9._-]+)?$/.test(fileName)) throw new Error('Unsafe attachment storage key.');
+    if (!/^[a-f0-9]{64}(?:[-.][A-Za-z0-9._-]+)?$/.test(fileName)) throw new Error('Unsafe attachment storage key.');
     const root = path.resolve(this.workspacePath, rootName);
     const rootStat = lstatSync(root, { throwIfNoEntry: false });
     if (!rootStat || !rootStat.isDirectory() || rootStat.isSymbolicLink()) throw new Error('Attachment cleanup root is unsafe.');
@@ -109,7 +109,7 @@ export class AttachmentLifecycleService {
       WHERE NOT EXISTS (SELECT 1 FROM attachment_links WHERE attachment_id = attachments.id)
         AND ((deleted_at IS NULL AND orphaned_at IS NOT NULL AND orphaned_at <= ?) OR deleted_at IS NOT NULL)
       ORDER BY COALESCE(deleted_at, orphaned_at), id LIMIT ?`).all(cutoff, safeLimit);
-    const result = { scanned: candidates.length, logicallyDeleted: 0, filesDeleted: 0, cacheFilesDeleted: 0, failed: 0, pending: 0 };
+    const result = { scanned: candidates.length, logicallyDeleted: 0, filesDeleted: 0, cacheFilesDeleted: 0, snapshotFilesDeleted: 0, failed: 0, pending: 0 };
     for (const item of candidates) {
       try {
         if (item.deleted_at == null) {
@@ -121,6 +121,8 @@ export class AttachmentLifecycleService {
         const expectedStorage = `attachments/${item.sha256}`;
         if (String(item.storage_key).replace(/\\/g, '/') !== expectedStorage) throw new Error('Attachment storage key does not match content address.');
         if (this.RemoveRegularFile(this.SafeWorkspaceFile('attachments', item.sha256))) result.filesDeleted += 1;
+        const markdownRoot = path.join(this.workspacePath, 'derived', 'markdown');
+        if (existsSync(markdownRoot) && this.RemoveRegularFile(this.SafeWorkspaceFile(path.join('derived', 'markdown'), `${item.sha256}.md`))) result.snapshotFilesDeleted += 1;
         const cacheRoot = path.join(this.workspacePath, 'derived', 'ocr');
         if (existsSync(cacheRoot)) {
           const rootStat = lstatSync(cacheRoot);

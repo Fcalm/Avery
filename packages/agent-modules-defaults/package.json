@@ -2,7 +2,7 @@
   "name": "@offerget/agent-modules-defaults",
   "version": "0.1.0",
   "private": true,
-  "description": "OfferGet Agent 官方默认模块：六槽默认实现与内置 12 工具",
+  "description": "OfferGet Agent 官方默认模块：六槽默认实现、场景工具与 Skill 渐进披露",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {

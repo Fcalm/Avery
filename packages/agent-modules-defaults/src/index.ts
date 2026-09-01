@@ -2,6 +2,6 @@
 export { CreateDefaultModules, DefaultsPackageName, DefaultsSdkVersion, DefaultsVersion } from './defaults';
 export type { AgentDefaultPorts, ObservabilityStorePort, ProviderConfig } from './ports';
 export {
-  ApplicationScenario, ApplicationScenarioPlaceholder, BuildApplicationCompiledInstructions, BuildDefaultCompiledInstructions, BuildDefaultPromptFragments, CompilePrompt, DefaultScenario,
+  ApplicationScenario, ApplicationScenarioPlaceholder, BuildApplicationCompiledInstructions, BuildApplicationPromptFragments, BuildDefaultCompiledInstructions, BuildDefaultPromptFragments, CompilePrompt, DefaultScenario,
 } from './prompts';
 export type { PromptFragment } from '@offerget/agent-sdk';

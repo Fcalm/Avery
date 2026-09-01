@@ -4,12 +4,14 @@ import * as path from 'node:path';
 import { RunAgentLoop, ScrubTraceContent } from '@offerget/agent-core';
 import { CreateRunSnapshot, ResolveModules } from '@offerget/agent-module-host';
 import { ApplicationScenario, BuildApplicationCompiledInstructions, BuildDefaultCompiledInstructions, CreateDefaultModules, DefaultScenario } from '@offerget/agent-modules-defaults';
-import type { AgentMessage, AgentModules, BrowserAutomationPort, CompiledInstructions, ConfirmationMode, ProviderUsageFact, ScenarioSnapshot } from '@offerget/agent-sdk';
+import type { AgentMessage, AgentModules, BrowserAutomationPort, CompiledInstructions, ConfirmationMode, ProviderUsageFact, ReasoningEffort, ScenarioSnapshot, SkillSnapshot } from '@offerget/agent-sdk';
 import { AgentFileReader } from './agent-file-reader';
 import { AgentResumePort } from './agent-resume-port';
 import { ResumeLockStore } from './resume-lock-store';
 import { CreateVisionUserMessage, DeepSeekVisionModel, HydrateVisionMessage } from './vision-input';
 import { AgentBrowserRuntime } from './agent-browser-runtime';
+import { AgentSkillRegistry } from './agent-skill-registry';
+import { CreateCronTaskSchema } from '@offerget/contracts';
 
 /** 用户编辑锁的稳定 ownerId；前端经 bridge 加解锁都以此为准。 */
 const UserLockOwnerId = 'user-main';
@@ -21,6 +23,11 @@ function NormalizeConfirmationMode(value: unknown): ConfirmationMode {
   if (value === 'always_confirm' || value === 'allow_low_risk' || value === 'fully_trusted') return value;
   if (value === '无需确认') return 'fully_trusted';
   return 'always_confirm';
+}
+
+/** 只接受前端公开的五档会话值；旧快照或非法 IPC 输入回退中档。 */
+function NormalizeReasoningEffort(value: unknown): ReasoningEffort {
+  return value === 'low' || value === 'medium' || value === 'high' || value === 'xhigh' || value === 'max' ? value : 'medium';
 }
 
 function ResolveScenario(value: unknown) {
@@ -53,6 +60,22 @@ function NormalizeSessionUsage(value: unknown): any {
     inputTokens: number('inputTokens'), contextLimit: number('contextLimit'), compressionCount: number('compressionCount'), compressionThreshold: number('compressionThreshold'),
     promptTokens: number('promptTokens'), completionTokens: number('completionTokens'), totalTokens: number('totalTokens'), reportedRequestCount: number('reportedRequestCount'), unreportedRequestCount: number('unreportedRequestCount'), updatedAt: number('updatedAt'),
   };
+}
+
+/** 会话级助手偏好不含凭据；模型仅保存可公开的 Provider 模型 ID。 */
+interface SessionAssistantState {
+  model: string;
+  confirmationMode: ConfirmationMode;
+  reasoningEffort: ReasoningEffort;
+}
+
+function NormalizeSessionAssistantState(value: unknown): SessionAssistantState | null {
+  if (!value || typeof value !== 'object') return null;
+  const candidate = value as { model?: unknown; confirmationMode?: unknown; reasoningEffort?: unknown };
+  if (typeof candidate.model !== 'string') return null;
+  const model = candidate.model.trim();
+  if (!model || model.length > 200) return null;
+  return { model, confirmationMode: NormalizeConfirmationMode(candidate.confirmationMode), reasoningEffort: NormalizeReasoningEffort(candidate.reasoningEffort) };
 }
 
 /** 校验字符串字段，避免 IPC 输入直接进入请求层。 */
@@ -89,6 +112,8 @@ export interface AgentHostOptions {
   agentBrowserExecutablePath?: string;
   browserCompanionExecutablePath?: string;
   browserCompanionAppPath?: string;
+  /** 构造期 Skill 固定目录测试接缝；生产环境使用应用内置 skills 目录。 */
+  skillRootPath?: string;
   /** 构造期测试接缝；生产组合根不传入，不能由 Renderer、IPC 或环境变量选择。 */
   createDefaultModules?: (ports: Parameters<typeof CreateDefaultModules>[0]) => AgentModules;
   /** 构造期测试接缝；用于完整链路测试连接精确本地 fixture origin。 */
@@ -97,6 +122,8 @@ export interface AgentHostOptions {
   compileInstructions?: (scenarioId: 'default' | 'application', toolPolicyHash: string) => CompiledInstructions;
   /** 测评宿主专用冻结场景；可收窄工具和轮数，不能由生产 Renderer 请求设置。 */
   scenarioOverride?: ScenarioSnapshot;
+  /** Cron 数据写入后的 OS 唤醒同步由 Backend 组合根提供。 */
+  onCronScheduleChanged?: () => Promise<void> | void;
 }
 
 /**
@@ -113,12 +140,13 @@ export class AgentHost {
   private credentialPort: any;
   private resolveProjectEnvironment: (projectId: string) => Promise<unknown> | unknown;
   private controllers = new Map<string, AbortController>();
-  private runtimeControls = new Map<string, { confirmationMode: ConfirmationMode; toolContext: any }>();
+  private runtimeControls = new Map<string, { sessionId: string; confirmationMode: ConfirmationMode; toolContext: any }>();
   private histories = new Map<string, any[]>();
   private tasks = new Map<string, Map<string, any>>();
   private pendingQuestions = new Map<string, unknown>();
   private pendingEdits = new Map<string, unknown>();
   private pendingBrowserActions = new Map<string, any>();
+  private pendingCronTasks = new Map<string, any>();
   private browserRunId: string | null = null;
   private toolLedger = new Map<string, any>();
   private projectEnvironments = new Map<string, any>();
@@ -126,7 +154,10 @@ export class AgentHost {
   private runSnapshots = new Map<string, any>();
   private sessionUsage = new Map<string, any>();
   private sessionScenarios = new Map<string, 'default' | 'application'>();
-  private lastContextUsage: { inputTokens: number; contextLimit: number } = { inputTokens: 0, contextLimit: 64000 };
+  private sessionAssistantStates = new Map<string, SessionAssistantState>();
+  private loadedSkills = new Map<string, Map<string, string>>();
+  private loadedSkillResources = new Map<string, Set<string>>();
+  private lastContextUsage: { inputTokens: number; contextLimit: number } = { inputTokens: 0, contextLimit: 256000 };
   private compressionCount = 0;
   private fileReader: AgentFileReader;
   private resumePort: AgentResumePort;
@@ -140,16 +171,30 @@ export class AgentHost {
   private modules: any;
   private compileInstructions: (scenarioId: 'default' | 'application', toolPolicyHash: string) => CompiledInstructions;
   private scenarioOverride?: ScenarioSnapshot;
+  private skillRegistry: AgentSkillRegistry;
+  private onCronScheduleChanged: () => Promise<void> | void;
+  private scheduledRequestIds = new Set<string>();
+  private scheduledOutput = new Map<string, { content: string; thinkingContent: string; terminal?: string; needsAttention: boolean }>();
 
   constructor(options: AgentHostOptions) {
     this.statePath = path.join(options.userDataPath, 'agent-state.json');
     this.moduleConfigPath = path.join(options.userDataPath, 'agent-modules.json');
-    this.Emit = options.Emit;
+    this.Emit = (event: any) => {
+      const output = typeof event?.requestId === 'string' ? this.scheduledOutput.get(event.requestId) : undefined;
+      if (output) {
+        if (event.type === 'content_delta' && typeof event.delta === 'string') output.content += event.delta;
+        if (event.type === 'thinking_delta' && typeof event.delta === 'string') output.thinkingContent += event.delta;
+        if (['completed', 'cancelled', 'error', 'waiting_user_input', 'waiting_confirmation', 'paused'].includes(event.type)) output.terminal = event.type;
+        if (event.type === 'browser_user_action' || event.type === 'question_requested' || event.type === 'waiting_user_input' || event.type === 'waiting_confirmation') output.needsAttention = true;
+      }
+      options.Emit(event);
+    };
     this.business = options.business;
     this.observabilityPort = options.observability;
     this.credentialPort = options.credentialPort;
     this.resolveProjectEnvironment = options.resolveProjectEnvironment ?? (() => null);
-    this.fileReader = new AgentFileReader((uri: string) => this.business?.ResolveAttachmentUri?.(uri) ?? Promise.resolve(null), {
+    this.onCronScheduleChanged = options.onCronScheduleChanged ?? (() => undefined);
+    this.fileReader = new AgentFileReader((uri: string) => this.business?.ResolveAttachmentMarkdownUri?.(uri) ?? Promise.resolve(null), {
       ocrRuntimeRoot: path.join(options.userDataPath, 'ocr-runtime'),
       ocrCacheRoot: options.workspacePath ? path.join(options.workspacePath, 'derived', 'ocr') : null,
     });
@@ -161,6 +206,7 @@ export class AgentHost {
       ? BuildApplicationCompiledInstructions(toolPolicyHash)
       : BuildDefaultCompiledInstructions(toolPolicyHash));
     this.scenarioOverride = options.scenarioOverride;
+    this.skillRegistry = new AgentSkillRegistry(options.skillRootPath);
     this.browserRuntime = options.browserRuntime ?? new AgentBrowserRuntime({
       executablePath: options.agentBrowserExecutablePath ?? path.join(options.userDataPath, 'agent-browser', 'runtime-unavailable'),
       companionExecutablePath: options.browserCompanionExecutablePath ?? path.join(options.userDataPath, 'agent-browser', 'companion-unavailable'),
@@ -168,7 +214,7 @@ export class AgentHost {
       runtimeRoot: path.join(options.userDataPath, 'agent-browser'),
       resolveUploadFile: async (fileId) => {
         const resolved = await this.business?.ResolveAttachmentUri?.(fileId);
-        return typeof resolved === 'string' ? resolved : null;
+        return typeof resolved === 'string' ? resolved : resolved?.physicalPath ?? null;
       },
     });
     this.moduleError = null;
@@ -311,12 +357,23 @@ export class AgentHost {
         .filter(([sessionId, value]: [string, any]) => typeof sessionId === 'string' && value));
       this.sessionScenarios = new Map((Array.isArray(state.sessionScenarios) ? state.sessionScenarios : [])
         .filter((entry: unknown) => Array.isArray(entry) && typeof entry[0] === 'string' && (entry[1] === 'default' || entry[1] === 'application')));
+      this.sessionAssistantStates = new Map((Array.isArray(state.sessionAssistantStates) ? state.sessionAssistantStates : [])
+        .map(([sessionId, value]: [string, unknown]) => [sessionId, NormalizeSessionAssistantState(value)] as const)
+        .filter(([sessionId, value]: readonly [string, SessionAssistantState | null]) => typeof sessionId === 'string' && value !== null) as Array<[string, SessionAssistantState]>);
       this.toolLedger = new Map((Array.isArray(state.toolLedger) ? state.toolLedger : [])
         .filter((entry: unknown) => Array.isArray(entry) && typeof entry[0] === 'string' && entry[1] && typeof entry[1] === 'object'));
       this.pendingBrowserActions = new Map((Array.isArray(state.pendingBrowserActions) ? state.pendingBrowserActions : [])
         .filter((entry: unknown) => Array.isArray(entry) && typeof entry[0] === 'string' && entry[1] && typeof entry[1] === 'object'));
+      this.pendingCronTasks = new Map((Array.isArray(state.pendingCronTasks) ? state.pendingCronTasks : [])
+        .filter((entry: unknown) => Array.isArray(entry) && typeof entry[0] === 'string' && entry[1] && typeof entry[1] === 'object'));
       this.runSnapshots = new Map((Array.isArray(state.runSnapshots) ? state.runSnapshots : [])
         .filter((entry: unknown) => Array.isArray(entry) && typeof entry[0] === 'string' && entry[1] && typeof entry[1] === 'object'));
+      this.loadedSkills = new Map((Array.isArray(state.loadedSkills) ? state.loadedSkills : [])
+        .filter((entry: unknown) => Array.isArray(entry) && typeof entry[0] === 'string' && Array.isArray(entry[1]))
+        .map(([sessionId, skills]: [string, unknown[]]) => [sessionId, new Map(skills.filter((entry) => Array.isArray(entry) && typeof entry[0] === 'string' && typeof entry[1] === 'string') as Array<[string, string]>)]));
+      this.loadedSkillResources = new Map((Array.isArray(state.loadedSkillResources) ? state.loadedSkillResources : [])
+        .filter((entry: unknown) => Array.isArray(entry) && typeof entry[0] === 'string' && Array.isArray(entry[1]))
+        .map(([sessionId, resources]: [string, unknown[]]) => [sessionId, new Set(resources.filter((entry): entry is string => typeof entry === 'string'))]));
     } catch {
       // First launch or corrupted state starts with empty runtime data.
     }
@@ -330,9 +387,13 @@ export class AgentHost {
       projectEnvironments: [...this.projectEnvironments.entries()],
       sessionUsage: [...this.sessionUsage.entries()],
       sessionScenarios: [...this.sessionScenarios.entries()],
+      sessionAssistantStates: [...this.sessionAssistantStates.entries()],
       toolLedger: [...this.toolLedger.entries()],
       pendingBrowserActions: [...this.pendingBrowserActions.entries()],
+      pendingCronTasks: [...this.pendingCronTasks.entries()],
       runSnapshots: [...this.runSnapshots.entries()],
+      loadedSkills: [...this.loadedSkills.entries()].map(([sessionId, skills]) => [sessionId, [...skills.entries()]]),
+      loadedSkillResources: [...this.loadedSkillResources.entries()].map(([sessionId, resources]) => [sessionId, [...resources]]),
     };
     const temporaryPath = `${this.statePath}.tmp`;
     mkdirSync(path.dirname(this.statePath), { recursive: true });
@@ -381,13 +442,26 @@ export class AgentHost {
   }
 
   /** 更新当前 Run 的确认权限；不扩展场景白名单、资源授权或工具能力。 */
-  UpdateConfirmationMode(requestId: string, value: unknown): any {
+  async UpdateConfirmationMode(requestId: string, value: unknown): Promise<any> {
     const control = this.runtimeControls.get(requestId);
     if (!control) return { updated: false, reason: 'not_running' };
     const confirmationMode = NormalizeConfirmationMode(value);
     control.confirmationMode = confirmationMode;
     control.toolContext.confirmationMode = confirmationMode;
+    const current = this.sessionAssistantStates.get(control.sessionId);
+    if (current) {
+      await this.PersistSessionAssistantState(control.sessionId, { ...current, confirmationMode });
+    }
     return { updated: true, confirmationMode };
+  }
+
+  /** 保存会话级思考强度；当前 Run 保持启动时快照，下一 Run 使用新值。 */
+  async UpdateReasoningEffort(sessionId: string, value: unknown): Promise<any> {
+    const normalizedSessionId = RequireString(sessionId, 'sessionId', 200);
+    const reasoningEffort = NormalizeReasoningEffort(value);
+    const current = await this.RestoreSessionAssistantState(normalizedSessionId);
+    await this.PersistSessionAssistantState(normalizedSessionId, { ...current, reasoningEffort });
+    return { updated: true, reasoningEffort };
   }
 
   /** 应用或丢弃待确认的简历补丁：接受时经简历写端口落库并释放 Agent 锁。 */
@@ -398,6 +472,44 @@ export class AgentHost {
       ledger: this.CreateToolLedgerPort(),
       emit: (event: unknown) => this.Emit(event),
     });
+  }
+
+  /** 冻结 CronTask 创建参数；投递任务必须绑定当前会话已选择的简历，避免后台运行时缺少授权材料。 */
+  private PrepareCronTask(input: unknown, context: { requestId: string; resumeId?: string }): { confirmationId: string; summary: string; scenarioId: 'default' | 'application' } {
+    const parsed = CreateCronTaskSchema.parse(input);
+    if (parsed.scenarioId === 'application' && !context.resumeId) {
+      throw Object.assign(new Error('Select a resume before creating an unattended application CronTask.'), { code: 'VALIDATION_ERROR' });
+    }
+    const confirmationId = `cron-confirmation-${randomUUID()}`;
+    const summary = parsed.scenarioId === 'application'
+      ? '系统可在计划时间唤醒或后台启动应用。该计划将在整个周期内以无人值守完全信任模式复用独立浏览器登录，可能填写表单、发送招聘消息并提交投递；执行时不会逐项确认。第一版只能读取所选简历内容，不携带临时附件；网页强制上传文件时会标记为需要你接管。'
+      : '系统可在计划时间唤醒或后台启动应用。该计划将在整个周期内以无人值守完全信任模式创建新会话并执行指定消息；执行时不会逐项确认。';
+    this.pendingCronTasks.set(confirmationId, { input: parsed, resumeId: context.resumeId, requestId: context.requestId, createdAt: Date.now(), summary });
+    this.SaveState();
+    return { confirmationId, summary, scenarioId: parsed.scenarioId };
+  }
+
+  /** 用户一次性确认整个 CronTask 周期；拒绝或过期均不写数据库，也不注册 OS 唤醒。 */
+  async ConfirmCronTask(confirmationId: string, accepted: boolean): Promise<any> {
+    const normalizedId = RequireString(confirmationId, 'confirmationId', 200);
+    const pending = this.pendingCronTasks.get(normalizedId);
+    if (!pending) throw Object.assign(new Error('CronTask confirmation is unavailable or expired.'), { code: 'VALIDATION_ERROR' });
+    this.pendingCronTasks.delete(normalizedId);
+    this.SaveState();
+    if (!accepted) return { created: false };
+    if (!Number.isFinite(pending.createdAt) || Date.now() - pending.createdAt > SessionSnapshotTtlMs) {
+      throw Object.assign(new Error('CronTask confirmation expired. Create the schedule again.'), { code: 'VALIDATION_ERROR' });
+    }
+    const task = await this.business.CreateCronTask(pending.input, { ...(pending.resumeId ? { resumeId: pending.resumeId } : {}) });
+    try {
+      await this.onCronScheduleChanged();
+    } catch (error) {
+      await this.business.DeleteCronTask(task.id);
+      await Promise.resolve(this.onCronScheduleChanged()).catch(() => undefined);
+      throw Object.assign(new Error('CronTask could not register the operating-system wake and was cancelled.'), { code: 'INTERNAL_ERROR', cause: error });
+    }
+    this.Emit({ type: 'cron_task_changed', requestId: pending.requestId, cronTask: task });
+    return { created: true, task };
   }
 
   /** 执行被冻结的浏览器提案；确认后仍重新校验页面 revision 和目标引用，拒绝模型重建动作。 */
@@ -546,9 +658,111 @@ export class AgentHost {
     return project?.rootPath ?? null;
   }
 
-  /** 返回会话专属 usage 和脱敏项目标签；默认值绝不回退到其它会话。 */
-  GetSessionAssistantState(sessionId: string): any {
+  /** 从会话快照的可序列化部分读取偏好，工作空间数据库优先于本机运行态。 */
+  private async ReadPersistedSessionAssistantState(sessionId: string): Promise<SessionAssistantState | null> {
+    const stored = await this.business?.GetConversationSnapshots?.(sessionId);
+    if (stored?.toolSnapshotJson) {
+      try {
+        const combined = JSON.parse(stored.toolSnapshotJson);
+        const state = NormalizeSessionAssistantState(combined?.assistantState);
+        if (state) {
+          this.sessionAssistantStates.set(sessionId, state);
+          return state;
+        }
+      } catch {
+        // 会话快照损坏时保留内存态或安全默认值；不因偏好恢复阻断会话读取。
+      }
+    }
+    return this.sessionAssistantStates.get(sessionId) ?? null;
+  }
+
+  /** 解析已保存模型：无效值回退当前 Provider 默认；网络不可用时保留本地结构校验后的选择。 */
+  private async ResolvePersistedSessionModel(value: unknown, status: any): Promise<string> {
+    const fallback = this.modules.modelProvider.ResolveRequestModel(undefined);
+    if (typeof value !== 'string' || !value.trim()) return fallback;
+    let model: string;
+    try {
+      model = this.modules.modelProvider.ResolveRequestModel(value.trim());
+    } catch {
+      return fallback;
+    }
+    if (!status.configured || status.provider !== 'DeepSeek') return model;
+    try {
+      const result = await this.modules.modelProvider.GetModels();
+      const models = Array.isArray(result?.models) ? result.models.filter((item: unknown): item is string => typeof item === 'string') : [];
+      if (!models.length || models.includes(model)) return model;
+      if (models.includes(fallback)) return fallback;
+      const providerFallback = models.find((item: string) => {
+        try {
+          return this.modules.modelProvider.ResolveRequestModel(item) === item;
+        } catch {
+          return false;
+        }
+      });
+      return providerFallback ?? fallback;
+    } catch {
+      // /models 是在线能力；暂时无法联网时不把结构有效的会话选择误判为失效。
+      return model;
+    }
+  }
+
+  /** 恢复并校验会话偏好，模型回退后立即写回会话快照，避免下次重载重复命中失效值。 */
+  private async RestoreSessionAssistantState(sessionId: string): Promise<SessionAssistantState> {
+    const stored = await this.ReadPersistedSessionAssistantState(sessionId);
+    const status = await this.modules.modelProvider.GetStatus();
+    const next: SessionAssistantState = {
+      model: await this.ResolvePersistedSessionModel(stored?.model, status),
+      confirmationMode: stored?.confirmationMode ?? 'always_confirm',
+      reasoningEffort: stored?.reasoningEffort ?? 'medium',
+    };
+    if (!stored || stored.model !== next.model || stored.confirmationMode !== next.confirmationMode || stored.reasoningEffort !== next.reasoningEffort) {
+      await this.PersistSessionAssistantState(sessionId, next);
+    }
+    return next;
+  }
+
+  /** 将会话偏好并入既有快照包，绝不覆盖会话前缀、工具、Skill 或场景冻结信息。 */
+  private async PersistSessionAssistantState(sessionId: string, state: SessionAssistantState): Promise<void> {
+    this.sessionAssistantStates.set(sessionId, state);
+    const cached = this.sessionSnapshots.get(sessionId);
+    if (cached) {
+      await this.business?.SetConversationSnapshots?.(sessionId, {
+        toolSnapshotJson: JSON.stringify({
+          module: cached.module,
+          tool: cached.tool,
+          skills: cached.skills,
+          instructions: cached.instructions,
+          scenarioId: cached.scenarioId,
+          assistantState: state,
+        }),
+      });
+      this.SaveState();
+      return;
+    }
+    const stored = await this.business?.GetConversationSnapshots?.(sessionId);
+    if (!stored?.toolSnapshotJson) {
+      this.SaveState();
+      return;
+    }
+    try {
+      const combined = JSON.parse(stored.toolSnapshotJson);
+      if (!combined || typeof combined !== 'object' || Array.isArray(combined)) {
+        this.SaveState();
+        return;
+      }
+      await this.business?.SetConversationSnapshots?.(sessionId, {
+        toolSnapshotJson: JSON.stringify({ ...combined, assistantState: state }),
+      });
+    } catch {
+      // 无法验证的旧快照不写回，下一次 Send 会以新快照和当前偏好原子替换。
+    }
+    this.SaveState();
+  }
+
+  /** 返回会话专属 usage、项目标签及已校验的模型与确认权限；默认值绝不回退到其它会话。 */
+  async GetSessionAssistantState(sessionId: string): Promise<any> {
     const normalizedSessionId = RequireString(sessionId, 'sessionId', 200);
+    const assistantState = await this.RestoreSessionAssistantState(normalizedSessionId);
     const { contextLimit, threshold } = this.modules.modelProvider.GetRuntimeLimits();
     const storedUsage = this.sessionUsage.get(normalizedSessionId) ?? null;
     const project = this.projectEnvironments.get(normalizedSessionId) ?? null;
@@ -567,6 +781,9 @@ export class AgentHost {
       },
       project: project ? { projectId: project.projectId, name: project.name } : null,
       scenarioId: this.sessionScenarios.get(normalizedSessionId) ?? 'default',
+      model: assistantState.model,
+      confirmationMode: assistantState.confirmationMode,
+      reasoningEffort: assistantState.reasoningEffort,
     };
   }
 
@@ -631,6 +848,24 @@ export class AgentHost {
     return { ...this.moduleSnapshot, snapshotId: randomUUID(), sessionId, sessionRevision };
   }
 
+  private HasCompleteSkillSnapshot(value: any): value is SkillSnapshot {
+    if (!value || !Array.isArray(value.skills) || typeof value.snapshotHash !== 'string') return false;
+    return createHash('sha256').update(JSON.stringify(value.skills)).digest('hex') === value.snapshotHash;
+  }
+
+  /** 快照刷新不删除旧消息，而是追加失效标记；后续索引和正文以新 revision 为准。 */
+  private ResetSkillState(sessionId: string, reason: 'ttl_elapsed' | 'user_reload', sessionRevision: number): void {
+    this.loadedSkills.delete(sessionId);
+    this.loadedSkillResources.delete(sessionId);
+    const history = this.histories.get(sessionId) ?? [];
+    const resetMessage: AgentMessage = {
+      role: 'user',
+      content: `<skill-state-reset>\nPreviously loaded Skill instructions are no longer active. Use the next Skill index for this session.\n</skill-state-reset>`,
+      metadata: { source: 'runtime', visibility: 'hidden', kind: 'skill_state_reset', reason, sessionRevision },
+    };
+    this.histories.set(sessionId, [...history, resetMessage]);
+  }
+
   /** 创建完整会话前缀快照并原子写入会话表；普通 Run 只复用，不重编译。 */
   private async CreateAndPersistSnapshots(sessionId: string, sessionRevision: number, refreshReason: 'session_created' | 'ttl_elapsed' | 'user_reload', scenarioId: 'default' | 'application'): Promise<any> {
     const session = await this.modules.contextBuilder.BuildSessionContextSnapshot(sessionId, sessionRevision, {
@@ -638,11 +873,17 @@ export class AgentHost {
     });
     const module = this.BuildModuleSnapshot(sessionId, sessionRevision);
     const tool = this.BuildToolSnapshot(sessionId, sessionRevision, scenarioId);
+    const skills = await this.skillRegistry.BuildSnapshot(sessionId, sessionRevision, scenarioId);
     const instructions = this.compileInstructions(scenarioId, tool.toolsetHash);
-    const entry = { session, module, tool, instructions, scenarioId };
-    await this.business?.SetConversationSnapshots?.(sessionId, { sessionSnapshotJson: JSON.stringify(session), toolSnapshotJson: JSON.stringify({ module, tool, instructions, scenarioId }) });
+    const entry = { session, module, tool, skills, instructions, scenarioId };
+    const assistantState = this.sessionAssistantStates.get(sessionId);
+    await this.business?.SetConversationSnapshots?.(sessionId, {
+      sessionSnapshotJson: JSON.stringify(session),
+      toolSnapshotJson: JSON.stringify({ module, tool, skills, instructions, scenarioId, ...(assistantState ? { assistantState } : {}) }),
+    });
     this.sessionSnapshots.set(sessionId, entry);
     this.sessionScenarios.set(sessionId, scenarioId);
+    if (refreshReason === 'ttl_elapsed' || refreshReason === 'user_reload') this.ResetSkillState(sessionId, refreshReason, sessionRevision);
     this.SaveState();
     return entry;
   }
@@ -705,9 +946,11 @@ export class AgentHost {
     const cached = this.sessionSnapshots.get(sessionId);
     const cachedScenarioId = cached?.scenarioId ?? cached?.tool?.scenarioId ?? this.sessionScenarios.get(sessionId) ?? 'default';
     if (requestedScenarioId && cached && requestedScenarioId !== cachedScenarioId) throw new Error('A scenario is already bound to this conversation. Create a new conversation to switch scenarios.');
-    if (cached && this.IsUsableSessionSnapshot(cached.session) && this.HasCompleteToolBundle(cached.tool, cached.instructions)) return { ...cached, scenarioId: cachedScenarioId };
+    if (cached && this.IsUsableSessionSnapshot(cached.session) && this.HasCompleteToolBundle(cached.tool, cached.instructions) && this.HasCompleteSkillSnapshot(cached.skills)) return { ...cached, scenarioId: cachedScenarioId };
     if (cached) {
-      const expiredCompleteBundle = this.HasCompleteSessionSnapshot(cached.session) && this.HasCompleteToolBundle(cached.tool, cached.instructions);
+      const expiredCompleteBundle = this.HasCompleteSessionSnapshot(cached.session)
+        && this.HasCompleteToolBundle(cached.tool, cached.instructions)
+        && this.HasCompleteSkillSnapshot(cached.skills);
       return this.CreateAndPersistSnapshots(sessionId, (cached.session?.sessionRevision ?? 0) + 1, expiredCompleteBundle ? 'ttl_elapsed' : 'session_created', cachedScenarioId);
     }
     const stored = await this.business?.GetConversationSnapshots?.(sessionId);
@@ -715,6 +958,7 @@ export class AgentHost {
     let module: any = null;
     let tool: any = null;
     let instructions: any = null;
+    let skills: any = null;
     let storedScenarioId: 'default' | 'application' = 'default';
     let hasStoredSnapshot = false;
     if (stored?.sessionSnapshotJson) {
@@ -734,20 +978,25 @@ export class AgentHost {
           module = combined?.module ?? null;
           tool = combined?.tool ?? combined;
           instructions = combined?.instructions ?? null;
+          skills = combined?.skills ?? null;
+          const assistantState = NormalizeSessionAssistantState(combined?.assistantState);
+          if (assistantState) this.sessionAssistantStates.set(sessionId, assistantState);
           storedScenarioId = combined?.scenarioId === 'application' || tool?.scenarioId === 'application' ? 'application' : 'default';
         }
       } catch { tool = null; }
     }
     if (requestedScenarioId && requestedScenarioId !== storedScenarioId && hasStoredSnapshot) throw new Error('A scenario is already bound to this conversation. Create a new conversation to switch scenarios.');
     const scenarioId = requestedScenarioId ?? storedScenarioId;
-    if (this.IsUsableSessionSnapshot(session) && this.HasCompleteToolBundle(tool, instructions)) {
-      const entry = { session, module: module ?? this.BuildModuleSnapshot(sessionId, session.sessionRevision ?? 1), tool, instructions, scenarioId };
+    if (this.IsUsableSessionSnapshot(session) && this.HasCompleteToolBundle(tool, instructions) && this.HasCompleteSkillSnapshot(skills)) {
+      const entry = { session, module: module ?? this.BuildModuleSnapshot(sessionId, session.sessionRevision ?? 1), tool, skills, instructions, scenarioId };
       this.sessionSnapshots.set(sessionId, entry);
       this.sessionScenarios.set(sessionId, scenarioId);
       return entry;
     }
     const nextRevision = Math.max(1, (session?.sessionRevision ?? 0) + 1);
-    const hadCompleteBundle = this.HasCompleteSessionSnapshot(session) && this.HasCompleteToolBundle(tool, instructions);
+    const hadCompleteBundle = this.HasCompleteSessionSnapshot(session)
+      && this.HasCompleteToolBundle(tool, instructions)
+      && this.HasCompleteSkillSnapshot(skills);
     return this.CreateAndPersistSnapshots(sessionId, nextRevision, hadCompleteBundle ? 'ttl_elapsed' : 'session_created', scenarioId);
   }
 
@@ -755,6 +1004,7 @@ export class AgentHost {
   async ReloadSession(sessionId: string): Promise<any> {
     if (typeof sessionId !== 'string' || sessionId.length === 0 || sessionId.length > 200) throw new Error('Session id is invalid.');
     if (this.IsBusy()) return { reloaded: false, reason: 'busy' };
+    await this.RestoreSessionAssistantState(sessionId);
     const current = this.sessionSnapshots.get(sessionId) ?? await this.LoadOrCreateSnapshots(sessionId);
     const nextRevision = (current.session?.sessionRevision ?? 0) + 1;
     try {
@@ -762,6 +1012,23 @@ export class AgentHost {
       return { reloaded: true, sessionRevision: session.sessionRevision };
     } catch (error) {
       return { reloaded: false, reason: error instanceof Error ? error.message : 'reload failed' };
+    }
+  }
+
+  /** Backend Cron Runner 专用入口；Renderer 无法设置 scheduledRequestIds，也不能伪造无人值守权限。 */
+  async SendScheduled(input: any): Promise<any> {
+    const requestId = RequireString(input?.requestId, 'requestId', 200);
+    this.scheduledRequestIds.add(requestId);
+    const output = { content: '', thinkingContent: '', needsAttention: false };
+    this.scheduledOutput.set(requestId, output);
+    await this.browserRuntime.SetUnattended?.(true);
+    try {
+      const result = await this.Send({ ...input, confirmationMode: 'fully_trusted', attachments: [], projectId: undefined });
+      return { ...result, ...output };
+    } finally {
+      this.scheduledRequestIds.delete(requestId);
+      this.scheduledOutput.delete(requestId);
+      await this.browserRuntime.SetUnattended?.(false);
     }
   }
 
@@ -777,6 +1044,9 @@ export class AgentHost {
       throw Object.assign(new Error('Evaluation scenario does not match the frozen host scenario.'), { code: 'VALIDATION_ERROR' });
     }
     const scenarioId = scenario.id as 'default' | 'application';
+    const unattended = this.scheduledRequestIds.has(requestId);
+    const cronToolNames = new Set(['CreateCronTask', 'ReadCronTask', 'UpdateCronTask', 'DeleteCronTask']);
+    const runScenario = unattended ? { ...scenario, toolNames: scenario.toolNames.filter((name) => !cronToolNames.has(name)) } : scenario;
     if (scenarioId === 'application' && this.browserRunId) throw Object.assign(new Error('Another browser Agent run is already active.'), { code: 'AGENT_BUSY' });
     if (scenarioId === 'application') {
       this.browserRunId = requestId;
@@ -786,20 +1056,57 @@ export class AgentHost {
     try {
     const status = await this.modules.modelProvider.GetStatus();
     if (!status.configured) throw new Error('API Key is not configured.');
-    const model = this.modules.modelProvider.ResolveRequestModel(input?.model);
+    const restoredAssistantState = await this.RestoreSessionAssistantState(sessionId);
+    const hasRequestedModel = input?.model !== undefined;
+    const model = hasRequestedModel
+      ? this.modules.modelProvider.ResolveRequestModel(input.model)
+      : restoredAssistantState.model;
     if (this.controllers.has(requestId)) throw new Error('The request is already running.');
-    const confirmationMode = NormalizeConfirmationMode(input?.confirmationMode);
+    const confirmationMode = input?.confirmationMode === undefined
+      ? restoredAssistantState.confirmationMode
+      : NormalizeConfirmationMode(input.confirmationMode);
+    const reasoningEffort = input?.reasoningEffort === undefined
+      ? restoredAssistantState.reasoningEffort
+      : NormalizeReasoningEffort(input.reasoningEffort);
+    const assistantStateChanged = model !== restoredAssistantState.model || confirmationMode !== restoredAssistantState.confirmationMode || reasoningEffort !== restoredAssistantState.reasoningEffort;
+    this.sessionAssistantStates.set(sessionId, { model, confirmationMode, reasoningEffort });
     const attachments = Array.isArray(input?.attachments) ? input.attachments.slice(0, 10).map((attachment: any) => ({
       name: String(attachment?.name ?? '').slice(0, 200), path: String(attachment?.path ?? '').slice(0, 1000),
     })).filter((attachment: any) => attachment.name && attachment.path) : [];
     const resumeId = typeof input?.resumeId === 'string' && input.resumeId ? input.resumeId.slice(0, 200) : '';
     const projectId = typeof input?.projectId === 'string' ? input.projectId.slice(0, 200) : '';
+    // 快照可能因 TTL 刷新并追加 Skill reset；必须先完成刷新，再读取本次请求历史。
+    const snapshots = await this.LoadOrCreateSnapshots(sessionId, scenarioId);
+    this.EnsureModuleSnapshotCompatible(snapshots.module);
+    if (assistantStateChanged) await this.PersistSessionAssistantState(sessionId, { model, confirmationMode, reasoningEffort });
     const projectRoot = await this.BindProjectEnvironment(sessionId, projectId);
     const profiles = (await this.business?.GetProfiles?.())?.items ?? [];
     const resumeSnapshot = resumeId ? (await this.resumeReadPort.ReadCurrent(resumeId)) ?? null : null;
     const resumeEditing = resumeId ? this.resumePort.IsUserEditing(resumeId) : false;
     const runtimeContext = { resumeEditing, resume: resumeSnapshot, profiles, attachments, projectId };
     const history = this.histories.get(sessionId) || [];
+    const sessionLoadedSkills = this.loadedSkills.get(sessionId) ?? new Map<string, string>();
+    const sessionLoadedResources = this.loadedSkillResources.get(sessionId) ?? new Set<string>();
+    this.loadedSkills.set(sessionId, sessionLoadedSkills);
+    this.loadedSkillResources.set(sessionId, sessionLoadedResources);
+    const loadedSkillsBeforeRun = new Map(sessionLoadedSkills);
+    const loadedResourcesBeforeRun = new Set(sessionLoadedResources);
+    const RestoreSkillState = () => {
+      sessionLoadedSkills.clear();
+      loadedSkillsBeforeRun.forEach((version, id) => sessionLoadedSkills.set(id, version));
+      sessionLoadedResources.clear();
+      loadedResourcesBeforeRun.forEach((resource) => sessionLoadedResources.add(resource));
+    };
+    const messagesBeforeUser: AgentMessage[] = history.some((message: AgentMessage) => message.metadata?.kind === 'skill_index' && message.metadata.snapshotId === snapshots.skills.snapshotId)
+      ? []
+      : [this.skillRegistry.CreateIndexMessage(snapshots.skills)];
+    const explicitSkill = this.skillRegistry.MatchExplicitCommand(userContent, snapshots.skills);
+    const alreadyLoadedVersion = explicitSkill
+      ? [...sessionLoadedSkills.entries()].find(([id]) => id.toLowerCase() === explicitSkill.manifest.id.toLowerCase())?.[1]
+      : undefined;
+    const messagesAfterUser: AgentMessage[] = explicitSkill && alreadyLoadedVersion !== explicitSkill.manifest.version
+      ? [this.skillRegistry.Load(snapshots.skills, scenarioId, { skillId: explicitSkill.manifest.id }).message]
+      : [];
     const snapshot = this.modules.contextBuilder.CreateDynamicSnapshot(sessionId, runtimeContext);
     const baseRequestHistory = snapshot.changed ? [...history, snapshot.message] : history;
     const usesDeepSeekVision = status.provider === 'DeepSeek' && model === DeepSeekVisionModel;
@@ -814,12 +1121,10 @@ export class AgentHost {
     this.modules.observability.RecordLog('INFO', 'conversation.send', `session=${sessionId}`);
     this.modules.observability.StartTrace(requestId, sessionId, model);
     this.pendingQuestions.delete(sessionId);
-    const snapshots = await this.LoadOrCreateSnapshots(sessionId, scenarioId);
-    this.EnsureModuleSnapshotCompatible(snapshots.module);
     const activeTools = this.HydrateToolSnapshot(snapshots.tool, scenarioId)
-      .filter((tool: any) => scenario.toolNames.includes(tool.definition.function.name));
+      .filter((tool: any) => runScenario.toolNames.includes(tool.definition.function.name));
     const activeToolNames = activeTools.map((tool: any) => tool.definition.function.name);
-    const missingScenarioTools = scenario.toolNames.filter((name) => !activeToolNames.includes(name));
+    const missingScenarioTools = runScenario.toolNames.filter((name) => !activeToolNames.includes(name));
     if (missingScenarioTools.length) {
       throw new Error(`Active tool registry does not match the ${scenario.id} scenario: missing=${missingScenarioTools.join(',') || 'none'}.`);
     }
@@ -828,7 +1133,7 @@ export class AgentHost {
       snapshotId: randomUUID(),
       sessionId,
       sessionRevision: snapshots.session.sessionRevision,
-      scenario,
+      scenario: runScenario,
       instructions: snapshots.instructions,
       tools: activeTools,
       dataScope: {
@@ -883,6 +1188,55 @@ export class AgentHost {
           },
         },
         browser: scenarioId === 'application' ? this.browserRuntime : undefined,
+        skill: {
+          Load: async (skillInput: { skillId: string; resource?: string }) => this.skillRegistry.Load(snapshots.skills, scenarioId, skillInput),
+        },
+        ...(!unattended ? { cronTask: {
+          PrepareCreate: async (cronInput: Record<string, unknown>) => this.PrepareCronTask(cronInput, { requestId, ...(resumeId ? { resumeId } : {}) }),
+          Read: async (cronInput: { cronTaskId?: string; includeRuns?: boolean }) => this.business.ReadCronTask(cronInput),
+          Update: async (cronInput: Record<string, unknown>) => {
+            const task = await this.business.UpdateCronTask(cronInput);
+            try { await this.onCronScheduleChanged(); }
+            catch (error) {
+              if (task.state === 'active') await this.business.UpdateCronTask({ cronTaskId: task.id, state: 'paused' });
+              await Promise.resolve(this.onCronScheduleChanged()).catch(() => undefined);
+              throw Object.assign(new Error('CronTask was saved as paused because the operating-system wake could not be registered.'), { code: 'INTERNAL_ERROR', cause: error });
+            }
+            return task;
+          },
+          Delete: async (cronTaskId: string) => { const result = await this.business.DeleteCronTask(cronTaskId); await this.onCronScheduleChanged(); return result; },
+        } } : {}),
+        ...(scenarioId === 'application' ? { applicationTracking: {
+          Read: async (filters: { company?: string; title?: string; url?: string } = {}) => {
+            const view = await this.business.LoadViewModel();
+            const allJobs = Array.isArray(view.jobs) ? view.jobs : [];
+            const allApplications = Array.isArray(view.applications) ? view.applications : [];
+            const maxRecords = 200;
+            const NormalizeText = (value: unknown) => String(value ?? '').trim().toLocaleLowerCase();
+            const NormalizeUrl = (value: unknown) => {
+              try {
+                const url = new URL(String(value ?? ''));
+                url.hash = '';
+                url.pathname = url.pathname.replace(/\/+$/, '') || '/';
+                return url.toString().toLocaleLowerCase();
+              } catch { return NormalizeText(value); }
+            };
+            const hasFilters = Boolean(filters.company || filters.title || filters.url);
+            const matchedJobs = hasFilters ? allJobs.filter((job: any) => (
+              (!filters.company || NormalizeText(job.company).includes(NormalizeText(filters.company)))
+              && (!filters.title || NormalizeText(job.title).includes(NormalizeText(filters.title)))
+              && (!filters.url || NormalizeUrl(job.url) === NormalizeUrl(filters.url))
+            )) : allJobs;
+            const matchedJobIds = new Set(matchedJobs.map((job: any) => job.id));
+            const matchedApplications = hasFilters ? allApplications.filter((application: any) => matchedJobIds.has(application.jobId)) : allApplications;
+            return {
+              jobs: matchedJobs.slice(0, maxRecords),
+              applications: matchedApplications.slice(0, maxRecords),
+              truncated: matchedJobs.length > maxRecords || matchedApplications.length > maxRecords,
+            };
+          },
+          Update: async (trackingInput: Record<string, unknown>) => this.business.UpdateApplicationTracking(trackingInput),
+        } } : {}),
       },
       tasks: sessionTasks,
       pendingEdits: this.pendingEdits,
@@ -894,15 +1248,20 @@ export class AgentHost {
       scenarioId,
       emit: (event: unknown) => this.Emit(event),
       persistSessionState: () => this.SaveState(),
+      loadedSkills: sessionLoadedSkills,
+      loadedSkillResources: sessionLoadedResources,
+      pendingSkillLoads: new Set<string>(),
+      unattended,
     };
-    const runtimeControl = { confirmationMode, toolContext };
+    const runtimeControl = { sessionId, confirmationMode, toolContext };
     this.runtimeControls.set(requestId, runtimeControl);
     this.controllers.set(requestId, controller);
     try {
       let modelRequestCompleted = false;
       const result = await RunAgentLoop({
-        requestId, sessionId, model: runSnapshot.provider.model,
+        requestId, sessionId, model: runSnapshot.provider.model, reasoningEffort,
         systemContext: contextContent, requestHistory, userContent, userMessage,
+        messagesBeforeUser, messagesAfterUser,
         histories: this.histories,
         toolArray: runSnapshot.tools,
         modules: this.modules, toolContext,
@@ -913,6 +1272,7 @@ export class AgentHost {
           getConfirmationMode: () => runtimeControl.confirmationMode,
           interval: runSnapshot.scenario.id === 'application' ? 10 : 5,
           timeZone: RuntimeTimeZone,
+          getLoadedSkillIds: () => [...sessionLoadedSkills.keys()],
         },
         contextLimit, thresholdPercent: threshold,
         createId: () => randomUUID(),
@@ -920,6 +1280,7 @@ export class AgentHost {
         instructions: runSnapshot.instructions,
         onModelUsage: (usage) => { modelRequestCompleted = true; this.RecordSessionUsage(requestId, sessionId, usage, contextLimit, threshold); },
       });
+      if (result.outcome === 'cancelled') RestoreSkillState();
       this.compressionCount += result.compressionCount;
       const currentUsage = this.sessionUsage.get(sessionId);
       if (currentUsage?.source === 'actual') {
@@ -937,6 +1298,8 @@ export class AgentHost {
       this.SaveState();
       return { accepted: true, ...(result.outcome === 'cancelled' ? { cancelled: true } : {}) };
     } catch (error) {
+      RestoreSkillState();
+      this.SaveState();
       throw error;
     } finally {
       this.controllers.delete(requestId);

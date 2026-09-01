@@ -99,6 +99,8 @@ export interface SettingsDto {
   baseUrl: string;
   model: string;
   contextLength: string;
+  /** 默认模式使用 min(256K, 模型上限)，自定义模式使用 contextLength。 */
+  contextLimitMode?: 'default' | 'custom';
   thinkingEnabled: boolean;
   developerMode: boolean;
   traceRetention: number;

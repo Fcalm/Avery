@@ -34,6 +34,7 @@ const { DeveloperService } = require('./electron/backend/services/developer-serv
 const { AgentHost } = require('./electron/backend/agent-host.js') as any;
 const { ResumeLockStore } = require('./electron/backend/resume-lock-store.js') as any;
 const { EvalService, AssertEvaluationDeveloperModePreserved } = require('./electron/backend/evaluation/eval-service.js') as any;
+const { CronRunnerService } = require('./electron/backend/services/cron-runner-service.js') as any;
 
 /** 组装业务/可观测性 DB Worker、Agent 运行时与 Router，经 parentPort 服务 Main 命令；桌面能力与凭据经反向 RPC 交由 Main 适配器执行。 */
 async function Bootstrap(): Promise<void> {
@@ -49,6 +50,11 @@ async function Bootstrap(): Promise<void> {
   const smoke = Boolean(app.smoke);
 
   const desktop = CreateDesktopCapabilityClient(PostMessage);
+  // Cron 等初始化流程会在完整命令循环注册前请求桌面能力，必须先接收回包，避免初始化等待永久悬挂。
+  parentPort.on('message', (event: any) => {
+    const message = event?.data ?? event;
+    if (message?.kind === 'desktop-result') desktop.OnMessage(message);
+  });
   const credentialPort = CreateCredentialClient(desktop);
   const host = CreateWorkerHost({ workspacePath: currentWorkspacePath, userDataPath, smoke });
   await host.Ready();
@@ -58,6 +64,7 @@ async function Bootstrap(): Promise<void> {
   const projectEnvironments = new Map<string, { path: string; name: string }>();
   const resumeLockStore = new ResumeLockStore();
 
+  let cronRunner: any = null;
   const agent = new AgentHost({
     userDataPath,
     workspacePath: currentWorkspacePath,
@@ -70,6 +77,7 @@ async function Bootstrap(): Promise<void> {
     agentBrowserExecutablePath,
     browserCompanionExecutablePath,
     browserCompanionAppPath,
+    onCronScheduleChanged: () => cronRunner?.Sync(),
   });
 
   const agentRunService = new AgentRunService({ agentHost: agent, selectModuleDirectory: () => desktop.Call('SelectModuleDirectory') });
@@ -85,6 +93,13 @@ async function Bootstrap(): Promise<void> {
     Emit: (event: unknown) => PostMessage({ kind: 'event', channel: 'evaluation:event', payload: { type: 'evaluation_event', event } }),
   });
   await evaluationService.Initialize();
+  cronRunner = new CronRunnerService({
+    business: host.business,
+    agent,
+    syncOsWake: (nextRunAt: number | null) => desktop.Call('SyncCronWake', [nextRunAt]),
+    emit: (event: unknown) => PostMessage({ kind: 'event', channel: 'agent:stream', payload: event }),
+  });
+  await cronRunner.Initialize();
 
   let migrating = false;
 
@@ -146,6 +161,7 @@ async function Bootstrap(): Promise<void> {
       agent: agentRunService,
       developer: developerService,
       evaluation: evaluationService,
+      cron: { RunDue: () => cronRunner.RunDue(), GetStatus: async () => ({ nextRunAt: (await host.business.GetEarliestCronRunAt())?.nextRunAt ?? null }) },
       conversations,
       resumes,
       jobs,
@@ -178,7 +194,6 @@ async function Bootstrap(): Promise<void> {
     const typed = message;
     if (!typed || typeof typed.kind !== 'string') return;
     if (typed.kind === 'desktop-result') {
-      desktop.OnMessage(message);
       return;
     }
     if (typed.kind === 'command') {
@@ -203,6 +218,7 @@ async function Bootstrap(): Promise<void> {
       return;
     }
     if (typed.kind === 'shutdown') {
+      cronRunner.Close();
       await evaluationService.Close();
       await agent.Close();
       host.Close();

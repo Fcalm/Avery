@@ -9,6 +9,7 @@ node_modules/
 /release-rebuild/
 /output/
 /artifacts/
+/build/markitdown/
 *.asar
 *.blockmap
 

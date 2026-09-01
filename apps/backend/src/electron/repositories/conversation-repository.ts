@@ -56,11 +56,13 @@ export class ConversationRepository {
     return { id, title, revision: nextRevision };
   }
 
-  /** 删除会话；外键级联移除其全部消息。 */
+  /** 删除会话；保留定时任务运行历史并解除其对话关联，消息和附件链接随会话一并清理。 */
   Delete(id: string): any {
     if (typeof id !== 'string' || id.length === 0 || id.length > 200) throw new Error('Conversation id is invalid.');
     const run = this.db.transaction(() => {
       this.attachmentLifecycle.RemoveConversationLinks(id);
+      // cron_runs 需保留执行审计，但其 conversation_id 外键默认禁止删除；先断开关联再删会话。
+      this.db.prepare('UPDATE cron_runs SET conversation_id = NULL WHERE conversation_id = ?').run(id);
       this.db.prepare('DELETE FROM conversations WHERE id = ?').run(id);
       WriteAudit(this.db, 'user', 'delete', 'conversation', id, {});
     });

@@ -131,6 +131,16 @@ function BuildRegistry(): RegisteredAgentTool[] {
       resourceKeys: (input) => [`run:todos:${String(input?.todoId ?? '')}`],
     },
     {
+      definition: CreateDefinition('DeleteTodo', 'Delete a todo from the current Run when it is no longer part of the task. Use UpdateTodo with cancelled when the item should remain visible as part of the execution record.', { type: 'object', properties: { todoId: { type: 'string', minLength: 1, maxLength: 200 } }, required: ['todoId'], additionalProperties: false }),
+      timeoutMs: 10000,
+      isConcurrencySafe: false,
+      sideEffect: 'local_write',
+      risk: 'low',
+      confirmation: 'scenario_policy',
+      idempotency: 'required',
+      resourceKeys: (input) => [`run:todos:${String(input?.todoId ?? '')}`],
+    },
+    {
       definition: CreateDefinition('ReadTodo', 'Read the full todo list of the current Run.', EmptyParameters),
       timeoutMs: 10000,
       isConcurrencySafe: true,
@@ -139,12 +149,84 @@ function BuildRegistry(): RegisteredAgentTool[] {
       idempotency: 'not_needed',
       resourceKeys: () => ['run:todos'],
     },
+    {
+      definition: CreateDefinition('LoadSkill', 'Load a trusted OfferGet skill when its index matches the current task. Call it as the only tool in the batch and wait for the injected instructions. Omit resource to load SKILL.md first; load a listed resource only after the main skill is loaded.', {
+        type: 'object',
+        properties: {
+          skillId: { type: 'string', minLength: 1, maxLength: 80 },
+          resource: { type: 'string', minLength: 1, maxLength: 240 },
+        },
+        required: ['skillId'],
+        additionalProperties: false,
+      }),
+      timeoutMs: 10_000,
+      isConcurrencySafe: false,
+      sideEffect: 'none',
+      risk: 'low',
+      confirmation: 'never',
+      idempotency: 'not_needed',
+      resourceKeys: (input) => [`skill:${String(input?.skillId ?? '').toLowerCase()}`],
+    },
+    {
+      definition: CreateDefinition('CreateCronTask', 'Prepare a scheduled Agent task. Use only after the user explicitly asks for future or recurring execution. Creation is saved only after the user confirms the displayed unattended-execution warning.', {
+        type: 'object', properties: {
+          title: { type: 'string', minLength: 1, maxLength: 200 }, message: { type: 'string', minLength: 1, maxLength: 20000 },
+          scenarioId: { type: 'string', enum: ['default', 'application'] },
+          schedule: { oneOf: [
+            { type: 'object', properties: { type: { const: 'once' }, executeAt: { type: 'string' }, timeZone: { type: 'string' } }, required: ['type', 'executeAt', 'timeZone'], additionalProperties: false },
+            { type: 'object', properties: { type: { const: 'daily' }, startAt: { type: 'string' }, timeZone: { type: 'string' }, intervalDays: { type: 'integer', minimum: 1, maximum: 365 }, occurrences: { type: 'integer', minimum: 1, maximum: 3650 } }, required: ['type', 'startAt', 'timeZone', 'occurrences'], additionalProperties: false },
+            { type: 'object', properties: { type: { const: 'weekly' }, startAt: { type: 'string' }, timeZone: { type: 'string' }, daysOfWeek: { type: 'array', minItems: 1, maxItems: 7, uniqueItems: true, items: { type: 'string', enum: ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'] } }, intervalWeeks: { type: 'integer', minimum: 1, maximum: 52 }, occurrences: { type: 'integer', minimum: 1, maximum: 3650 } }, required: ['type', 'startAt', 'timeZone', 'daysOfWeek', 'occurrences'], additionalProperties: false },
+          ] },
+        }, required: ['title', 'message', 'scenarioId', 'schedule'], additionalProperties: false,
+      }),
+      timeoutMs: 10000, isConcurrencySafe: false, sideEffect: 'local_write', risk: 'high', confirmation: 'always', idempotency: 'required',
+      resourceKeys: () => ['cron:tasks'],
+    },
+    {
+      definition: CreateDefinition('ReadCronTask', 'Read scheduled Agent tasks and optionally one task run history.', { type: 'object', properties: { cronTaskId: { type: 'string', minLength: 1, maxLength: 200 }, includeRuns: { type: 'boolean' } }, additionalProperties: false }),
+      timeoutMs: 10000, isConcurrencySafe: true, sideEffect: 'none', risk: 'low', confirmation: 'never', idempotency: 'not_needed', resourceKeys: () => ['cron:tasks'],
+    },
+    {
+      definition: CreateDefinition('UpdateCronTask', 'Update, pause, or resume an existing scheduled Agent task. Total occurrences cannot be lower than the number already consumed.', {
+        type: 'object', properties: { cronTaskId: { type: 'string', minLength: 1, maxLength: 200 }, title: { type: 'string', minLength: 1, maxLength: 200 }, message: { type: 'string', minLength: 1, maxLength: 20000 }, state: { type: 'string', enum: ['active', 'paused'] }, schedule: { type: 'object' } }, required: ['cronTaskId'], additionalProperties: false,
+      }),
+      timeoutMs: 10000, isConcurrencySafe: false, sideEffect: 'local_write', risk: 'medium', confirmation: 'scenario_policy', idempotency: 'required', resourceKeys: (input) => [`cron:tasks:${String(input?.cronTaskId ?? '')}`],
+    },
+    {
+      definition: CreateDefinition('DeleteCronTask', 'Cancel all future executions of a scheduled Agent task while preserving its prior run and conversation history.', { type: 'object', properties: { cronTaskId: { type: 'string', minLength: 1, maxLength: 200 } }, required: ['cronTaskId'], additionalProperties: false }),
+      timeoutMs: 10000, isConcurrencySafe: false, sideEffect: 'local_write', risk: 'medium', confirmation: 'scenario_policy', idempotency: 'required', resourceKeys: (input) => [`cron:tasks:${String(input?.cronTaskId ?? '')}`],
+    },
   ];
-  const sharedApplicationTools = new Set(['Read', 'Glob', 'Grep', 'ReadProfile', 'ReadResume', 'CreateTodo', 'UpdateTodo', 'ReadTodo', 'AskUserQuestion']);
+  const sharedApplicationTools = new Set(['Read', 'Glob', 'Grep', 'ReadProfile', 'ReadResume', 'CreateTodo', 'UpdateTodo', 'DeleteTodo', 'ReadTodo', 'AskUserQuestion', 'LoadSkill', 'CreateCronTask', 'ReadCronTask', 'UpdateCronTask', 'DeleteCronTask']);
   for (const tool of registry) {
     const name = tool.definition.function.name;
     tool.allowedScenarios = sharedApplicationTools.has(name) ? ['default', 'application'] : ['default'];
   }
+  registry.push(
+    {
+      definition: CreateDefinition('ReadApplicationStatus', 'Search persisted job and application tracking records before deciding whether a job was already applied to. Filter by the observed company, title, and/or URL when checking one target. Page observations are not a substitute for this status.', {
+        type: 'object', properties: {
+          company: { type: 'string', minLength: 1, maxLength: 300 },
+          title: { type: 'string', minLength: 1, maxLength: 300 },
+          url: { type: 'string', minLength: 1, maxLength: 2000 },
+        }, additionalProperties: false,
+      }),
+      timeoutMs: 10000, isConcurrencySafe: true, sideEffect: 'none', risk: 'low', confirmation: 'never', idempotency: 'not_needed', allowedScenarios: ['application'], resourceKeys: () => ['applications'],
+    },
+    {
+      definition: CreateDefinition('UpdateApplicationStatus', 'Create or update the persisted job/application status after a verified browser outcome. ReadApplicationStatus must be called first. Use applied only after an ok:true browser receipt proves submission.', {
+        type: 'object', properties: {
+          applicationId: { type: 'string', minLength: 1, maxLength: 200 }, jobId: { type: 'string', minLength: 1, maxLength: 200 },
+          company: { type: 'string', minLength: 1, maxLength: 200 }, title: { type: 'string', minLength: 1, maxLength: 300 },
+          url: { type: 'string', minLength: 1, maxLength: 2000 }, city: { type: 'string', maxLength: 100 }, experience: { type: 'string', maxLength: 100 },
+          employmentType: { type: 'string', enum: ['intern', 'full_time'] }, channel: { type: 'string', enum: ['boss_zhipin', 'company_website', 'other'] },
+          jd: { type: 'string', maxLength: 200000 }, status: { type: 'string', enum: ['saved', 'applied', 'written_test', 'interviewing', 'ended'] },
+          appliedAt: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$' }, note: { type: 'string', maxLength: 20000 },
+        }, required: ['applicationId', 'jobId', 'company', 'title', 'url', 'status'], additionalProperties: false,
+      }),
+      timeoutMs: 10000, isConcurrencySafe: false, sideEffect: 'local_write', risk: 'low', confirmation: 'scenario_policy', idempotency: 'required', allowedScenarios: ['application'], resourceKeys: (input) => [`applications:${String(input?.applicationId ?? '')}`, `jobs:${String(input?.jobId ?? '')}`],
+    },
+  );
   const RefParameters = {
     type: 'object',
     properties: { ref: { type: 'string', pattern: '^@e[0-9]+$' }, pageRevision: { type: 'integer', minimum: 1 } },
@@ -256,6 +338,56 @@ export function CreateToolsModule(ports: AgentDefaultPorts): ToolsModule {
 
   function GetToolMeta(name: string): RegisteredAgentTool | undefined {
     return byName.get(NormalizeToolName(name));
+  }
+
+  /** 加载冻结 Skill 正文或清单内资源；消息追加与 loaded 状态提交由 Kernel 原子完成。 */
+  async function LoadSkill(context: ToolContext, callId: string, args: Record<string, unknown>): Promise<ToolExecutionResult> {
+    if (!context.ports.skill) return CreateToolResult(callId, { ok: false, code: 'SKILL_REGISTRY_UNAVAILABLE', message: 'The frozen Skill registry is unavailable.' });
+    const requestedId = String(args.skillId ?? '').trim();
+    const resource = typeof args.resource === 'string' ? args.resource.trim().replace(/\\/g, '/') : undefined;
+    const loadedEntry = [...(context.loadedSkills?.entries() ?? [])].find(([id]) => id.toLowerCase() === requestedId.toLowerCase());
+    if (resource && !loadedEntry) {
+      return CreateToolResult(callId, { ok: false, code: 'SKILL_NOT_LOADED', message: `Load the main skill "${requestedId}" before loading one of its resources.` });
+    }
+    const mainKey = `skill:${requestedId.toLowerCase()}`;
+    const resourceKey = resource ? `resource:${requestedId.toLowerCase()}:${resource}` : null;
+    const stateKey = resourceKey ?? mainKey;
+    if (!resource && loadedEntry) {
+      return CreateToolResult(callId, { ok: true, code: 'SKILL_ALREADY_LOADED', message: `Skill "${loadedEntry[0]}" is already loaded.` });
+    }
+    if (resource && context.loadedSkillResources?.has(`${requestedId.toLowerCase()}:${resource}`)) {
+      return CreateToolResult(callId, { ok: true, code: 'SKILL_RESOURCE_ALREADY_LOADED', message: `Skill resource "${resource}" is already loaded.` });
+    }
+    if (context.pendingSkillLoads?.has(stateKey)) {
+      return CreateToolResult(callId, { ok: true, code: 'SKILL_LOAD_ALREADY_QUEUED', message: 'The same Skill content is already queued in this tool batch.' });
+    }
+    try {
+      const loaded = await context.ports.skill.Load({ skillId: requestedId, ...(resource ? { resource } : {}) });
+      context.pendingSkillLoads?.add(resource
+        ? `resource:${loaded.skillId.toLowerCase()}:${loaded.resource}`
+        : `skill:${loaded.skillId.toLowerCase()}`);
+      return {
+        ...CreateToolResult(callId, {
+          ok: true,
+          code: resource ? 'SKILL_RESOURCE_LOADED' : 'SKILL_LOADED',
+          message: resource
+            ? `Skill resource "${loaded.resource}" loaded successfully. Its content follows in the next message.`
+            : `Skill "${loaded.skillId}" loaded successfully. Its instructions follow in the next message.`,
+          skillId: loaded.skillId,
+          version: loaded.skillVersion,
+          ...(loaded.resource ? { resource: loaded.resource } : {}),
+        }),
+        followupMessages: [loaded.message],
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Skill loading failed.';
+      const code = /not available in this scenario/i.test(message)
+        ? 'SKILL_NOT_ALLOWED'
+        : /resource/i.test(message)
+          ? 'SKILL_RESOURCE_NOT_FOUND'
+          : 'SKILL_NOT_FOUND';
+      return CreateToolResult(callId, { ok: false, code, message });
+    }
   }
 
   /** 确认级别只作用于已授权场景内的业务写入；Run Todo 属于内部进度状态，不进入用户确认流程。 */
@@ -386,13 +518,13 @@ export function CreateToolsModule(ports: AgentDefaultPorts): ToolsModule {
     return CreateToolResult(callId, { ok: true, files: [...attachments, ...projectFiles].slice(0, 1000) });
   }
 
-  /** 在授权的纯文本附件与项目文件中执行受限正则搜索，并限制结果规模。 */
+  /** 在授权附件的 Markdown 快照与项目文本文件中执行受限正则搜索，并限制结果规模。 */
   async function Grep(context: ToolContext, callId: string, args: Record<string, unknown>): Promise<ToolExecutionResult> {
     const pattern = RequireString(args.pattern, 'pattern', 300);
     const matcher = new RegExp(pattern, 'i');
     const matches: Array<{ path: string; line: number; content: string }> = [];
     for (const attachment of context.attachments) {
-      if (!/\.(txt|md|json|yaml|yml|csv)$/i.test(attachment.name) || matches.length >= 100) continue;
+      if (matches.length >= 100) continue;
       try {
         const resolved = await ports.file.ResolveAttachmentUri(attachment.path);
         if (!resolved) continue;
@@ -608,6 +740,24 @@ export function CreateToolsModule(ports: AgentDefaultPorts): ToolsModule {
     return CreateToolResult(callId, { ok: true, todo: task, tasks: [...context.tasks.values()] }, { receipt });
   }
 
+  /** 删除当前 Run 中已不再需要的 Todo；与 cancelled 区分，删除后不再出现在执行记录中。 */
+  async function DeleteTodo(context: ToolContext, callId: string, args: Record<string, unknown>): Promise<ToolExecutionResult> {
+    const todoId = RequireString(args.todoId, 'todoId', 200);
+    const idempotencyKey = CreateIdempotencyKey(context, 'DeleteTodo', HashArguments({ todoId }));
+    const ledger = GetLedger(context);
+    const previous = await ledger.FindByIdempotencyKey(idempotencyKey);
+    if (previous?.status === 'succeeded') return CreateToolResult(callId, { ok: true, replayed: true, deletedTodoId: todoId, tasks: [...context.tasks.values()] }, { receipt: previous.receipt });
+    const task = context.tasks.get(todoId);
+    if (!task) throw new Error('Todo not found in this Run.');
+    const ledgerEntry = await StartLedger(context, 'DeleteTodo', { todoId }, idempotencyKey);
+    context.tasks.delete(todoId);
+    context.persistSessionState();
+    context.emit({ type: 'task_deleted', sessionId: context.sessionId, task });
+    const receipt: ToolReceipt = { receiptId: `receipt-${randomUUID()}`, toolDefinitionId: 'DeleteTodo', resourceIds: ['run:todos'], idempotencyKey };
+    await FinishLedger(context, ledgerEntry, 'succeeded', { receipt });
+    return CreateToolResult(callId, { ok: true, deletedTodo: task, deletedTodoId: todoId, tasks: [...context.tasks.values()] }, { receipt });
+  }
+
   /** 读取当前 Run 的完整 Todo 列表。 */
   function ReadTodo(context: ToolContext, callId: string): ToolExecutionResult {
     const tasks = [...context.tasks.values()];
@@ -617,6 +767,79 @@ export function CreateToolsModule(ports: AgentDefaultPorts): ToolsModule {
       completed: tasks.filter((task) => task.status === 'completed').length,
       cancelled: tasks.filter((task) => task.status === 'cancelled').length,
     } });
+  }
+
+  /** 冻结创建提案并让宿主展示周期级无人值守授权；确认前不写数据库、不注册 OS 调度。 */
+  async function CreateCronTask(context: ToolContext, callId: string, args: Record<string, unknown>): Promise<ToolExecutionResult> {
+    if (context.unattended) return CreateToolResult(callId, { ok: false, code: 'TOOL_NOT_ALLOWED', message: 'An unattended Cron Run cannot create another CronTask.' });
+    const cronTask = context.ports.cronTask;
+    if (!cronTask) return CreateToolResult(callId, { ok: false, code: 'RESOURCE_NOT_AUTHORIZED', message: 'CronTask scheduling is unavailable in the current host.' });
+    const proposal = await cronTask.PrepareCreate(args);
+    context.emit({ type: 'cron_task_confirmation', requestId: context.requestId, confirmationId: proposal.confirmationId, cronTask: {
+      title: String(args.title ?? ''), message: String(args.message ?? ''), scenarioId: proposal.scenarioId, schedule: args.schedule, summary: proposal.summary,
+    } });
+    return CreateToolResult(callId, { ok: false, code: 'CONFIRMATION_REQUIRED', confirmationId: proposal.confirmationId, summary: proposal.summary, message: 'The CronTask is waiting for user confirmation.' }, { disposition: 'wait_confirmation' });
+  }
+
+  async function ReadCronTask(context: ToolContext, callId: string, args: Record<string, unknown>): Promise<ToolExecutionResult> {
+    const cronTask = context.ports.cronTask;
+    if (!cronTask) return CreateToolResult(callId, { ok: false, code: 'RESOURCE_NOT_AUTHORIZED', message: 'CronTask scheduling is unavailable in the current host.' });
+    return CreateToolResult(callId, { ok: true, result: await cronTask.Read({ cronTaskId: typeof args.cronTaskId === 'string' ? args.cronTaskId : undefined, includeRuns: args.includeRuns === true }) });
+  }
+
+  async function UpdateCronTask(context: ToolContext, callId: string, args: Record<string, unknown>): Promise<ToolExecutionResult> {
+    if (context.unattended) return CreateToolResult(callId, { ok: false, code: 'TOOL_NOT_ALLOWED', message: 'An unattended Cron Run cannot modify scheduling.' });
+    const cronTask = context.ports.cronTask;
+    if (!cronTask) return CreateToolResult(callId, { ok: false, code: 'RESOURCE_NOT_AUTHORIZED', message: 'CronTask scheduling is unavailable in the current host.' });
+    const idempotencyKey = CreateIdempotencyKey(context, 'UpdateCronTask', HashArguments(args));
+    const previous = await GetLedger(context).FindByIdempotencyKey(idempotencyKey);
+    if (previous?.status === 'succeeded') return CreateToolResult(callId, { ok: true, replayed: true }, { receipt: previous.receipt });
+    const ledgerEntry = await StartLedger(context, 'UpdateCronTask', args, idempotencyKey);
+    const task = await cronTask.Update(args);
+    const receipt: ToolReceipt = { receiptId: `receipt-${randomUUID()}`, toolDefinitionId: 'UpdateCronTask', resourceIds: [`cron:tasks:${String(args.cronTaskId)}`], idempotencyKey };
+    await FinishLedger(context, ledgerEntry, 'succeeded', { receipt });
+    context.emit({ type: 'cron_task_changed', requestId: context.requestId, cronTask: task as any });
+    return CreateToolResult(callId, { ok: true, task }, { receipt });
+  }
+
+  async function DeleteCronTask(context: ToolContext, callId: string, args: Record<string, unknown>): Promise<ToolExecutionResult> {
+    if (context.unattended) return CreateToolResult(callId, { ok: false, code: 'TOOL_NOT_ALLOWED', message: 'An unattended Cron Run cannot modify scheduling.' });
+    const cronTask = context.ports.cronTask;
+    if (!cronTask) return CreateToolResult(callId, { ok: false, code: 'RESOURCE_NOT_AUTHORIZED', message: 'CronTask scheduling is unavailable in the current host.' });
+    const cronTaskId = RequireString(args.cronTaskId, 'cronTaskId', 200);
+    const idempotencyKey = CreateIdempotencyKey(context, 'DeleteCronTask', HashArguments({ cronTaskId }));
+    const previous = await GetLedger(context).FindByIdempotencyKey(idempotencyKey);
+    if (previous?.status === 'succeeded') return CreateToolResult(callId, { ok: true, replayed: true }, { receipt: previous.receipt });
+    const ledgerEntry = await StartLedger(context, 'DeleteCronTask', { cronTaskId }, idempotencyKey);
+    const result = await cronTask.Delete(cronTaskId);
+    const receipt: ToolReceipt = { receiptId: `receipt-${randomUUID()}`, toolDefinitionId: 'DeleteCronTask', resourceIds: [`cron:tasks:${cronTaskId}`], idempotencyKey };
+    await FinishLedger(context, ledgerEntry, 'succeeded', { receipt });
+    context.emit({ type: 'cron_task_changed', requestId: context.requestId, cronTask: { id: cronTaskId, state: 'cancelled' } });
+    return CreateToolResult(callId, { ok: true, result }, { receipt });
+  }
+
+  async function ReadApplicationStatus(context: ToolContext, callId: string, args: Record<string, unknown>): Promise<ToolExecutionResult> {
+    const tracking = context.ports.applicationTracking;
+    if (!tracking) return CreateToolResult(callId, { ok: false, code: 'RESOURCE_NOT_AUTHORIZED', message: 'Application tracking is unavailable in the current host.' });
+    return CreateToolResult(callId, { ok: true, ...(await tracking.Read({
+      ...(typeof args.company === 'string' ? { company: args.company } : {}),
+      ...(typeof args.title === 'string' ? { title: args.title } : {}),
+      ...(typeof args.url === 'string' ? { url: args.url } : {}),
+    })) });
+  }
+
+  async function UpdateApplicationStatus(context: ToolContext, callId: string, args: Record<string, unknown>): Promise<ToolExecutionResult> {
+    const tracking = context.ports.applicationTracking;
+    if (!tracking) return CreateToolResult(callId, { ok: false, code: 'RESOURCE_NOT_AUTHORIZED', message: 'Application tracking is unavailable in the current host.' });
+    if (!context.resumeId) return CreateToolResult(callId, { ok: false, code: 'RESUME_NOT_SELECTED', message: 'A resume must be selected before recording an application.' });
+    const idempotencyKey = CreateIdempotencyKey(context, 'UpdateApplicationStatus', HashArguments(args));
+    const previous = await GetLedger(context).FindByIdempotencyKey(idempotencyKey);
+    if (previous?.status === 'succeeded') return CreateToolResult(callId, { ok: true, replayed: true }, { receipt: previous.receipt });
+    const ledgerEntry = await StartLedger(context, 'UpdateApplicationStatus', args, idempotencyKey);
+    const result = await tracking.Update({ ...args, resumeId: context.resumeId });
+    const receipt: ToolReceipt = { receiptId: `receipt-${randomUUID()}`, toolDefinitionId: 'UpdateApplicationStatus', resourceIds: [`applications:${String(args.applicationId)}`, `jobs:${String(args.jobId)}`], idempotencyKey };
+    await FinishLedger(context, ledgerEntry, 'succeeded', { receipt });
+    return CreateToolResult(callId, { ok: true, result }, { receipt });
   }
 
   /** 岗位搜索：仅在宿主注入 jobSearch 端口时可用，否则安全拒绝；结果仅作为 Run 临时数据。 */
@@ -642,6 +865,13 @@ export function CreateToolsModule(ports: AgentDefaultPorts): ToolsModule {
     if (toolName === 'BrowserUploadFile') {
       const fileId = typeof args.fileId === 'string' ? args.fileId : '';
       if (!context.attachments.some((attachment) => attachment.path === fileId)) {
+        if (context.unattended) {
+          context.emit({
+            type: 'browser_user_action', requestId: context.requestId,
+            browserAction: { toolName, summary: '定时任务不携带临时附件，该页面需要你接管上传文件。', status: 'user_action_required' },
+          });
+          return CreateToolResult(callId, { ok: false, code: 'BROWSER_FILE_NOT_AUTHORIZED', message: 'This scheduled Run has no authorized upload attachment. User action is required.' }, { disposition: 'wait_user_input' });
+        }
         return CreateToolResult(callId, { ok: false, code: 'BROWSER_FILE_NOT_AUTHORIZED', message: 'The upload file is not authorized for this Run.' });
       }
     }
@@ -654,7 +884,7 @@ export function CreateToolsModule(ports: AgentDefaultPorts): ToolsModule {
     }
     const meta = GetToolMeta(toolName);
     const hasExternalEffect = meta?.sideEffect === 'external_action';
-    const requiresConfirmation = hasExternalEffect && (
+    const requiresConfirmation = hasExternalEffect && !context.unattended && (
       proposal.forceConfirmation
       || meta?.confirmation === 'always'
       || context.confirmationMode === 'always_confirm'
@@ -799,7 +1029,7 @@ export function CreateToolsModule(ports: AgentDefaultPorts): ToolsModule {
     version: '0.1.0',
     sdkVersion: '0.1.0',
     slot: 'tools',
-    capabilities: ['tools:default:12', 'tools:application:22', 'browser:atomic', 'browser:fill-batch'],
+    capabilities: ['tools:default:18', 'tools:application:30', 'browser:atomic', 'browser:fill-batch', 'skills:progressive', 'cron:scheduled', 'applications:tracking'],
     /** 返回设计文档 MVP 白名单工具；旧名仅兼容旧快照，不再向新模型暴露。 */
     GetToolDefinitions(scenarioId = 'default') { return registry.filter((tool) => tool.allowedScenarios?.includes(scenarioId)); },
     /** 统一执行管道：Schema 校验与一次修复、写工具幂等账本、按工具超时、结构化错误码、统一 disposition。 */
@@ -842,7 +1072,15 @@ export function CreateToolsModule(ports: AgentDefaultPorts): ToolsModule {
           case 'AskUserQuestion': return AskUserQuestion(executionContext, call.id, args);
           case 'CreateTodo': return CreateTodo(executionContext, call.id, args);
           case 'UpdateTodo': return UpdateTodo(executionContext, call.id, args);
+          case 'DeleteTodo': return DeleteTodo(executionContext, call.id, args);
           case 'ReadTodo': return ReadTodo(executionContext, call.id);
+          case 'LoadSkill': return await LoadSkill(executionContext, call.id, args);
+          case 'CreateCronTask': return await CreateCronTask(executionContext, call.id, args);
+          case 'ReadCronTask': return await ReadCronTask(executionContext, call.id, args);
+          case 'UpdateCronTask': return await UpdateCronTask(executionContext, call.id, args);
+          case 'DeleteCronTask': return await DeleteCronTask(executionContext, call.id, args);
+          case 'ReadApplicationStatus': return await ReadApplicationStatus(executionContext, call.id, args);
+          case 'UpdateApplicationStatus': return await UpdateApplicationStatus(executionContext, call.id, args);
           case 'SearchJobs': return await SearchJobs(executionContext, call.id, args);
           case 'ReadUrl': return await ReadUrl(executionContext, call.id, args);
           case 'BrowserNavigate': case 'BrowserSnapshot': case 'BrowserReadPage': case 'BrowserClick': case 'BrowserFill': case 'BrowserFillForm': case 'BrowserSelect':

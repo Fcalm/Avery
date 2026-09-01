@@ -1,7 +1,7 @@
 import type { AgentStreamEvent } from './events';
 import type { AgentModules } from './modules';
 import type { RegisteredAgentTool, ToolContext } from './tools';
-import type { AgentMessage, CompiledInstructions, ConfirmationMode, ProviderUsageFact, RunDisposition, ScenarioSnapshot } from './types';
+import type { AgentMessage, CompiledInstructions, ConfirmationMode, ProviderUsageFact, ReasoningEffort, RunDisposition, ScenarioSnapshot } from './types';
 
 /** Kernel 单轮运行输入：全部业务态（历史、任务、交互）经参数与上下文注入，Kernel 自身不持持久化。 */
 export interface KernelRunInput {
@@ -9,6 +9,8 @@ export interface KernelRunInput {
   sessionId: string;
   /** 本次请求使用的模型。 */
   model: string;
+  /** 本次 Run 使用的会话级思考强度；运行中保持不变。 */
+  reasoningEffort: ReasoningEffort;
   /** 会话上下文快照序列化后的 system 消息正文（transcript[0]）；业务系统提示由 Run 快照中的 instructions 提供。 */
   systemContext: string;
   /** 已含动态快照消息的请求历史；Kernel 压缩后以此为基构建完整 transcript。 */
@@ -16,6 +18,9 @@ export interface KernelRunInput {
   userContent: string;
   /** 可选的多模态用户消息；缺省时 Kernel 仍按 userContent 构造纯文本消息。 */
   userMessage?: AgentMessage;
+  /** 首次索引或显式 Skill 正文等位于真实 user 消息周围的合成 user 消息。 */
+  messagesBeforeUser?: AgentMessage[];
+  messagesAfterUser?: AgentMessage[];
   /** 会话 Transcript 表：宿主持有的 Map 引用；压缩与落库由 Kernel 更新。 */
   histories: Map<string, AgentMessage[]>;
   /** 本次请求的工具数组（来自会话 Tool 快照顺序）。 */
@@ -43,6 +48,8 @@ export interface KernelRunInput {
     interval: number;
     timeZone: string;
     now?: () => number;
+    /** 会话级已加载 Skill 状态；Kernel 在每次提醒边界读取最新值。 */
+    getLoadedSkillIds?: () => string[];
   };
 }
 

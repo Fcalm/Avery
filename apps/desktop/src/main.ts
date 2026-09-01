@@ -42,8 +42,12 @@ function configureSecurityPolicies(): void {
 
 /** 创建唯一主窗口，明确维持 Renderer 与 Node/Electron 能力隔离。 */
 function createWindow(): BrowserWindow {
+  // Acrylic 负责模糊桌面，Renderer 只提供半透明浅绿染色层。
+  const useWindowsTransparency = process.platform === 'win32';
   const window = new BrowserWindow({
-    width: 1440, height: 960, minWidth: 1024, minHeight: 680, frame: false, autoHideMenuBar: true, backgroundColor: '#F6F1E6',
+    width: 1440, height: 960, minWidth: 1024, minHeight: 680, frame: false, autoHideMenuBar: true,
+    backgroundColor: useWindowsTransparency ? '#00000000' : '#F6F1E6',
+    ...(useWindowsTransparency ? { transparent: true, backgroundMaterial: 'acrylic' as const } : {}),
     webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true, preload: join(__dirname, '..', '..', '..', 'electron', 'preload.cjs') },
   });
   mainWindow = window;
@@ -64,6 +68,17 @@ async function callBackend(channel: string, ...args: unknown[]): Promise<unknown
   const result = await backendHost.Command(channel, undefined, ...args) as CommandFailure | CommandSuccess;
   if (!result.ok) throw Object.assign(new Error(`Lifecycle command failed: ${channel}${result.error?.message ? ` (${result.error.message})` : ''}`), { code: result.error?.code || 'INTERNAL_ERROR' });
   return result.data;
+}
+
+/** 等待 Utility Process 就绪后执行到期任务；后台启动路径不创建/聚焦窗口。 */
+async function runDueCronTasksWhenReady(quitAfter: boolean): Promise<void> {
+  const deadline = Date.now() + 30_000;
+  while (backendHost?.state() !== 'ready') {
+    if (Date.now() >= deadline) throw new Error('Backend was not ready for CronTask execution.');
+    await new Promise((resolveWait) => setTimeout(resolveWait, 100));
+  }
+  await callBackend('cron:run-due');
+  if (quitAfter) app.quit();
 }
 
 /** 从隔离 Renderer 经 preload/IPC 读取 AgentHost 状态，避免桌面冒烟只验证 Main 直连 Backend。 */
@@ -93,7 +108,7 @@ async function runLifecycleScenario(mode: string, userDataPath: string, workspac
   if (mode === 'seed') {
     if (!fixturePath || !existsSync(fixturePath)) throw new Error('Lifecycle attachment fixture is missing.');
     await callBackend('workspace:save-settings', { nickname: '生命周期验收用户', developerMode: true, onboardingCompleted: true });
-    await callBackend('agent:configure', { provider: 'DeepSeek', model: 'deepseek-v4-flash', apiKey, contextLength: 64000, compressionThreshold: 80 });
+    await callBackend('agent:configure', { provider: 'DeepSeek', model: 'deepseek-v4-flash', apiKey, contextLength: '256K', contextLimitMode: 'default', compressionThreshold: 80 });
     await callBackend('workspace:profiles-save', [{ id: 'lifecycle-profile', category: 'project', title: '生命周期档案', content: '确定性测试内容', updatedAt: Date.now() }]);
     await callBackend('workspace:resumes-upsert', { id: 'lifecycle-resume', name: '生命周期简历', targetRoles: ['前端工程师'], summary: '第一版', content: '第一版正文' });
     await callBackend('workspace:resumes-upsert', { id: 'lifecycle-resume', name: '生命周期简历', targetRoles: ['前端工程师'], summary: '第二版', content: '第二版正文' });
@@ -109,7 +124,7 @@ async function runLifecycleScenario(mode: string, userDataPath: string, workspac
   const revisions = await callBackend('workspace:get-resume-revisions', 'lifecycle-resume') as unknown[];
   let provider = await callBackend('agent:status') as { configured?: boolean; model?: string };
   if (!provider.configured && mode === 'verify') {
-    await callBackend('agent:configure', { provider: 'DeepSeek', model: 'deepseek-v4-flash', apiKey, contextLength: 64000, compressionThreshold: 80 });
+    await callBackend('agent:configure', { provider: 'DeepSeek', model: 'deepseek-v4-flash', apiKey, contextLength: '256K', contextLimitMode: 'default', compressionThreshold: 80 });
     provider = await callBackend('agent:status') as { configured?: boolean; model?: string };
   }
   const resume = (view.resumes ?? []).find((item): item is { id: string; name: string; summary: string; content: string; revision?: number } => typeof item === 'object' && item !== null && (item as { id?: unknown }).id === 'lifecycle-resume');
@@ -144,6 +159,9 @@ async function runInstalledVisualScenario(outputDirectory: string): Promise<Reco
 
   const pageLabels = ['求职助手', '岗位库', '投递管理', '简历库', '档案库', '开发者工具'];
   const pages: Array<Record<string, unknown>> = [];
+  // Windows 上隐藏或尚未获得可绘制表面的窗口会让 capturePage 抛出 UnknownVizError。
+  window.show();
+  window.focus();
   for (const [width, height] of [[1280, 800], [1024, 680]] as const) {
     window.setContentSize(width, height);
     for (const label of pageLabels) {
@@ -153,6 +171,12 @@ async function runInstalledVisualScenario(outputDirectory: string): Promise<Reco
         button.click();
         const end = Date.now() + 1500;
         while (button.getAttribute('aria-current') !== 'page' && Date.now() < end) await new Promise((resolve) => setTimeout(resolve, 25));
+        if (${JSON.stringify(label)} === '开发者工具') {
+          const evaluationTab = [...document.querySelectorAll('button[role="tab"]')].find((item) => item.getAttribute('aria-label') === 'Agent 测评' || item.getAttribute('title') === 'Agent 测评');
+          evaluationTab?.click();
+          const evaluationEnd = Date.now() + 1500;
+          while (!document.querySelector('.evaluation-console') && Date.now() < evaluationEnd) await new Promise((resolve) => setTimeout(resolve, 25));
+        }
         const visible = (element) => { const style = getComputedStyle(element); const rect = element.getBoundingClientRect(); return style.visibility !== 'hidden' && style.display !== 'none' && rect.width > 0 && rect.height > 0; };
         const critical = [...document.querySelectorAll('.page-header-actions button, .onboarding-actions button, .composer-dock button, [role="dialog"] button')].filter(visible);
         const offscreenCritical = critical.filter((element) => { const rect = element.getBoundingClientRect(); return rect.left < 0 || rect.right > innerWidth || rect.top < 0 || rect.bottom > innerHeight; }).map((element) => element.textContent?.trim() || element.getAttribute('aria-label'));
@@ -160,7 +184,8 @@ async function runInstalledVisualScenario(outputDirectory: string): Promise<Reco
           label: ${JSON.stringify(label)}, selected: button.getAttribute('aria-current') === 'page',
           horizontalOverflow: document.documentElement.scrollWidth > document.documentElement.clientWidth || document.body.scrollWidth > document.body.clientWidth,
           offscreenCritical,
-          evaluationTabVisible: ${JSON.stringify(label)} !== '开发者工具' || [...document.querySelectorAll('button[role="tab"]')].some((item) => item.textContent?.includes('Agent 测评')),
+          evaluationTabVisible: ${JSON.stringify(label)} !== '开发者工具' || [...document.querySelectorAll('button[role="tab"]')].some((item) => item.getAttribute('aria-label') === 'Agent 测评' || item.getAttribute('title') === 'Agent 测评'),
+          evaluationPanelVisible: ${JSON.stringify(label)} !== '开发者工具' || Boolean(document.querySelector('.evaluation-console')),
         };
       })()`, true) as Record<string, unknown>;
       const image = await window.webContents.capturePage();
@@ -189,22 +214,27 @@ async function runInstalledVisualScenario(outputDirectory: string): Promise<Reco
   await ReloadRenderer();
   const visibleWhenEnabled = await window.webContents.executeJavaScript(`new Promise((resolve)=>{const end=Date.now()+5000;const wait=()=>{const visible=[...document.querySelectorAll('button[title]')].some((item)=>item.getAttribute('title')==='开发者工具');visible?resolve(true):Date.now()>=end?resolve(false):setTimeout(wait,25)};wait();})`, true);
   const developerModeGate = hiddenWhenDisabled === true && visibleWhenEnabled === true;
-  const pagesPassed = pages.every((page) => page.selected === true && page.horizontalOverflow !== true && Array.isArray(page.offscreenCritical) && page.offscreenCritical.length === 0 && page.evaluationTabVisible === true);
+  const pagesPassed = pages.every((page) => page.selected === true && page.horizontalOverflow !== true && Array.isArray(page.offscreenCritical) && page.offscreenCritical.length === 0 && page.evaluationTabVisible === true && page.evaluationPanelVisible === true);
   return { rendererNavigationReady: true, consoleErrors, pages, keyboardTargetFocused, keyboardNavigation, developerModeGate, passed: pagesPassed && keyboardTargetFocused === true && keyboardNavigation === true && developerModeGate && consoleErrors.length === 0 };
 }
 
 if (IsBrowserCompanionProcess()) {
   StartBrowserCompanion();
 } else {
-  writeSmokeStage('main_loaded');
+  const cronRunnerLaunch = process.argv.includes('--cron-runner');
+  // Smoke 必须在申请单实例锁前切换隔离目录，否则会被正在运行的正式应用误判为第二实例并立即退出。
   if (process.env.OFFERGET_DESKTOP_SMOKE === '1' && process.env.OFFERGET_SMOKE_USER_DATA) app.setPath('userData', resolve(process.env.OFFERGET_SMOKE_USER_DATA));
-
+  const ownsSingleInstance = app.requestSingleInstanceLock();
+  if (!ownsSingleInstance) {
+    app.quit();
+  } else {
+  writeSmokeStage('main_loaded');
   app.whenReady().then(() => {
     writeSmokeStage('electron_ready');
     configureSecurityPolicies();
     const userDataPath = app.getPath('userData');
     const workspacePath = join(userDataPath, 'OfferGet Workspace');
-    const adapters = CreateDesktopAdapters({ getWindow: () => mainWindow, userDataPath });
+    const adapters = CreateDesktopAdapters({ getWindow: () => mainWindow, userDataPath, executablePath: process.execPath, enableSystemCron: app.isPackaged });
     backendHost = CreateBackendHost({
       appContext: {
         userDataPath,
@@ -219,7 +249,8 @@ if (IsBrowserCompanionProcess()) {
     RegisterGateway({ backendHost, webContentsGetter: () => mainWindow });
     RegisterWindowControls({ webContentsGetter: () => mainWindow });
     Menu.setApplicationMenu(null);
-    createWindow();
+    if (!cronRunnerLaunch) createWindow();
+    else void runDueCronTasksWhenReady(true).catch((error) => { console.error('CronTask runner failed:', error); app.exit(1); });
     if (process.env.OFFERGET_DESKTOP_SMOKE !== '1') return;
     const deadline = Date.now() + 15000;
     const timer = setInterval(async () => {
@@ -246,7 +277,13 @@ if (IsBrowserCompanionProcess()) {
       }
     }, 100);
   });
+  app.on('second-instance', (_event, commandLine) => {
+    if (commandLine.includes('--cron-runner')) { void runDueCronTasksWhenReady(false).catch((error) => console.error('CronTask wake failed:', error)); return; }
+    if (!mainWindow || mainWindow.isDestroyed()) createWindow();
+    else { if (mainWindow.isMinimized()) mainWindow.restore(); mainWindow.show(); mainWindow.focus(); }
+  });
   app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
   app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
   app.on('before-quit', () => { backendHost?.Shutdown(); });
+  }
 }

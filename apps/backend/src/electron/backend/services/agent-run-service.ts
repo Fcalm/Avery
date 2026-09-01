@@ -29,8 +29,14 @@ export class AgentRunService {
   /** 在途 Run 的确认权限切换；Kernel 在下一轮状态提醒中同步给模型。 */
   UpdateConfirmationMode(requestId: string, confirmationMode: unknown): any { return this.agent.UpdateConfirmationMode(requestId, confirmationMode); }
 
+  /** 持久化会话级思考强度；下一 Run 读取该值。 */
+  UpdateReasoningEffort(sessionId: string, reasoningEffort: unknown): any { return this.agent.UpdateReasoningEffort(sessionId, reasoningEffort); }
+
   /** 应用或丢弃待确认的简历补丁。 */
   ConfirmResumeEdit(confirmationId: string, accepted: boolean): any { return this.agent.ConfirmResumeEdit(confirmationId, accepted); }
+
+  /** 确认或拒绝周期级无人值守 CronTask 创建提案。 */
+  ConfirmCronTask(confirmationId: string, accepted: boolean): any { return this.agent.ConfirmCronTask(confirmationId, accepted); }
 
   /** 应用或拒绝冻结的浏览器动作提案。 */
   ConfirmBrowserAction(confirmationId: string, accepted: boolean): any { return this.agent.ConfirmBrowserAction(confirmationId, accepted); }
@@ -57,7 +63,7 @@ export class AgentRunService {
 
   async BindProjectEnvironment(sessionId: string, projectId: string): Promise<any> {
     await this.agent.BindProjectEnvironment(sessionId, projectId);
-    return this.agent.GetSessionAssistantState(sessionId).project;
+    return (await this.agent.GetSessionAssistantState(sessionId)).project;
   }
 
   GetModuleConfiguration(): any { return this.agent.GetModuleConfiguration(); }

@@ -1,4 +1,4 @@
-import type { AgentMessage, ModelCompletion, ModelDelta, ModelProviderModule, ModelUsage, RegisteredAgentTool } from '@offerget/agent-sdk';
+import type { AgentMessage, ModelCompletion, ModelDelta, ModelProviderModule, ModelUsage, ReasoningEffort, RegisteredAgentTool } from '@offerget/agent-sdk';
 import { AgentDefaultPorts, ProviderConfig } from './ports';
 import { RequireString } from './helpers';
 import { SummaryPrompt } from './prompts';
@@ -10,6 +10,38 @@ export { SummaryPrompt } from './prompts';
 export const DefaultBaseUrl = 'https://api.deepseek.com';
 const DefaultDeepSeekModels = ['deepseek-v4-flash', 'deepseek-v4-pro', 'deepseek-v4-flash-vision-exp'];
 const DeepSeekMaximumRequestBytes = 48 * 1024 * 1024;
+export const DefaultContextLimit = 256_000;
+const MaximumConfigurableContextLimit = 2_000_000;
+/** DeepSeek /models 不返回上下文元数据，已知官方模型能力必须由 Provider 维护。 */
+const DeepSeekModelContextLimits: Readonly<Record<string, number>> = {
+  'deepseek-v4-flash': 1_000_000,
+  'deepseek-v4-pro': 1_000_000,
+  'deepseek-v4-flash-vision-exp': 1_000_000,
+};
+
+export type ContextLimitMode = 'default' | 'custom';
+
+/** DeepSeek V4 官方映射：前端保留五档语义，Provider 只发送服务端实际支持的三档。 */
+export function ResolveDeepSeekReasoningEffort(value: ReasoningEffort): 'low' | 'high' | 'max' {
+  if (value === 'low') return 'low';
+  if (value === 'max') return 'max';
+  return 'high';
+}
+
+/** 统一解析自动/自定义限制；自动值永不超过模型上限，自定义值超过已知上限时显式拒绝。 */
+export function ResolveContextLimit(input: { mode: ContextLimitMode; value?: unknown; modelMaximum?: number }): number {
+  if (input.mode === 'default') return Math.min(DefaultContextLimit, input.modelMaximum ?? DefaultContextLimit);
+  const raw = String(input.value ?? '').trim();
+  const matched = raw.match(/^(\d+)\s*([kK])?$/);
+  const limit = matched ? Number(matched[1]) * (matched[2] ? 1000 : 1) : Number.NaN;
+  if (!Number.isSafeInteger(limit) || limit < 8_000 || limit > MaximumConfigurableContextLimit) {
+    throw new Error('上下文限制需为 8K–2000K，可填写 256K 或 256000。');
+  }
+  if (input.modelMaximum !== undefined && limit > input.modelMaximum) {
+    throw new Error(`自定义上下文限制不能超过当前模型的 ${input.modelMaximum.toLocaleString()} token 上限。`);
+  }
+  return limit;
+}
 
 /** 将已弃用的历史模型名迁移为当前默认模型，避免旧配置导致请求被服务端拒绝。 */
 function NormalizeDeepSeekModel(model: unknown) {
@@ -101,7 +133,7 @@ function EstimateProviderTokens(value: unknown): number {
 
 /** 默认模型 Provider 模块：配置、连通性、请求级模型解析、流式补全、摘要与规模估算；API Key 经宿主端口存取。 */
 export function CreateProviderModule(ports: AgentDefaultPorts): ModelProviderModule {
-  let config: ProviderConfig = { provider: 'DeepSeek', baseUrl: DefaultBaseUrl, model: 'deepseek-v4-flash', thinkingEnabled: true, contextLimit: 64000, compressionThreshold: 80, apiKey: '' };
+  let config: ProviderConfig = { provider: 'DeepSeek', baseUrl: DefaultBaseUrl, model: 'deepseek-v4-flash', thinkingEnabled: true, contextLimit: DefaultContextLimit, contextLimitMode: 'default', compressionThreshold: 80, apiKey: '' };
   let configLoaded = false;
   const providerFetch = globalThis.fetch;
 
@@ -111,23 +143,28 @@ export function CreateProviderModule(ports: AgentDefaultPorts): ModelProviderMod
     configLoaded = true;
     const stored = (await ports.getConfig()) ?? null;
     if (!stored) return;
+    const provider = stored.provider === '自定义' ? '自定义' : 'DeepSeek';
+    const model = provider === 'DeepSeek' ? NormalizeDeepSeekModel(stored.model) : (stored.model || 'deepseek-v4-flash');
+    // DeepSeek 旧版 64K 是历史默认值而非用户选择；自定义 Provider 的旧值则由用户明确填写，必须保留。
+    const contextLimitMode: ContextLimitMode = stored.contextLimitMode === 'custom' || stored.contextLimitMode === 'default'
+      ? stored.contextLimitMode : provider === '自定义' ? 'custom' : 'default';
+    const modelMaximum = provider === 'DeepSeek' ? DeepSeekModelContextLimits[model] : undefined;
+    let contextLimit: number;
+    try {
+      contextLimit = ResolveContextLimit({ mode: contextLimitMode, value: stored.contextLimit, modelMaximum });
+    } catch {
+      contextLimit = ResolveContextLimit({ mode: 'default', modelMaximum });
+    }
     config = {
-      provider: stored.provider || 'DeepSeek',
-      baseUrl: stored.provider === 'DeepSeek' ? DefaultBaseUrl : (stored.baseUrl || DefaultBaseUrl),
-      model: stored.provider === 'DeepSeek' ? NormalizeDeepSeekModel(stored.model) : (stored.model || 'deepseek-v4-flash'),
+      provider,
+      baseUrl: provider === 'DeepSeek' ? DefaultBaseUrl : (stored.baseUrl || DefaultBaseUrl),
+      model,
       thinkingEnabled: stored.thinkingEnabled !== false,
-      contextLimit: stored.contextLimit || 64000,
+      contextLimit,
+      contextLimitMode,
       compressionThreshold: stored.compressionThreshold ?? 80,
       apiKey: typeof stored.apiKey === 'string' ? stored.apiKey : '',
     };
-  }
-
-  /** 解析用户配置的上下文长度，拒绝无意义长度并保留安全默认值。 */
-  function ParseContextLimit(value: unknown): number {
-    const matched = String(value ?? '64K').trim().match(/^(\d+)\s*[kK]?$/);
-    const limit = matched ? Number(matched[1]) * (/[kK]/.test(String(value)) ? 1000 : 1) : 64000;
-    if (!Number.isInteger(limit) || limit < 8000 || limit > 2_000_000) return 64000;
-    return limit;
   }
 
   /** 解析可配置的压缩阈值，范围固定为文档要求的 1–80%。 */
@@ -156,10 +193,15 @@ export function CreateProviderModule(ports: AgentDefaultPorts): ModelProviderMod
       if (provider === 'DeepSeek' && model !== requestedModel) throw new Error('请选择 DeepSeek 当前支持的模型。');
       const next = { provider, baseUrl, model, thinkingEnabled: Boolean(cfg.thinkingEnabled), apiKey: apiKey || config.apiKey };
       if (!next.apiKey) throw new Error('API Key is required.');
-      const contextLimit = ParseContextLimit(cfg.contextLength);
+      const contextLimitMode: ContextLimitMode = cfg.contextLimitMode === 'custom' ? 'custom' : 'default';
+      const contextLimit = ResolveContextLimit({
+        mode: contextLimitMode,
+        value: cfg.contextLength,
+        modelMaximum: provider === 'DeepSeek' ? DeepSeekModelContextLimits[model] : undefined,
+      });
       const compressionThreshold = ParseCompressionThreshold(cfg.compressionThreshold);
-      await ports.saveConfig({ ...next, contextLimit, compressionThreshold });
-      config = { ...next, contextLimit, compressionThreshold };
+      await ports.saveConfig({ ...next, contextLimit, contextLimitMode, compressionThreshold });
+      config = { ...next, contextLimit, contextLimitMode, compressionThreshold };
       return { configured: true, provider: next.provider, model: next.model };
     },
     /** 使用当前表单值测试兼容 OpenAI 的模型服务，不写入配置或暴露密钥。 */
@@ -169,6 +211,13 @@ export function CreateProviderModule(ports: AgentDefaultPorts): ModelProviderMod
       const apiKey = RequireString(cfg.apiKey, 'apiKey', 500);
       if (/\*/.test(apiKey)) throw new Error('Please enter the complete API Key before testing.');
       const baseUrl = provider === 'DeepSeek' ? DefaultBaseUrl : RequireString(cfg.baseUrl, 'baseUrl', 500).replace(/\/$/, '');
+      const requestedModel = RequireString(cfg.model, 'model', 200);
+      const model = provider === 'DeepSeek' ? NormalizeDeepSeekModel(requestedModel) : requestedModel;
+      ResolveContextLimit({
+        mode: cfg.contextLimitMode === 'custom' ? 'custom' : 'default',
+        value: cfg.contextLength,
+        modelMaximum: provider === 'DeepSeek' ? DeepSeekModelContextLimits[model] : undefined,
+      });
       const response = await providerFetch(`${baseUrl}/models`, { method: 'GET', headers: { Authorization: `Bearer ${apiKey}` }, signal: AbortSignal.timeout(15000) });
       if (!response.ok) throw new Error(`Connection test failed (${response.status}).`);
       return { connected: true, provider, baseUrl };
@@ -176,7 +225,15 @@ export function CreateProviderModule(ports: AgentDefaultPorts): ModelProviderMod
     /** 只返回脱敏状态，供渲染层决定是否展示配置引导；首次读取前先加载已保存配置。 */
     async GetStatus() {
       await EnsureConfig();
-      return { configured: Boolean(config.apiKey), provider: config.provider, model: config.model };
+      return {
+        configured: Boolean(config.apiKey),
+        provider: config.provider,
+        model: config.model,
+        baseUrl: config.baseUrl,
+        contextLimit: config.contextLimit,
+        contextLimitMode: config.contextLimitMode ?? 'default',
+        compressionThreshold: config.compressionThreshold,
+      };
     },
     /** 校验单轮模型切换，DeepSeek 仅允许预设，自定义 Provider 固定使用已保存模型。 */
     ResolveRequestModel(requestedModel) {
@@ -222,11 +279,16 @@ export function CreateProviderModule(ports: AgentDefaultPorts): ModelProviderMod
     async StreamCompletion(request) {
       await EnsureConfig();
       const systemContent = RequireString(request.instructions?.compiled, 'compiled instructions', 200000);
+      const thinking = config.provider === 'DeepSeek'
+        ? config.thinkingEnabled
+          ? { thinking: { type: 'enabled' }, reasoning_effort: ResolveDeepSeekReasoningEffort(request.reasoningEffort) }
+          : { thinking: { type: 'disabled' } }
+        : {};
       const response = await providerFetch(`${config.baseUrl}/chat/completions`, {
         method: 'POST',
         signal: request.signal,
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${config.apiKey}` },
-        body: SerializeCompletionBody({ model: request.model, stream: true, ...(config.provider === 'DeepSeek' ? { stream_options: { include_usage: true } } : {}), messages: [{ role: 'system', content: systemContent }, ...request.history.map(ToProviderMessage)], tools: request.tools.map((tool) => tool.definition), tool_choice: 'auto' }, config.provider === 'DeepSeek'),
+        body: SerializeCompletionBody({ model: request.model, stream: true, ...thinking, ...(config.provider === 'DeepSeek' ? { stream_options: { include_usage: true } } : {}), messages: [{ role: 'system', content: systemContent }, ...request.history.map(ToProviderMessage)], tools: request.tools.map((tool) => tool.definition), tool_choice: 'auto' }, config.provider === 'DeepSeek'),
       });
       if (!response.ok || !response.body) throw new Error(`Model request failed (${response.status}).`);
       const decoder = new TextDecoder();

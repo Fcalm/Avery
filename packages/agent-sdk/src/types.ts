@@ -33,6 +33,9 @@ export type ToolDisposition = 'continue' | 'wait_user_input' | 'wait_confirmatio
 /** 用户选择的确认级别；它只改变场景白名单内动作的确认方式，不扩大工具或资源权限。 */
 export type ConfirmationMode = 'always_confirm' | 'allow_low_risk' | 'fully_trusted';
 
+/** 用户选择的会话级思考强度；Provider 负责映射到供应商实际支持的档位。 */
+export type ReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+
 /** 一次 Run 的不可变场景快照；工具白名单、确认策略与预算均来自这里。 */
 export interface ScenarioSnapshot {
   id: string;
@@ -140,6 +143,39 @@ export interface PromptManifest {
   compiledHash: string;
 }
 
+/** 从 SKILL.md frontmatter 与目录资源派生的内部元数据；不对应额外 manifest 文件。 */
+export interface SkillManifest {
+  id: string;
+  name: string;
+  version: string;
+  description: string;
+  scenarios: string[];
+  resources: string[];
+}
+
+/** 会话快照内冻结的单个 Skill；正文和资源只能通过受控加载端口读取。 */
+export interface FrozenSkill {
+  manifest: SkillManifest;
+  content: string;
+  contentHash: string;
+  resources: Array<{ path: string; content: string; contentHash: string }>;
+}
+
+/** 与 Session 同版本的完整 Skill 快照；普通 Run 不重新读取磁盘。 */
+export interface SkillSnapshot {
+  snapshotId: string;
+  sessionId: string;
+  sessionRevision: number;
+  skills: FrozenSkill[];
+  snapshotHash: string;
+}
+
+/** 会话级已加载 Skill 状态；版本用于幂等和 /reload 后重载。 */
+export interface LoadedSkillState {
+  id: string;
+  version: string;
+}
+
 /** 编译后的指令：内部有序片段 + 完整文本；Provider 只做角色映射。 */
 export interface CompiledInstructions {
   manifest: PromptManifest;
@@ -197,6 +233,8 @@ export type ModelStreamEvent =
 
 /** Transcript 原子组：一个完整用户轮次及其工具链不可拆分。 */
 export interface TurnGroup {
+  /** 位于真实用户消息之前的合成上下文；保持原顺序但不单独计为用户轮次。 */
+  prefixMessages?: AgentMessage[];
   userMessage: AgentMessage;
   messages: AgentMessage[];
 }
@@ -227,13 +265,43 @@ export interface AgentMessage {
   tool_call_id?: string;
   reasoning_content?: string;
   /** 仅供宿主持久化与 Context 编排；Provider Adapter 不得透传该元数据。 */
-  metadata?: {
-    source: 'runtime';
-    visibility: 'hidden';
-    kind: 'runtime_reminder';
-    reminderRevision: number;
-    injectedAtTurn: number;
-  };
+  metadata?:
+    | {
+      source: 'runtime';
+      visibility: 'hidden';
+      kind: 'runtime_reminder';
+      reminderRevision: number;
+      injectedAtTurn: number;
+    }
+    | {
+      source: 'runtime';
+      visibility: 'hidden';
+      kind: 'skill_index';
+      snapshotId: string;
+      sessionRevision: number;
+    }
+    | {
+      source: 'runtime';
+      visibility: 'hidden';
+      kind: 'loaded_skill';
+      skillId: string;
+      skillVersion: string;
+    }
+    | {
+      source: 'runtime';
+      visibility: 'hidden';
+      kind: 'loaded_skill_resource';
+      skillId: string;
+      skillVersion: string;
+      resourcePath: string;
+    }
+    | {
+      source: 'runtime';
+      visibility: 'hidden';
+      kind: 'skill_state_reset';
+      reason: 'ttl_elapsed' | 'user_reload';
+      sessionRevision: number;
+    };
 }
 
 /** 流式模型增量：思考正文与回复正文可能各自到达。 */
@@ -280,6 +348,8 @@ export interface ToolExecutionResult {
   disposition?: ToolDisposition;
   /** 写工具成功时携带回执，供最终回复与 Harness 校验。 */
   receipt?: ToolReceipt;
+  /** 工具结果后由 Kernel 追加的内部消息；Provider 工具协议字段不得携带此属性。 */
+  followupMessages?: AgentMessage[];
 }
 
 /** 本地运行日志条目：不含用户正文、附件路径或密钥。 */

@@ -8,6 +8,7 @@ export interface RuntimeReminderState {
   maxTurns: number;
   confirmationMode: ConfirmationMode;
   finalTurn: boolean;
+  loadedSkillIds: string[];
 }
 
 /** 首轮、固定间隔和最后一轮追加提醒；调用方可在权限变化时额外请求一次。 */
@@ -44,6 +45,7 @@ export function BuildRuntimeReminder(state: RuntimeReminderState): string {
     `Today is ${date}. The current local time is ${time} in ${state.timeZone}.`,
     `Used turns: ${state.usedTurns} of ${state.maxTurns}. Remaining turns: ${remaining}.`,
     `Current confirmation mode: ${mode}.`,
+    `Loaded skills: ${state.loadedSkillIds.length ? [...new Set(state.loadedSkillIds)].sort().join(', ') : 'none'}.`,
   ];
   if (state.finalTurn) {
     lines.push('This is the final available turn. Do not start new tool calls. Conclude the current work and explain anything that remains unfinished.');

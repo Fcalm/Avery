@@ -44,6 +44,38 @@ function HistorySnapshot(transcript: AgentMessage[]): AgentMessage[] {
   return transcript.filter((message) => message.role !== 'system').map(({ providerContent: _providerContent, ...message }) => message);
 }
 
+/** Skill 工具结果的合成 user 消息只能在所有 tool result 完整追加后进入 Transcript。 */
+function CommitSkillFollowups(input: KernelRunInput, results: ToolExecutionResult[]): AgentMessage[] {
+  const messages: AgentMessage[] = [];
+  for (const result of results) {
+    for (const message of result.followupMessages ?? []) {
+      const metadata = message.metadata;
+      if (metadata?.kind === 'loaded_skill') {
+        input.toolContext.loadedSkills?.set(metadata.skillId, metadata.skillVersion);
+        input.toolContext.pendingSkillLoads?.delete(`skill:${metadata.skillId.toLowerCase()}`);
+      } else if (metadata?.kind === 'loaded_skill_resource') {
+        const key = `${metadata.skillId.toLowerCase()}:${metadata.resourcePath}`;
+        input.toolContext.loadedSkillResources?.add(key);
+        input.toolContext.pendingSkillLoads?.delete(`resource:${key}`);
+      }
+      messages.push(message);
+    }
+  }
+  return messages;
+}
+
+/** 首次索引与显式 Skill 正文在首个模型请求前提交，并同步会话级 loaded 状态。 */
+function CommitInitialSyntheticMessages(input: KernelRunInput, messages: AgentMessage[]): AgentMessage[] {
+  for (const message of messages) {
+    const metadata = message.metadata;
+    if (metadata?.kind === 'loaded_skill') input.toolContext.loadedSkills?.set(metadata.skillId, metadata.skillVersion);
+    if (metadata?.kind === 'loaded_skill_resource') {
+      input.toolContext.loadedSkillResources?.add(`${metadata.skillId.toLowerCase()}:${metadata.resourcePath}`);
+    }
+  }
+  return messages;
+}
+
 /** 取消是硬边界：Provider 或工具即使忽略 AbortSignal 迟到返回，也不得继续产生 Usage、历史或副作用。 */
 function ThrowIfRunCancelled(signal: KernelRunInput['signal']): void {
   if (!signal.aborted) return;
@@ -82,6 +114,15 @@ function CreateSkippedResult(call: ToolCallFragment): ToolExecutionResult {
   };
 }
 
+/** Skill 正文必须先回到模型；同批其他动作不能抢在 Skill 指令注入前执行。 */
+function CreateSkippedAfterSkillLoadResult(call: ToolCallFragment): ToolExecutionResult {
+  return {
+    role: 'tool',
+    tool_call_id: call.id,
+    content: JSON.stringify({ ok: false, code: 'SKIPPED_FOR_SKILL_LOAD', message: 'Skipped because LoadSkill must complete as the only tool in its batch. Re-plan after reading the injected Skill instructions.' }),
+  };
+}
+
 /** 构造冻结场景白名单拒绝结果；未知或未授权工具不得进入工具模块。 */
 function CreateToolNotAllowedResult(call: ToolCallFragment): ToolExecutionResult {
   return {
@@ -108,7 +149,12 @@ async function CompressIfNeeded(input: KernelRunInput, history: AgentMessage[], 
   const estimate = modules.modelProvider.EstimateTokens({
     system: input.instructions.compiled,
     tools: toolArray,
-    messages: [...history, input.userMessage ?? { role: 'user', content: input.userContent }],
+    messages: [
+      ...history,
+      ...(input.messagesBeforeUser ?? []),
+      input.userMessage ?? { role: 'user', content: input.userContent },
+      ...(input.messagesAfterUser ?? []),
+    ],
   });
   if (!modules.compaction.ShouldCompact(estimate, contextLimit, threshold)) return history;
   let candidate = history;
@@ -145,6 +191,15 @@ async function CompressIfNeeded(input: KernelRunInput, history: AgentMessage[], 
 /** 按 tool_call 顺序执行工具批次；只读并行、写/交互屏障，等待后跳过未执行节点。 */
 async function RunToolBatch(input: KernelRunInput, calls: ToolCallFragment[]): Promise<{ results: AgentMessage[]; disposition: RunDisposition }> {
   ThrowIfRunCancelled(input.signal);
+  const skillLoadIndex = calls.findIndex((call) => call.function.name === 'LoadSkill');
+  if (skillLoadIndex >= 0 && calls.length > 1) {
+    const selected = calls[skillLoadIndex];
+    const single = await RunToolBatch(input, [selected]);
+    return {
+      results: calls.map((call, index) => index === skillLoadIndex ? single.results[0] : CreateSkippedAfterSkillLoadResult(call)),
+      disposition: single.disposition,
+    };
+  }
   const results: AgentMessage[] = new Array(calls.length);
   const phases: ToolCallFragment[][] = [];
   let currentPhase: ToolCallFragment[] = [];
@@ -245,7 +300,15 @@ export async function RunAgentLoop(input: KernelRunInput): Promise<KernelRunResu
   try {
     // 压缩熔断错误进入 catch，统一 FinishTrace/emit error（旧实现压缩在 try 外，抛错会跳过 Trace 收尾导致 running 幽灵 Trace）。
     requestHistory = await CompressIfNeeded(input, input.requestHistory, () => { compressionCount += 1; });
-    transcript = [{ role: 'system', content: input.systemContext }, ...requestHistory, input.userMessage ?? { role: 'user', content: input.userContent }];
+    const beforeUser = CommitInitialSyntheticMessages(input, input.messagesBeforeUser ?? []);
+    const afterUser = CommitInitialSyntheticMessages(input, input.messagesAfterUser ?? []);
+    transcript = [
+      { role: 'system', content: input.systemContext },
+      ...requestHistory,
+      ...beforeUser,
+      input.userMessage ?? { role: 'user', content: input.userContent },
+      ...afterUser,
+    ];
     inputTokens = modules.modelProvider.EstimateTokens({ system: input.instructions.compiled, tools: input.toolArray, messages: transcript });
     while (true) {
       // 取消不经循环顶部轮询：模型流经 signal 中止抛错，由 catch 统一 FinishTrace 并 emit cancelled。
@@ -268,6 +331,7 @@ export async function RunAgentLoop(input: KernelRunInput): Promise<KernelRunResu
           maxTurns,
           confirmationMode: currentConfirmationMode,
           finalTurn,
+          loadedSkillIds: input.runtimeReminder.getLoadedSkillIds?.() ?? [],
         }, reminderRevision);
         transcript = [...transcript, reminder];
         modules.observability.AppendTraceEvent(requestId, 'runtime_reminder', {
@@ -287,6 +351,7 @@ export async function RunAgentLoop(input: KernelRunInput): Promise<KernelRunResu
       const completion = await modules.modelProvider.StreamCompletion({
         requestId,
         model: input.model,
+        reasoningEffort: input.reasoningEffort,
         history: transcript,
         tools: input.toolArray,
         signal,
@@ -324,7 +389,10 @@ export async function RunAgentLoop(input: KernelRunInput): Promise<KernelRunResu
         return { outcome: 'circuit_open', disposition: 'paused', reason: 'tool_call_limit', transcript: HistorySnapshot(transcript), inputTokens, compressionCount };
       }
       const { results, disposition } = await RunToolBatch(input, completion.toolCalls);
-      transcript = [...transcript, ...results];
+      const toolResults = results as ToolExecutionResult[];
+      const skillFollowups = CommitSkillFollowups(input, toolResults);
+      const protocolResults = toolResults.map(({ followupMessages: _followupMessages, ...result }) => result);
+      transcript = [...transcript, ...protocolResults, ...skillFollowups];
       if (disposition !== 'continue') {
         const waitOutcome = disposition === 'waiting_user_input' ? 'waiting_user_input' : disposition === 'waiting_confirmation' ? 'waiting_confirmation' : 'paused';
         input.histories.set(input.sessionId, HistorySnapshot(transcript));

@@ -1,5 +1,5 @@
 import type { AgentStreamEvent } from './events';
-import type { AttachmentDescriptor, ConfirmationMode, ProfileSnapshotItem, ResumeSnapshot, TaskItem, ToolExecutionResult, ToolLedgerEntry, ToolReceipt } from './types';
+import type { AgentMessage, AttachmentDescriptor, ConfirmationMode, ProfileSnapshotItem, ResumeSnapshot, TaskItem, ToolExecutionResult, ToolLedgerEntry, ToolReceipt } from './types';
 
 /** 已注册工具：定义 + 超时 + 并发安全标记 + 设计文档要求的副作用/风险/确认/幂等/资源键/限额/场景白名单；并发屏障由 Kernel 调度。 */
 export interface RegisteredAgentTool {
@@ -58,6 +58,30 @@ export interface UrlReadPort {
   }>;
 }
 
+/** Skill 快照读取端口：只接受注册表 ID 与清单内资源路径，禁止模型传入文件系统路径。 */
+export interface SkillReadPort {
+  Load(input: { skillId: string; resource?: string }): Promise<{
+    skillId: string;
+    skillVersion: string;
+    resource?: string;
+    message: AgentMessage;
+  }>;
+}
+
+/** CronTask 端口：创建先冻结为待确认提案；读取/更新/删除只操作宿主持久化的任务。 */
+export interface CronTaskPort {
+  PrepareCreate(input: Record<string, unknown>): Promise<{ confirmationId: string; summary: string; scenarioId: 'default' | 'application' }>;
+  Read(input: { cronTaskId?: string; includeRuns?: boolean }): Promise<unknown>;
+  Update(input: Record<string, unknown>): Promise<unknown>;
+  Delete(cronTaskId: string): Promise<unknown>;
+}
+
+/** 投递状态端口：Agent 必须先读取现有记录，再以显式 job/application ID 原子更新跟踪状态。 */
+export interface ApplicationTrackingPort {
+  Read(input?: { company?: string; title?: string; url?: string }): Promise<{ jobs: unknown[]; applications: unknown[]; truncated?: boolean }>;
+  Update(input: Record<string, unknown>): Promise<unknown>;
+}
+
 export type BrowserToolName =
   | 'BrowserNavigate'
   | 'BrowserSnapshot'
@@ -95,6 +119,8 @@ export interface BrowserAutomationPort {
   /** 新 Run 或用户接管后废弃全部元素引用，强制先重新 Snapshot。 */
   ResetPageReferences(): void;
   Close(): Promise<void>;
+  /** Cron Runner 可请求后台窗口模式；只影响展示，不改变 Profile、工具或导航权限。 */
+  SetUnattended?(value: boolean): Promise<void> | void;
 }
 
 /** 文件读取端口：由宿主注入（agent-file-reader）；路径校验与资源边界由宿主持有，模块不可绕过。 */
@@ -119,7 +145,7 @@ export interface FileReadPort {
   /** 枚举项目内常规文件：path 为可读取的绝对路径，name 为相对项目的 POSIX 路径（供展示与匹配）。 */
   ListProjectFiles(projectPath: string, limit?: number): Array<{ path: string; name: string }>;
   ResolveProjectPath(projectRoot: string | null, requestedPath: string): string;
-  /** 将 attachment:// 虚拟 URI 解析为宿主私有物理路径；展示名取自 ToolContext.attachments。 */
+  /** 将 attachment:// 虚拟 URI 解析为宿主私有 Markdown 快照路径；图片可保留原文件进入视觉/OCR 路径。 */
   ResolveAttachmentUri(uri: string): Promise<string | null>;
   CreateGlobMatcher(pattern: string): RegExp;
 }
@@ -158,6 +184,9 @@ export interface ToolPorts {
   jobSearch?: JobSearchPort;
   urlRead?: UrlReadPort;
   browser?: BrowserAutomationPort;
+  skill?: SkillReadPort;
+  cronTask?: CronTaskPort;
+  applicationTracking?: ApplicationTrackingPort;
 }
 
 /** 宿主逐会话构造的工具执行上下文：承载只读快照、交互态、持久化回调与事件出口。 */
@@ -195,4 +224,12 @@ export interface ToolContext {
   scenarioSnapshotId?: string;
   /** 当前 Run 的冻结场景 ID；工具模块在执行入口再次校验。 */
   scenarioId?: string;
+  /** 会话已提交到 Transcript 的 Skill；Kernel 在 followup 消息追加后更新。 */
+  loadedSkills?: Map<string, string>;
+  /** 当前 Run 已加载的 Skill 资源，用于幂等；值为 `skillId:resourcePath`。 */
+  loadedSkillResources?: Set<string>;
+  /** 同一工具批次内已经生成但尚未追加的 Skill/资源键，避免重复正文。 */
+  pendingSkillLoads?: Set<string>;
+  /** 无人值守 Cron Run 已在创建时获得周期级授权；只由宿主内部入口设置。 */
+  unattended?: boolean;
 }

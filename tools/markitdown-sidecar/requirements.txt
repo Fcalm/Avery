@@ -1,0 +1,2 @@
+markitdown[docx,pdf,pptx,xls,xlsx]==0.1.6
+pyinstaller==6.15.0

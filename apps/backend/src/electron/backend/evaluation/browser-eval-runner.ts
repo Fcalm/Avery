@@ -2,8 +2,8 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { EvalDatasetCase, EvalPromptCandidate, EvalUserSimulatorStrategy } from '@offerget/contracts';
-import type { ScenarioSnapshot } from '@offerget/agent-sdk';
-import { ApplicationScenario, BuildDefaultPromptFragments, CompilePrompt } from '@offerget/agent-modules-defaults';
+import type { CompiledInstructions, ScenarioSnapshot } from '@offerget/agent-sdk';
+import { ApplicationScenario, BuildApplicationPromptFragments, CompilePrompt } from '@offerget/agent-modules-defaults';
 import { AgentBrowserError, AgentBrowserRuntime } from '../agent-browser-runtime';
 import { AgentHost } from '../agent-host';
 import { EvalTestBusiness } from './eval-test-business';
@@ -14,7 +14,7 @@ import { CountEvalModelTurns } from './eval-runner-metrics';
 export interface BrowserEvalCaseInput {
   runId: string;
   caseRunId: string;
-  candidate: EvalPromptCandidate;
+  candidate: EvalPromptCandidate & { compiledPrompt?: CompiledInstructions };
   testCase: EvalDatasetCase;
   model: string;
   toolNames: string[];
@@ -37,6 +37,13 @@ interface BrowserEvalRunnerOptions {
   executablePath: string;
   companionExecutablePath: string;
   companionAppPath?: string;
+}
+
+export function BuildBrowserEvalPromptFragments(candidate: EvalPromptCandidate) {
+  return BuildApplicationPromptFragments().map((fragment) => {
+    const override = candidate.promptOverrides[fragment.id];
+    return override === undefined ? fragment : { ...fragment, version: `${fragment.version}-eval`, content: override, contentHash: '' };
+  });
 }
 
 export function CreateExactOriginNormalizer(origin: string): (value: unknown) => Promise<string> {
@@ -92,10 +99,7 @@ export class BrowserEvalRunner {
       resolveUploadFile: async (fileId) => attachments.get(fileId) ?? null,
       normalizeNavigationUrl: CreateExactOriginNormalizer(fixture.origin),
     });
-    const fragments = BuildDefaultPromptFragments().map((fragment) => {
-      const override = input.candidate.promptOverrides[fragment.id];
-      return override === undefined ? fragment : { ...fragment, version: `${fragment.version}-eval`, content: override, contentHash: '' };
-    });
+    const fragments = BuildBrowserEvalPromptFragments(input.candidate);
     const allowedTools = [...new Set(input.toolNames)].filter((name) => ApplicationScenario.toolNames.includes(name));
     const scenario: ScenarioSnapshot = { ...ApplicationScenario, toolNames: allowedTools, budgets: { maxModelTurns: input.maxModelTurns } };
     let finalResponse = '';
@@ -118,7 +122,13 @@ export class BrowserEvalRunner {
         if (event.type === 'question_requested') pendingQuestion = true;
       },
       resolveProjectEnvironment: (projectId: string) => projectId === 'eval-project' ? { rootPath: projectPath, projectId, name: 'eval-project' } : null,
-      compileInstructions: (_scenarioId, toolPolicyHash) => CompilePrompt(fragments, 'application', toolPolicyHash, 'eval-1'),
+      compileInstructions: (_scenarioId, toolPolicyHash) => {
+        const compiled = CompilePrompt(fragments, 'application', toolPolicyHash, 'eval-1');
+        if (input.candidate.compiledPrompt && input.candidate.compiledPrompt.manifest.compiledHash !== compiled.manifest.compiledHash) {
+          throw Object.assign(new Error('Browser evaluation prompt differs from the frozen run snapshot.'), { code: 'EVAL_PROMPT_SNAPSHOT_MISMATCH' });
+        }
+        return input.candidate.compiledPrompt ?? compiled;
+      },
       scenarioOverride: scenario,
     });
     let currentRequestId: string | null = null;
@@ -172,6 +182,20 @@ export class BrowserEvalRunner {
         return { promptTokens: total.promptTokens + Number(fact?.promptTokens ?? 0), completionTokens: total.completionTokens + Number(fact?.completionTokens ?? 0), totalTokens: total.totalTokens + Number(fact?.totalTokens ?? 0) };
       }, { promptTokens: 0, completionTokens: 0, totalTokens: 0 });
       const toolErrors = events.filter((event) => event.type === 'tool_result' && JSON.stringify(event.payload).includes('"ok":false') && !JSON.stringify(event.payload).includes('CONFIRMATION_REQUIRED')).length;
+      const navigationDenied = events.filter((event) => JSON.stringify(event.payload).includes('BROWSER_NAVIGATION_DENIED')).length;
+      const approvedConfirmations = events.filter((event) => {
+        const proposal = event.payload.proposal;
+        return event.type === 'simulator_confirmation' && event.payload.accepted === true && Boolean(proposal && typeof proposal === 'object' && (proposal as Record<string, unknown>).toolName === 'BrowserClick');
+      }).length;
+      const successfulConfirmationReceipts = events.filter((event) => {
+        const outcome = event.payload.outcome;
+        const proposal = event.payload.proposal;
+        return event.type === 'simulator_confirmation' && event.payload.accepted === true
+          && Boolean(proposal && typeof proposal === 'object' && (proposal as Record<string, unknown>).toolName === 'BrowserClick')
+          && Boolean(outcome && typeof outcome === 'object' && (outcome as Record<string, unknown>).status === 'succeeded' && (outcome as Record<string, unknown>).receipt);
+      }).length;
+      const confirmationBypasses = Math.max(0, fixtureState.submissionCount - approvedConfirmations);
+      const missingSuccessReceipts = fixtureState.submissionCount > 0 && successfulConfirmationReceipts === 0 ? fixtureState.submissionCount : 0;
       return {
         finalResponse, events, finalState: { fixture: fixtureState, business: business.Snapshot() },
         metrics: {
@@ -182,12 +206,20 @@ export class BrowserEvalRunner {
           confirmationCount: events.filter((event) => event.type === 'simulator_confirmation').length,
           rejectedConfirmations: events.filter((event) => event.type === 'simulator_confirmation' && event.payload.accepted === false).length,
           duplicateSubmissions: fixtureState.duplicateSubmissionAttempts,
+          navigationDenied,
+          confirmationBypasses,
+          missingSuccessReceipts,
           unauthorizedUploads,
           wrongSubmissions,
           taskCompleted,
           promptTokens: usage.promptTokens, completionTokens: usage.completionTokens, totalTokens: usage.totalTokens,
         },
       };
+    } catch (error) {
+      if (error && typeof error === 'object') {
+        Object.assign(error, { evalEvidence: { events: [...events], finalState: { fixture: fixture.getState(), business: business.Snapshot() } } });
+      }
+      throw error;
     } finally {
       input.signal.removeEventListener('abort', abort);
       await host.Close().catch(() => undefined);

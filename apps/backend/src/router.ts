@@ -23,7 +23,7 @@ export const ReadOnlyChannels = new Set<string>([
   'workspace:get-profiles', 'workspace:get-resume-revisions',
   'workspace:recovery-status',
   'workspace:database-recovery-status',
-  'agent:status', 'agent:observability', 'agent:trace-events', 'agent:test-connection', 'agent:get-balance', 'agent:get-models', 'agent:get-session-assistant-state', 'agent:browser-runtime-status',
+  'agent:status', 'agent:observability', 'agent:trace-events', 'agent:test-connection', 'agent:get-balance', 'agent:get-models', 'agent:get-session-assistant-state', 'agent:browser-runtime-status', 'cron:status',
   'evaluation:projects-list', 'evaluation:project-read', 'evaluation:project-validate', 'evaluation:project-preview', 'evaluation:runs-list', 'evaluation:run-read', 'evaluation:case-read', 'evaluation:runs-compare',
 ]);
 
@@ -51,7 +51,9 @@ export const MethodRoutes: Record<string, MethodRoute> = {
   'agent:send': { service: 'agent', method: 'Send' },
   'agent:cancel': { service: 'agent', method: 'Cancel' },
   'agent:update-confirmation-mode': { service: 'agent', method: 'UpdateConfirmationMode' },
+  'agent:update-reasoning-effort': { service: 'agent', method: 'UpdateReasoningEffort' },
   'agent:confirm-resume-edit': { service: 'agent', method: 'ConfirmResumeEdit' },
+  'agent:confirm-cron-task': { service: 'agent', method: 'ConfirmCronTask' },
   'agent:confirm-browser-action': { service: 'agent', method: 'ConfirmBrowserAction' },
   'agent:browser-runtime-status': { service: 'agent', method: 'GetBrowserRuntimeStatus' },
   'agent:browser-clear-profile': { service: 'agent', method: 'ClearBrowserProfile' },
@@ -70,6 +72,8 @@ export const MethodRoutes: Record<string, MethodRoute> = {
   'agent:module-configuration': { service: 'agent', method: 'GetModuleConfiguration' },
   'agent:select-module-directory': { service: 'agent', method: 'SelectModuleDirectory' },
   'agent:reset-modules': { service: 'agent', method: 'ResetModules' },
+  'cron:run-due': { service: 'cron', method: 'RunDue' },
+  'cron:status': { service: 'cron', method: 'GetStatus' },
   'evaluation:project-create': { service: 'evaluation', method: 'CreateProject' },
   'evaluation:project-update': { service: 'evaluation', method: 'UpdateProject' },
   'evaluation:project-read': { service: 'evaluation', method: 'ReadProject' },
@@ -139,6 +143,7 @@ const EvalProjectInputSchema = z.object({
 
 /** 写通道负载的整数组形状校验表（阶段 6 A2 收口）：键为通道，值为对该通道 args 的整体 tuple 校验。 */
 const WriteArgsSchemas: Record<string, z.ZodTuple> = {
+  'agent:confirm-cron-task': z.tuple([EntityId, z.boolean()]),
   'agent:confirm-browser-action': z.tuple([EntityId, z.boolean()]),
   'agent:browser-clear-profile': z.tuple([]),
   'evaluation:project-create': z.tuple([EvalProjectInputSchema]),

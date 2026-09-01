@@ -26,7 +26,7 @@ export class AgentBrowserError extends Error {
 }
 
 /** 构造隔离伴随进程的固定参数数组；路径始终作为单个参数传递，禁止经过 Shell 解释。 */
-export function BuildBrowserCompanionArgs(input: { appPath?: string; profilePath: string; parentPid: number }): string[] {
+export function BuildBrowserCompanionArgs(input: { appPath?: string; profilePath: string; parentPid: number; unattended?: boolean }): string[] {
   return [
     ...(input.appPath ? [input.appPath] : []),
     '--offerget-browser-companion',
@@ -35,6 +35,7 @@ export function BuildBrowserCompanionArgs(input: { appPath?: string; profilePath
     '--remote-debugging-address=127.0.0.1',
     '--remote-debugging-port=0',
     `--user-data-dir=${input.profilePath}`,
+    ...(input.unattended ? ['--offerget-browser-hidden'] : []),
   ];
 }
 
@@ -154,6 +155,7 @@ export class AgentBrowserRuntime implements BrowserAutomationPort {
   private daemonNamespace = `offerget-${process.pid}-0`;
   private daemonActive = false;
   private lastRuntimeError: { code: string; message: string } | null = null;
+  private unattended = false;
 
   constructor(options: AgentBrowserRuntimeOptions) {
     this.executablePath = resolve(options.executablePath);
@@ -200,7 +202,7 @@ export class AgentBrowserRuntime implements BrowserAutomationPort {
     if (!existsSync(this.companionExecutablePath)) throw new AgentBrowserError('BROWSER_RUNTIME_UNAVAILABLE', `Browser companion ${basename(this.companionExecutablePath)} is unavailable.`);
     const portFile = join(this.profilePath, 'DevToolsActivePort');
     await unlink(portFile).catch((error: any) => { if (error?.code !== 'ENOENT') throw error; });
-    const args = BuildBrowserCompanionArgs({ appPath: this.companionAppPath, profilePath: this.profilePath, parentPid: process.pid });
+    const args = BuildBrowserCompanionArgs({ appPath: this.companionAppPath, profilePath: this.profilePath, parentPid: process.pid, unattended: this.unattended });
     const env = this.SanitizedEnvironment();
     for (const key of Object.keys(env)) if (/^OFFERGET_(DESKTOP_SMOKE|SMOKE_|LIFECYCLE_|INSTALLED_VISUAL_)/i.test(key)) delete env[key];
     const child = spawn(this.companionExecutablePath, args, { cwd: this.runtimeRoot, env, shell: false, windowsHide: false, stdio: 'ignore' });
@@ -250,6 +252,13 @@ export class AgentBrowserRuntime implements BrowserAutomationPort {
       }
     };
     return { port, close, isAlive: () => child.exitCode === null, homeUrl, internalUrls };
+  }
+
+  /** 可见性是 companion 进程创建期属性；模式改变时淘汰旧实例，避免后台任务复用可见窗口或交互任务复用隐藏窗口。 */
+  async SetUnattended(value: boolean): Promise<void> {
+    if (this.unattended === value) return;
+    this.unattended = value;
+    if (this.companionHandle || this.daemonActive) await this.RetireBrowserInstance();
   }
 
   private async EnsureCompanion(): Promise<{ port: number; close: () => Promise<void>; isAlive?: () => boolean; homeUrl?: string; internalUrls?: string[] }> {

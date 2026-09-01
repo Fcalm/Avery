@@ -2,15 +2,18 @@ import { createHash, randomUUID } from 'node:crypto';
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { z } from 'zod';
+import type { CompiledInstructions } from '@offerget/agent-sdk';
 import type {
-  EvalCaseRun, EvalDatasetCase, EvalEvent, EvalProject, EvalProjectInput, EvalPromptCandidate,
+  EvalCaseRun, EvalCaseRunDetail, EvalDatasetCase, EvalEvent, EvalProject, EvalProjectInput, EvalPromptCandidate,
   EvalRun, EvalRunDetail, EvalRunSummary,
 } from '@offerget/contracts';
-import { ApplicationScenario, BuildDefaultPromptFragments, CompilePrompt, CreateDefaultModules, DefaultScenario } from '@offerget/agent-modules-defaults';
+import { ApplicationScenario, BuildApplicationPromptFragments, BuildDefaultPromptFragments, CompilePrompt, CreateDefaultModules, DefaultScenario } from '@offerget/agent-modules-defaults';
 import { EvalArtifactStore } from './eval-artifact-store';
 import { PromptEvalRunner } from './prompt-eval-runner';
 import { EvalScorer } from './eval-scorer';
 import { BrowserEvalRunner } from './browser-eval-runner';
+import { ScoreBrowserCase } from './browser-eval-scorer';
+import { NormalizeEvalTrace } from './eval-trace';
 
 const Id = z.string().min(1).max(200).regex(/^[A-Za-z0-9._-]+$/);
 const CandidateSchema = z.object({
@@ -21,8 +24,8 @@ const CandidateSchema = z.object({
 const ConfigSchema = z.object({
   executionProvider: z.literal('DeepSeek'),
   executionModel: z.string().trim().min(1).max(200),
-  judgeProvider: z.literal('DeepSeek'),
-  judgeModel: z.string().trim().min(1).max(200),
+  judgeProvider: z.literal('DeepSeek').optional(),
+  judgeModel: z.string().trim().min(1).max(200).optional(),
   candidates: z.array(CandidateSchema).min(1).max(20),
   toolNames: z.array(z.string().min(1).max(100)).max(50),
   userSimulator: z.enum(['approve_valid', 'reject_submit_once', 'scripted']),
@@ -63,6 +66,12 @@ const DatasetCaseSchema = z.object({
     expectedTargets: z.array(z.string().max(200)).max(100).optional(),
     forbiddenTargets: z.array(z.string().max(200)).max(100).optional(),
     scriptedResponses: z.array(z.object({ kind: z.enum(['confirmation', 'input']), accepted: z.boolean().optional(), content: z.string().max(10000).optional() }).strict()).max(100).optional(),
+    assertions: z.array(z.object({
+      id: Id, type: z.enum(['state_equals', 'state_subset', 'state_absent', 'event_exists', 'event_absent', 'event_order', 'receipt_exists', 'metric_equals', 'metric_max']),
+      path: z.string().max(500).optional(), expected: z.unknown().optional(), eventType: z.string().max(200).optional(), toolName: z.string().max(200).optional(),
+      beforeToolName: z.string().max(200).optional(), afterToolName: z.string().max(200).optional(), weight: z.number().positive().max(1000),
+      required: z.boolean().optional(), hardFailure: z.string().max(500).optional(),
+    }).strict()).max(200).optional(),
   }).strict().optional(),
 }).strict();
 
@@ -93,11 +102,57 @@ export function ParseEvalDataset(jsonl: string): EvalDatasetCase[] {
   return cases;
 }
 
-function ValidateProjectConfig(config: z.infer<typeof ConfigSchema>): void {
+/** 在固定上限内执行 CaseRun；任一基础设施异常后停止领取新任务，但等待已启动任务稳定退出。 */
+export async function RunEvaluationTaskPool<T>(tasks: Array<() => Promise<T>>, maxConcurrency: number, signal: AbortSignal): Promise<T[]> {
+  const requestedConcurrency = Number.isInteger(maxConcurrency) && maxConcurrency > 0 ? maxConcurrency : 1;
+  const concurrency = Math.max(1, Math.min(requestedConcurrency, tasks.length || 1));
+  const results = new Array<T>(tasks.length);
+  let nextIndex = 0;
+  let failure: unknown;
+  let hasFailure = false;
+  const workers = Array.from({ length: concurrency }, async () => {
+    while (!hasFailure) {
+      if (signal.aborted) {
+        failure = signal.reason ?? Object.assign(new Error('Evaluation run was cancelled.'), { code: 'CANCELLED' });
+        hasFailure = true;
+        return;
+      }
+      const index = nextIndex;
+      nextIndex += 1;
+      if (index >= tasks.length) return;
+      try { results[index] = await tasks[index](); } catch (error) {
+        if (!hasFailure) { failure = error; hasFailure = true; }
+        return;
+      }
+    }
+  });
+  await Promise.all(workers);
+  if (hasFailure) throw failure;
+  return results;
+}
+
+const StrictComparisonFields = [
+  'runnerType', 'datasetVersion', 'toolsetHash', 'versions', 'config.executionModel', 'config.judgeModel',
+  'config.toolNames', 'config.fixtureBranch', 'config.maxModelTurns', 'config.userSimulator',
+  'environment.repeatCount', 'environment.maxConcurrency',
+] as const;
+
+/** Prompt 候选差异是实验变量；这里只比较必须保持一致的运行控制变量。 */
+export function FindEvalSnapshotDifferences(leftSnapshot: unknown, rightSnapshot: unknown): string[] {
+  const read = (value: unknown, path: string) => path.split('.').reduce<unknown>((current, key) => (
+    current && typeof current === 'object' ? (current as Record<string, unknown>)[key] : undefined
+  ), value);
+  return StrictComparisonFields.filter((field) => JSON.stringify(read(leftSnapshot, field)) !== JSON.stringify(read(rightSnapshot, field)));
+}
+
+function ValidateProjectConfig(config: z.infer<typeof ConfigSchema>, runnerType: 'prompt' | 'browser'): void {
+  if (runnerType === 'prompt' && (!config.judgeProvider || !config.judgeModel)) {
+    throw Object.assign(new Error('Prompt evaluation requires a Judge provider and model.'), { code: 'VALIDATION_ERROR' });
+  }
   const candidateIds = config.candidates.map((candidate) => candidate.id);
   if (new Set(candidateIds).size !== candidateIds.length) throw Object.assign(new Error('Evaluation candidate ids must be unique.'), { code: 'VALIDATION_ERROR' });
   if (new Set(config.toolNames).size !== config.toolNames.length) throw Object.assign(new Error('Evaluation tool names must be unique.'), { code: 'VALIDATION_ERROR' });
-  const fragmentIds = new Set(BuildDefaultPromptFragments().map((fragment) => fragment.id));
+  const fragmentIds = new Set((runnerType === 'browser' ? BuildApplicationPromptFragments() : BuildDefaultPromptFragments()).map((fragment) => fragment.id));
   const unknownOverrides = config.candidates.flatMap((candidate) => Object.keys(candidate.promptOverrides).filter((id) => !fragmentIds.has(id)).map((id) => `${candidate.id}:${id}`));
   if (unknownOverrides.length) throw Object.assign(new Error(`Evaluation prompt overrides contain unknown fragment ids: ${unknownOverrides.join(', ')}.`), { code: 'VALIDATION_ERROR' });
 }
@@ -172,7 +227,7 @@ export class EvalService {
   async CreateProject(input: EvalProjectInput): Promise<EvalProject> {
     await this.RequireDeveloperMode();
     const parsed = ProjectInputSchema.parse(input);
-    ValidateProjectConfig(parsed.config);
+    ValidateProjectConfig(parsed.config, parsed.runnerType);
     const now = Date.now();
     return this.PublicProject(await this.store.CreateEvalProjectRecord({ ...parsed, id: parsed.id ?? `eval-${randomUUID()}`, createdAt: now, updatedAt: now }));
   }
@@ -181,7 +236,7 @@ export class EvalService {
     await this.RequireDeveloperMode();
     Id.parse(id);
     const parsed = ProjectInputSchema.parse(input);
-    ValidateProjectConfig(parsed.config);
+    ValidateProjectConfig(parsed.config, parsed.runnerType);
     return this.PublicProject(await this.store.UpdateEvalProjectRecord(id, { ...parsed, updatedAt: Date.now() }, expectedRevision));
   }
 
@@ -212,17 +267,27 @@ export class EvalService {
     const record = await this.store.ReadEvalProjectRecord(Id.parse(id));
     const errors: string[] = [];
     if (!record.datasetVersion || !record.datasetJsonl) errors.push('请先导入至少一个测试案例。');
-    if (!record.rubric.trim()) errors.push('请填写评分 Rubric。');
+    if (record.runnerType === 'prompt' && !record.rubric.trim()) errors.push('请填写评分 Rubric。');
     if (!record.config.candidates.length) errors.push('至少需要一个 Prompt 候选。');
     const supportedTools = record.runnerType === 'browser' ? ApplicationScenario.toolNames : DefaultScenario.toolNames;
     if (!record.config.toolNames.every((name: string) => supportedTools.includes(name))) errors.push('测评包含当前场景不支持的工具。');
     if (record.runnerType === 'browser' && !record.config.toolNames.some((name: string) => name.startsWith('Browser'))) errors.push('浏览器测评至少需要一个 Browser 工具。');
     if (record.runnerType === 'browser' && !record.config.fixtureBranch) errors.push('浏览器测评必须选择 Fixture 分支。');
+    if (record.runnerType === 'browser' && record.datasetVersion) {
+      try {
+        const cases = ParseEvalDataset(await this.artifacts.ReadDataset(record.id, record.datasetVersion));
+        const missing = cases.filter((testCase) => !(testCase.browser?.assertions?.length)).map((testCase) => testCase.id);
+        if (missing.length) errors.push(`以下浏览器案例缺少 Assertions：${missing.join('、')}`);
+      } catch (error) {
+        errors.push(error instanceof Error ? error.message : '浏览器测试集无法读取。');
+      }
+    }
     return { valid: errors.length === 0, errors };
   }
 
   private BuildSnapshot(project: any, cases: EvalDatasetCase[]): Record<string, unknown> {
     const scenarioId = project.runnerType === 'browser' ? 'application' : 'default';
+    const productionFragments = project.runnerType === 'browser' ? BuildApplicationPromptFragments() : BuildDefaultPromptFragments();
     const definitions = CreateDefaultModules({
       getConfig: async () => null, saveConfig: async () => undefined, getStoredSettings: async () => ({}),
       file: {} as any, resumeRead: {} as any, resumeWrite: {} as any, observabilityStore: null,
@@ -231,7 +296,7 @@ export class EvalService {
       .map((tool) => tool.definition);
     const toolsetHash = createHash('sha256').update(JSON.stringify(definitions)).digest('hex');
     const candidates = project.config.candidates.map((candidate: EvalPromptCandidate) => {
-      const fragments = BuildDefaultPromptFragments().map((fragment) => candidate.promptOverrides[fragment.id] === undefined
+      const fragments = productionFragments.map((fragment) => candidate.promptOverrides[fragment.id] === undefined
         ? fragment
         : { ...fragment, version: `${fragment.version}-eval`, content: candidate.promptOverrides[fragment.id], contentHash: '' });
       const compiled = CompilePrompt(fragments, scenarioId, toolsetHash, 'eval-1');
@@ -241,8 +306,8 @@ export class EvalService {
       schemaVersion: 1, createdAt: Date.now(), projectId: project.id, projectRevision: project.revision,
       runnerType: project.runnerType, config: { ...project.config, candidates }, rubric: project.rubric,
       datasetVersion: project.datasetVersion, cases, toolDefinitions: definitions, toolsetHash,
-      versions: { snapshot: 1, promptRunner: 1, browserRunner: 1, scorer: 1, application: '0.1.0' },
-      environment: { repeatCount: project.config.repeatCount, maxConcurrency: 1 },
+      versions: { snapshot: 2, promptRunner: 2, browserRunner: 2, scorer: project.runnerType === 'browser' ? 'browser-deterministic-2' : 'prompt-judge-2', assertions: 1, trace: 1, application: '0.1.0' },
+      environment: { repeatCount: project.config.repeatCount, maxConcurrency: project.runnerType === 'browser' ? 1 : 2 },
     };
   }
 
@@ -250,12 +315,22 @@ export class EvalService {
     await this.RequireDeveloperMode();
     const project = await this.store.ReadEvalProjectRecord(Id.parse(id));
     const snapshot = this.BuildSnapshot(project, []) as any;
+    const scenarioId = project.runnerType === 'browser' ? 'application' : 'default';
+    const productionFragments = project.runnerType === 'browser' ? BuildApplicationPromptFragments() : BuildDefaultPromptFragments();
+    const productionPrompt = CompilePrompt(productionFragments, scenarioId, snapshot.toolsetHash, 'eval-1').compiled;
     return {
       schemaVersion: 1,
       projectId: project.id,
       projectRevision: project.revision,
       generatedAt: Date.now(),
       toolsetHash: snapshot.toolsetHash,
+      productionPrompt,
+      // Renderer 只获得可编辑的生产 Prompt 正文，不接触文件系统或编译实现。
+      fragments: productionFragments.map((fragment) => ({
+        id: fragment.id,
+        content: fragment.content,
+        trustLevel: fragment.trustLevel,
+      })),
       candidates: snapshot.config.candidates.map((candidate: any) => ({
         id: candidate.id,
         name: candidate.name,
@@ -321,10 +396,9 @@ export class EvalService {
       const snapshot = run.snapshot as any;
       const projectConfig = snapshot.config;
       const cases = snapshot.cases as EvalDatasetCase[];
-      const caseRuns: EvalCaseRun[] = [];
       const plannedCaseIds = new Map<string, string>();
       for (const testCase of cases) {
-        for (const candidate of projectConfig.candidates as Array<EvalPromptCandidate & { compiledPrompt: unknown }>) {
+        for (const candidate of projectConfig.candidates as Array<EvalPromptCandidate & { compiledPrompt: CompiledInstructions }>) {
           for (let repeatIndex = 0; repeatIndex < projectConfig.repeatCount; repeatIndex += 1) {
             this.ThrowIfCancelled(controller.signal);
             const caseRunId = `case-${randomUUID()}`;
@@ -336,75 +410,93 @@ export class EvalService {
           }
         }
       }
+      const caseTasks: Array<() => Promise<EvalCaseRun>> = [];
       for (const testCase of cases) {
-        for (const candidate of projectConfig.candidates as Array<EvalPromptCandidate & { compiledPrompt: unknown }>) {
+        for (const candidate of projectConfig.candidates as Array<EvalPromptCandidate & { compiledPrompt: CompiledInstructions }>) {
           for (let repeatIndex = 0; repeatIndex < projectConfig.repeatCount; repeatIndex += 1) {
-            this.ThrowIfCancelled(controller.signal);
-            const caseRunId = plannedCaseIds.get(`${testCase.id}\u0000${candidate.id}\u0000${repeatIndex}`)!;
-            const createdAt = (await this.store.ReadEvalCaseRunRecord(caseRunId)).createdAt;
-            await this.store.UpsertEvalCaseRunRecord({ id: caseRunId, runId, candidateId: candidate.id, candidateName: candidate.name, caseId: testCase.id, repeatIndex, status: 'running', createdAt, metrics: {} });
-            this.EmitEvent({ type: 'case_status', runId, caseRunId, message: `${candidate.name} · ${testCase.id} 正在执行` });
-            try {
-              const caseRoot = join(this.userDataPath, 'evaluation-data', 'runtime', runId, caseRunId);
-              await mkdir(caseRoot, { recursive: true });
-              const startedAt = Date.now();
-              const commonInput = {
-                runId, caseRunId, candidate, testCase, model: projectConfig.executionModel,
-                toolNames: projectConfig.toolNames, maxModelTurns: projectConfig.maxModelTurns,
-                userSimulator: projectConfig.userSimulator, caseRoot, signal: controller.signal,
-              };
-              const result = run.runnerType === 'browser'
-                ? await this.browserRunner.Execute({ ...commonInput, fixtureBranch: projectConfig.fixtureBranch })
-                : await this.promptRunner.Execute(commonInput);
+            caseTasks.push(async () => {
               this.ThrowIfCancelled(controller.signal);
-              await this.store.UpsertEvalCaseRunRecord({
-                id: caseRunId, runId, candidateId: candidate.id, candidateName: candidate.name, caseId: testCase.id, repeatIndex,
-                status: 'scoring', finalResponse: result.finalResponse, metrics: result.metrics, createdAt,
-              });
-              this.EmitEvent({ type: 'case_status', runId, caseRunId, message: `${candidate.name} · ${testCase.id} 正在评分` });
-              for (const event of result.events) await this.artifacts.AppendCaseEvent(runId, caseRunId, 'messages.jsonl', event);
-              const scoreResult = await this.scorer.Score({
-                testCase, finalResponse: result.finalResponse, events: result.events, finalState: result.finalState, metrics: result.metrics,
-                rubric: snapshot.rubric, judgeModel: projectConfig.judgeModel, signal: controller.signal,
-              });
-              this.ThrowIfCancelled(controller.signal);
-              const judgeUsage = scoreResult.usage;
-              const metrics = {
-                ...result.metrics,
-                taskCompleted: typeof result.metrics.taskCompleted === 'boolean'
-                  ? result.metrics.taskCompleted
-                  : Boolean(result.finalResponse) && scoreResult.score.deterministicScore >= 45 && scoreResult.score.hardFailures.length === 0,
-                promptTokens: Number(result.metrics.promptTokens ?? 0) + Number(judgeUsage?.promptTokens ?? 0),
-                completionTokens: Number(result.metrics.completionTokens ?? 0) + Number(judgeUsage?.completionTokens ?? 0),
-                totalTokens: Number(result.metrics.totalTokens ?? 0) + Number(judgeUsage?.totalTokens ?? 0),
-                durationMs: Date.now() - startedAt,
-              };
-              const record = await this.store.UpsertEvalCaseRunRecord({
-                id: caseRunId, runId, candidateId: candidate.id, candidateName: candidate.name, caseId: testCase.id, repeatIndex,
-                status: 'completed', finalResponse: result.finalResponse, score: scoreResult.score, metrics,
-                createdAt, completedAt: Date.now(),
-              });
-              caseRuns.push(record);
-              await this.artifacts.WriteCaseJson(runId, caseRunId, 'result.json', { ...record, finalState: result.finalState });
-              await this.artifacts.WriteCaseJson(runId, caseRunId, 'score.json', scoreResult);
-              this.EmitEvent({ type: 'score', runId, caseRunId, message: `${candidate.name} · ${testCase.id} 得分 ${scoreResult.score.totalScore}`, data: { totalScore: scoreResult.score.totalScore } });
-            } catch (error) {
-              const code = controller.signal.aborted ? 'CANCELLED' : String((error as any)?.code ?? 'EVAL_CASE_FAILED');
-              const status = controller.signal.aborted ? 'cancelled' : 'failed';
-              const record = await this.store.UpsertEvalCaseRunRecord({
-                id: caseRunId, runId, candidateId: candidate.id, candidateName: candidate.name, caseId: testCase.id, repeatIndex,
-                status, finalResponse: '', metrics: {}, error: { code, message: error instanceof Error ? error.message : 'Evaluation case failed.' },
-                createdAt, completedAt: Date.now(),
-              });
-              caseRuns.push(record);
-              if (controller.signal.aborted) throw error;
-            }
+              const caseRunId = plannedCaseIds.get(`${testCase.id}\u0000${candidate.id}\u0000${repeatIndex}`)!;
+              const createdAt = (await this.store.ReadEvalCaseRunRecord(caseRunId)).createdAt;
+              await this.store.UpsertEvalCaseRunRecord({ id: caseRunId, runId, candidateId: candidate.id, candidateName: candidate.name, caseId: testCase.id, repeatIndex, status: 'running', createdAt, metrics: {} });
+              this.EmitEvent({ type: 'case_status', runId, caseRunId, message: `${candidate.name} · ${testCase.id} 正在执行` });
+              try {
+                const caseRoot = join(this.userDataPath, 'evaluation-data', 'runtime', runId, caseRunId);
+                await mkdir(caseRoot, { recursive: true });
+                const startedAt = Date.now();
+                const commonInput = {
+                  runId, caseRunId, candidate, testCase, model: projectConfig.executionModel,
+                  toolNames: projectConfig.toolNames, maxModelTurns: projectConfig.maxModelTurns,
+                  userSimulator: projectConfig.userSimulator, caseRoot, signal: controller.signal,
+                };
+                const result = run.runnerType === 'browser'
+                  ? await this.browserRunner.Execute({ ...commonInput, fixtureBranch: projectConfig.fixtureBranch })
+                  : await this.promptRunner.Execute(commonInput);
+                this.ThrowIfCancelled(controller.signal);
+                await this.store.UpsertEvalCaseRunRecord({
+                  id: caseRunId, runId, candidateId: candidate.id, candidateName: candidate.name, caseId: testCase.id, repeatIndex,
+                  status: 'scoring', finalResponse: result.finalResponse, metrics: result.metrics, createdAt,
+                });
+                this.EmitEvent({ type: 'case_status', runId, caseRunId, message: `${candidate.name} · ${testCase.id} 正在评分` });
+                for (const event of result.events) await this.artifacts.AppendCaseEvent(runId, caseRunId, 'messages.jsonl', event);
+                const trace = NormalizeEvalTrace(result.events, result.finalState);
+                await this.artifacts.WriteCaseJson(runId, caseRunId, 'trace.json', trace);
+                const scoreResult = run.runnerType === 'browser'
+                  ? ScoreBrowserCase({ testCase, events: result.events, finalState: result.finalState, metrics: result.metrics })
+                  : await this.scorer.Score({
+                    testCase, finalResponse: result.finalResponse, events: result.events, finalState: result.finalState, metrics: result.metrics,
+                    rubric: snapshot.rubric, judgeModel: projectConfig.judgeModel!, signal: controller.signal,
+                  });
+                this.ThrowIfCancelled(controller.signal);
+                const judgeUsage = 'usage' in scoreResult ? scoreResult.usage : undefined;
+                const metrics = {
+                  ...result.metrics,
+                  taskCompleted: run.runnerType === 'browser'
+                    ? scoreResult.score.taskCompleted === true
+                    : typeof result.metrics.taskCompleted === 'boolean' ? result.metrics.taskCompleted : Boolean(result.finalResponse),
+                  promptTokens: Number(result.metrics.promptTokens ?? 0) + Number(judgeUsage?.promptTokens ?? 0),
+                  completionTokens: Number(result.metrics.completionTokens ?? 0) + Number(judgeUsage?.completionTokens ?? 0),
+                  totalTokens: Number(result.metrics.totalTokens ?? 0) + Number(judgeUsage?.totalTokens ?? 0),
+                  durationMs: Date.now() - startedAt,
+                };
+                const record = await this.store.UpsertEvalCaseRunRecord({
+                  id: caseRunId, runId, candidateId: candidate.id, candidateName: candidate.name, caseId: testCase.id, repeatIndex,
+                  status: 'completed', finalResponse: result.finalResponse, score: scoreResult.score, metrics,
+                  createdAt, completedAt: Date.now(),
+                });
+                await this.artifacts.WriteCaseJson(runId, caseRunId, 'result.json', { ...record, finalState: result.finalState, promptCompiledHash: candidate.compiledPrompt.manifest.compiledHash });
+                await this.artifacts.WriteCaseJson(runId, caseRunId, 'score.json', scoreResult);
+                this.EmitEvent({ type: 'score', runId, caseRunId, message: scoreResult.score.totalScore === null ? `${candidate.name} · ${testCase.id} 未计分` : `${candidate.name} · ${testCase.id} 得分 ${scoreResult.score.totalScore}`, data: { totalScore: scoreResult.score.totalScore } });
+                return record;
+              } catch (error) {
+                const partialEvidence = (error as any)?.evalEvidence;
+                if (partialEvidence?.events && Array.isArray(partialEvidence.events)) {
+                  try {
+                    for (const event of partialEvidence.events) await this.artifacts.AppendCaseEvent(runId, caseRunId, 'messages.jsonl', event);
+                    await this.artifacts.WriteCaseJson(runId, caseRunId, 'trace.json', NormalizeEvalTrace(partialEvidence.events, partialEvidence.finalState));
+                    await this.artifacts.WriteCaseJson(runId, caseRunId, 'result.json', { status: controller.signal.aborted ? 'cancelled' : 'failed', finalState: partialEvidence.finalState, promptCompiledHash: candidate.compiledPrompt.manifest.compiledHash });
+                  } catch {
+                    // Artifact 失败不能阻止 Case 写入稳定终态；主错误仍由 Case 记录保留。
+                  }
+                }
+                const code = controller.signal.aborted ? 'CANCELLED' : String((error as any)?.code ?? 'EVAL_CASE_FAILED');
+                const status = controller.signal.aborted ? 'cancelled' : 'failed';
+                const record = await this.store.UpsertEvalCaseRunRecord({
+                  id: caseRunId, runId, candidateId: candidate.id, candidateName: candidate.name, caseId: testCase.id, repeatIndex,
+                  status, finalResponse: '', metrics: {}, error: { code, message: error instanceof Error ? error.message : 'Evaluation case failed.' },
+                  createdAt, completedAt: Date.now(),
+                });
+                if (controller.signal.aborted) throw error;
+                return record;
+              }
+            });
           }
         }
       }
+      const caseRuns = await RunEvaluationTaskPool(caseTasks, Number(snapshot.environment?.maxConcurrency ?? 1), controller.signal);
       this.ThrowIfCancelled(controller.signal);
       await this.store.UpdateEvalRunRecord(runId, { status: 'scoring' });
-      this.EmitEvent({ type: 'run_status', runId, message: '正在汇总 Prompt 测评结果' });
+      this.EmitEvent({ type: 'run_status', runId, message: run.runnerType === 'browser' ? '正在汇总浏览器测评结果' : '正在汇总 Prompt 测评结果' });
       const summary = this.Summarize(caseRuns, run.startedAt ?? Date.now());
       await this.artifacts.WriteJson(runId, 'summary.json', summary);
       this.ThrowIfCancelled(controller.signal);
@@ -439,6 +531,7 @@ export class EvalService {
     const promptTokens = numberMetric('promptTokens'); const completionTokens = numberMetric('completionTokens');
     return {
       totalCaseRuns: caseRuns.length, completedCaseRuns: completed.length,
+      unscoredCaseRuns: completed.filter((item) => item.score?.totalScore === null).length,
       failedCaseRuns: caseRuns.filter((item) => item.status === 'failed').length,
       cancelledCaseRuns: caseRuns.filter((item) => item.status === 'cancelled').length,
       averageScore: scores.length ? scores.reduce((sum, value) => sum + value, 0) / scores.length : null,
@@ -470,14 +563,20 @@ export class EvalService {
     return { ...run, caseRuns: await this.store.ListEvalCaseRunRecords(runId) } as EvalRunDetail;
   }
   async ListRuns(projectId?: string): Promise<EvalRun[]> { await this.RequireDeveloperMode(); return (await this.store.ListEvalRunRecords(projectId ? Id.parse(projectId) : undefined)).map((record: any) => this.PublicRun(record)); }
-  async ReadCaseResult(caseRunId: string): Promise<EvalCaseRun> { await this.RequireDeveloperMode(); return this.store.ReadEvalCaseRunRecord(Id.parse(caseRunId)); }
+  async ReadCaseResult(caseRunId: string): Promise<EvalCaseRunDetail> {
+    await this.RequireDeveloperMode();
+    const record = await this.store.ReadEvalCaseRunRecord(Id.parse(caseRunId));
+    const [trace, scoreArtifact] = await Promise.all([
+      this.artifacts.ReadCaseJson<any[]>(record.runId, record.id, 'trace.json'),
+      this.artifacts.ReadCaseJson<any>(record.runId, record.id, 'score.json'),
+    ]);
+    return { ...record, trace: trace ?? [], ...(scoreArtifact?.details ? { scoreDetails: scoreArtifact.details } : {}) } as EvalCaseRunDetail;
+  }
 
   async CompareRuns(leftRunId: string, rightRunId: string): Promise<any> {
     await this.RequireDeveloperMode();
     const [left, right] = await Promise.all([this.ReadRun(leftRunId), this.ReadRun(rightRunId)]);
-    const fields = ['runnerType', 'datasetVersion', 'toolsetHash', 'versions', 'config.executionModel', 'config.judgeModel', 'config.toolNames', 'config.fixtureBranch'];
-    const read = (value: any, path: string) => path.split('.').reduce((current, key) => current?.[key], value);
-    const differingSnapshotFields = fields.filter((field) => JSON.stringify(read(left.snapshot, field)) !== JSON.stringify(read(right.snapshot, field)));
+    const differingSnapshotFields = FindEvalSnapshotDifferences(left.snapshot, right.snapshot);
     return { left, right, strictComparison: differingSnapshotFields.length === 0, differingSnapshotFields };
   }
 

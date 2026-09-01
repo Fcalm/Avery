@@ -8,12 +8,14 @@ import { ResumeRepository } from './electron/repositories/resume-repository';
 import { JobRepository } from './electron/repositories/job-repository';
 import { ApplicationRepository } from './electron/repositories/application-repository';
 import { ProfileRepository } from './electron/repositories/profile-repository';
+import { CronTaskRepository } from './electron/repositories/cron-task-repository';
 import { ConversationService } from './electron/backend/services/conversation-service';
 import { ResumeService } from './electron/backend/services/resume-service';
 import { JobService } from './electron/backend/services/job-service';
 import { ApplicationService } from './electron/backend/services/application-service';
 import { ProfileService } from './electron/backend/services/profile-service';
 import { SettingsService } from './electron/backend/services/settings-service';
+import { CronTaskService } from './electron/backend/services/cron-task-service';
 import { WorkspaceService, EnsureWorkspaceDirectories } from './electron/backend/services/workspace-service';
 import { AttachmentLifecycleService } from './electron/backend/services/attachment-lifecycle-service';
 import { WorkspaceOperationService } from './electron/backend/services/workspace-operation-service';
@@ -46,12 +48,14 @@ export class BusinessStore {
   jobs: JobRepository;
   applications: ApplicationRepository;
   profiles: ProfileRepository;
+  cronTasks: CronTaskRepository;
   conversationService: ConversationService;
   resumeService: ResumeService;
   jobService: JobService;
   applicationService: ApplicationService;
   profileService: ProfileService;
   settingsService: SettingsService;
+  cronTaskService: CronTaskService;
   workspaceService: WorkspaceService;
   attachmentLifecycle: AttachmentLifecycleService;
   workspaceOperations: WorkspaceOperationService;
@@ -92,12 +96,14 @@ export class BusinessStore {
     this.jobs = new JobRepository({ db: this.db });
     this.applications = new ApplicationRepository({ db: this.db });
     this.profiles = new ProfileRepository({ profilePath: this.profilePath });
+    this.cronTasks = new CronTaskRepository(this.db);
     this.conversationService = new ConversationService({ repository: this.conversations });
     this.resumeService = new ResumeService({ repository: this.resumes });
     this.jobService = new JobService({ repository: this.jobs });
     this.applicationService = new ApplicationService({ repository: this.applications });
     this.profileService = new ProfileService({ repository: this.profiles, db: this.db, attachmentLifecycle: this.attachmentLifecycle, workspaceOperations: this.workspaceOperations });
     this.settingsService = new SettingsService({ db: this.db });
+    this.cronTaskService = new CronTaskService(this.cronTasks);
     this.workspaceService = new WorkspaceService({
       db: this.db,
       conversationService: this.conversationService,
@@ -276,6 +282,40 @@ export class BusinessStore {
   MoveApplicationStatus(id: string, status: string, expectedRevision?: number): any { return this.applicationService.MoveStatus(id, status, expectedRevision); }
   /** 删除投递并级联清理事件。 */
   DeleteApplication(id: string): any { return this.applicationService.Delete(id); }
+  /** Agent 投递状态写入：岗位和投递在同一数据库事务中更新，避免只保存其中一半。 */
+  UpdateApplicationTracking(input: any): any {
+    if (!input || typeof input !== 'object') throw new Error('Application tracking input is invalid.');
+    const run = this.db.transaction(() => {
+      const job = {
+        id: input.jobId, company: input.company, title: input.title, city: input.city ?? '', experience: input.experience ?? '',
+        employmentType: input.employmentType ?? 'full_time', channel: input.channel ?? 'company_website', favorite: false,
+        url: input.url, jd: input.jd ?? '',
+      };
+      const existingJob = this.jobs.ListAll().find((item: any) => item.id === input.jobId);
+      const savedJob = this.jobService.Upsert({ ...(existingJob ?? {}), ...job }, existingJob?.revision);
+      const existingApplication = this.applications.ListAll().find((item: any) => item.id === input.applicationId);
+      const savedApplication = this.applicationService.Upsert({
+        ...(existingApplication ?? {}), id: input.applicationId, jobId: input.jobId, resumeId: input.resumeId,
+        status: input.status, note: input.note ?? existingApplication?.note ?? '', ...(input.appliedAt ? { appliedAt: input.appliedAt } : {}),
+      }, existingApplication?.revision);
+      return { jobId: savedJob.id, applicationId: savedApplication.id, jobRevision: savedJob.revision, applicationRevision: savedApplication.revision, status: input.status };
+    });
+    return run();
+  }
+  /** 创建已由交互 Harness 确认的定时任务。 */
+  CreateCronTask(input: unknown, resourceContext?: { resumeId?: string }): any { return this.cronTaskService.Create(input, resourceContext); }
+  /** 读取定时任务及可选运行历史。 */
+  ReadCronTask(input?: { cronTaskId?: string; includeRuns?: boolean }): any { return this.cronTaskService.Read(input); }
+  /** 修改计划内容、调度或暂停状态。 */
+  UpdateCronTask(input: unknown, expectedRevision?: number): any { return this.cronTaskService.Update(input, expectedRevision); }
+  /** 软删除定时任务，保留已经产生的会话和 CronRun。 */
+  DeleteCronTask(id: string): any { return this.cronTaskService.Delete(id); }
+  /** 原子领取到期 occurrence；只返回每个任务最近一次可执行项。 */
+  ClaimDueCronTasks(now?: number): any { return this.cronTaskService.ClaimDue(now); }
+  AttachCronRunConversation(runId: string, conversationId: string): any { this.cronTaskService.AttachConversation(runId, conversationId); return { runId, conversationId }; }
+  FinishCronRun(runId: string, state: string, reason?: string): any { return this.cronTaskService.FinishRun(runId, state, reason); }
+  RecoverInterruptedCronRuns(): any { return { recovered: this.cronTaskService.RecoverInterruptedRuns() }; }
+  GetEarliestCronRunAt(): any { return { nextRunAt: this.cronTaskService.EarliestNextRunAt() }; }
   /** 读取档案唯一事实源；缺失或损坏时返回安全回退值，并认可磁盘内容为哈希基线。 */
   LoadProfiles(fallback: any): any { return this.profileService.Load(fallback); }
   /** 读取档案及外部修改状态，供启动恢复与冲突界面使用。 */
@@ -293,7 +333,7 @@ export class BusinessStore {
   /** 复制、校验并准备切换到空目标目录；源工作空间保持不变以便发生故障时回退。 */
   CopyWorkspaceTo(destinationPath: string): any { return this.workspaceService.CopyWorkspaceTo(destinationPath); }
   /** 复制用户主动选择的附件至工作空间内容寻址目录，并禁止向模型暴露源文件路径。 */
-  ImportAttachment(sourcePath: string, mimeType = 'application/octet-stream'): any { return this.workspaceService.ImportAttachment(sourcePath, mimeType); }
+  ImportAttachment(sourcePath: string, mimeType = 'application/octet-stream'): Promise<any> { return this.workspaceService.ImportAttachment(sourcePath, mimeType); }
   /** 扫描并清理已连续 7 天无引用的工作空间附件副本与 OCR 派生缓存；失败项保留墓碑供下次重试。 */
   CleanupAttachments(options?: any): any { return this.attachmentLifecycle.Cleanup(options); }
   /** 返回启动 Saga 恢复状态；blocked 时 Main 仅开放只读命令。 */
@@ -307,6 +347,7 @@ export class BusinessStore {
   RecoverWorkspaceOperations(): any { return this.workspaceOperations.Recover({ synchronizeProfiles: (items) => this.profileService.SynchronizeAttachmentLinks(items) }); }
   /** 将虚拟附件 URI 解析为受控工作空间文件，拒绝任意物理路径输入。 */
   ResolveAttachmentUri(uri: string): any { return this.workspaceService.ResolveAttachmentUri(uri); }
+  ResolveAttachmentMarkdownUri(uri: string): Promise<any> { return this.workspaceService.ResolveAttachmentMarkdownUri(uri); }
   /** 创建一致性的业务数据库和档案备份；附件以原始内容寻址文件继续由 manifest 引用。 */
   CreateBackup(): any { return this.workspaceService.CreateBackup(); }
   /** 关闭数据库句柄，供应用退出或后续工作空间迁移时安全调用。 */

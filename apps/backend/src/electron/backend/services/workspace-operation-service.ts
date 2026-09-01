@@ -117,7 +117,8 @@ export class WorkspaceOperationService {
     if (row.state === 'prepared') {
       if (row.operation_type === 'import_attachment') {
         const filePath = this.ResolveWorkspaceRelative(payload.storageKey);
-        if (this.VerifyFileHash(filePath, payload.sha256)) row.state = 'file_written';
+        const snapshotValid = !payload.snapshotKey || this.VerifyFileHash(this.ResolveWorkspaceRelative(payload.snapshotKey), payload.snapshotSha256);
+        if (this.VerifyFileHash(filePath, payload.sha256) && snapshotValid) row.state = 'file_written';
         else {
           this.MarkFailed(row.id, 'INTERRUPTED_BEFORE_FILE_WRITE');
           return;
@@ -151,9 +152,10 @@ export class WorkspaceOperationService {
     if (row.operation_type === 'import_attachment') {
       const filePath = this.ResolveWorkspaceRelative(payload.storageKey);
       if (!this.VerifyFileHash(filePath, payload.sha256)) throw new Error('Recovered attachment file is unavailable.');
-      this.db.prepare(`INSERT INTO attachments(id, sha256, original_name, mime_type, byte_size, storage_key, created_at, orphaned_at)
-        VALUES(?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(sha256) DO UPDATE SET deleted_at = NULL, cleanup_error = NULL`)
-        .run(payload.attachmentId, payload.sha256, payload.originalName, payload.mimeType, payload.byteSize, payload.storageKey, payload.createdAt, payload.createdAt);
+      if (payload.snapshotKey && !this.VerifyFileHash(this.ResolveWorkspaceRelative(payload.snapshotKey), payload.snapshotSha256)) throw new Error('Recovered attachment snapshot is unavailable.');
+      this.db.prepare(`INSERT INTO attachments(id, sha256, original_name, mime_type, byte_size, storage_key, parse_status, created_at, orphaned_at)
+        VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(sha256) DO UPDATE SET parse_status = excluded.parse_status, deleted_at = NULL, cleanup_error = NULL`)
+        .run(payload.attachmentId, payload.sha256, payload.originalName, payload.mimeType, payload.byteSize, payload.storageKey, payload.snapshotKey ? 'ready' : 'pending', payload.createdAt, payload.createdAt);
       this.Advance(row.id, 'db_committed');
       this.Advance(row.id, 'completed');
       return;

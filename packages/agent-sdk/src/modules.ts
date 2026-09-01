@@ -1,7 +1,7 @@
 import type { AgentStreamEvent } from './events';
 import type { ModuleManifest, SlotName } from './manifest';
 import type { RegisteredAgentTool, ToolContext } from './tools';
-import type { AgentMessage, CompiledInstructions, LogEntry, ModelCompletion, ModelDelta, ModelSummary, ProviderUsageFact, RuntimeContext, ToolCallFragment, ToolExecutionResult, TraceEntry, TraceEventEntry } from './types';
+import type { AgentMessage, CompiledInstructions, LogEntry, ModelCompletion, ModelDelta, ModelSummary, ProviderUsageFact, ReasoningEffort, RuntimeContext, ToolCallFragment, ToolExecutionResult, TraceEntry, TraceEventEntry } from './types';
 
 /** 会话上下文快照来源：如用户自定义上下文。 */
 export interface SessionContextSource {
@@ -32,11 +32,20 @@ export interface ModelProviderModule extends ModuleManifest {
   TestConnection(input: unknown): Promise<{ connected: boolean; provider: string; baseUrl: string }>;
   GetBalance(): Promise<{ available: boolean; balances: Array<{ currency: string; totalBalance: string }> }>;
   GetModels(): Promise<{ models: string[] }>;
-  GetStatus(): Promise<{ configured: boolean; provider: string; model: string }>;
+  GetStatus(): Promise<{
+    configured: boolean;
+    provider: string;
+    model: string;
+    baseUrl?: string;
+    contextLimit?: number;
+    contextLimitMode?: 'default' | 'custom';
+    compressionThreshold?: number;
+  }>;
   ResolveRequestModel(requestedModel: string | undefined): string;
   StreamCompletion(request: {
     requestId: string;
     model: string;
+    reasoningEffort: ReasoningEffort;
     history: AgentMessage[];
     tools: RegisteredAgentTool[];
     signal: AbortSignal;

@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { EvalDatasetCase, EvalPromptCandidate, EvalUserSimulatorStrategy } from '@offerget/contracts';
-import type { ScenarioSnapshot } from '@offerget/agent-sdk';
+import type { CompiledInstructions, ScenarioSnapshot } from '@offerget/agent-sdk';
 import { BuildDefaultPromptFragments, CompilePrompt, DefaultScenario } from '@offerget/agent-modules-defaults';
 import { AgentHost } from '../agent-host';
 import { EvalTestBusiness } from './eval-test-business';
@@ -11,7 +11,7 @@ import { CountEvalModelTurns } from './eval-runner-metrics';
 export interface PromptEvalCaseInput {
   runId: string;
   caseRunId: string;
-  candidate: EvalPromptCandidate;
+  candidate: EvalPromptCandidate & { compiledPrompt?: CompiledInstructions };
   testCase: EvalDatasetCase;
   model: string;
   toolNames: string[];
@@ -81,7 +81,13 @@ export class PromptEvalRunner {
       observability: observable,
       credentialPort: this.credentialPort,
       resolveProjectEnvironment: (projectId: string) => projectId === 'eval-project' ? { rootPath: projectPath, projectId, name: 'eval-project' } : null,
-      compileInstructions: (_scenarioId, toolPolicyHash) => CompilePrompt(fragments, scenario.id, toolPolicyHash, 'eval-1'),
+      compileInstructions: (_scenarioId, toolPolicyHash) => {
+        const compiled = CompilePrompt(fragments, scenario.id, toolPolicyHash, 'eval-1');
+        if (input.candidate.compiledPrompt && input.candidate.compiledPrompt.manifest.compiledHash !== compiled.manifest.compiledHash) {
+          throw Object.assign(new Error('Prompt evaluation instructions differ from the frozen run snapshot.'), { code: 'EVAL_PROMPT_SNAPSHOT_MISMATCH' });
+        }
+        return input.candidate.compiledPrompt ?? compiled;
+      },
       scenarioOverride: scenario,
     });
 
@@ -144,6 +150,9 @@ export class PromptEvalRunner {
           completed: Boolean(finalResponse),
         },
       };
+    } catch (error) {
+      if (error && typeof error === 'object') Object.assign(error, { evalEvidence: { events: [...events], finalState: business.Snapshot() } });
+      throw error;
     } finally {
       input.signal.removeEventListener('abort', Abort);
       await host.Close();

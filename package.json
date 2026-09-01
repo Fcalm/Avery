@@ -27,8 +27,9 @@
     "evaluate:system-baseline": "node scripts/run-evaluation-system-baseline.mjs",
     "audit:system-baseline": "node scripts/audit-evaluation-system-baseline.mjs",
     "smoke:evaluation-ui": "node scripts/smoke-evaluation-ui.mjs",
-    "pack:dir": "npm run build && node node_modules/electron-builder/out/cli/cli.js --dir",
-    "pack:win": "npm run build && node node_modules/electron-builder/out/cli/cli.js --win"
+    "build:markitdown-sidecar": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-markitdown-sidecar.ps1",
+    "pack:dir": "npm run build && npm run build:markitdown-sidecar && node node_modules/electron-builder/out/cli/cli.js --dir",
+    "pack:win": "npm run build && npm run build:markitdown-sidecar && node node_modules/electron-builder/out/cli/cli.js --win"
   },
   "dependencies": {
     "@napi-rs/canvas": "0.1.80",
@@ -78,6 +79,7 @@
       "dist/**",
       "apps/**",
       "packages/**",
+      "skills/**",
       "electron/**",
       "migrations/**",
       "node_modules/@offerget/**",
@@ -86,6 +88,13 @@
     ],
     "asarUnpack": [
       "node_modules/agent-browser/bin/**"
+    ],
+    "extraResources": [
+      {
+        "from": "build/markitdown",
+        "to": "markitdown",
+        "filter": ["markitdown.exe"]
+      }
     ]
   }
 }

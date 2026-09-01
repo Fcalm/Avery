@@ -70,6 +70,7 @@ export const SettingsSubmitSchema = z.object({
   baseUrl: z.string().max(2000).optional(),
   model: z.string().max(200).optional(),
   contextLength: z.string().max(50).optional(),
+  contextLimitMode: z.enum(['default', 'custom']).optional(),
   thinkingEnabled: z.boolean().optional(),
   developerMode: z.boolean().optional(),
   traceRetention: z.number().int().min(1).max(100).optional(),

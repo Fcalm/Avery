@@ -8,12 +8,17 @@ import type { DesktopEvaluationBridge } from './evaluation';
 /** Agent 确认级别；完全信任仍受场景白名单、Schema、资源授权与幂等约束。 */
 export type ConfirmationMode = 'always_confirm' | 'allow_low_risk' | 'fully_trusted';
 
+/** 会话级思考强度；DeepSeek Provider 会按官方规则映射实际 effort。 */
+export type ReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+
 /** Agent 请求的显式窄字段：确认模式、附件、项目 ID 与简历 ID；业务只读快照（简历/档案）由后端按 ID 读取，不再整包透传前端组合态。 */
 export interface AgentSendRequest {
   requestId: string;
   sessionId: string;
   content: string;
   model?: string;
+  /** 请求级思考强度；缺省恢复会话值，旧会话默认 medium。 */
+  reasoningEffort?: ReasoningEffort;
   /** 请求级确认模式；缺省由后端场景默认。 */
   confirmationMode?: ConfirmationMode;
   attachments?: Array<{ name: string; path: string }>;
@@ -46,7 +51,7 @@ export interface AgentBrowserRuntimeStatus {
 
 /** Agent 流式事件：preload 单通道 `agent:stream` 的全部事件类型。 */
 export interface AgentStreamEvent {
-  type: 'thinking_delta' | 'content_delta' | 'completed' | 'cancelled' | 'error' | 'resume_updated' | 'resume_created' | 'resume_confirmation' | 'task_created' | 'task_updated' | 'question_requested' | 'waiting_user_input' | 'waiting_confirmation' | 'paused' | 'browser_confirmation' | 'browser_action_completed' | 'browser_user_action';
+  type: 'thinking_delta' | 'content_delta' | 'completed' | 'cancelled' | 'error' | 'resume_updated' | 'resume_created' | 'resume_confirmation' | 'cron_task_confirmation' | 'cron_task_changed' | 'cron_run_completed' | 'task_created' | 'task_updated' | 'task_deleted' | 'question_requested' | 'waiting_user_input' | 'waiting_confirmation' | 'paused' | 'browser_confirmation' | 'browser_action_completed' | 'browser_user_action';
   requestId?: string;
   delta?: string;
   content?: string;
@@ -59,6 +64,7 @@ export interface AgentStreamEvent {
   confirmationId?: string;
   questions?: Array<{ id: string; question: string; options: string[] }>;
   browserAction?: BrowserActionState;
+  cronTask?: { id?: string; title?: string; message?: string; scenarioId?: 'default' | 'application'; schedule?: unknown; state?: string; summary?: string };
 }
 
 /** Agent 模型配置：API Key 仅经 IPC 进入主进程 safeStorage。 */
@@ -68,6 +74,7 @@ export interface AgentConfiguration {
   baseUrl: string;
   model: string;
   contextLength: string;
+  contextLimitMode?: 'default' | 'custom';
   compressionThreshold: number;
   thinkingEnabled: boolean;
 }
@@ -83,7 +90,7 @@ export interface AgentObservability {
   traces: Array<{ requestId: string; sessionId: string; model: string; state: string; summary: string; createdAt: number; completedAt: number | null; eventCount: number; usage: { source: 'provider' | 'unavailable'; promptTokens: number; completionTokens: number; totalTokens: number; reportedRequestCount: number; unreportedRequestCount: number } }>;
 }
 
-/** 单会话的助手运行状态；用于恢复输入栏 usage 与项目环境，不含真实路径或凭据。 */
+/** 单会话的助手运行状态；用于恢复输入栏 usage、模型与确认权限，不含真实路径或凭据。 */
 export interface AgentSessionAssistantState {
   usage: {
     inputTokens: number;
@@ -99,6 +106,12 @@ export interface AgentSessionAssistantState {
   };
   project: { projectId: string | null; name: string } | null;
   scenarioId: 'default' | 'application';
+  /** 经当前 Provider 校验后的会话模型；失效值已回退。 */
+  model: string;
+  /** 会话级确认策略；不扩展场景、工具或资源授权边界。 */
+  confirmationMode: ConfirmationMode;
+  /** 会话级思考强度；切换会话或重启应用后从 Backend 快照恢复。 */
+  reasoningEffort: ReasoningEffort;
 }
 
 /** 高级用户模块配置只返回目录掩码和校验状态，绝不向 Renderer 暴露绝对路径。 */
@@ -130,7 +143,9 @@ export interface DesktopAgentBridge {
   Send: (request: AgentSendRequest) => Promise<{ accepted: boolean }>;
   Cancel: (requestId: string) => Promise<{ cancelled: boolean }>;
   UpdateConfirmationMode: (requestId: string, confirmationMode: ConfirmationMode) => Promise<{ updated: boolean; confirmationMode?: ConfirmationMode; reason?: string }>;
+  UpdateReasoningEffort: (sessionId: string, reasoningEffort: ReasoningEffort) => Promise<{ updated: boolean; reasoningEffort: ReasoningEffort }>;
   ConfirmResumeEdit: (confirmationId: string, accepted: boolean) => Promise<{ applied: boolean }>;
+  ConfirmCronTask: (confirmationId: string, accepted: boolean) => Promise<{ created: boolean; task?: unknown }>;
   ConfirmBrowserAction: (confirmationId: string, accepted: boolean) => Promise<BrowserActionState>;
   GetBrowserRuntimeStatus: () => Promise<AgentBrowserRuntimeStatus>;
   ClearBrowserProfile: () => Promise<{ cleared: boolean }>;
@@ -138,7 +153,15 @@ export interface DesktopAgentBridge {
   AcquireResumeEditLock: (resumeId: string) => Promise<{ acquired: boolean; reason?: string }>;
   /** 用户保存或取消编辑后释放简历锁。 */
   ReleaseResumeEditLock: (resumeId: string) => Promise<{ released: boolean }>;
-  GetStatus: () => Promise<{ configured: boolean; provider: string; model: string }>;
+  GetStatus: () => Promise<{
+    configured: boolean;
+    provider: string;
+    model: string;
+    baseUrl?: string;
+    contextLimit?: number;
+    contextLimitMode?: 'default' | 'custom';
+    compressionThreshold?: number;
+  }>;
   GetObservability: () => Promise<AgentObservability>;
   GetTraceEvents: (requestId: string) => Promise<AgentTraceEvent[]>;
   /** 按会话删除其全部 Trace 索引和事件，不影响日志与会话业务数据。 */
@@ -147,7 +170,7 @@ export interface DesktopAgentBridge {
   ClearObservability: () => Promise<{ cleared: boolean }>;
   ReloadSession: (sessionId: string) => Promise<{ reloaded: boolean; sessionRevision?: number; reason?: string }>;
   SelectProjectDirectory: () => Promise<{ projectId: string; name: string } | null>;
-  /** 按会话读取 usage 与项目环境；绝不暴露项目绝对路径。 */
+  /** 按会话读取 usage、项目环境、模型与确认权限；绝不暴露项目绝对路径或凭据。 */
   GetSessionAssistantState: (sessionId: string) => Promise<AgentSessionAssistantState>;
   /** 将已由原生选择器授权的项目环境立即绑定到会话。 */
   BindProjectEnvironment: (sessionId: string, projectId: string) => Promise<AgentSessionAssistantState['project']>;
@@ -192,14 +215,14 @@ export interface WorkspaceBridge {
   CreateBackup: (options?: WriteCommandOptions) => Promise<{ created: boolean; timestamp: number; retainedCount: number }>;
   GetResumeRevisions: (resumeId: string) => Promise<ResumeRevisionDto[]>;
   SetResumeRevisionPinned: (revisionId: string, pinned: boolean, options?: WriteCommandOptions) => Promise<{ id: string; isPinned: boolean }>;
-  ExportResume: (resume: { name: string; summary: string; content: string }, format: 'pdf' | 'docx' | 'png') => Promise<{ fileName: string; exported: boolean }>;
+  ExportResume: (resume: { name: string; summary: string; content: string }, format: 'html' | 'pdf' | 'docx' | 'png') => Promise<{ fileName: string; exported: boolean }>;
   Migrate: () => Promise<WorkspaceStatusDto & { migration: unknown }>;
 }
 
 /** Bridge 方法清单：preload 暴露的方法名唯一来源，供一致性冒烟校验与契约生成使用。 */
 export const BridgeNamespaces = {
   agent: [
-    'Configure', 'TestConnection', 'GetBalance', 'GetModels', 'Send', 'Cancel', 'UpdateConfirmationMode', 'ConfirmResumeEdit',
+    'Configure', 'TestConnection', 'GetBalance', 'GetModels', 'Send', 'Cancel', 'UpdateConfirmationMode', 'UpdateReasoningEffort', 'ConfirmResumeEdit', 'ConfirmCronTask',
     'ConfirmBrowserAction', 'GetBrowserRuntimeStatus', 'ClearBrowserProfile',
     'AcquireResumeEditLock', 'ReleaseResumeEditLock', 'GetStatus',
     'GetObservability', 'GetTraceEvents', 'DeleteTraces', 'SetTraceRetention', 'ClearObservability',

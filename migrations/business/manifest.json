@@ -5,6 +5,7 @@
     { "version": 3, "name": "v3-attachments", "file": "v3-attachments.sql", "kind": "sql", "checksumSeed": "business-store-v1-attachments" },
     { "version": 4, "name": "v4-entity-revision", "file": "v4-entity-revision.cjs", "kind": "js", "checksumSeed": "business-store-v1-entity-revision" },
     { "version": 5, "name": "v5-attachment-lifecycle", "file": "v5-attachment-lifecycle.cjs", "kind": "js", "checksumSeed": "business-store-v1-attachment-lifecycle-7-days" },
-    { "version": 6, "name": "v6-workspace-operations", "file": "v6-workspace-operations.sql", "kind": "sql", "checksumSeed": "business-store-v1-workspace-operations" }
+    { "version": 6, "name": "v6-workspace-operations", "file": "v6-workspace-operations.sql", "kind": "sql", "checksumSeed": "business-store-v1-workspace-operations" },
+    { "version": 7, "name": "v7-cron-tasks", "file": "v7-cron-tasks.sql", "kind": "sql", "checksumSeed": "business-store-v1-cron-tasks-unattended" }
   ]
 }

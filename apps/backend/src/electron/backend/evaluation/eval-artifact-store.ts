@@ -74,6 +74,18 @@ export class EvalArtifactStore {
     await appendFile(target, `${scrubbed}\n`, 'utf8');
   }
 
+  async ReadCaseJson<T>(runId: string, caseRunId: string, fileName: string): Promise<T | null> {
+    await this.Initialize();
+    const target = this.Path(runId, 'cases', caseRunId, fileName);
+    try {
+      const content = await readFile(target, 'utf8');
+      return JSON.parse(content) as T;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+      throw error;
+    }
+  }
+
   async WriteDataset(projectId: string, version: string, jsonl: string): Promise<string> {
     if (![projectId, version].every((value) => /^[A-Za-z0-9._-]{1,200}$/.test(value))) throw Object.assign(new Error('Evaluation dataset identifier is invalid.'), { code: 'VALIDATION_ERROR' });
     const target = resolve(this.dataRoot, 'datasets', projectId, `${version}.jsonl`);
