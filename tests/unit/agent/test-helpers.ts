@@ -99,9 +99,15 @@ export function CreateKernelHarness(options: {
   const events: AgentStreamEvent[] = [];
   const usages: ProviderUsageFact[] = [];
   const trace = { append: vi.fn(), finish: vi.fn(), log: vi.fn() };
-  const streamCompletion = options.streamCompletion ?? vi.fn(async ({ onDelta }) => {
+  const streamCompletion = options.streamCompletion ?? vi.fn(async ({ onDelta, onRequest, instructions, history, model, tools }) => {
     const completion = completions.shift();
     if (!completion) throw new Error('No test completion remains.');
+    onRequest?.({
+      kind: 'completion',
+      model,
+      messages: [{ role: 'system', content: instructions.compiled }, ...history.map(({ metadata: _metadata, imageAttachments: _imageAttachments, providerContent, ...message }) => ({ ...message, content: providerContent ?? message.content }))],
+      toolCount: tools.length,
+    });
     if (completion.content) onDelta({ reasoning: '', content: completion.content });
     return completion;
   });
@@ -112,7 +118,10 @@ export function CreateKernelHarness(options: {
       Configure: vi.fn(), TestConnection: vi.fn(), GetBalance: vi.fn(), GetModels: vi.fn(), GetStatus: vi.fn(),
       ResolveRequestModel: vi.fn((model?: string) => model ?? 'test-model'),
       StreamCompletion: streamCompletion,
-      CreateSummary: options.createSummary ?? vi.fn(async () => ({ content: 'summary' })),
+      CreateSummary: options.createSummary ?? vi.fn(async (model, messages, onRequest) => {
+        onRequest?.({ kind: 'summary', model, messages: [{ role: 'system', content: 'summary prompt' }, ...messages], toolCount: 0 });
+        return { content: 'summary' };
+      }),
       EstimateTokens: vi.fn(() => options.shouldCompact ? 800 : 100),
       GetRuntimeLimits: vi.fn(() => ({ contextLimit: 1_000, threshold: 70 })),
       BaseUrl: vi.fn(() => 'https://example.test'),

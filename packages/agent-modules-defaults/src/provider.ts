@@ -279,16 +279,19 @@ export function CreateProviderModule(ports: AgentDefaultPorts): ModelProviderMod
     async StreamCompletion(request) {
       await EnsureConfig();
       const systemContent = RequireString(request.instructions?.compiled, 'compiled instructions', 200000);
+      const providerMessages = [{ role: 'system', content: systemContent }, ...request.history.map(ToProviderMessage)];
       const thinking = config.provider === 'DeepSeek'
         ? config.thinkingEnabled
           ? { thinking: { type: 'enabled' }, reasoning_effort: ResolveDeepSeekReasoningEffort(request.reasoningEffort) }
           : { thinking: { type: 'disabled' } }
         : {};
+      const body = SerializeCompletionBody({ model: request.model, stream: true, ...thinking, ...(config.provider === 'DeepSeek' ? { stream_options: { include_usage: true } } : {}), messages: providerMessages, tools: request.tools.map((tool) => tool.definition), tool_choice: 'auto' }, config.provider === 'DeepSeek');
+      request.onRequest?.({ kind: 'completion', model: request.model, messages: providerMessages, toolCount: request.tools.length });
       const response = await providerFetch(`${config.baseUrl}/chat/completions`, {
         method: 'POST',
         signal: request.signal,
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${config.apiKey}` },
-        body: SerializeCompletionBody({ model: request.model, stream: true, ...thinking, ...(config.provider === 'DeepSeek' ? { stream_options: { include_usage: true } } : {}), messages: [{ role: 'system', content: systemContent }, ...request.history.map(ToProviderMessage)], tools: request.tools.map((tool) => tool.definition), tool_choice: 'auto' }, config.provider === 'DeepSeek'),
+        body,
       });
       if (!response.ok || !response.body) throw new Error(`Model request failed (${response.status}).`);
       const decoder = new TextDecoder();
@@ -353,12 +356,15 @@ export function CreateProviderModule(ports: AgentDefaultPorts): ModelProviderMod
       return { content, reasoningContent, toolCalls: completedCalls, ...(usage ? { usage } : {}) };
     },
     /** 通过不带工具的非流式模型调用生成可替换历史的应用摘要。 */
-    async CreateSummary(model, messages) {
+    async CreateSummary(model, messages, onRequest) {
       await EnsureConfig();
+      const providerMessages = [{ role: 'system', content: SummaryPrompt }, ...messages.map(ToProviderMessage)];
+      const body = JSON.stringify({ model, stream: false, messages: providerMessages });
+      onRequest?.({ kind: 'summary', model, messages: providerMessages, toolCount: 0 });
       const response = await providerFetch(`${config.baseUrl}/chat/completions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${config.apiKey}` },
-        body: JSON.stringify({ model, stream: false, messages: [{ role: 'system', content: SummaryPrompt }, ...messages.map(ToProviderMessage)] }),
+        body,
       });
       if (!response.ok) throw new Error(`Summary request failed (${response.status}).`);
       const json = (await response.json()) as { choices?: Array<{ message?: { content?: unknown } }>; usage?: unknown };

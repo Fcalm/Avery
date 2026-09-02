@@ -1,4 +1,4 @@
-import type { AgentMessage, KernelRunInput, KernelRunResult, ModelUsage, ProviderUsageFact, RunDisposition, ToolCallFragment, ToolDisposition, ToolExecutionResult } from '@offerget/agent-sdk';
+import type { AgentMessage, KernelRunInput, KernelRunResult, ModelUsage, ProviderRequestSnapshot, ProviderUsageFact, RunDisposition, ToolCallFragment, ToolDisposition, ToolExecutionResult } from '@offerget/agent-sdk';
 import { CreateRuntimeReminderMessage, ShouldInjectRuntimeReminder } from './runtime-reminder';
 
 /** 从 Trace 正文中移除常见密钥、Authorization 凭据和绝对路径；纯函数，供内核事件脱敏。 */
@@ -37,6 +37,65 @@ function ScrubToolArguments(toolName: string, value: string): string {
   } catch {
     return '[REDACTED_BROWSER_ARGUMENTS]';
   }
+}
+
+/** Trace 以真实 API 请求为边界，逐条保存本次请求实际包含的 message。 */
+function RecordProviderRequest(input: KernelRunInput, apiRequestIndex: number, snapshot: ProviderRequestSnapshot): void {
+  input.modules.observability.AppendTraceEvent(input.requestId, 'provider_request', {
+    apiRequestIndex,
+    kind: snapshot.kind,
+    model: snapshot.model,
+    messageCount: snapshot.messages.length,
+    toolCount: snapshot.toolCount,
+  });
+  snapshot.messages.forEach((message, messageIndex) => {
+    const traceMessage = { ...message };
+    const content = traceMessage.content;
+    if (Array.isArray(content)) {
+      traceMessage.content = content.map((part) => {
+        if (!part || typeof part !== 'object') return part;
+        const record = part as Record<string, unknown>;
+        if (record.type !== 'image_url' || !record.image_url || typeof record.image_url !== 'object') return record;
+        const image = record.image_url as Record<string, unknown>;
+        return { ...record, image_url: { ...image, url: typeof image.url === 'string' && image.url.startsWith('data:') ? '[REDACTED_IMAGE_DATA]' : image.url } };
+      });
+    }
+    if (Array.isArray(traceMessage.tool_calls)) {
+      traceMessage.tool_calls = traceMessage.tool_calls.map((value) => {
+        if (!value || typeof value !== 'object') return value;
+        const call = value as Record<string, unknown>;
+        const fn = call.function && typeof call.function === 'object' ? call.function as Record<string, unknown> : null;
+        if (!fn) return call;
+        const name = String(fn.name ?? '');
+        return { ...call, function: { ...fn, arguments: ScrubToolArguments(name, String(fn.arguments ?? '')) } };
+      });
+    }
+    input.modules.observability.AppendTraceEvent(input.requestId, 'message', {
+      apiRequestIndex,
+      messageIndex,
+      direction: 'input',
+      kind: snapshot.kind,
+      message: traceMessage,
+    }, EstimateTraceTokens(JSON.stringify(traceMessage)));
+  });
+}
+
+/** 保存 Provider 输出或随后加入 Transcript 的消息，不把 assistant tool_calls 拆成虚构消息。 */
+function RecordAppendedMessage(input: KernelRunInput, apiRequestIndex: number, source: 'provider' | 'tool' | 'runtime', message: AgentMessage, kind: ProviderRequestSnapshot['kind'] = 'completion'): void {
+  const providerMessage: Record<string, unknown> = {
+    role: message.role,
+    content: ScrubTraceContent(message.content),
+    ...(message.tool_calls ? { tool_calls: message.tool_calls.map((call) => ({ ...call, function: { ...call.function, arguments: ScrubToolArguments(call.function.name, call.function.arguments) } })) } : {}),
+    ...(message.tool_call_id ? { tool_call_id: message.tool_call_id } : {}),
+    ...(message.reasoning_content ? { reasoning_content: ScrubTraceContent(message.reasoning_content) } : {}),
+  };
+  input.modules.observability.AppendTraceEvent(input.requestId, 'message', {
+    apiRequestIndex,
+    direction: source === 'provider' ? 'output' : 'append',
+    source,
+    kind,
+    message: providerMessage,
+  }, EstimateTraceTokens(JSON.stringify(providerMessage)));
 }
 
 /** 提取不含 system 消息的完整 append-only transcript；只有显式压缩可以改变历史前缀。 */
@@ -143,7 +202,7 @@ function CreateTurnBudgetExhaustedResult(call: ToolCallFragment): ToolExecutionR
 }
 
 /** 按真实用户轮次压缩早期历史；重试循环内置 3 次熔断，全部失败抛出压缩错误（宿主据此传播）。 */
-async function CompressIfNeeded(input: KernelRunInput, history: AgentMessage[], onCompressed: () => void): Promise<AgentMessage[]> {
+async function CompressIfNeeded(input: KernelRunInput, history: AgentMessage[], onCompressed: () => void, nextApiRequestIndex: () => number): Promise<AgentMessage[]> {
   const { modules, toolArray } = input;
   const { contextLimit, threshold } = modules.modelProvider.GetRuntimeLimits();
   const estimate = modules.modelProvider.EstimateTokens({
@@ -167,9 +226,14 @@ async function CompressIfNeeded(input: KernelRunInput, history: AgentMessage[], 
         if (dropped) throw new Error('Context compression cannot make progress: history has no earlier turns to compact.');
         return candidate;
       }
-      const summary = await modules.modelProvider.CreateSummary(input.model, earlier);
+      let apiRequestIndex = 0;
+      const summary = await modules.modelProvider.CreateSummary(input.model, earlier, (snapshot) => {
+        apiRequestIndex = nextApiRequestIndex();
+        RecordProviderRequest(input, apiRequestIndex, snapshot);
+      });
       ThrowIfRunCancelled(input.signal);
       input.onModelUsage?.(CreateProviderUsageFact(summary.usage));
+      if (apiRequestIndex) RecordAppendedMessage(input, apiRequestIndex, 'provider', { role: 'assistant', content: summary.content }, 'summary');
       const compacted: AgentMessage[] = [{ role: 'user', content: `<summary summary_id="summary-${input.createId()}">${summary.content}</summary>` }, ...recent];
       input.histories.set(input.sessionId, HistorySnapshot(compacted));
       onCompressed();
@@ -293,13 +357,15 @@ export async function RunAgentLoop(input: KernelRunInput): Promise<KernelRunResu
   let reminderRevision = 0;
   let lastReminderConfirmationMode = input.runtimeReminder.confirmationMode;
   let toolCallCount = 0;
+  let apiRequestCount = 0;
+  const NextApiRequestIndex = () => { apiRequestCount += 1; return apiRequestCount; };
   const maxTurns = input.scenario?.budgets?.maxModelTurns ?? input.maxTurns;
   // 场景只有显式配置时才限制工具总数；投递场景依赖较多原子浏览器动作，不另设浏览器动作预算。
   const maxToolCalls = input.scenario?.budgets?.maxToolCalls ?? Number.POSITIVE_INFINITY;
 
   try {
     // 压缩熔断错误进入 catch，统一 FinishTrace/emit error（旧实现压缩在 try 外，抛错会跳过 Trace 收尾导致 running 幽灵 Trace）。
-    requestHistory = await CompressIfNeeded(input, input.requestHistory, () => { compressionCount += 1; });
+    requestHistory = await CompressIfNeeded(input, input.requestHistory, () => { compressionCount += 1; }, NextApiRequestIndex);
     const beforeUser = CommitInitialSyntheticMessages(input, input.messagesBeforeUser ?? []);
     const afterUser = CommitInitialSyntheticMessages(input, input.messagesAfterUser ?? []);
     transcript = [
@@ -346,6 +412,7 @@ export async function RunAgentLoop(input: KernelRunInput): Promise<KernelRunResu
       }
       turn += 1;
       modules.observability.AppendTraceEvent(requestId, 'loop_turn', { turn });
+      let apiRequestIndex = 0;
       // Provider 可能在 Promise settle 或取消后仍回调；仅当前流处于 active 时接收增量，避免终态后污染 UI。
       let acceptsProviderDelta = true;
       const completion = await modules.modelProvider.StreamCompletion({
@@ -356,6 +423,10 @@ export async function RunAgentLoop(input: KernelRunInput): Promise<KernelRunResu
         tools: input.toolArray,
         signal,
         instructions: input.instructions,
+        onRequest: (snapshot) => {
+          apiRequestIndex = NextApiRequestIndex();
+          RecordProviderRequest(input, apiRequestIndex, snapshot);
+        },
         onDelta: (delta) => {
           if (!acceptsProviderDelta || signal.aborted) return;
           if (delta.reasoning) { reasoningContent += delta.reasoning; emit({ type: 'thinking_delta', requestId, delta: delta.reasoning }); }
@@ -371,9 +442,12 @@ export async function RunAgentLoop(input: KernelRunInput): Promise<KernelRunResu
         ...(completion.toolCalls.length ? { tool_calls: completion.toolCalls } : {}),
       };
       transcript = [...transcript, assistantMessage];
+      if (apiRequestIndex) RecordAppendedMessage(input, apiRequestIndex, 'provider', assistantMessage);
       if (!completion.toolCalls.length) break;
       if (finalTurn) {
-        transcript = [...transcript, ...completion.toolCalls.map(CreateTurnBudgetExhaustedResult)];
+        const exhaustedResults = completion.toolCalls.map(CreateTurnBudgetExhaustedResult);
+        transcript = [...transcript, ...exhaustedResults];
+        if (apiRequestIndex) exhaustedResults.forEach((message) => RecordAppendedMessage(input, apiRequestIndex, 'runtime', message));
         input.histories.set(input.sessionId, HistorySnapshot(transcript));
         modules.observability.RecordLog('WARN', 'conversation.circuit_open', 'iteration_limit');
         modules.observability.FinishTrace(requestId, 'circuit_open', 'Final model turn attempted new tool calls.');
@@ -393,6 +467,10 @@ export async function RunAgentLoop(input: KernelRunInput): Promise<KernelRunResu
       const skillFollowups = CommitSkillFollowups(input, toolResults);
       const protocolResults = toolResults.map(({ followupMessages: _followupMessages, ...result }) => result);
       transcript = [...transcript, ...protocolResults, ...skillFollowups];
+      if (apiRequestIndex) {
+        protocolResults.forEach((message) => RecordAppendedMessage(input, apiRequestIndex, 'tool', message));
+        skillFollowups.forEach((message) => RecordAppendedMessage(input, apiRequestIndex, 'runtime', message));
+      }
       if (disposition !== 'continue') {
         const waitOutcome = disposition === 'waiting_user_input' ? 'waiting_user_input' : disposition === 'waiting_confirmation' ? 'waiting_confirmation' : 'paused';
         input.histories.set(input.sessionId, HistorySnapshot(transcript));
@@ -404,9 +482,6 @@ export async function RunAgentLoop(input: KernelRunInput): Promise<KernelRunResu
     }
     input.histories.set(input.sessionId, HistorySnapshot(transcript));
     modules.observability.RecordLog('INFO', 'conversation.completed', `turns=${turn}`);
-    const responseText = ScrubTraceContent(assistantContent);
-    const reasoningText = ScrubTraceContent(reasoningContent);
-    modules.observability.AppendTraceEvent(requestId, 'assistant_message', { content: responseText, reasoning: reasoningText }, EstimateTraceTokens(`${responseText}\n${reasoningText}`));
     modules.observability.FinishTrace(requestId, 'completed', `Completed in ${turn} loop turn(s).`);
     emit({ type: 'completed', requestId, content: assistantContent, thinkingContent: reasoningContent });
     return { outcome: 'completed', disposition: 'completed', transcript: HistorySnapshot(transcript), inputTokens, compressionCount };

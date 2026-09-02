@@ -430,6 +430,35 @@ describe('agent-core RunAgentLoop', () => {
     expect(serialized).not.toContain(secretEmail);
   });
 
+  it('按真实 API 请求逐条记录消息，并保留单条 assistant 中的多个 tool_calls', async () => {
+    const tools = [CreateRegisteredTool('ReadA'), CreateRegisteredTool('ReadB')];
+    const harness = CreateKernelHarness({
+      tools,
+      completions: [
+        { content: '', toolCalls: [ToolCall('call-a', 'ReadA'), ToolCall('call-b', 'ReadB')] },
+        { content: 'done', toolCalls: [] },
+      ],
+    });
+    harness.input.systemContext = 'session snapshot';
+    harness.input.instructions.compiled = 'compiled system prompt';
+
+    await RunAgentLoop(harness.input);
+
+    const traceEvents = harness.trace.append.mock.calls.map((call) => ({ type: call[1], payload: call[2] as Record<string, unknown> }));
+    const requests = traceEvents.filter((event) => event.type === 'provider_request');
+    expect(requests.map((event) => event.payload.apiRequestIndex)).toEqual([1, 2]);
+    const messages = traceEvents.filter((event) => event.type === 'message').map((event) => event.payload);
+    const firstInputs = messages.filter((payload) => payload.apiRequestIndex === 1 && payload.direction === 'input');
+    expect(firstInputs.map((payload) => (payload.message as { role: string }).role)).toEqual(['system', 'system', 'user', 'user']);
+    expect(firstInputs.map((payload) => (payload.message as { content: string }).content)).toContain('compiled system prompt');
+    expect(firstInputs.map((payload) => (payload.message as { content: string }).content)).toContain('session snapshot');
+    expect(firstInputs.some((payload) => (payload.message as { content: string }).content.includes('<runtime-reminder>'))).toBe(true);
+    const assistantToolMessage = messages.find((payload) => payload.apiRequestIndex === 1 && payload.direction === 'output');
+    expect((assistantToolMessage?.message as { tool_calls: ToolCallFragment[] }).tool_calls.map((call) => call.id)).toEqual(['call-a', 'call-b']);
+    const toolMessages = messages.filter((payload) => payload.apiRequestIndex === 1 && payload.source === 'tool');
+    expect(toolMessages.map((payload) => (payload.message as { tool_call_id: string }).tool_call_id)).toEqual(['call-a', 'call-b']);
+  });
+
   it('最后一轮返回工具调用时不执行工具并显式暂停', async () => {
     const write = CreateRegisteredTool('UpdateProfile', { isConcurrencySafe: false, sideEffect: 'local_write' });
     const execute = vi.fn(async (call: ToolCallFragment) => ({ role: 'tool' as const, tool_call_id: call.id, content: '{"ok":true}' }));

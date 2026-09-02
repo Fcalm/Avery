@@ -16,7 +16,9 @@ interface ConversationTrace {
 interface TimelineEvent extends AgentTraceEvent {
   id: string;
   requestId: string;
-  requestIndex: number;
+  runIndex: number;
+  apiRequestIndex: number;
+  requestKind: 'completion' | 'summary' | 'legacy';
   title: 'System' | 'User' | 'Tool' | 'Assistant';
   detail: string;
   tone: 'is-neutral' | 'is-accent' | 'is-success' | 'is-warning' | 'is-danger';
@@ -80,40 +82,54 @@ function EventPayload(event: AgentTraceEvent) {
   return (event.payload && typeof event.payload === 'object' ? event.payload : {}) as Record<string, unknown>;
 }
 
-function BuildTimeline(requestId: string, requestIndex: number, events: AgentTraceEvent[]) {
+function MessageTitle(role: unknown): TimelineEvent['title'] {
+  if (role === 'system') return 'System';
+  if (role === 'user') return 'User';
+  if (role === 'tool') return 'Tool';
+  return 'Assistant';
+}
+
+function MessageDetail(payload: Record<string, unknown>, message: Record<string, unknown>) {
+  const direction = String(payload.direction ?? 'append');
+  const source = String(payload.source ?? '');
+  const calls = Array.isArray(message.tool_calls) ? message.tool_calls.length : 0;
+  if (calls) return `Assistant message · ${calls} tool call${calls === 1 ? '' : 's'}`;
+  if (message.role === 'tool') return `Tool result${message.tool_call_id ? ` · ${String(message.tool_call_id)}` : ''}`;
+  if (direction === 'input') return `API input · message ${Number(payload.messageIndex ?? 0) + 1}`;
+  if (direction === 'output') return 'API output';
+  return source ? `Appended by ${source}` : 'Appended message';
+}
+
+/** 新 Trace 严格按 Provider request/message 展示；旧 Trace 保持兼容，但不再合并工具调用与结果。 */
+export function BuildTimeline(requestId: string, runIndex: number, events: AgentTraceEvent[]) {
   const timeline: TimelineEvent[] = [];
+  const hasMessageEvents = events.some((event) => event.eventType === 'message');
   for (let index = 0; index < events.length; index += 1) {
     const event = events[index];
     const payload = EventPayload(event);
     const tokenCount = event.tokenCount || EstimateTokenCount(event.payload);
-    if (event.eventType === 'system_prompt') {
-      timeline.push({ ...event, id: `${requestId}-${event.ordinal}`, requestId, requestIndex, title: 'System', detail: 'System prompt', tone: 'is-neutral', tokenCount });
+    if (event.eventType === 'message') {
+      const message = payload.message && typeof payload.message === 'object' ? payload.message as Record<string, unknown> : {};
+      const title = MessageTitle(message.role);
+      const apiRequestIndex = Math.max(1, Number(payload.apiRequestIndex) || 1);
+      const requestKind = payload.kind === 'summary' ? 'summary' : 'completion';
+      let tone: TimelineEvent['tone'] = title === 'Assistant' ? 'is-accent' : 'is-neutral';
+      if (title === 'Tool') {
+        try { tone = JSON.parse(String(message.content ?? '{}')).ok === true ? 'is-success' : 'is-danger'; } catch { tone = 'is-warning'; }
+      }
+      timeline.push({ ...event, id: `${requestId}-${event.ordinal}`, requestId, runIndex, apiRequestIndex, requestKind, title, detail: MessageDetail(payload, message), tone, tokenCount, payload: message });
+    } else if (!hasMessageEvents && event.eventType === 'system_prompt') {
+      timeline.push({ ...event, id: `${requestId}-${event.ordinal}`, requestId, runIndex, apiRequestIndex: 1, requestKind: 'legacy', title: 'System', detail: 'System prompt', tone: 'is-neutral', tokenCount });
     } else if (event.eventType === 'user_message') {
-      timeline.push({ ...event, id: `${requestId}-${event.ordinal}`, requestId, requestIndex, title: 'User', detail: 'User message', tone: 'is-neutral', tokenCount });
-    } else if (event.eventType === 'tool_call') {
-      const result = events[index + 1]?.eventType === 'tool_result' ? events[index + 1] : null;
-      const resultPayload = result ? EventPayload(result) : null;
-      const name = String(payload.name ?? resultPayload?.name ?? 'Tool');
-      const succeeded = resultPayload?.ok === true;
-      const detail = result ? `${name} · ${succeeded ? 'Success' : 'Failed'}` : `${name} · Running`;
-      timeline.push({
-        ordinal: event.ordinal,
-        eventType: 'tool',
-        payload: result ? { call: event.payload, result: result.payload } : { call: event.payload },
-        tokenCount: tokenCount + (result?.tokenCount || (result ? EstimateTokenCount(result.payload) : 0)),
-        createdAt: result?.createdAt ?? event.createdAt,
-        id: `${requestId}-${event.ordinal}`,
-        requestId,
-        requestIndex,
-        title: 'Tool',
-        detail,
-        tone: result ? (succeeded ? 'is-success' : 'is-danger') : 'is-warning',
-      });
-      if (result) index += 1;
-    } else if (event.eventType === 'assistant_message') {
-      timeline.push({ ...event, id: `${requestId}-${event.ordinal}`, requestId, requestIndex, title: 'Assistant', detail: 'Assistant message', tone: 'is-accent', tokenCount });
-    } else if (event.eventType === 'error') {
-      timeline.push({ ...event, id: `${requestId}-${event.ordinal}`, requestId, requestIndex, title: 'Assistant', detail: 'Request failed', tone: 'is-danger', tokenCount });
+      if (!hasMessageEvents) timeline.push({ ...event, id: `${requestId}-${event.ordinal}`, requestId, runIndex, apiRequestIndex: 1, requestKind: 'legacy', title: 'User', detail: 'User message', tone: 'is-neutral', tokenCount });
+    } else if (!hasMessageEvents && event.eventType === 'tool_call') {
+      timeline.push({ ...event, id: `${requestId}-${event.ordinal}`, requestId, runIndex, apiRequestIndex: 1, requestKind: 'legacy', title: 'Tool', detail: `${String(payload.name ?? 'Tool')} · Call`, tone: 'is-warning', tokenCount });
+    } else if (!hasMessageEvents && event.eventType === 'tool_result') {
+      timeline.push({ ...event, id: `${requestId}-${event.ordinal}`, requestId, runIndex, apiRequestIndex: 1, requestKind: 'legacy', title: 'Tool', detail: `${String(payload.name ?? 'Tool')} · Result`, tone: payload.ok === true ? 'is-success' : 'is-danger', tokenCount });
+    } else if (!hasMessageEvents && event.eventType === 'assistant_message') {
+      timeline.push({ ...event, id: `${requestId}-${event.ordinal}`, requestId, runIndex, apiRequestIndex: 1, requestKind: 'legacy', title: 'Assistant', detail: 'Assistant message', tone: 'is-accent', tokenCount });
+    } else if (!hasMessageEvents && event.eventType === 'error') {
+      timeline.push({ ...event, id: `${requestId}-${event.ordinal}`, requestId, runIndex, apiRequestIndex: 1, requestKind: 'legacy', title: 'Assistant', detail: 'Request failed', tone: 'is-danger', tokenCount });
     }
   }
   return timeline;
@@ -247,13 +263,13 @@ function TraceViewer({ traces, conversations, onSelectTrace, onDeleteTraces, foc
           <div className="trace-detail-header">
             <div className="trace-detail-metadata">
               <span><b>{FormatDateTime(selectedEvent?.createdAt ?? selectedConversation.traces[0].createdAt)}</b></span>
-              <span><b>{selectedEvent ? selectedConversation.traces[selectedEvent.requestIndex - 1]?.model : selectedConversation.traces.at(-1)?.model}</b></span>
-              <span><b>{selectedEvent ? `TURN-${selectedEvent.requestIndex}` : `${selectedConversation.traces.length} requests`}</b></span>
+              <span><b>{selectedEvent ? selectedConversation.traces[selectedEvent.runIndex - 1]?.model : selectedConversation.traces.at(-1)?.model}</b></span>
+              <span><b>{selectedEvent ? `API REQUEST-${selectedEvent.apiRequestIndex}` : `${selectedConversation.traces.length} runs`}</b></span>
               <span className="trace-scene"><b>求职助手</b></span>{onDeleteTraces && <button className="trace-detail-delete" type="button" aria-label={`删除${selectedConversation.title}的 Trace`} title="删除此对话的 Trace" onClick={() => { setDeleteError(null); setDeleteTarget(selectedConversation); }}><Icon name="delete" size={14} /></button>}
             </div>
             <div className="trace-detail-controls"><div className="trace-search"><Icon name="search" size={14} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索事件内容" aria-label="搜索事件内容" /></div><Select className="trace-event-filter" value={eventFilter} onChange={(value) => setEventFilter(value as EventFilter)} ariaLabel="筛选事件" options={[{ value: 'all', label: '全部事件' }, { value: 'System', label: 'System' }, { value: 'User', label: 'User' }, { value: 'Tool', label: 'Tool' }, { value: 'Assistant', label: 'Assistant' }, { value: 'Success', label: 'Success' }, { value: 'Failed', label: 'Failed' }]} /></div>
           </div>
-          {isCurrentConversationMode ? selectedEvent ? <EventDetail event={selectedEvent} /> : <p className="empty-copy">此对话暂时没有可显示的 System、User、Tool 或 Assistant 事件。</p> : visibleTimeline.length ? <div className="trace-event-list">{visibleTimeline.map((event, index) => <div key={event.id} className="trace-request-group">{(index === 0 || visibleTimeline[index - 1].requestId !== event.requestId) && <div className="trace-request-divider"><span>TURN-{event.requestIndex}</span><small>{FormatTime(selectedConversation.traces[event.requestIndex - 1].createdAt)}</small></div>}<EventRow event={event} expanded={expanded.has(event.id)} onToggle={() => ToggleEvent(event.id)} /></div>)}</div> : <p className="empty-copy">此对话暂时没有可显示的 System、User、Tool 或 Assistant 事件。</p>}
+          {isCurrentConversationMode ? selectedEvent ? <EventDetail event={selectedEvent} /> : <p className="empty-copy">此对话暂时没有可显示的 System、User、Tool 或 Assistant 事件。</p> : visibleTimeline.length ? <div className="trace-event-list">{visibleTimeline.map((event, index) => { const previous = visibleTimeline[index - 1]; const startsRequest = index === 0 || previous.requestId !== event.requestId || previous.apiRequestIndex !== event.apiRequestIndex; return <div key={event.id} className="trace-request-group">{startsRequest && <div className="trace-request-divider"><span>API REQUEST-{event.apiRequestIndex}</span><code>{event.requestKind}</code><small>{FormatTime(event.createdAt)}</small></div>}<EventRow event={event} expanded={expanded.has(event.id)} onToggle={() => ToggleEvent(event.id)} /></div>; })}</div> : <p className="empty-copy">此对话暂时没有可显示的 System、User、Tool 或 Assistant 事件。</p>}
         </> : <p className="empty-copy">发送一条消息后，这里会按对话归纳 Trace 记录。</p>}
       </main>
     </div>

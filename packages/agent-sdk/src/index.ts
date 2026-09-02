@@ -2,7 +2,7 @@
 export { SlotOrder } from './manifest';
 export type { ModuleManifest, SlotName } from './manifest';
 export { SlotToModuleKey } from './modules';
-export type { AgentModules, CompactionModule, ContextBuilderModule, InteractionModule, ModelProviderModule, ObservabilityModule, SessionContextSnapshot, SessionContextSource, ToolsModule } from './modules';
+export type { AgentModules, CompactionModule, ContextBuilderModule, InteractionModule, ModelProviderModule, ObservabilityModule, ProviderRequestSnapshot, SessionContextSnapshot, SessionContextSource, ToolsModule } from './modules';
 export type { AgentStreamEvent } from './events';
 export type { KernelRunFunction, KernelRunInput, KernelRunResult } from './kernel';
 export { DropOldestTurnGroups, IsUserTurn, KeepRecentTurnGroups, SplitTurnGroups } from './turn-group';

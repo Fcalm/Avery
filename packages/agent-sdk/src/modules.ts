@@ -25,6 +25,14 @@ export interface SessionContextSnapshot {
   compiledHash: string;
 }
 
+/** Provider 即将发出的真实消息快照；仅用于 Trace，不包含凭据和请求头。 */
+export interface ProviderRequestSnapshot {
+  kind: 'completion' | 'summary';
+  model: string;
+  messages: Array<Record<string, unknown>>;
+  toolCount: number;
+}
+
 /** 模型 Provider 槽：配置、连通性、请求级模型解析、流式补全、摘要与规模估算。 */
 export interface ModelProviderModule extends ModuleManifest {
   slot: 'model-provider';
@@ -50,10 +58,12 @@ export interface ModelProviderModule extends ModuleManifest {
     tools: RegisteredAgentTool[];
     signal: AbortSignal;
     onDelta: (delta: ModelDelta) => void;
+    /** 调用方提供时，Provider 必须在实际网络请求前回报最终序列化后的 messages，供 Trace 按 API 请求还原。 */
+    onRequest?: (snapshot: ProviderRequestSnapshot) => void;
     /** 运行前由 Prompt Compiler 编译的指令；Provider 不再持有业务 System Prompt 所有权。 */
     instructions: CompiledInstructions;
   }): Promise<ModelCompletion>;
-  CreateSummary(model: string, messages: AgentMessage[]): Promise<ModelSummary>;
+  CreateSummary(model: string, messages: AgentMessage[], onRequest?: (snapshot: ProviderRequestSnapshot) => void): Promise<ModelSummary>;
   EstimateTokens(value: unknown): number;
   /** 返回上下文长度上限与压缩阈值百分比；供 Kernel 与宿主读取。 */
   GetRuntimeLimits(): { contextLimit: number; threshold: number };

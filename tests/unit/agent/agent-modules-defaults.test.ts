@@ -480,15 +480,22 @@ describe('agent-modules-defaults', () => {
     const { CreateProviderModule } = await import('../../../packages/agent-modules-defaults/src/provider');
     const provider = CreateProviderModule(CreatePorts());
     const deltas: Array<{ reasoning: string; content: string }> = [];
+    const onRequest = vi.fn();
 
     const result = await provider.StreamCompletion({
       requestId: 'request-1', model: 'deepseek-v4-flash', history: [{ role: 'user', content: 'runtime status', metadata: { source: 'runtime', visibility: 'hidden', kind: 'runtime_reminder', reminderRevision: 1, injectedAtTurn: 0 } }], tools: [], signal: new AbortController().signal,
       instructions: { ...BuildDefaultCompiledInstructions(), compiled: 'compiled prompt' },
+      onRequest,
       onDelta: (delta) => deltas.push(delta),
     });
 
     expect(result).toMatchObject({ content: 'hello ', reasoningContent: 'reason', usage: { promptTokens: 11, completionTokens: 7, totalTokens: 18 } });
     expect(deltas).toEqual([{ reasoning: '', content: 'hello ' }, { reasoning: 'reason', content: '' }]);
+    expect(onRequest).toHaveBeenCalledOnce();
+    expect(onRequest).toHaveBeenCalledWith({
+      kind: 'completion', model: 'deepseek-v4-flash', toolCount: 0,
+      messages: [{ role: 'system', content: 'compiled prompt' }, { role: 'user', content: 'runtime status' }],
+    });
   });
 
   it('DeepSeek 按官方协议映射会话思考强度，并在关闭思考时不发送 effort', async () => {
