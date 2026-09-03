@@ -1,4 +1,4 @@
-import type { AgentModules } from '@offerget/agent-sdk';
+import type { AgentModules } from '@avery/agent-sdk';
 import { CreateProviderModule } from './provider';
 import { CreateContextBuilderModule } from './context';
 import { CreateCompactionModule } from './compaction';
@@ -8,7 +8,7 @@ import { CreateObservabilityModule } from './observability';
 import { AgentDefaultPorts } from './ports';
 
 /** 默认模块包名与契约版本：解析器据此校验。 */
-export const DefaultsPackageName = '@offerget/agent-modules-defaults';
+export const DefaultsPackageName = '@avery/agent-modules-defaults';
 export const DefaultsVersion = '0.1.0';
 export const DefaultsSdkVersion = '0.1.0';
 

@@ -1,6 +1,6 @@
 import { useCallback, useRef } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { CreateWriteIntentKeyStore, type WriteCommandOptions } from '@offerget/contracts';
+import { CreateWriteIntentKeyStore, type WriteCommandOptions } from '@avery/contracts';
 import { AppError } from '../../../shared/platform/platformClient';
 import { WORKSPACE_QUERY_KEY, type WorkspaceData } from './workspaceData';
 

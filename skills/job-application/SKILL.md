@@ -2,7 +2,7 @@
 name: job-application
 description: Complete a controlled job application with authorized profile data and files. Use when the user asks to fill, message, upload, or submit through a recruitment website.
 metadata:
-  offerget:
+  avery:
     scenarios:
       - application
 ---

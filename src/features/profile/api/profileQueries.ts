@@ -1,4 +1,4 @@
-import type { ProfileItemDto } from '@offerget/contracts';
+import type { ProfileItemDto } from '@avery/contracts';
 import { platformClient, Unwrap } from '../../../shared/platform/platformClient';
 import type { ProfileItem } from '../../../types/domain';
 import { useWorkspaceData } from '../../workspace/api/useWorkspaceData';

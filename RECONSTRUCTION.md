@@ -1,6 +1,6 @@
-# OfferGet 重建说明
+# Avery 重建说明
 
-本目录是从磁盘损坏后的残留文件和已打包应用恢复出的独立工作区；原目录 `C:\Users\fanweiqian\Desktop\offerget` 未被修改。
+本目录是从磁盘损坏后的残留文件和已打包应用恢复出的独立工作区；原目录 `C:\Users\fanweiqian\Desktop\avery` 未被修改。
 
 ## 已恢复且可维护的源码
 

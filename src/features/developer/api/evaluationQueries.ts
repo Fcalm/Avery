@@ -1,4 +1,4 @@
-import type { EvalEvent, EvalProjectInput } from '@offerget/contracts';
+import type { EvalEvent, EvalProjectInput } from '@avery/contracts';
 import { platformClient, Unwrap } from '../../../shared/platform/platformClient';
 
 export const ListEvalProjects = () => Unwrap(platformClient.evaluation.ListProjects());

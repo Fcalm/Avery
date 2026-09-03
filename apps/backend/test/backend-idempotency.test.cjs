@@ -97,7 +97,7 @@ test('不同内部 requestId 但同稳定幂等键的重试只执行一次业务
 });
 
 test('Backend 重启后以同一幂等键重放只执行一次业务', async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'offerget-idem-'));
+  const dir = mkdtempSync(join(tmpdir(), 'avery-idem-'));
   const file = join(dir, 'idempotency-replay.json');
   const executions = { count: 0 };
   try {
@@ -118,7 +118,7 @@ test('Backend 重启后以同一幂等键重放只执行一次业务', async () 
 });
 
 test('幂等记录写盘失败会报告降级，重启后不承诺回放', async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'offerget-idem-degraded-'));
+  const dir = mkdtempSync(join(tmpdir(), 'avery-idem-degraded-'));
   const blockedParent = join(dir, 'not-a-directory');
   const replayFile = join(blockedParent, 'idempotency-replay.json');
   const executions = { count: 0 };
@@ -166,27 +166,27 @@ test('生产 Preload/Gateway 与 Bridge 契约一致，并透传稳定幂等键'
 
   for (const namespace of ['agent', 'workspace']) {
     assert.deepEqual(
-      Object.keys(exposed.get(`offerget${namespace[0].toUpperCase()}${namespace.slice(1)}`)).sort(),
+      Object.keys(exposed.get(`avery${namespace[0].toUpperCase()}${namespace.slice(1)}`)).sort(),
       [...BridgeNamespaces[namespace]].sort(),
       `Preload ${namespace} Bridge 方法必须与 contracts 保持一致`,
     );
   }
 
   const idempotencyKey = 'idem-production-retry';
-  await exposed.get('offergetWorkspace').SaveSettings({ nickname: 'x' }, { idempotencyKey });
+  await exposed.get('averyWorkspace').SaveSettings({ nickname: 'x' }, { idempotencyKey });
   assert.deepEqual(invokes, [['workspace:save-settings', { idempotencyKey, payload: [{ nickname: 'x' }] }]]);
-  await exposed.get('offergetWorkspace').RemoveConversationMessage('conversation-1', 'message-1', { idempotencyKey: 'idem-remove-message' });
+  await exposed.get('averyWorkspace').RemoveConversationMessage('conversation-1', 'message-1', { idempotencyKey: 'idem-remove-message' });
   assert.deepEqual(invokes[1], ['workspace:conversations-remove-message', {
     idempotencyKey: 'idem-remove-message', payload: ['conversation-1', 'message-1'],
   }]);
-  await exposed.get('offergetWorkspace').ImportAttachment({}, 'text/plain', { idempotencyKey: 'idem-attachment' });
+  await exposed.get('averyWorkspace').ImportAttachment({}, 'text/plain', { idempotencyKey: 'idem-attachment' });
   assert.deepEqual(invokes[2], ['workspace:import-attachment', { idempotencyKey: 'idem-attachment', payload: ['C:/fixture.txt', 'text/plain'] }]);
 
   const executions = { count: 0 };
   const backend = CreateBackend({ container: createContainer(executions), idempotencyStore: createFakeStore() });
   const handlers = new Map();
   let transportSequence = 0;
-  const windowContents = { id: 1, getURL: () => 'file:///offerget/index.html' };
+  const windowContents = { id: 1, getURL: () => 'file:///avery/index.html' };
   RegisterGateway({
     ipcMainApi: { handle: (channel, handler) => handlers.set(channel, handler) },
     webContentsGetter: () => ({ isDestroyed: () => false, webContents: windowContents }),
@@ -196,7 +196,7 @@ test('生产 Preload/Gateway 与 Bridge 契约一致，并透传稳定幂等键'
       OnEvent: () => {},
     },
   });
-  const event = { sender: windowContents, senderFrame: { url: 'file:///offerget/index.html' } };
+  const event = { sender: windowContents, senderFrame: { url: 'file:///avery/index.html' } };
   const handler = handlers.get('workspace:save-settings');
   const missingKey = await handler(event, { payload: [{ nickname: 'x' }] });
   assert.equal(missingKey.ok, false);

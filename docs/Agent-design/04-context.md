@@ -73,7 +73,7 @@ Skill 完整快照与 Session revision 一起冻结，但索引不进入 system 
 2. 主说明层通过 `/<skill-name>` 或 `LoadSkill({ skillId })` 加载冻结的 `SKILL.md`。
 3. 资源层只有在主说明已加载后，才能通过 `LoadSkill({ skillId, resource })` 读取该 Skill 的 `references/` 冻结资源。
 
-项目内 Skill 遵循通用目录格式：目录名使用小写连字符并与 `SKILL.md` frontmatter 的 `name` 一致；`name` 和 `description` 是必填字段，不再使用额外的 `manifest.json`。OfferGet 特有的场景限制放在可选的 `metadata.offerget.scenarios` 中，缺省时只在 `default` 场景披露。`references/` 下的 UTF-8 文件由宿主自动发现并随会话快照冻结。
+项目内 Skill 遵循通用目录格式：目录名使用小写连字符并与 `SKILL.md` frontmatter 的 `name` 一致；`name` 和 `description` 是必填字段，不再使用额外的 `manifest.json`。Avery 特有的场景限制放在可选的 `metadata.avery.scenarios` 中，缺省时只在 `default` 场景披露。`references/` 下的 UTF-8 文件由宿主自动发现并随会话快照冻结。
 
 Snapshot 保存完整正文、资源和内容哈希，普通 Run 不重新读取磁盘。Skill ID 使用小写字母、数字和连字符；资源只能来自该 Skill 的 `references/` 目录。Backend 通过 realpath、UTF-8、文件数量、单文件和聚合大小限制阻止目录逃逸与无界上下文。Skill 是知识包而不是权限包，实际能力仍由冻结场景白名单、确认策略、资源授权和 Harness 共同决定。
 

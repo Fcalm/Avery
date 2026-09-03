@@ -1,4 +1,4 @@
-import type { ProfileItemDto, WorkspaceViewModel } from '@offerget/contracts';
+import type { ProfileItemDto, WorkspaceViewModel } from '@avery/contracts';
 import type { SettingsDraft } from '../../../types/domain';
 
 /** 工作空间聚合缓存的 Query Key；页面通过失效该 Key 重新拉取后端聚合视图。 */

@@ -1,6 +1,6 @@
 (() => {
   const now = 1786320000000;
-  const scenario = localStorage.getItem('offerget.visual.scenario') || 'populated';
+  const scenario = localStorage.getItem('avery.visual.scenario') || 'populated';
   const ok = (data) => Promise.resolve({ ok: true, data });
   const fail = (code, message, details) => Promise.resolve({ ok: false, error: { code, message, details, retryable: false } });
   const populated = scenario !== 'empty' && scenario !== 'onboarding';
@@ -15,7 +15,7 @@
   };
   const profiles = populated ? [{ id: 'visual-profile', category: 'project', title: '核心项目成果', content: '通过拆包、缓存和按需加载，将首屏耗时降低 38%。', updatedAt: now }] : [];
   const settings = {
-    nickname: '验收用户', workspaceName: 'OfferGet Visual Workspace', provider: 'DeepSeek', baseUrl: '', model: 'deepseek-v4-flash', contextLength: '64K', thinkingEnabled: true,
+    nickname: '验收用户', workspaceName: 'Avery Visual Workspace', provider: 'DeepSeek', baseUrl: '', model: 'deepseek-v4-flash', contextLength: '64K', thinkingEnabled: true,
     developerMode: true, traceRetention: 50, compressionThreshold: 80, onboardingCompleted: scenario !== 'onboarding', customContext: '使用简洁、可验证的成果表达。',
   };
   const recovery = scenario === 'recovery'
@@ -39,7 +39,7 @@
     Migrate: { workspaceName: settings.workspaceName, integrity: 'ok' },
     ReloadProfiles: { items: profiles, hash: 'visual-profile-hash' },
   };
-  window.offergetWorkspace = new Proxy({}, {
+  window.averyWorkspace = new Proxy({}, {
     get: (_target, property) => (...args) => {
       const name = String(property);
       if (name === 'GetViewModel' && scenario === 'loading') return new Promise(() => undefined);
@@ -70,7 +70,7 @@
     ResetModules: { enabled: false, status: 'default', directoryName: null, error: null, slots: [] },
     AcquireResumeEditLock: { acquired: true }, ReleaseResumeEditLock: { released: true }, Cancel: { cancelled: true }, ReloadSession: { reloaded: true },
   };
-  window.offergetAgent = new Proxy({}, {
+  window.averyAgent = new Proxy({}, {
     get: (_target, property) => {
       const name = String(property);
       if (name === 'OnStream') return () => () => undefined;

@@ -1,4 +1,4 @@
-import type { FileReadPort, LogEntry, ProviderUsageFact, ResumeReadPort, ResumeWritePort, TraceEntry, TraceEventEntry } from '@offerget/agent-sdk';
+import type { FileReadPort, LogEntry, ProviderUsageFact, ResumeReadPort, ResumeWritePort, TraceEntry, TraceEventEntry } from '@avery/agent-sdk';
 
 /** 模型 Provider 配置：API Key 仅经宿主持有的 CredentialPort 存取，默认模块不直接接触 safeStorage。 */
 export interface ProviderConfig {

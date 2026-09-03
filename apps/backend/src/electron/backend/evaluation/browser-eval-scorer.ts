@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import type { EvalBrowserAssertion, EvalBrowserAssertionResult, EvalCaseScore, EvalDatasetCase } from '@offerget/contracts';
+import type { EvalBrowserAssertion, EvalBrowserAssertionResult, EvalCaseScore, EvalDatasetCase } from '@avery/contracts';
 
 export interface BrowserEvalScoreResult {
   score: EvalCaseScore;

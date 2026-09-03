@@ -6,7 +6,7 @@
 
 `agent-browser 0.34.0` 可以通过 CDP 连接 `Electron 43.3.0` 的专用 `WebContentsView`，导航、快照、读取、填写、点击、按键和截图等基础动作均可工作，因此功能层面兼容。
 
-当前方案不能直接替换独立 Chromium Runtime。Electron 的 `--remote-debugging-port` 暴露整个应用进程的全部 DevTools targets，`agent-browser` 可以切换到 OfferGet 主界面；`--pin-tab` 和直接传入 page WebSocket URL 都不能形成安全隔离。该问题属于发布阻断，不应只依靠 system prompt 或工具白名单规避。
+当前方案不能直接替换独立 Chromium Runtime。Electron 的 `--remote-debugging-port` 暴露整个应用进程的全部 DevTools targets，`agent-browser` 可以切换到 Avery 主界面；`--pin-tab` 和直接传入 page WebSocket URL 都不能形成安全隔离。该问题属于发布阻断，不应只依靠 system prompt 或工具白名单规避。
 
 ## 2. 验证环境
 
@@ -57,6 +57,6 @@
 
 ## 6. 方案决定
 
-2026-08-24 决定采用方向 C：使用应用自带 Electron 启动隔离浏览器伴随进程。伴随进程拥有独立 Profile 和随机本地 CDP 端口，不初始化 OfferGet 主界面或 Backend；`agent-browser` 只连接该进程。主进程 `WebContentsView` 的直接 CDP 接入停止推进，Chromium 安装流程删除。
+2026-08-24 决定采用方向 C：使用应用自带 Electron 启动隔离浏览器伴随进程。伴随进程拥有独立 Profile 和随机本地 CDP 端口，不初始化 Avery 主界面或 Backend；`agent-browser` 只连接该进程。主进程 `WebContentsView` 的直接 CDP 接入停止推进，Chromium 安装流程删除。
 
-实现验证中确认 `agent-browser` 不能在 Electron 单 target 会话中使用 `Target.createTarget`。最终伴随进程包含无业务数据的内部 Shell target 和覆盖窗口的招聘网页 `WebContentsView` target；Runtime 先在不启用 pin 的情况下发现并选择 `/ready`，随后对原子动作启用 sticky pin，并从模型可见标签列表过滤内部 URL。开发态和打包态均验证 Snapshot、Fill、Click 成功，且没有 OfferGet 主界面 target。
+实现验证中确认 `agent-browser` 不能在 Electron 单 target 会话中使用 `Target.createTarget`。最终伴随进程包含无业务数据的内部 Shell target 和覆盖窗口的招聘网页 `WebContentsView` target；Runtime 先在不启用 pin 的情况下发现并选择 `/ready`，随后对原子动作启用 sticky pin，并从模型可见标签列表过滤内部 URL。开发态和打包态均验证 Snapshot、Fill、Click 成功，且没有 Avery 主界面 target。

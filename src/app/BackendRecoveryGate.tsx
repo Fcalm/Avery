@@ -1,4 +1,4 @@
-import { ErrorCode } from '@offerget/contracts';
+import { ErrorCode } from '@avery/contracts';
 import { AppError } from '../shared/platform/platformClient';
 import { Button, EmptyState } from '../shared/components/UI';
 import { Icon } from '../shared/components/Icon';

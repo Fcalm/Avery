@@ -26,7 +26,7 @@ describe('vision input', () => {
   });
 
   it('将受控附件转换成 image_url data URL，并可由虚拟 URI 在后续 Run 重新水合', async () => {
-    const directory = mkdtempSync(join(tmpdir(), 'offerget-vision-'));
+    const directory = mkdtempSync(join(tmpdir(), 'avery-vision-'));
     temporaryDirectories.push(directory);
     const physicalPath = join(directory, 'misleading.txt');
     writeFileSync(physicalPath, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00]));
@@ -44,7 +44,7 @@ describe('vision input', () => {
   });
 
   it('声明为图片但实际内容不受支持时显式拒绝', async () => {
-    const directory = mkdtempSync(join(tmpdir(), 'offerget-vision-invalid-'));
+    const directory = mkdtempSync(join(tmpdir(), 'avery-vision-invalid-'));
     temporaryDirectories.push(directory);
     const physicalPath = join(directory, 'fake.png');
     writeFileSync(physicalPath, 'not an image');

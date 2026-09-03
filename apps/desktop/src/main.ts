@@ -2,10 +2,11 @@ import { app, BrowserWindow, Menu, session } from 'electron';
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { join, resolve } from 'node:path';
-import { CreateBackendHost } from '@offerget/backend/dist/host';
+import { CreateBackendHost } from '@avery/backend/dist/host';
 import { CreateDesktopAdapters } from './adapters';
 import { RegisterGateway, RegisterWindowControls } from './gateway';
 import { IsBrowserCompanionProcess, StartBrowserCompanion } from './browser-companion';
+import { MigrateLegacyUserData } from './brand-migration';
 
 const smokeStartedAt = Date.now();
 let mainWindow: BrowserWindow | undefined;
@@ -27,8 +28,8 @@ function resolveAgentBrowserExecutablePath(): string {
 }
 
 function writeSmokeStage(stage: string, extra: Record<string, unknown> = {}): void {
-  const output = process.env.OFFERGET_SMOKE_RESULT_PATH;
-  if (process.env.OFFERGET_DESKTOP_SMOKE === '1' && output) writeFileSync(output, JSON.stringify({ stage, electron: process.versions.electron, ...extra }), 'utf8');
+  const output = process.env.AVERY_SMOKE_RESULT_PATH;
+  if (process.env.AVERY_DESKTOP_SMOKE === '1' && output) writeFileSync(output, JSON.stringify({ stage, electron: process.versions.electron, ...extra }), 'utf8');
 }
 /** 默认拒绝权限、弹窗和导航；桌面能力只能经 preload/Gateway 调用。 */
 function configureSecurityPolicies(): void {
@@ -52,7 +53,7 @@ function createWindow(): BrowserWindow {
   });
   mainWindow = window;
   window.setMenuBarVisibility(false);
-  if (app.isPackaged || process.env.OFFERGET_DESKTOP_SMOKE === '1') void window.loadFile(join(__dirname, '..', '..', '..', 'dist', 'index.html'));
+  if (app.isPackaged || process.env.AVERY_DESKTOP_SMOKE === '1') void window.loadFile(join(__dirname, '..', '..', '..', 'dist', 'index.html'));
   else void window.loadURL(process.env.VITE_DEV_SERVER_URL || 'http://127.0.0.1:5173');
   window.webContents.once('did-finish-load', () => { rendererLoaded = true; });
   window.webContents.on('console-message', (_event, level, message) => { if (level >= 3) consoleErrors.push(String(message).slice(0, 300)); });
@@ -86,7 +87,7 @@ async function probeRendererAgentIpc(): Promise<{ agentStatus: boolean; browserR
   const window = mainWindow;
   if (!window || window.isDestroyed()) throw new Error('Main window is unavailable for Renderer Agent IPC probe.');
   return window.webContents.executeJavaScript(`(async () => {
-    const agent = globalThis.offergetAgent;
+    const agent = globalThis.averyAgent;
     if (!agent) return { agentStatus: false, browserRuntimeStatus: false };
     const [status, browser] = await Promise.all([agent.GetStatus(), agent.GetBrowserRuntimeStatus()]);
     return {
@@ -102,8 +103,8 @@ async function runLifecycleScenario(mode: string, userDataPath: string, workspac
     const recovery = await callBackend('workspace:database-recovery-status') as { readOnly?: boolean; canRestore?: boolean; mode?: string };
     return { mode, recoveryReadOnly: recovery.readOnly === true, recoveryCanRestore: recovery.canRestore === true, recoveryMode: recovery.mode };
   }
-  const fixturePath = process.env.OFFERGET_LIFECYCLE_ATTACHMENT;
-  const apiKey = process.env.OFFERGET_LIFECYCLE_API_KEY;
+  const fixturePath = process.env.AVERY_LIFECYCLE_ATTACHMENT;
+  const apiKey = process.env.AVERY_LIFECYCLE_API_KEY;
   if (!apiKey) throw new Error('Lifecycle smoke credential is missing.');
   if (mode === 'seed') {
     if (!fixturePath || !existsSync(fixturePath)) throw new Error('Lifecycle attachment fixture is missing.');
@@ -223,17 +224,18 @@ if (IsBrowserCompanionProcess()) {
 } else {
   const cronRunnerLaunch = process.argv.includes('--cron-runner');
   // Smoke 必须在申请单实例锁前切换隔离目录，否则会被正在运行的正式应用误判为第二实例并立即退出。
-  if (process.env.OFFERGET_DESKTOP_SMOKE === '1' && process.env.OFFERGET_SMOKE_USER_DATA) app.setPath('userData', resolve(process.env.OFFERGET_SMOKE_USER_DATA));
+  if (process.env.AVERY_DESKTOP_SMOKE === '1' && process.env.AVERY_SMOKE_USER_DATA) app.setPath('userData', resolve(process.env.AVERY_SMOKE_USER_DATA));
   const ownsSingleInstance = app.requestSingleInstanceLock();
   if (!ownsSingleInstance) {
     app.quit();
   } else {
   writeSmokeStage('main_loaded');
-  app.whenReady().then(() => {
+  app.whenReady().then(async () => {
     writeSmokeStage('electron_ready');
     configureSecurityPolicies();
     const userDataPath = app.getPath('userData');
-    const workspacePath = join(userDataPath, 'OfferGet Workspace');
+    if (process.env.AVERY_DESKTOP_SMOKE !== '1') await MigrateLegacyUserData(userDataPath);
+    const workspacePath = join(userDataPath, 'Avery Workspace');
     const adapters = CreateDesktopAdapters({ getWindow: () => mainWindow, userDataPath, executablePath: process.execPath, enableSystemCron: app.isPackaged });
     backendHost = CreateBackendHost({
       appContext: {
@@ -251,7 +253,7 @@ if (IsBrowserCompanionProcess()) {
     Menu.setApplicationMenu(null);
     if (!cronRunnerLaunch) createWindow();
     else void runDueCronTasksWhenReady(true).catch((error) => { console.error('CronTask runner failed:', error); app.exit(1); });
-    if (process.env.OFFERGET_DESKTOP_SMOKE !== '1') return;
+    if (process.env.AVERY_DESKTOP_SMOKE !== '1') return;
     const deadline = Date.now() + 15000;
     const timer = setInterval(async () => {
       if (rendererLoaded && backendHost?.state() === 'ready') {
@@ -259,10 +261,10 @@ if (IsBrowserCompanionProcess()) {
         lifecycleRunning = true;
         clearInterval(timer);
         try {
-          const mode = process.env.OFFERGET_LIFECYCLE_MODE;
+          const mode = process.env.AVERY_LIFECYCLE_MODE;
           lifecycleStep = mode ? `starting:${mode}` : 'completed';
           const lifecycle = mode ? await runLifecycleScenario(mode, userDataPath, workspacePath) : undefined;
-          const visual = process.env.OFFERGET_INSTALLED_VISUAL_OUTPUT ? await runInstalledVisualScenario(resolve(process.env.OFFERGET_INSTALLED_VISUAL_OUTPUT)) : undefined;
+          const visual = process.env.AVERY_INSTALLED_VISUAL_OUTPUT ? await runInstalledVisualScenario(resolve(process.env.AVERY_INSTALLED_VISUAL_OUTPUT)) : undefined;
           const rendererAgentIpc = await probeRendererAgentIpc();
           if (!rendererAgentIpc.agentStatus || !rendererAgentIpc.browserRuntimeStatus) throw new Error('Renderer Agent IPC probe failed.');
           const result = { rendererLoaded: true, backendReady: true, rendererAgentIpc, electron: process.versions.electron, startupReadyMs: Date.now() - smokeStartedAt, ...(lifecycle ? { lifecycle } : {}), ...(visual ? { installedVisual: visual } : {}) };

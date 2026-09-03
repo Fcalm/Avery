@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { CreateCronTaskSchema, UpdateCronTaskSchema, type CronRunState, type CronSchedule } from '@offerget/contracts';
+import { CreateCronTaskSchema, UpdateCronTaskSchema, type CronRunState, type CronSchedule } from '@avery/contracts';
 import { CronOccurrenceAt, CronTotalOccurrences, ValidateCronScheduleTiming } from '../backend/cron-schedule';
 import { GetNow, WriteAudit, AssertRevision } from './helpers';
 

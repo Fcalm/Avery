@@ -133,7 +133,7 @@ export interface AgentTraceEvent {
   createdAt: number;
 }
 
-/** preload `offergetAgent` 命名空间的类型化 Bridge 接口。 */
+/** preload `averyAgent` 命名空间的类型化 Bridge 接口。 */
 export interface DesktopAgentBridge {
   Configure: (config: AgentConfiguration) => Promise<{ configured: boolean }>;
   TestConnection: (config: AgentConfiguration) => Promise<{ connected: boolean }>;
@@ -180,7 +180,7 @@ export interface DesktopAgentBridge {
   OnStream: (listener: (event: AgentStreamEvent) => void) => () => void;
 }
 
-/** preload `offergetWorkspace` 命名空间的类型化 Bridge 接口；形状与当前实现保持一致。 */
+/** preload `averyWorkspace` 命名空间的类型化 Bridge 接口；形状与当前实现保持一致。 */
 export interface WorkspaceBridge {
   GetStatus: () => Promise<WorkspaceStatusDto>;
   GetViewModel: () => Promise<WorkspaceViewModel>;
@@ -246,5 +246,5 @@ export const BridgeNamespaces = {
   ] as const satisfies readonly (keyof DesktopEvaluationBridge)[],
 } as const;
 
-/** Bridge 命名空间名：evaluation 对应独立的 offergetEvaluation，不进入 Agent Tool。 */
+/** Bridge 命名空间名：evaluation 对应独立的 averyEvaluation，不进入 Agent Tool。 */
 export type BridgeNamespaceName = keyof typeof BridgeNamespaces;

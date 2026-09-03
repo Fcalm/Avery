@@ -1,4 +1,4 @@
-import type { EvalTraceNode, EvalTraceNodeType } from '@offerget/contracts';
+import type { EvalTraceNode, EvalTraceNodeType } from '@avery/contracts';
 
 function AsRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' ? value as Record<string, unknown> : {};

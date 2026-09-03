@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { CreateResumeDocumentMarkup } from '@offerget/contracts';
+import { CreateResumeDocumentMarkup } from '@avery/contracts';
 import { CreateResumeHtml } from '../../../apps/desktop/src/resume-export';
 
 describe('统一简历文档模板', () => {

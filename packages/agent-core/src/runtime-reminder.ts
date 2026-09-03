@@ -1,4 +1,4 @@
-import type { AgentMessage, ConfirmationMode } from '@offerget/agent-sdk';
+import type { AgentMessage, ConfirmationMode } from '@avery/agent-sdk';
 
 /** 发给模型的最小运行状态；不复制 Session/Run 的权威状态机或业务快照。 */
 export interface RuntimeReminderState {

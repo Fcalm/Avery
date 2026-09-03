@@ -11,7 +11,7 @@ const hash = 'a'.repeat(64);
 const workspaces: string[] = [];
 
 function createService(): { db: any; service: AttachmentLifecycleService; workspace: string } {
-  const workspace = mkdtempSync(join(tmpdir(), 'offerget-attachment-'));
+  const workspace = mkdtempSync(join(tmpdir(), 'avery-attachment-'));
   workspaces.push(workspace);
   mkdirSync(join(workspace, 'attachments'));
   mkdirSync(join(workspace, 'derived', 'markdown'), { recursive: true });

@@ -1,8 +1,8 @@
 {
-  "name": "@offerget/contracts",
+  "name": "@avery/contracts",
   "version": "0.1.0",
   "private": true,
-  "description": "OfferGet 跨进程契约：错误码、信封、DTO 与 Bridge 类型唯一来源",
+  "description": "Avery 跨进程契约：错误码、信封、DTO 与 Bridge 类型唯一来源",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "exports": {

@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import type { InteractionModule, ToolContext, ToolLedgerEntry, ToolReceipt } from '@offerget/agent-sdk';
+import type { InteractionModule, ToolContext, ToolLedgerEntry, ToolReceipt } from '@avery/agent-sdk';
 import { RequireString, type PendingResumeEdit } from './helpers';
 
 /** 交互模块：澄清提问与简历确认的宿主侧状态与事件；AskUserQuestion 作为内置工具由 tools 槽实现。 */
@@ -10,8 +10,8 @@ export function CreateInteractionModule(): InteractionModule {
   }
 
   return {
-    packageName: '@offerget/agent-modules-defaults',
-    name: 'offerget.agent-defaults',
+    packageName: '@avery/agent-modules-defaults',
+    name: 'avery.agent-defaults',
     version: '0.1.0',
     sdkVersion: '0.1.0',
     slot: 'interaction',

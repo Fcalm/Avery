@@ -1,12 +1,12 @@
-# OfferGet Agent 设计总览
+# Avery Agent 设计总览
 
 > 状态：v0.2 已通过 PM 复审；Runtime Reminder 与 Session 前缀快照已进入实现
 > 更新时间：2026-08-27
-> 适用范围：OfferGet 0.2.0 默认场景；0.3.0 网络能力边界与未来候选仅作版本化设计
+> 适用范围：Avery 0.2.0 默认场景；0.3.0 网络能力边界与未来候选仅作版本化设计
 
 ## 1. 文档目标
 
-本目录定义 OfferGet Agent 的运行时设计，回答六类问题：
+本目录定义 Avery Agent 的运行时设计，回答六类问题：
 
 1. [Loop](./01-loop.md)：一轮 Agent 如何运行、暂停、等待用户并恢复。
 2. [System Prompt](./02-system-prompt.md)：提示词由哪些可信层组成，如何版本化。

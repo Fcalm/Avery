@@ -4,7 +4,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const baselineRoot = resolve(process.argv[2] || process.env.OFFERGET_EVALUATION_BASELINE || join(projectRoot, 'artifacts', 'evaluation-system-baseline'));
+const baselineRoot = resolve(process.argv[2] || process.env.AVERY_EVALUATION_BASELINE || join(projectRoot, 'artifacts', 'evaluation-system-baseline'));
 
 async function ResolveBaselineRoot() {
   if ((await stat(baselineRoot)).isFile()) return dirname(baselineRoot);

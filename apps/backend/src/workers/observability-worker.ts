@@ -1,6 +1,6 @@
 import { parentPort, workerData } from 'node:worker_threads';
 import { ObservabilityStore } from '../observability-store';
-import { NormalizeError } from '@offerget/contracts';
+import { NormalizeError } from '@avery/contracts';
 
 if (!parentPort) throw new Error('parentPort is unavailable in this worker.');
 const port = parentPort;

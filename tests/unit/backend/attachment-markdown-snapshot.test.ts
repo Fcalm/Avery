@@ -18,7 +18,7 @@ function CreateTemporaryDirectory(prefix: string): string {
 }
 
 function CreateWorkspaceService(converter: { Convert(input: { sourcePath: string; originalName: string; mimeType: string }): Promise<string> }): { db: any; service: WorkspaceService; workspace: string } {
-  const workspace = CreateTemporaryDirectory('offerget-markdown-snapshot-');
+  const workspace = CreateTemporaryDirectory('avery-markdown-snapshot-');
   EnsureWorkspaceDirectories(workspace);
   const db = new Database(':memory:');
   db.exec(`
@@ -56,7 +56,7 @@ afterEach(() => {
 
 describe('MarkItDown attachment snapshots', () => {
   it('通过无 shell 子进程调用转换器，并传递原始扩展名与 MIME 提示', async () => {
-    const directory = CreateTemporaryDirectory('offerget-markitdown-cli-');
+    const directory = CreateTemporaryDirectory('avery-markitdown-cli-');
     const source = join(directory, 'content-addressed-source');
     const fakeCli = join(directory, 'fake-markitdown.cjs');
     writeFileSync(source, 'source', 'utf8');

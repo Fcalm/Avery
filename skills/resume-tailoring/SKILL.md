@@ -2,7 +2,7 @@
 name: resume-tailoring
 description: Tailor a resume to a target role using the user's confirmed experience. Use when the user asks to optimize, rewrite, or assess a resume against a job description.
 metadata:
-  offerget:
+  avery:
     scenarios:
       - default
 ---

@@ -1,4 +1,4 @@
-import type { ResumeSnapshot, ToolDisposition, ToolExecutionResult, ToolReceipt } from '@offerget/agent-sdk';
+import type { ResumeSnapshot, ToolDisposition, ToolExecutionResult, ToolReceipt } from '@avery/agent-sdk';
 
 /** 校验字符串字段，避免工具/配置输入直接进入请求层或持久化。 */
 export function RequireString(value: unknown, field: string, maxLength = 20000): string {

@@ -5,12 +5,12 @@ import { join, resolve } from 'node:path';
 
 const root = join(import.meta.dirname, '..');
 const expectedElectron = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).devDependencies.electron;
-const executable = process.env.OFFERGET_PACKAGED_EXE ? resolve(process.env.OFFERGET_PACKAGED_EXE) : join(root, 'release', 'win-unpacked', 'OfferGet.exe');
+const executable = process.env.AVERY_PACKAGED_EXE ? resolve(process.env.AVERY_PACKAGED_EXE) : join(root, 'release', 'win-unpacked', 'Avery.exe');
 if (!existsSync(executable)) throw new Error(`Packaged executable is missing: ${executable}`);
-const ownsUserData = !process.env.OFFERGET_SMOKE_USER_DATA;
-const userData = process.env.OFFERGET_SMOKE_USER_DATA ? resolve(process.env.OFFERGET_SMOKE_USER_DATA) : mkdtempSync(join(tmpdir(), 'offerget-packaged-smoke-'));
-const resultPath = process.env.OFFERGET_SMOKE_RESULT_PATH ? resolve(process.env.OFFERGET_SMOKE_RESULT_PATH) : join(userData, 'smoke-result.json');
-const child = spawn(executable, [], { cwd: root, env: { ...process.env, OFFERGET_DESKTOP_SMOKE: '1', OFFERGET_SMOKE_USER_DATA: userData, OFFERGET_SMOKE_RESULT_PATH: resultPath }, windowsHide: true, stdio: 'ignore' });
+const ownsUserData = !process.env.AVERY_SMOKE_USER_DATA;
+const userData = process.env.AVERY_SMOKE_USER_DATA ? resolve(process.env.AVERY_SMOKE_USER_DATA) : mkdtempSync(join(tmpdir(), 'avery-packaged-smoke-'));
+const resultPath = process.env.AVERY_SMOKE_RESULT_PATH ? resolve(process.env.AVERY_SMOKE_RESULT_PATH) : join(userData, 'smoke-result.json');
+const child = spawn(executable, [], { cwd: root, env: { ...process.env, AVERY_DESKTOP_SMOKE: '1', AVERY_SMOKE_USER_DATA: userData, AVERY_SMOKE_RESULT_PATH: resultPath }, windowsHide: true, stdio: 'ignore' });
 const deadline = Date.now() + 60000;
 let exited = false;
 let exitCode = null;

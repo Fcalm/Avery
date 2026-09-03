@@ -1,20 +1,20 @@
 {
-  "name": "@offerget/backend",
+  "name": "@avery/backend",
   "version": "0.1.0",
   "private": true,
-  "description": "OfferGet Backend 进程编排层 TS 组合根：utility-process 引导、Router、DB Worker 宿主与两个 Store 组合根",
+  "description": "Avery Backend 进程编排层 TS 组合根：utility-process 引导、Router、DB Worker 宿主与两个 Store 组合根",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
     "build": "node ../../node_modules/typescript/bin/tsc -p tsconfig.json",
-    "test": "npm run build --workspace @offerget/contracts && npm run build --workspace @offerget/agent-sdk && npm run build --workspace @offerget/agent-core && npm run build --workspace @offerget/agent-module-host && npm run build --workspace @offerget/agent-modules-defaults && npm run build --workspace @offerget/backend && node --test test/*.test.cjs"
+    "test": "npm run build --workspace @avery/contracts && npm run build --workspace @avery/agent-sdk && npm run build --workspace @avery/agent-core && npm run build --workspace @avery/agent-module-host && npm run build --workspace @avery/agent-modules-defaults && npm run build --workspace @avery/backend && node --test test/*.test.cjs"
   },
   "dependencies": {
-    "@offerget/agent-core": "0.1.0",
-    "@offerget/agent-module-host": "0.1.0",
-    "@offerget/agent-modules-defaults": "0.1.0",
-    "@offerget/agent-sdk": "0.1.0",
-    "@offerget/contracts": "0.1.0",
+    "@avery/agent-core": "0.1.0",
+    "@avery/agent-module-host": "0.1.0",
+    "@avery/agent-modules-defaults": "0.1.0",
+    "@avery/agent-sdk": "0.1.0",
+    "@avery/contracts": "0.1.0",
     "better-sqlite3": "13.0.3",
     "js-yaml": "^4.3.1",
     "zod": "^4.1.12"

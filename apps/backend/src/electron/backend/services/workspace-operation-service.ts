@@ -132,7 +132,7 @@ export class WorkspaceOperationService {
         row.state = 'file_written';
       } else if (row.operation_type === 'create_backup') {
         const directory = this.ResolveWorkspaceRelative(path.join('backups', payload.directoryName));
-        if (existsSync(path.join(directory, 'manifest.json')) && existsSync(path.join(directory, 'offerget.db'))) row.state = 'file_written';
+        if (existsSync(path.join(directory, 'manifest.json')) && existsSync(path.join(directory, 'avery.db'))) row.state = 'file_written';
         else {
           if (existsSync(directory)) this.RemoveDirectorySafely(directory, path.join(this.workspacePath, 'backups'));
           this.MarkFailed(row.id, 'INTERRUPTED_BEFORE_FILE_WRITE');
@@ -140,9 +140,9 @@ export class WorkspaceOperationService {
         }
       } else if (row.operation_type === 'copy_workspace') {
         const target = path.resolve(payload.destinationPath);
-        if (existsSync(path.join(target, 'migration-manifest.json')) && existsSync(path.join(target, 'offerget.db'))) row.state = 'file_written';
+        if (existsSync(path.join(target, 'migration-manifest.json')) && existsSync(path.join(target, 'avery.db'))) row.state = 'file_written';
         else {
-          const temporary = `${target}.offerget-migration-${row.id}`;
+          const temporary = `${target}.avery-migration-${row.id}`;
           if (existsSync(temporary)) this.RemoveDirectorySafely(temporary, path.dirname(target));
           this.MarkFailed(row.id, 'INTERRUPTED_BEFORE_FILE_WRITE');
           return;
@@ -171,7 +171,7 @@ export class WorkspaceOperationService {
     }
     if (row.operation_type === 'create_backup') {
       const directory = this.ResolveWorkspaceRelative(path.join('backups', payload.directoryName));
-      const backupDb = path.join(directory, 'offerget.db');
+      const backupDb = path.join(directory, 'avery.db');
       const manifest = path.join(directory, 'manifest.json');
       if (!existsSync(manifest)) throw new Error('Recovered backup manifest is unavailable.');
       const Database = require('better-sqlite3') as any;
@@ -187,7 +187,7 @@ export class WorkspaceOperationService {
       const manifest = path.join(target, 'migration-manifest.json');
       if (!existsSync(manifest)) throw new Error('Recovered workspace copy is incomplete.');
       const Database = require('better-sqlite3') as any;
-      const verification = new Database(path.join(target, 'offerget.db'), { readonly: true });
+      const verification = new Database(path.join(target, 'avery.db'), { readonly: true });
       const integrity = verification.pragma('integrity_check', { simple: true });
       verification.close();
       if (integrity !== 'ok') throw new Error('Recovered workspace copy is invalid.');

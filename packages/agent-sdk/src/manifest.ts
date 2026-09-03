@@ -8,9 +8,9 @@ export type SlotName = (typeof SlotOrder)[number];
 
 /** 模块清单：每个 Agent 模块必须声明；工具槽必须声明能力上限。 */
 export interface ModuleManifest {
-  /** 包名（如 @offerget/agent-modules-defaults）。 */
+  /** 包名（如 @avery/agent-modules-defaults）。 */
   packageName: string;
-  /** 模块短名（如 offerget.agent-defaults）。 */
+  /** 模块短名（如 avery.agent-defaults）。 */
   name: string;
   /** 语义版本；不兼容版本由 Host 拒绝。 */
   version: string;

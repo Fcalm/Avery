@@ -1,4 +1,4 @@
-import type { ResumeSnapshot } from '@offerget/agent-sdk';
+import type { ResumeSnapshot } from '@avery/agent-sdk';
 import { ResumeLockStore, type ResumeEditLock } from './resume-lock-store';
 
 /**

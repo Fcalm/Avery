@@ -1,8 +1,8 @@
-# OfferGet 项目架构设计
+# Avery 项目架构设计
 
 > 文档状态：目标架构基线
 > 更新日期：2026-08-19
-> 适用范围：OfferGet Windows 桌面端、Backend、Agent、自动化投递与本地数据层
+> 适用范围：Avery Windows 桌面端、Backend、Agent、自动化投递与本地数据层
 > 依据：`AGENTS.md`、`docs/PRD.md`、`RECONSTRUCTION.md`、现有源码、数据库迁移和已恢复运行时
 
 ## 1. 文档目的
@@ -19,7 +19,7 @@
 
 ## 2. 架构结论
 
-OfferGet 采用“安全桌面壳 + 独立业务后端 + Worker 持久化 + 模块化 Agent + 隔离自动化执行器”的本地优先架构：
+Avery 采用“安全桌面壳 + 独立业务后端 + Worker 持久化 + 模块化 Agent + 隔离自动化执行器”的本地优先架构：
 
 1. **Renderer 只负责界面和交互状态**，不得直接访问 Node.js、文件系统、数据库或模型服务。
 2. **Preload 只暴露经过契约定义的最小桥接能力**，不承载业务规则。
@@ -74,7 +74,7 @@ project/
 
 | 边界                 | 当前实现                                                                      | 结论                                   |
 | ------------------ | ------------------------------------------------------------------------- | ------------------------------------ |
-| Renderer → Preload | `window.offergetAgent`、`window.offergetWorkspace`、`window.offergetWindow` | 保留命名空间，改为契约驱动并减少手工重复清单               |
+| Renderer → Preload | `window.averyAgent`、`window.averyWorkspace`、`window.averyWindow` | 保留命名空间，改为契约驱动并减少手工重复清单               |
 | Preload → Main     | `ipcRenderer.invoke` 与单一 `agent:stream` 事件                                | 保留异步模型，禁止同步 IPC                      |
 | Main → Backend     | `utilityProcess` 宿主与命令转发                                                  | 保留进程隔离；启动器最终归属 Desktop，而不是 Backend 包 |
 | Backend → DB       | Business/Observability 两类 Worker RPC                                      | 保留 Worker 隔离和两个数据库的不同生命周期            |
@@ -264,9 +264,9 @@ project/
 
 | 来源                 | 允许依赖                                                       | 禁止依赖                                         |
 | ------------------ | ---------------------------------------------------------- | -------------------------------------------- |
-| `apps/renderer`    | React、React Query、`@offerget/contracts`、Renderer shared    | Node/Electron、Backend 实现、SQLite、Provider SDK |
-| Desktop Preload    | Electron `contextBridge/ipcRenderer`、`@offerget/contracts` | 业务 Service、数据库、任意文件系统入口                      |
-| `apps/desktop`     | Electron、`@offerget/contracts`、桌面能力适配器                     | Renderer feature、业务仓储、Agent Kernel 内部状态      |
+| `apps/renderer`    | React、React Query、`@avery/contracts`、Renderer shared    | Node/Electron、Backend 实现、SQLite、Provider SDK |
+| Desktop Preload    | Electron `contextBridge/ipcRenderer`、`@avery/contracts` | 业务 Service、数据库、任意文件系统入口                      |
+| `apps/desktop`     | Electron、`@avery/contracts`、桌面能力适配器                     | Renderer feature、业务仓储、Agent Kernel 内部状态      |
 | `apps/backend`     | Contracts、Agent 包、Backend ports/infrastructure             | React、DOM、BrowserWindow、Renderer store       |
 | DB/Document Worker | Worker 协议、对应 Store/Parser、最小原生依赖                           | Electron UI、Renderer、跨库直接连接                  |
 | `agent-core`       | `agent-sdk` 类型和注入端口                                        | Node、Electron、业务数据库、凭据、具体 Provider           |
@@ -285,7 +285,7 @@ Automation Runtime → Automation Core → Contracts
 ### 6.2 Renderer 规则
 
 - `features/<name>/pages` 只做页面组合；业务请求集中在该 feature 的 `api`，交互状态在 `model`。
-- 页面不得直接访问 `window.offerget*`；所有调用经过 `shared/platform`。
+- 页面不得直接访问 `window.avery*`；所有调用经过 `shared/platform`。
 - feature 之间只通过各自 `index.ts` 的公开 API 或 app 层编排，禁止深层相互导入。
 - 服务端事实由 React Query 管理；纯 UI 状态由局部 state 或 UiStore 管理，不复制一份长期业务实体缓存。
 - 大型页面继续拆为 `components`、`model` 和 `api`，避免页面文件同时处理流协议、持久化和展示。
@@ -358,7 +358,7 @@ Desktop Gateway、Preload 暴露对象、Backend Router 和契约测试必须引
 
 | 数据                   | 存储位置                                | 所有者                           | 关键约束                             |
 | -------------------- | ----------------------------------- | ----------------------------- | -------------------------------- |
-| 会话、简历、岗位、投递、设置、自动化任务 | `<workspace>/offerget.db`           | Business DB Worker            | 迁移、事务、revision、审计、备份             |
+| 会话、简历、岗位、投递、设置、自动化任务 | `<workspace>/avery.db`           | Business DB Worker            | 迁移、事务、revision、审计、备份             |
 | 档案事实                 | `<workspace>/profile.json`，后续可迁入业务库 | Profile 模块                    | 原子写、内容哈希、外部修改冲突                  |
 | 附件                   | `<workspace>/attachments/<sha256>`  | Attachment 模块                 | 内容寻址、虚拟 URI、引用计数/墓碑              |
 | 导出文件                 | 用户主动选择的位置                           | Desktop Export Capability     | Agent 不得直接触发或获取真实路径              |
@@ -518,4 +518,4 @@ Desktop Gateway、Preload 暴露对象、Backend Router 和契约测试必须引
 
 ## 15. 总结
 
-OfferGet 的目标不是把所有能力堆进 Electron 主进程，而是建立可验证的最小权限链路：Renderer 发起意图，Preload 暴露固定能力，Main 执行桌面安全边界，Backend 编排业务与权限，Worker 持有数据库和重任务，Agent 与自动化只能通过受控端口执行。当前最优先工作不是扩展新功能，而是先把已恢复的 Desktop、Backend 和 Preload 运行时重建为可重复构建的 TypeScript 源码；此后再迁移 Renderer、结构化简历和自动化投递，才能在保留现有可运行基线的同时实现 PRD 的安全、数据一致性与可维护性目标。
+Avery 的目标不是把所有能力堆进 Electron 主进程，而是建立可验证的最小权限链路：Renderer 发起意图，Preload 暴露固定能力，Main 执行桌面安全边界，Backend 编排业务与权限，Worker 持有数据库和重任务，Agent 与自动化只能通过受控端口执行。当前最优先工作不是扩展新功能，而是先把已恢复的 Desktop、Backend 和 Preload 运行时重建为可重复构建的 TypeScript 源码；此后再迁移 Renderer、结构化简历和自动化投递，才能在保留现有可运行基线的同时实现 PRD 的安全、数据一致性与可维护性目标。

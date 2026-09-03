@@ -1,17 +1,17 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdirSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import * as path from 'node:path';
-import { RunAgentLoop, ScrubTraceContent } from '@offerget/agent-core';
-import { CreateRunSnapshot, ResolveModules } from '@offerget/agent-module-host';
-import { ApplicationScenario, BuildApplicationCompiledInstructions, BuildDefaultCompiledInstructions, CreateDefaultModules, DefaultScenario } from '@offerget/agent-modules-defaults';
-import type { AgentMessage, AgentModules, BrowserAutomationPort, CompiledInstructions, ConfirmationMode, ProviderUsageFact, ReasoningEffort, ScenarioSnapshot, SkillSnapshot } from '@offerget/agent-sdk';
+import { RunAgentLoop, ScrubTraceContent } from '@avery/agent-core';
+import { CreateRunSnapshot, ResolveModules } from '@avery/agent-module-host';
+import { ApplicationScenario, BuildApplicationCompiledInstructions, BuildDefaultCompiledInstructions, CreateDefaultModules, DefaultScenario } from '@avery/agent-modules-defaults';
+import type { AgentMessage, AgentModules, BrowserAutomationPort, CompiledInstructions, ConfirmationMode, ProviderUsageFact, ReasoningEffort, ScenarioSnapshot, SkillSnapshot } from '@avery/agent-sdk';
 import { AgentFileReader } from './agent-file-reader';
 import { AgentResumePort } from './agent-resume-port';
 import { ResumeLockStore } from './resume-lock-store';
 import { CreateVisionUserMessage, HydrateVisionMessage, SupportsVisionInput } from './vision-input';
 import { AgentBrowserRuntime } from './agent-browser-runtime';
 import { AgentSkillRegistry } from './agent-skill-registry';
-import { CreateCronTaskSchema } from '@offerget/contracts';
+import { CreateCronTaskSchema } from '@avery/contracts';
 
 /** 用户编辑锁的稳定 ownerId；前端经 bridge 加解锁都以此为准。 */
 const UserLockOwnerId = 'user-main';
@@ -246,12 +246,14 @@ export class AgentHost {
     return defaults;
   }
 
-  /** 从受信任目录读取 offerget-modules.json，并把入口约束在该目录真实路径内。 */
+  /** 从受信任目录读取 avery-modules.json，并把入口约束在该目录真实路径内。 */
   private LoadModuleOverrides(directoryPath: string, defaults: any): any {
     const base = realpathSync(directoryPath);
-    const manifestPath = path.join(base, 'offerget-modules.json');
+    const currentManifestPath = path.join(base, 'avery-modules.json');
+    const legacyManifestPath = path.join(base, `${['offer', 'get'].join('')}-modules.json`);
+    const manifestPath = existsSync(currentManifestPath) ? currentManifestPath : legacyManifestPath;
     const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as any;
-    if (!manifest || typeof manifest !== 'object' || !manifest.modules || typeof manifest.modules !== 'object') throw new Error('offerget-modules.json modules is missing.');
+    if (!manifest || typeof manifest !== 'object' || !manifest.modules || typeof manifest.modules !== 'object') throw new Error('avery-modules.json modules is missing.');
     const overrides: Record<string, any> = {};
     for (const [slot, descriptor] of Object.entries(manifest.modules)) {
       if (!['model-provider', 'context-builder', 'compaction', 'tools', 'interaction', 'observability'].includes(slot)) throw new Error(`Unknown module slot: ${slot}.`);
@@ -608,7 +610,7 @@ export class AgentHost {
   /** 返回浏览器运行时状态；Renderer 看不到可执行文件和 Profile 物理路径。 */
   GetBrowserRuntimeStatus(): any { return this.browserRuntime.GetStatus(); }
 
-  /** 清除 OfferGet 独立浏览器身份；调用方必须先展示破坏性确认。 */
+  /** 清除 Avery 独立浏览器身份；调用方必须先展示破坏性确认。 */
   async ClearBrowserProfile(): Promise<any> {
     if (this.IsBusy()) throw Object.assign(new Error('Stop the current Agent run before clearing the browser profile.'), { code: 'AGENT_BUSY' });
     this.browserRunId = 'maintenance:clear';

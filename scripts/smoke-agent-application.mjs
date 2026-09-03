@@ -9,11 +9,11 @@ import { StartBrowserFixture } from '../tests/fixtures/browser-site/server.mjs';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const platformName = process.platform === 'darwin' ? 'darwin' : process.platform === 'win32' ? 'win32' : 'linux';
-const electronExecutable = process.env.OFFERGET_COMPANION_EXECUTABLE || (process.platform === 'win32'
+const electronExecutable = process.env.AVERY_COMPANION_EXECUTABLE || (process.platform === 'win32'
   ? join(projectRoot, 'node_modules', 'electron', 'dist', 'electron.exe')
   : join(projectRoot, 'node_modules', 'electron', 'dist', process.platform === 'darwin' ? 'Electron.app/Contents/MacOS/Electron' : 'electron'));
-const companionAppPath = process.env.OFFERGET_COMPANION_APP_PATH ?? projectRoot;
-const agentBrowserExecutable = process.env.OFFERGET_AGENT_BROWSER_EXECUTABLE || join(projectRoot, 'node_modules', 'agent-browser', 'bin', `agent-browser-${platformName}-${process.arch}${process.platform === 'win32' ? '.exe' : ''}`);
+const companionAppPath = process.env.AVERY_COMPANION_APP_PATH ?? projectRoot;
+const agentBrowserExecutable = process.env.AVERY_AGENT_BROWSER_EXECUTABLE || join(projectRoot, 'node_modules', 'agent-browser', 'bin', `agent-browser-${platformName}-${process.arch}${process.platform === 'win32' ? '.exe' : ''}`);
 
 function Assert(condition, message) { if (!condition) throw new Error(message); }
 function ToolCall(index, name, args) { return { id: `application-e2e-${index}`, type: 'function', function: { name, arguments: JSON.stringify(args) } }; }
@@ -66,7 +66,7 @@ function CreateScriptedProvider(origin, fileId) {
   function Action(name, args = {}) { const call = ToolCall(`${attempt}-${step}`, name, args); step += 1; return { content: '', toolCalls: [call] }; }
 
   return {
-    packageName: 'offerget.application-e2e', name: 'scripted-provider', version: '0.1.0', sdkVersion: '0.1.0', slot: 'model-provider', capabilities: ['model:scripted-test'],
+    packageName: 'avery.application-e2e', name: 'scripted-provider', version: '0.1.0', sdkVersion: '0.1.0', slot: 'model-provider', capabilities: ['model:scripted-test'],
     Configure: async () => ({ configured: true, provider: 'Scripted', model: 'application-e2e' }),
     TestConnection: async () => ({ connected: true, provider: 'Scripted', baseUrl: origin }),
     GetBalance: async () => ({ available: false, balances: [] }), GetModels: async () => ({ models: ['application-e2e'] }),
@@ -135,11 +135,11 @@ function CreateScriptedProvider(origin, fileId) {
   };
 }
 
-const temporaryRoot = await mkdtemp(join(tmpdir(), 'offerget-agent-application-e2e-'));
+const temporaryRoot = await mkdtemp(join(tmpdir(), 'avery-agent-application-e2e-'));
 const fixture = await StartBrowserFixture();
 const resumePath = join(temporaryRoot, 'authorized-resume.txt');
 const fileId = 'attachment://application-e2e/resume.txt';
-await writeFile(resumePath, 'OfferGet application E2E resume', 'utf8');
+await writeFile(resumePath, 'Avery application E2E resume', 'utf8');
 const events = [];
 const scriptedProvider = CreateScriptedProvider(fixture.origin, fileId);
 const browserRuntime = new AgentBrowserRuntime({

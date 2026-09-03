@@ -107,9 +107,9 @@ const evaluationBridge = {
         return () => electron_1.ipcRenderer.removeListener('evaluation:event', handler);
     },
 };
-electron_1.contextBridge.exposeInMainWorld('offergetAgent', agentBridge);
-electron_1.contextBridge.exposeInMainWorld('offergetWorkspace', workspaceBridge);
-electron_1.contextBridge.exposeInMainWorld('offergetEvaluation', evaluationBridge);
-electron_1.contextBridge.exposeInMainWorld('offergetWindow', {
+electron_1.contextBridge.exposeInMainWorld('averyAgent', agentBridge);
+electron_1.contextBridge.exposeInMainWorld('averyWorkspace', workspaceBridge);
+electron_1.contextBridge.exposeInMainWorld('averyEvaluation', evaluationBridge);
+electron_1.contextBridge.exposeInMainWorld('averyWindow', {
     Minimize: () => invoke('window:minimize'), ToggleMaximize: () => invoke('window:toggle-maximize'), Close: () => invoke('window:close'),
 });

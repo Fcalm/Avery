@@ -4,10 +4,10 @@ import { appendFile } from 'node:fs/promises';
 import { createServer, type Server } from 'node:http';
 import { resolve } from 'node:path';
 
-const CompanionFlag = '--offerget-browser-companion';
-const ProfileSwitch = '--offerget-browser-profile=';
-const ParentPidSwitch = '--offerget-browser-parent-pid=';
-const HiddenFlag = '--offerget-browser-hidden';
+const CompanionFlag = '--avery-browser-companion';
+const ProfileSwitch = '--avery-browser-profile=';
+const ParentPidSwitch = '--avery-browser-parent-pid=';
+const HiddenFlag = '--avery-browser-hidden';
 let companionWindow: BrowserWindow | null = null;
 
 /** 伴随模式由 Backend 以固定参数启动；普通 Renderer 和网页均不能切换进该模式。 */
@@ -108,7 +108,7 @@ function ConfigurePage(contents: WebContents, hidden = false): void {
   contents.on('will-redirect', (event, url) => { if (!IsAllowedBrowserCompanionUrl(url)) event.preventDefault(); });
 }
 
-/** 启动只承载招聘网页的独立 Electron 进程；本分支不会创建 OfferGet 主窗口或 Backend。 */
+/** 启动只承载招聘网页的独立 Electron 进程；本分支不会创建 Avery 主窗口或 Backend。 */
 export function StartBrowserCompanion(argv: readonly string[] = process.argv): void {
   const profile = ReadSwitch(argv, ProfileSwitch);
   if (!profile) {

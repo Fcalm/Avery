@@ -3,11 +3,11 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 async function Run() {
-  const resources = process.env.OFFERGET_INSTALLED_RESOURCES;
-  const workspacePath = process.env.OFFERGET_LIFECYCLE_WORKSPACE;
-  const userDataPath = process.env.OFFERGET_LIFECYCLE_USER_DATA;
-  const fixturePath = process.env.OFFERGET_LIFECYCLE_ATTACHMENT;
-  const resultPath = process.env.OFFERGET_LIFECYCLE_RESULT;
+  const resources = process.env.AVERY_INSTALLED_RESOURCES;
+  const workspacePath = process.env.AVERY_LIFECYCLE_WORKSPACE;
+  const userDataPath = process.env.AVERY_LIFECYCLE_USER_DATA;
+  const fixturePath = process.env.AVERY_LIFECYCLE_ATTACHMENT;
+  const resultPath = process.env.AVERY_LIFECYCLE_RESULT;
   if (![resources, workspacePath, userDataPath, fixturePath, resultPath].every(Boolean)) throw new Error('Lifecycle v4 seed environment is incomplete.');
   const { CreateWorkerHost } = require(path.join(resources, 'app.asar', 'apps', 'backend', 'dist', 'worker-host.js'));
   const host = CreateWorkerHost({ workspacePath, userDataPath, smoke: true });

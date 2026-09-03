@@ -54,7 +54,7 @@ async (page) => {
     await page.getByRole('heading', { name: '账户' }).waitFor();
   }
 
-  await page.evaluate(() => localStorage.setItem('offerget.visual.scenario', 'populated'));
+  await page.evaluate(() => localStorage.setItem('avery.visual.scenario', 'populated'));
   await page.reload(); await page.locator('.app-shell').waitFor();
   for (const [width, height] of [[1280, 800], [1024, 680]]) {
     await page.setViewportSize({ width, height });
@@ -85,36 +85,36 @@ async (page) => {
   records.push({ name: 'keyboard', enterWorks, spaceWorks, initialFocusInside, tabTrapped, escapeClosed, focusRestored });
 
   // 首次设置与表单错误关联。
-  await page.evaluate(() => localStorage.setItem('offerget.visual.scenario', 'onboarding')); await page.reload();
-  await page.getByRole('heading', { name: '欢迎来到 OfferGet' }).waitFor(); await Capture('state-onboarding', 1280, 800);
+  await page.evaluate(() => localStorage.setItem('avery.visual.scenario', 'onboarding')); await page.reload();
+  await page.getByRole('heading', { name: '欢迎来到 Avery' }).waitFor(); await Capture('state-onboarding', 1280, 800);
   await page.getByRole('button', { name: '下一步' }).click(); await page.getByRole('button', { name: '下一步' }).click();
   const apiKey = page.getByRole('textbox', { name: 'API Key' }); await page.getByRole('button', { name: '下一步' }).click();
   const errorAssociated = await apiKey.getAttribute('aria-describedby') === 'onboarding-form-error' && await apiKey.getAttribute('aria-invalid') === 'true' && await page.getByRole('alert').isVisible();
   await Capture('state-form-error', 1280, 800);
   records.push({ name: 'form-error', associated: errorAssociated });
 
-  await page.evaluate(() => localStorage.setItem('offerget.visual.scenario', 'loading')); await page.reload(); await page.waitForTimeout(150);
+  await page.evaluate(() => localStorage.setItem('avery.visual.scenario', 'loading')); await page.reload(); await page.waitForTimeout(150);
   await page.getByRole('heading', { name: '正在加载本地工作空间…' }).waitFor(); await Capture('state-loading', 1280, 800);
   for (const [scenario, expectedHeading] of [['error', '本地数据加载失败'], ['backend-recovery', '本地服务正在恢复']]) {
-    await page.evaluate((value) => localStorage.setItem('offerget.visual.scenario', value), scenario); await page.reload();
+    await page.evaluate((value) => localStorage.setItem('avery.visual.scenario', value), scenario); await page.reload();
     await page.getByRole('heading', { name: expectedHeading }).waitFor({ timeout: 15000 });
     await Capture(`state-${scenario}`, 1280, 800);
     records.push({ name: `state-heading:${scenario}`, expectedHeading, matched: true });
   }
 
   // 空态、数据库恢复、模块信任和恢复默认弹窗。
-  await page.evaluate(() => localStorage.setItem('offerget.visual.scenario', 'empty')); await page.reload(); await page.locator('.app-shell').waitFor();
+  await page.evaluate(() => localStorage.setItem('avery.visual.scenario', 'empty')); await page.reload(); await page.locator('.app-shell').waitFor();
   await Navigate('岗位库'); await Capture('state-empty', 1280, 800);
-  await page.evaluate(() => localStorage.setItem('offerget.visual.scenario', 'recovery')); await page.reload(); await page.locator('.app-shell').waitFor(); await OpenSettings();
+  await page.evaluate(() => localStorage.setItem('avery.visual.scenario', 'recovery')); await page.reload(); await page.locator('.app-shell').waitFor(); await OpenSettings();
   await page.getByRole('button', { name: '工作空间', exact: true }).click(); await page.getByText('数据库只读恢复模式').waitFor(); await Capture('state-recovery', 1280, 800);
   await page.getByRole('button', { name: '恢复所选备份' }).click(); await Capture('dialog-database-restore', 1280, 800); await page.keyboard.press('Escape');
-  await page.evaluate(() => localStorage.setItem('offerget.visual.scenario', 'modules-active')); await page.reload(); await page.locator('.app-shell').waitFor(); await OpenSettings();
+  await page.evaluate(() => localStorage.setItem('avery.visual.scenario', 'modules-active')); await page.reload(); await page.locator('.app-shell').waitFor(); await OpenSettings();
   await page.getByRole('button', { name: '开发者模式', exact: true }).click(); await page.getByText('已启用 visual-modules').waitFor();
   await page.getByRole('button', { name: '选择本地模块目录' }).click(); await Capture('dialog-module-trust', 1280, 800); await page.keyboard.press('Escape');
   await page.getByRole('button', { name: '恢复官方默认' }).click(); await Capture('dialog-module-reset', 1280, 800); await page.keyboard.press('Escape');
 
   // 档案外部修改冲突。
-  await page.evaluate(() => localStorage.setItem('offerget.visual.scenario', 'conflict')); await page.reload(); await page.locator('.app-shell').waitFor();
+  await page.evaluate(() => localStorage.setItem('avery.visual.scenario', 'conflict')); await page.reload(); await page.locator('.app-shell').waitFor();
   await Navigate('档案库'); await page.locator('.profile-card').click(); await page.getByRole('button', { name: '保存资料' }).click();
   await page.getByRole('dialog', { name: '档案文件已被外部修改' }).waitFor(); await Capture('dialog-profile-conflict', 1280, 800);
 

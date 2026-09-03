@@ -56,7 +56,7 @@ describe('browser evaluation isolation and simulator', () => {
         personal: { name: '测试用户', gender: '不便透露', birthDate: '1995-06-15', email: 'test@example.com', phone: '13800000000', idType: '身份证', idNumber: 'MOCK-ID', graduationDate: '2018-06', yearsExperience: '5-10年', nationality: '中国', nativePlace: '浙江杭州', ethnicity: '汉族', politicalStatus: '群众', residenceProvince: '浙江', residenceCity: '杭州', hukouProvince: '浙江', hukouCity: '宁波' },
         education: { school: '测试大学', startDate: '2014-09', endDate: '2018-06', educationType: '全日制', major: '计算机科学与技术', degreeLevel: '本科', degree: '学士' },
         workExperience: { company: '示例软件有限公司', startDate: '2018-07', endDate: '2024-12', position: 'Agent 工程师', department: '平台研发部', companyType: '民营企业', companySize: '500-4999人', annualSalary: '30万元', responsibilities: '负责 Agent 工具编排。' },
-        projectExperience: { name: 'OfferGet智能求职平台', startDate: '2023-01', endDate: '2024-12', description: '智能求职平台', responsibilities: '负责浏览器评测。' },
+        projectExperience: { name: 'Avery智能求职平台', startDate: '2023-01', endDate: '2024-12', description: '智能求职平台', responsibilities: '负责浏览器评测。' },
         jobPreference: { province: '浙江', city: '杭州', jobFamily: '技术', jobTrack: 'Agent 工程', expectedSalary: '35万元', availability: '一个月内', source: '企业官网', workMode: 'hybrid' },
         files: { resumeName: 'resume.txt', photoName: 'photo.png' }, terms: true,
       };

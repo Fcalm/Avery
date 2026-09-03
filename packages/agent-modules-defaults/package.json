@@ -1,15 +1,15 @@
 {
-  "name": "@offerget/agent-modules-defaults",
+  "name": "@avery/agent-modules-defaults",
   "version": "0.1.0",
   "private": true,
-  "description": "OfferGet Agent 官方默认模块：六槽默认实现、场景工具与 Skill 渐进披露",
+  "description": "Avery Agent 官方默认模块：六槽默认实现、场景工具与 Skill 渐进披露",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
     "build": "node ../../node_modules/typescript/bin/tsc -p tsconfig.json"
   },
   "dependencies": {
-    "@offerget/agent-sdk": "0.1.0",
+    "@avery/agent-sdk": "0.1.0",
     "ajv": "^8.17.1"
   }
 }

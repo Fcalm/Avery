@@ -2,17 +2,17 @@
 
 ## 1. 目标与当前结论
 
-本文把 `03-tools.md` 中已确定的浏览器工具草案拆成可开发、可验收、可跟踪的实施计划。目标是在投递场景启用时，让 Agent 能在本地可见浏览器中搜索岗位、读取 JD、填写表单、上传材料和发送消息，同时保持 OfferGet 的 Loop、Tool Scheduler、Harness、取消和审计边界。
+本文把 `03-tools.md` 中已确定的浏览器工具草案拆成可开发、可验收、可跟踪的实施计划。目标是在投递场景启用时，让 Agent 能在本地可见浏览器中搜索岗位、读取 JD、填写表单、上传材料和发送消息，同时保持 Avery 的 Loop、Tool Scheduler、Harness、取消和审计边界。
 
 已冻结的基础方向：
 
-- 使用 `agent-browser` CLI 作为浏览器执行层，不在 OfferGet 内重写一套 Playwright 驱动。
-- 模型只看到 OfferGet 注册的原子 Browser Tools，不看到 CLI、Shell、任意参数或 `agent-browser chat`。
+- 使用 `agent-browser` CLI 作为浏览器执行层，不在 Avery 内重写一套 Playwright 驱动。
+- 模型只看到 Avery 注册的原子 Browser Tools，不看到 CLI、Shell、任意参数或 `agent-browser chat`。
 - Host 使用参数数组调用固定 CLI 映射，不拼接 Shell 命令。
-- `agent-browser` 只通过随机本地 CDP 端口连接独立 Electron 伴随进程，不连接 OfferGet 主进程，也不额外下载 Chromium。
-- 登录由用户在可见浏览器内完成，登录态保存在 OfferGet 独立的持久化 Profile 中并跨 Agent Session 复用。
+- `agent-browser` 只通过随机本地 CDP 端口连接独立 Electron 伴随进程，不连接 Avery 主进程，也不额外下载 Chromium。
+- 登录由用户在可见浏览器内完成，登录态保存在 Avery 独立的持久化 Profile 中并跨 Agent Session 复用。
 - Browser Profile、浏览器 Runtime、Agent Session 和 Agent Run 是不同生命周期，不能复用同一个 ID 代替。
-- 提交申请、发送消息和敏感文件上传仍由 OfferGet Harness 判断与确认，`agent-browser` 不拥有最终授权。
+- 提交申请、发送消息和敏感文件上传仍由 Avery Harness 判断与确认，`agent-browser` 不拥有最终授权。
 - 第一阶段只做应用层安全限制，不声明具备进程级网络出口隔离。
 - 不增加模型可见的 `BrowserBatch`；若未来需要批量执行，只能作为经过基准和取消验证后的 Host 内部优化。
 
@@ -51,7 +51,7 @@ Browser Tool Adapter
     ↓ 固定参数数组、超时、JSON解析
 agent-browser CLI / daemon
     ↓ 随机 localhost CDP
-OfferGet Persistent Profile
+Avery Persistent Profile
     ↓
 Isolated Electron Companion + Visible Browser Window
 ```
@@ -98,8 +98,8 @@ Isolated Electron Companion + Visible Browser Window
 
 - 将 `agent-browser` 固定到经过测试的精确版本，记录许可证、来源和校验信息。
 - 桌面应用直接调用打包资源中的 CLI 可执行文件，不在生产环境执行 `npm install -g`。
-- 复用应用随包携带的 Electron Chromium，以 `--offerget-browser-companion` 启动不包含主界面和 Backend 的独立进程。
-- 使用随机本地 CDP 端口和独立 Profile；不得将 OfferGet 主进程远程调试端口交给 CLI。
+- 复用应用随包携带的 Electron Chromium，以 `--avery-browser-companion` 启动不包含主界面和 Backend 的独立进程。
+- 使用随机本地 CDP 端口和独立 Profile；不得将 Avery 主进程远程调试端口交给 CLI。
 - 建立 Windows 打包路径解析，开发态与打包态使用同一版本解析接口。
 
 验收标准：
@@ -137,7 +137,7 @@ Isolated Electron Companion + Visible Browser Window
 
 主要开发：
 
-- 在 OfferGet 应用数据目录创建专用 Profile，禁止使用项目目录、临时目录或用户日常 Chrome Profile 作为长期事实源。
+- 在 Avery 应用数据目录创建专用 Profile，禁止使用项目目录、临时目录或用户日常 Chrome Profile 作为长期事实源。
 - 建立 `browserProfileId → canonical profile path` 的 Host 内部映射，模型和 Renderer 只使用不透明 ID。
 - 对每个 Profile 建立跨进程独占锁；同一 Profile 只允许一个活动 browser runtime。
 - 创建、复用、空闲关闭和异常恢复 browser runtime；关闭 Agent Run 不自动删除登录态。
@@ -146,7 +146,7 @@ Isolated Electron Companion + Visible Browser Window
 
 验收标准：
 
-- [ ] 用户在测试站点登录后，关闭浏览器、重启 OfferGet 并创建新 Agent Session，登录状态仍可用。
+- [ ] 用户在测试站点登录后，关闭浏览器、重启 Avery 并创建新 Agent Session，登录状态仍可用。
 - [ ] 两个 Run 请求同一 Profile 时不会启动两个并发写实例；第二个请求得到可恢复的 busy 状态。
 - [ ] 不同 Profile 的 Cookie、localStorage、IndexedDB 和标签页状态不会互相可见。
 - [ ] 清除 Profile 后再次访问测试站点处于未登录状态，且不会删除应用数据目录中的其他内容。
@@ -348,8 +348,8 @@ test(browser): 覆盖取消迟到与提交对账
 
 ### 7.2 2026-08-24 隔离浏览器架构调整
 
-- `08-electron-cdp-compatibility-validation.md` 证明主进程 `WebContentsView` 功能兼容但会暴露 OfferGet 主界面 target，因此拒绝直接接入。
-- 方案改为应用自带 Electron 的独立伴随进程；伴随进程不初始化 OfferGet Renderer 或 Backend，CLI 只附着其随机 CDP 端口。
+- `08-electron-cdp-compatibility-validation.md` 证明主进程 `WebContentsView` 功能兼容但会暴露 Avery 主界面 target，因此拒绝直接接入。
+- 方案改为应用自带 Electron 的独立伴随进程；伴随进程不初始化 Avery Renderer 或 Backend，CLI 只附着其随机 CDP 端口。
 - 删除 Chromium 安装接口和 UI；Profile、Harness、取消、URL 与上传授权边界保持不变。
 - 本节只记录架构决定；统一验证证据见下一节。
 
@@ -357,10 +357,10 @@ test(browser): 覆盖取消迟到与提交对账
 
 - `npm run build`：通过；包含 Contracts、SDK、Core、Module Host、Defaults、Backend、Desktop、Preload 和 Renderer。
 - `npm test`：Vitest `99 passed / 1 skipped`；Backend Node 契约测试 `8 passed`，生产 Preload 与 Bridge 契约一致。
-- 开发态 companion 冒烟：通过；CDP 中只有内部 Shell 与招聘网页 `WebContentsView` 两个 target，Snapshot、Fill、Click 均成功，未发现 OfferGet 主界面 target。
+- 开发态 companion 冒烟：通过；CDP 中只有内部 Shell 与招聘网页 `WebContentsView` 两个 target，Snapshot、Fill、Click 均成功，未发现 Avery 主界面 target。
 - Windows 目录打包：通过；打包原生 CLI 为 `agent-browser 0.34.0`，不包含额外下载的 Chromium。
 - 打包态主应用冒烟：通过；Renderer 与 Backend ready，`startupReadyMs=712`。
-- 打包态 companion 冒烟：通过；直接使用 `win-unpacked/OfferGet.exe` 和包内 CLI，target 隔离及 Snapshot、Fill、Click 结果与开发态一致。
+- 打包态 companion 冒烟：通过；直接使用 `win-unpacked/Avery.exe` 和包内 CLI，target 隔离及 Snapshot、Fill、Click 结果与开发态一致。
 - 未使用真实招聘网站、真实账号、真实简历或真实投递；登录跨应用重启仍保留为人工门禁。
 
 ### 7.4 2026-08-24 投递场景 Agent E2E
@@ -395,4 +395,4 @@ test(browser): 覆盖取消迟到与提交对账
 
 ## 9. 总结
 
-浏览器工具仍由 OfferGet Agent Loop 统一编排，`agent-browser` 只负责执行固定原子命令。浏览网页运行在应用自带 Electron 的隔离伴随进程中，不需要安装第二份 Chromium，也不向 CLI 暴露 OfferGet 主界面 target。架构调整已完成统一测试和打包态验证，但真实账号登录保持、招聘测试站人工验证和复审尚未完成，因此仍不能视为生产放行。
+浏览器工具仍由 Avery Agent Loop 统一编排，`agent-browser` 只负责执行固定原子命令。浏览网页运行在应用自带 Electron 的隔离伴随进程中，不需要安装第二份 Chromium，也不向 CLI 暴露 Avery 主界面 target。架构调整已完成统一测试和打包态验证，但真实账号登录保持、招聘测试站人工验证和复审尚未完成，因此仍不能视为生产放行。

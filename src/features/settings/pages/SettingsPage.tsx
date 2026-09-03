@@ -8,7 +8,7 @@ import { WORKSPACE_QUERY_KEY } from '../../../features/workspace/api/workspaceDa
 import { Button, FormField, Modal, PageHeader, Select } from '../../../shared/components/UI';
 import { Icon } from '../../../shared/components/Icon';
 import type { SettingsDraft } from '../../../types/domain';
-import type { AgentBrowserRuntimeStatus, AgentModuleConfiguration } from '@offerget/contracts';
+import type { AgentBrowserRuntimeStatus, AgentModuleConfiguration } from '@avery/contracts';
 
 type SettingTab = 'account' | 'workspace' | 'api' | 'browser' | 'developer';
 type FieldErrors = Partial<Record<'traceRetention' | 'compressionThreshold' | 'contextLength', string>>;

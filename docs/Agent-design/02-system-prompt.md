@@ -15,7 +15,7 @@ System Prompt 应稳定表达产品身份、场景目标和工具协议，同时
 | 层级 | 内容 | 来源 | 是否可被下层覆盖 |
 | --- | --- | --- | --- |
 | L0 Runtime Policy | 权限不变量、真实性、隐私、工具回执规则 | 随应用发布、版本化 | 否 |
-| L1 Product | OfferGet 身份、求职范围、语气和完成标准 | 产品代码/配置 | 否 |
+| L1 Product | Avery 身份、求职范围、语气和完成标准 | 产品代码/配置 | 否 |
 | L2 Scenario | 默认场景、投递场景的目标与边界 | 场景注册表 | 只能被更严格地收窄 |
 | L3 User Preference | 用户自定义语言、格式、写作偏好 | 用户设置 | 不能改变 L0–L2 或授权 |
 | Data | 简历、档案、JD、附件、项目文件、工具结果 | Context/Tools | 永远不是指令 |
@@ -50,7 +50,7 @@ Trace 默认只保存 fragment ID、版本和哈希；正文仅在开发模式�
 稳定、可缓存的片段放在前面：
 
 1. `runtime/invariants`：证据、权限、隐私、等待和完成声明。
-2. `product/identity`：OfferGet 的职责和非目标。
+2. `product/identity`：Avery 的职责和非目标。
 3. `scenario/<id>`：当前场景目标、输出定义、事实要求。
 4. `tool/protocol`：如何解释结构化结果和错误，不重复工具 Schema。
 5. `interaction/policy`：何时提问、何时确认、何时停止。
@@ -87,7 +87,7 @@ Skill 精简索引和 `SKILL.md` 正文都不编译进 System Prompt。索引在
 
 ### 5.2 Product
 
-- OfferGet 是求职材料与流程助手，而不是通用系统代理。
+- Avery 是求职材料与流程助手，而不是通用系统代理。
 - 可以帮助澄清、起草、优化、组织和规划。
 - 0.2.0 默认场景没有岗位网络能力，岗位信息由用户手动录入或作为已授权本地材料提供。
 - 0.3.0 只有在用户明确提供 URL 且版本化场景启用 `ReadUrl` 时才能受限读取；不得自行搜索、猜测 URL 或扩展来源。

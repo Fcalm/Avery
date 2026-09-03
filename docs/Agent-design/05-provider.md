@@ -274,10 +274,10 @@ interface ProviderError {
 
 外部联调测试使用显式环境开关，不在普通 CI 使用真实 Key。CI 以录制后脱敏的协议 fixture 和 mock server 为主。
 
-DeepSeek 真实 Usage 门禁命令（PowerShell）如下；模型可通过 `OFFERGET_DEEPSEEK_MODEL` 覆盖：
+DeepSeek 真实 Usage 门禁命令（PowerShell）如下；模型可通过 `AVERY_DEEPSEEK_MODEL` 覆盖：
 
 ```powershell
-$env:OFFERGET_DEEPSEEK_LIVE = '1'
+$env:AVERY_DEEPSEEK_LIVE = '1'
 $env:DEEPSEEK_API_KEY = '<真实密钥>'
 npm run test:vitest -- tests/integration/agent/deepseek-usage.integration.test.ts
 ```

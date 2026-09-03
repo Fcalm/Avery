@@ -2,7 +2,7 @@
 name: job-discovery
 description: Search and compare public job openings with browser tools. Use when the user asks to discover, filter, or evaluate roles across recruitment websites.
 metadata:
-  offerget:
+  avery:
     scenarios:
       - application
 ---

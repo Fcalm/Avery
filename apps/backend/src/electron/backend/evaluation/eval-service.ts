@@ -2,12 +2,12 @@ import { createHash, randomUUID } from 'node:crypto';
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { z } from 'zod';
-import type { CompiledInstructions } from '@offerget/agent-sdk';
+import type { CompiledInstructions } from '@avery/agent-sdk';
 import type {
   EvalCaseRun, EvalCaseRunDetail, EvalDatasetCase, EvalEvent, EvalProject, EvalProjectInput, EvalPromptCandidate,
   EvalRun, EvalRunDetail, EvalRunSummary,
-} from '@offerget/contracts';
-import { ApplicationScenario, BuildApplicationPromptFragments, BuildDefaultPromptFragments, CompilePrompt, CreateDefaultModules, DefaultScenario } from '@offerget/agent-modules-defaults';
+} from '@avery/contracts';
+import { ApplicationScenario, BuildApplicationPromptFragments, BuildDefaultPromptFragments, CompilePrompt, CreateDefaultModules, DefaultScenario } from '@avery/agent-modules-defaults';
 import { EvalArtifactStore } from './eval-artifact-store';
 import { PromptEvalRunner } from './prompt-eval-runner';
 import { EvalScorer } from './eval-scorer';

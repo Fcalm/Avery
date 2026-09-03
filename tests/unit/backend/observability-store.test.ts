@@ -12,7 +12,7 @@ afterEach(() => {
 
 describe('ObservabilityStore Provider usage 对账', () => {
   it('以 Provider usage 事实聚合 Trace，不使用估算 token_count', () => {
-    const directory = mkdtempSync(join(tmpdir(), 'offerget-observability-'));
+    const directory = mkdtempSync(join(tmpdir(), 'avery-observability-'));
     directories.push(directory);
     const store = new ObservabilityStore(directory);
     store.StartTrace('request-1', 'session-1', 'model-1');
@@ -34,7 +34,7 @@ describe('ObservabilityStore Provider usage 对账', () => {
   });
 
   it('Provider 未返回 usage 时显式保留 unavailable，不伪造估算值', () => {
-    const directory = mkdtempSync(join(tmpdir(), 'offerget-observability-'));
+    const directory = mkdtempSync(join(tmpdir(), 'avery-observability-'));
     directories.push(directory);
     const store = new ObservabilityStore(directory);
     store.StartTrace('request-2', 'session-1', 'model-1');
@@ -45,7 +45,7 @@ describe('ObservabilityStore Provider usage 对账', () => {
   });
 
   it('拒绝总数矛盾或携带非零值的 unavailable usage', () => {
-    const directory = mkdtempSync(join(tmpdir(), 'offerget-observability-'));
+    const directory = mkdtempSync(join(tmpdir(), 'avery-observability-'));
     directories.push(directory);
     const store = new ObservabilityStore(directory);
     store.StartTrace('request-invalid', 'session-1', 'model-1');

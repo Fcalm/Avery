@@ -29,7 +29,7 @@
 
 ## 验证
 
-- `npm test --workspace @offerget/backend`：8/8 通过，包含 Bridge 方法清单、写信封、删除消息与附件导入透传。
+- `npm test --workspace @avery/backend`：8/8 通过，包含 Bridge 方法清单、写信封、删除消息与附件导入透传。
 - `tsc --noEmit -p tsconfig.json`：通过。
 - `npm run build`：通过。
 

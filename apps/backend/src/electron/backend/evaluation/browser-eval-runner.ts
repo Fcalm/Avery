@@ -1,9 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import type { EvalDatasetCase, EvalPromptCandidate, EvalUserSimulatorStrategy } from '@offerget/contracts';
-import type { CompiledInstructions, ScenarioSnapshot } from '@offerget/agent-sdk';
-import { ApplicationScenario, BuildApplicationPromptFragments, CompilePrompt } from '@offerget/agent-modules-defaults';
+import type { EvalDatasetCase, EvalPromptCandidate, EvalUserSimulatorStrategy } from '@avery/contracts';
+import type { CompiledInstructions, ScenarioSnapshot } from '@avery/agent-sdk';
+import { ApplicationScenario, BuildApplicationPromptFragments, CompilePrompt } from '@avery/agent-modules-defaults';
 import { AgentBrowserError, AgentBrowserRuntime } from '../agent-browser-runtime';
 import { AgentHost } from '../agent-host';
 import { EvalTestBusiness } from './eval-test-business';

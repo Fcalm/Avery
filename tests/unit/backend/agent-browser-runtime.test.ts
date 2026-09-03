@@ -14,14 +14,14 @@ describe('AgentBrowserRuntime', () => {
   it('隔离伴随进程使用随机本地 CDP 端口且路径保持单参数', () => {
     const args = BuildBrowserCompanionArgs({ appPath: 'D:\\Offer Get\\app', profilePath: 'D:\\Profiles\\name;&unsafe', parentPid: 42 });
     expect(args).toEqual([
-      'D:\\Offer Get\\app', '--offerget-browser-companion', '--offerget-browser-profile=D:\\Profiles\\name;&unsafe',
-      '--offerget-browser-parent-pid=42', '--remote-debugging-address=127.0.0.1', '--remote-debugging-port=0', '--user-data-dir=D:\\Profiles\\name;&unsafe',
+      'D:\\Offer Get\\app', '--avery-browser-companion', '--avery-browser-profile=D:\\Profiles\\name;&unsafe',
+      '--avery-browser-parent-pid=42', '--remote-debugging-address=127.0.0.1', '--remote-debugging-port=0', '--user-data-dir=D:\\Profiles\\name;&unsafe',
     ]);
-    expect(BuildBrowserCompanionArgs({ profilePath: 'D:\\Profiles\\scheduled', parentPid: 42, unattended: true })).toContain('--offerget-browser-hidden');
+    expect(BuildBrowserCompanionArgs({ profilePath: 'D:\\Profiles\\scheduled', parentPid: 42, unattended: true })).toContain('--avery-browser-hidden');
   });
 
   it('交互与无人值守模式切换时淘汰旧 companion，不交叉复用可见性属性', async () => {
-    const runtimeRoot = await mkdtemp(join(tmpdir(), 'offerget-browser-visibility-'));
+    const runtimeRoot = await mkdtemp(join(tmpdir(), 'avery-browser-visibility-'));
     temporaryRoots.push(runtimeRoot);
     const closeCompanions: Array<ReturnType<typeof vi.fn>> = [];
     const launchCompanion = vi.fn(async () => {
@@ -69,7 +69,7 @@ describe('AgentBrowserRuntime', () => {
   });
 
   it('构造期导航策略可收窄到测试 origin，默认策略仍拒绝本地地址', async () => {
-    const runtimeRoot = await mkdtemp(join(tmpdir(), 'offerget-browser-policy-'));
+    const runtimeRoot = await mkdtemp(join(tmpdir(), 'avery-browser-policy-'));
     temporaryRoots.push(runtimeRoot);
     const normalizeNavigationUrl = vi.fn(async (value: unknown) => {
       const url = new URL(String(value));
@@ -88,7 +88,7 @@ describe('AgentBrowserRuntime', () => {
   });
 
   it('固定 CLI 身份与参数，页面引用在动作和新 Run 后失效', async () => {
-    const runtimeRoot = await mkdtemp(join(tmpdir(), 'offerget-browser-runtime-'));
+    const runtimeRoot = await mkdtemp(join(tmpdir(), 'avery-browser-runtime-'));
     temporaryRoots.push(runtimeRoot);
     const calls: string[][] = [];
     const closeCompanion = vi.fn(async () => undefined);
@@ -115,7 +115,7 @@ describe('AgentBrowserRuntime', () => {
     await expect(runtime.Prepare({ toolName: 'BrowserClick', arguments: { ref: '@e1', pageRevision: 2 } })).rejects.toMatchObject({ code: 'BROWSER_STALE_PAGE_REF' });
 
     const openCall = calls.find((args) => args.includes('open'))!;
-    expect(openCall).toEqual(expect.arrayContaining(['--namespace', `offerget-${process.pid}-1`, '--session', 'offerget-default', '--cdp', '9339', '--pin-tab', '--no-auto-dialog', '--content-boundaries', '--json']));
+    expect(openCall).toEqual(expect.arrayContaining(['--namespace', `avery-${process.pid}-1`, '--session', 'avery-default', '--cdp', '9339', '--pin-tab', '--no-auto-dialog', '--content-boundaries', '--json']));
     expect(openCall).not.toEqual(expect.arrayContaining(['--profile', '--headed']));
     expect(openCall[openCall.indexOf('open') + 1]).toBe('https://93.184.216.34/jobs?q=a;b');
     await expect(runtime.GetStatus()).resolves.toMatchObject({ available: true, running: true });
@@ -129,7 +129,7 @@ describe('AgentBrowserRuntime', () => {
   });
 
   it('BrowserFillForm 仅以 JSON stdin 批量填写同页普通输入框且不回显正文', async () => {
-    const runtimeRoot = await mkdtemp(join(tmpdir(), 'offerget-browser-fill-form-'));
+    const runtimeRoot = await mkdtemp(join(tmpdir(), 'avery-browser-fill-form-'));
     temporaryRoots.push(runtimeRoot);
     const calls: Array<{ args: string[]; stdin?: string }> = [];
     const runProcess = vi.fn(async ({ args, stdin }: { args: string[]; stdin?: string }) => {
@@ -203,7 +203,7 @@ describe('AgentBrowserRuntime', () => {
   });
 
   it('companion 异常退出后重启并拒绝崩溃前的页面引用', async () => {
-    const runtimeRoot = await mkdtemp(join(tmpdir(), 'offerget-browser-recovery-'));
+    const runtimeRoot = await mkdtemp(join(tmpdir(), 'avery-browser-recovery-'));
     temporaryRoots.push(runtimeRoot);
     let firstAlive = true;
     let launchCount = 0;
@@ -234,7 +234,7 @@ describe('AgentBrowserRuntime', () => {
     expect(launchCompanion).toHaveBeenCalledTimes(2);
     expect(calls.filter((args) => args.includes('click'))).toHaveLength(0);
     const attachedNamespaces = calls.filter((args) => args.includes('tab') && args.includes('--cdp')).map((args) => args[args.indexOf('--namespace') + 1]);
-    expect(new Set(attachedNamespaces)).toEqual(new Set([`offerget-${process.pid}-1`, `offerget-${process.pid}-2`]));
+    expect(new Set(attachedNamespaces)).toEqual(new Set([`avery-${process.pid}-1`, `avery-${process.pid}-2`]));
 
     const recoveredSnapshot = await runtime.Prepare({ toolName: 'BrowserSnapshot', arguments: {} });
     const recovered = await runtime.Execute({ proposal: recoveredSnapshot });
@@ -245,7 +245,7 @@ describe('AgentBrowserRuntime', () => {
   });
 
   it('导航遇到失效 CDP 时淘汰旧 daemon，并使用新 namespace 仅重试一次', async () => {
-    const runtimeRoot = await mkdtemp(join(tmpdir(), 'offerget-browser-cdp-recovery-'));
+    const runtimeRoot = await mkdtemp(join(tmpdir(), 'avery-browser-cdp-recovery-'));
     temporaryRoots.push(runtimeRoot);
     let launchCount = 0;
     let openCount = 0;
@@ -278,7 +278,7 @@ describe('AgentBrowserRuntime', () => {
     expect(launchCompanion).toHaveBeenCalledTimes(2);
     expect(closeCompanions[0]).toHaveBeenCalledOnce();
     const openNamespaces = calls.filter((args) => args.includes('open')).map((args) => args[args.indexOf('--namespace') + 1]);
-    expect(openNamespaces).toEqual([`offerget-${process.pid}-1`, `offerget-${process.pid}-2`]);
+    expect(openNamespaces).toEqual([`avery-${process.pid}-1`, `avery-${process.pid}-2`]);
     await expect(runtime.GetStatus()).resolves.toMatchObject({ available: true, running: true, state: 'ready' });
     await runtime.Close();
   });

@@ -5,14 +5,14 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
 const root = resolve(import.meta.dirname, '..');
-const temporaryRoot = await mkdtemp(join(tmpdir(), 'offerget-evaluation-ui-'));
+const temporaryRoot = await mkdtemp(join(tmpdir(), 'avery-evaluation-ui-'));
 const resultPath = join(temporaryRoot, 'result.json');
-const visualRoot = resolve(process.env.OFFERGET_EVALUATION_UI_OUTPUT || join(root, 'artifacts', 'evaluation-ui-smoke', new Date().toISOString().replaceAll(':', '-')));
+const visualRoot = resolve(process.env.AVERY_EVALUATION_UI_OUTPUT || join(root, 'artifacts', 'evaluation-ui-smoke', new Date().toISOString().replaceAll(':', '-')));
 await mkdir(visualRoot, { recursive: true });
 const executable = join(root, 'node_modules', 'electron', 'dist', process.platform === 'win32' ? 'electron.exe' : process.platform === 'darwin' ? 'Electron.app/Contents/MacOS/Electron' : 'electron');
 const child = spawn(executable, ['.'], {
   cwd: root, windowsHide: true, stdio: 'ignore',
-  env: { ...process.env, OFFERGET_DESKTOP_SMOKE: '1', OFFERGET_SMOKE_USER_DATA: temporaryRoot, OFFERGET_SMOKE_RESULT_PATH: resultPath, OFFERGET_INSTALLED_VISUAL_OUTPUT: visualRoot },
+  env: { ...process.env, AVERY_DESKTOP_SMOKE: '1', AVERY_SMOKE_USER_DATA: temporaryRoot, AVERY_SMOKE_RESULT_PATH: resultPath, AVERY_INSTALLED_VISUAL_OUTPUT: visualRoot },
 });
 let exited = false; let exitCode = null;
 child.once('exit', (code) => { exited = true; exitCode = code; });

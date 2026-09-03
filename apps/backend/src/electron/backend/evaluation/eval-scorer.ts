@@ -1,8 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
-import type { EvalCaseScore, EvalDatasetCase, EvalRequirementResult } from '@offerget/contracts';
-import type { CompiledInstructions, ModelUsage } from '@offerget/agent-sdk';
-import { CreateDefaultModules } from '@offerget/agent-modules-defaults';
+import type { EvalCaseScore, EvalDatasetCase, EvalRequirementResult } from '@avery/contracts';
+import type { CompiledInstructions, ModelUsage } from '@avery/agent-sdk';
+import { CreateDefaultModules } from '@avery/agent-modules-defaults';
 
 const JudgeSchema = z.object({
   score: z.number().min(0).max(100),

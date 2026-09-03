@@ -146,7 +146,7 @@ interface AgentToolDefinition<TInput, TOutput> {
 
 四个 CronTask 工具同时存在于默认和投递场景。`CreateCronTask` 只冻结提案并展示一次周期级无人值守确认；确认前不写数据库、不注册系统任务。确认后每次 occurrence 创建独立会话，以真实 `user` 消息执行，并使用 `fully_trusted + unattended`，但仍受冻结场景、Schema、资源授权、网络边界与 Tool Ledger 约束。
 
-支持 `once`、`daily` 和带 `daysOfWeek` 的 `weekly` 调度；重复时间按 IANA 时区的本地日历计算。关机或休眠导致多次逾期时只补最近一次，其余写为 `missed`。系统只维护一个 `OfferGet Cron Runner` 唤醒任务，业务数据库保存全部计划与运行历史。无人值守 Run 不暴露四个 CronTask 工具，防止递归调度。
+支持 `once`、`daily` 和带 `daysOfWeek` 的 `weekly` 调度；重复时间按 IANA 时区的本地日历计算。关机或休眠导致多次逾期时只补最近一次，其余写为 `missed`。系统只维护一个 `Avery Cron Runner` 唤醒任务，业务数据库保存全部计划与运行历史。无人值守 Run 不暴露四个 CronTask 工具，防止递归调度。
 创建确认会明示系统可在计划时间唤醒或后台启动应用。Windows 唤醒允许电池供电时启动，且切换到电池后不中止已开始的 Run。
 第一版 CronTask 不继承交互 Run 的临时附件；投递 Run 可读取创建时绑定的简历内容，但页面强制上传本地文件时必须转为 `needsAttention`，不得绕过 Run 级文件授权。
 
@@ -167,7 +167,7 @@ interface AgentToolDefinition<TInput, TOutput> {
 ```text
 workspace://src/index.ts
 attachment://notes.md
-project://offerget/package.json
+project://avery/package.json
 artifact://document/abc123.txt
 ```
 
@@ -237,9 +237,9 @@ ReadUrl
 
 ### 5.4 浏览器操作工具（投递场景规划）
 
-浏览器能力使用 `agent-browser` CLI 作为执行层，由 Host 将模型调用固定映射为 CLI 参数数组，不向模型开放原始命令、任意参数、`eval`、`chat` 或插件能力。CLI 通过随机本地 CDP 端口连接由应用自带 Electron 启动的隔离浏览器伴随进程，不连接 OfferGet 主进程，也不需要额外安装 Chromium。登录态保存在伴随进程独立的持久化 Profile 中，由用户在可见窗口内手动登录并跨 Session 复用。
+浏览器能力使用 `agent-browser` CLI 作为执行层，由 Host 将模型调用固定映射为 CLI 参数数组，不向模型开放原始命令、任意参数、`eval`、`chat` 或插件能力。CLI 通过随机本地 CDP 端口连接由应用自带 Electron 启动的隔离浏览器伴随进程，不连接 Avery 主进程，也不需要额外安装 Chromium。登录态保存在伴随进程独立的持久化 Profile 中，由用户在可见窗口内手动登录并跨 Session 复用。
 
-隔离伴随进程只承载招聘网页 target，不初始化 OfferGet Renderer 或 Backend，因此 CLI 无法枚举主应用页面。第一阶段仍只实施应用层网络限制：导航及重定向仅接受经校验的公开 `http/https` 地址，拒绝本机、内网和特殊协议；页面输出使用内容边界并限长；上传只接受 Host 签发的文件引用；提交、发送和敏感上传继续由 Harness 判断并确认。这里的进程隔离是页面与身份隔离，不等同于受控代理或完整网络出口隔离。
+隔离伴随进程只承载招聘网页 target，不初始化 Avery Renderer 或 Backend，因此 CLI 无法枚举主应用页面。第一阶段仍只实施应用层网络限制：导航及重定向仅接受经校验的公开 `http/https` 地址，拒绝本机、内网和特殊协议；页面输出使用内容边界并限长；上传只接受 Host 签发的文件引用；提交、发送和敏感上传继续由 Harness 判断并确认。这里的进程隔离是页面与身份隔离，不等同于受控代理或完整网络出口隔离。
 
 规划工具列表：
 

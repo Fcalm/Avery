@@ -60,7 +60,7 @@ R-01 已按“失败用例 → 修复 → 完成记录”拆成三个提交；Ro
 - 测试通过 `require('../dist/router.js')` 与 `require('../dist/idempotency-store.js')` 加载生成物，而不是当前 `src`。
 - 下一阶段 B-02 计划停止跟踪 `dist`；干净检出后直接执行当前测试入口将缺少被测模块，或者在本地开发中误测上一次构建产物。
 
-整改要求：R-01 至少增加可靠的测试前构建步骤，保证测试必定对应当前源码；B-03 再迁移到正式测试框架。B-02 移除 `dist` 后，`npm test --workspace @offerget/backend` 必须仍能在干净检出中运行。
+整改要求：R-01 至少增加可靠的测试前构建步骤，保证测试必定对应当前源码；B-03 再迁移到正式测试框架。B-02 移除 `dist` 后，`npm test --workspace @avery/backend` 必须仍能在干净检出中运行。
 
 ### R-01-F3【P2】持久化失败被完全静默，无法判断跨重启幂等是否降级
 
@@ -71,7 +71,7 @@ R-01 已按“失败用例 → 修复 → 完成记录”拆成三个提交；Ro
 ## 3. 已通过项目
 
 - 提交拆分符合 Conventional Commits，工作区干净。
-- `npm test --workspace @offerget/backend`：5/5 通过。
+- `npm test --workspace @avery/backend`：5/5 通过。
 - `tsc -p apps/backend/tsconfig.json --noEmit`：通过。
 - Electron 隔离恢复模式冒烟：通过；`rendererLoaded: true`、`backendReady: true`、`startupReadyMs: 767`、`recoveryMode: healthy`。
 - 同键进程内串行实现能够防止 Router 内部并发穿透。

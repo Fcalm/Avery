@@ -24,7 +24,7 @@ type WindowControls = {
 };
 
 function NativeTitlebar({ sidebarCollapsed, onToggleSidebar }: { sidebarCollapsed: boolean; onToggleSidebar: () => void }) {
-  const controls = (window as Window & { offergetWindow?: WindowControls }).offergetWindow;
+  const controls = (window as Window & { averyWindow?: WindowControls }).averyWindow;
   const [isMaximized, setIsMaximized] = useState(false);
   async function ToggleMaximize() {
     setIsMaximized(await controls?.ToggleMaximize() ?? false);

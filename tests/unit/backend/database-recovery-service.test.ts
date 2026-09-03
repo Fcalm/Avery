@@ -16,9 +16,9 @@ afterEach(() => {
 
 describe('ValidateRecoverySet', () => {
   it('未知的未来 Schema 被拒绝，调用方应保持恢复只读模式', () => {
-    const directory = mkdtempSync(join(tmpdir(), 'offerget-recovery-'));
+    const directory = mkdtempSync(join(tmpdir(), 'avery-recovery-'));
     directories.push(directory);
-    const databasePath = join(directory, 'offerget.db');
+    const databasePath = join(directory, 'avery.db');
     const db = new Database(databasePath);
     db.exec(`
       CREATE TABLE workspace_meta (id TEXT PRIMARY KEY, schema_version INTEGER);

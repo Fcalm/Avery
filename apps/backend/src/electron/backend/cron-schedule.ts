@@ -1,4 +1,4 @@
-import type { CronSchedule } from '@offerget/contracts';
+import type { CronSchedule } from '@avery/contracts';
 
 const Weekdays = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'] as const;
 

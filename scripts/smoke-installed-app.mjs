@@ -7,12 +7,12 @@ import { join } from 'node:path';
 const root = join(import.meta.dirname, '..');
 const require = createRequire(import.meta.url);
 const pkg = require('../package.json');
-const installer = process.env.OFFERGET_INSTALLED_SMOKE_INSTALLER
-  ? join(root, process.env.OFFERGET_INSTALLED_SMOKE_INSTALLER)
-  : join(root, 'release', `OfferGet-Setup-${pkg.version}-x64.exe`);
+const installer = process.env.AVERY_INSTALLED_SMOKE_INSTALLER
+  ? join(root, process.env.AVERY_INSTALLED_SMOKE_INSTALLER)
+  : join(root, 'release', `Avery-Setup-${pkg.version}-x64.exe`);
 if (!existsSync(installer)) throw new Error(`Installer is missing: ${installer}`);
 
-const testRoot = mkdtempSync(join(tmpdir(), 'offerget-installed-smoke-'));
+const testRoot = mkdtempSync(join(tmpdir(), 'avery-installed-smoke-'));
 const installDir = join(testRoot, 'app');
 let installed = false;
 let launched = false;
@@ -20,13 +20,13 @@ let uninstalled = false;
 try {
   const install = spawnSync(installer, ['/S', `/D=${installDir}`], { cwd: root, windowsHide: true, stdio: 'pipe', encoding: 'utf8' });
   if (install.error || install.status !== 0) throw new Error(`Silent install failed (${install.status ?? 'spawn'}): ${install.error?.message ?? install.stderr}`);
-  const executable = join(installDir, 'OfferGet.exe');
+  const executable = join(installDir, 'Avery.exe');
   installed = existsSync(executable);
-  if (!installed) throw new Error('Silent installer exited successfully but OfferGet.exe is missing.');
+  if (!installed) throw new Error('Silent installer exited successfully but Avery.exe is missing.');
 
   const smoke = spawnSync(process.execPath, [join(root, 'scripts', 'smoke-packaged-app.mjs')], {
     cwd: root,
-    env: { ...process.env, OFFERGET_PACKAGED_EXE: executable },
+    env: { ...process.env, AVERY_PACKAGED_EXE: executable },
     windowsHide: true,
     stdio: 'inherit',
   });

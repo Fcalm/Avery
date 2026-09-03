@@ -1,4 +1,4 @@
-import type { ApplicationStatus, Channel, EmploymentType, JobScore, ProfileCategory } from '@offerget/contracts';
+import type { ApplicationStatus, Channel, EmploymentType, JobScore, ProfileCategory } from '@avery/contracts';
 
 /** 英文枚举 → 中文文案映射；枚举值在前端转换展示，持久化用稳定英文值。 */
 export const EmploymentTypeLabel: Record<EmploymentType, string> = { intern: '实习', full_time: '正式工' };

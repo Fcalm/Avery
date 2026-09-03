@@ -25,7 +25,7 @@ afterEach(() => {
 
 describe('AgentHost 会话助手状态', () => {
   it('将模型和确认权限写入业务会话快照，并在新宿主重载时校验失效模型后回退', async () => {
-    const root = mkdtempSync(join(tmpdir(), 'offerget-session-assistant-state-'));
+    const root = mkdtempSync(join(tmpdir(), 'avery-session-assistant-state-'));
     directories.push(root);
     const snapshots = new Map<string, any>();
     const business = {

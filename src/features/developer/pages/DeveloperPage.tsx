@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import type { AgentObservability } from '@offerget/contracts';
+import type { AgentObservability } from '@avery/contracts';
 import { GetAgentObservability } from '../../../features/assistant/api/agentQueries';
 import { useUiStore } from '../../../app/UiStore';
 import { Icon } from '../../../shared/components/Icon';

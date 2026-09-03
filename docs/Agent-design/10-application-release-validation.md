@@ -18,13 +18,13 @@
 npm run build
 node node_modules/electron-builder/out/cli/cli.js --dir --config.directories.output=release-rebuild/ap06 --config.electronDist=node_modules/electron/dist
 
-$env:OFFERGET_PACKAGED_EXE = (Resolve-Path 'release-rebuild/ap06/win-unpacked/OfferGet.exe').Path
+$env:AVERY_PACKAGED_EXE = (Resolve-Path 'release-rebuild/ap06/win-unpacked/Avery.exe').Path
 npm run smoke
-Remove-Item Env:OFFERGET_PACKAGED_EXE
+Remove-Item Env:AVERY_PACKAGED_EXE
 
-$env:OFFERGET_PACKAGED_ROOT = (Resolve-Path 'release-rebuild/ap06/win-unpacked').Path
+$env:AVERY_PACKAGED_ROOT = (Resolve-Path 'release-rebuild/ap06/win-unpacked').Path
 npm run smoke:packaged-agent-application
-Remove-Item Env:OFFERGET_PACKAGED_ROOT
+Remove-Item Env:AVERY_PACKAGED_ROOT
 ```
 
 验收时必须同时确认：
@@ -40,8 +40,8 @@ Remove-Item Env:OFFERGET_PACKAGED_ROOT
 
 ```powershell
 $env:DEEPSEEK_API_KEY = '<测试密钥>'
-$env:OFFERGET_DEEPSEEK_MODEL = 'deepseek-v4-flash'
-$env:OFFERGET_EVALUATION_RUNS = '10'
+$env:AVERY_DEEPSEEK_MODEL = 'deepseek-v4-flash'
+$env:AVERY_EVALUATION_RUNS = '10'
 npm run evaluate:deepseek-application
 Remove-Item Env:DEEPSEEK_API_KEY
 ```

@@ -1,6 +1,6 @@
 import { open, readFile } from 'node:fs/promises';
 import * as path from 'node:path';
-import type { AgentMessage } from '@offerget/agent-sdk';
+import type { AgentMessage } from '@avery/agent-sdk';
 
 export const DeepSeekVisionModel = 'deepseek-v4-flash-vision-exp';
 export const GlmVisionModel = 'glm-5.3-flash';

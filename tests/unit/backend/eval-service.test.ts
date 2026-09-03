@@ -64,7 +64,7 @@ describe('Agent evaluation service', () => {
   });
 
   it('切换 Provider 后 Run 快照与 Runner 使用当前唯一可用模型', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'offerget-eval-provider-switch-')); roots.push(root);
+    const root = await mkdtemp(join(tmpdir(), 'avery-eval-provider-switch-')); roots.push(root);
     const store = new ObservabilityStore(root);
     const execute = vi.fn(async () => ({
       finalResponse: 'answer', events: [], finalState: {},
@@ -90,7 +90,7 @@ describe('Agent evaluation service', () => {
   });
 
   it('未知 Prompt Fragment 覆盖和重复工具名不能静默进入项目', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'offerget-eval-config-')); roots.push(root);
+    const root = await mkdtemp(join(tmpdir(), 'avery-eval-config-')); roots.push(root);
     const store = new ObservabilityStore(root);
     const service = new EvalService({ userDataPath: root, store, credentialPort: {}, getStoredSettings: async () => ({ developerMode: true }), Emit: vi.fn() });
     await service.Initialize();
@@ -100,7 +100,7 @@ describe('Agent evaluation service', () => {
   });
 
   it('关闭开发者模式时 Backend 服务拒绝读写测评', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'offerget-eval-gate-')); roots.push(root);
+    const root = await mkdtemp(join(tmpdir(), 'avery-eval-gate-')); roots.push(root);
     const store = new ObservabilityStore(root);
     const service = new EvalService({ userDataPath: root, store, credentialPort: {}, getStoredSettings: async () => ({ developerMode: false }), Emit: vi.fn() });
     await service.Initialize();
@@ -110,7 +110,7 @@ describe('Agent evaluation service', () => {
   });
 
   it('冻结多候选快照并以最大并发 2 完成默认场景案例矩阵', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'offerget-eval-run-')); roots.push(root);
+    const root = await mkdtemp(join(tmpdir(), 'avery-eval-run-')); roots.push(root);
     const store = new ObservabilityStore(root);
     let activeExecutions = 0; let peakExecutions = 0;
     const execute = vi.fn(async ({ candidate }: any) => {
@@ -170,7 +170,7 @@ describe('Agent evaluation service', () => {
   });
 
   it('Runner 中途失败仍保存已形成的 Trace 证据', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'offerget-eval-partial-trace-')); roots.push(root);
+    const root = await mkdtemp(join(tmpdir(), 'avery-eval-partial-trace-')); roots.push(root);
     const store = new ObservabilityStore(root);
     const execute = vi.fn(async () => {
       throw Object.assign(new Error('fixture failed'), { code: 'FIXTURE_FAILED', evalEvidence: { events: [{ type: 'tool_call', createdAt: 1, payload: { name: 'ReadResume' } }], finalState: { partial: true } } });
@@ -191,7 +191,7 @@ describe('Agent evaluation service', () => {
   });
 
   it('取消后忽略 AbortSignal 的迟到 Runner 结果不能写成完成', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'offerget-eval-cancel-')); roots.push(root);
+    const root = await mkdtemp(join(tmpdir(), 'avery-eval-cancel-')); roots.push(root);
     const store = new ObservabilityStore(root);
     let release!: () => void;
     const waiting = new Promise<void>((resolve) => { release = resolve; });
@@ -230,7 +230,7 @@ describe('Agent evaluation service', () => {
   });
 
   it('Artifact 事件完整保留长证据，同时脱敏密钥和绝对路径', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'offerget-eval-artifact-')); roots.push(root);
+    const root = await mkdtemp(join(tmpdir(), 'avery-eval-artifact-')); roots.push(root);
     const artifacts = new EvalArtifactStore(root);
     const longText = 'x'.repeat(25_000);
     await artifacts.AppendEvent('run-safe', { longText, authorization: 'Bearer sk-secret123', cookie: 'session=private', path: 'C:\\Users\\tester\\secret.txt' });
@@ -243,7 +243,7 @@ describe('Agent evaluation service', () => {
   });
 
   it('全局只执行一个 Run，第二个保持 queued 且可独立取消', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'offerget-eval-queue-')); roots.push(root);
+    const root = await mkdtemp(join(tmpdir(), 'avery-eval-queue-')); roots.push(root);
     const store = new ObservabilityStore(root);
     let release!: () => void;
     const waiting = new Promise<void>((resolve) => { release = resolve; });
@@ -274,7 +274,7 @@ describe('Agent evaluation service', () => {
   });
 
   it('browser 项目分派给 BrowserEvalRunner 并使用 Fixture 状态判分', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'offerget-eval-browser-dispatch-')); roots.push(root);
+    const root = await mkdtemp(join(tmpdir(), 'avery-eval-browser-dispatch-')); roots.push(root);
     const store = new ObservabilityStore(root);
     const browserExecute = vi.fn(async () => ({
       finalResponse: 'receipt', events: [], finalState: { fixture: { submissionCount: 1 } },

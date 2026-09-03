@@ -5,7 +5,7 @@
 
 ## 1. 目标与边界
 
-本规范固定 OfferGet 桌面端的窗口档位、交互反馈、键盘路径和可访问性下限。Renderer 只经 `shared/platform` 调用 Bridge，不因布局或可访问性需求直接访问 Electron、Node.js 或文件系统。
+本规范固定 Avery 桌面端的窗口档位、交互反馈、键盘路径和可访问性下限。Renderer 只经 `shared/platform` 调用 Bridge，不因布局或可访问性需求直接访问 Electron、Node.js 或文件系统。
 
 发布验收窗口为 **1280×800** 与 **1024×680**。小于 1024px 的 CSS 降级样式可以保留，以支持窗口缩小过程，但不构成 0.2.0 工作台完整功能承诺。
 

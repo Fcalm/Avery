@@ -70,7 +70,7 @@ export function CreateBackendHost({ appContext, desktopCapabilities = {}, onEven
   function Spawn(): void {
     state = 'starting';
     const backendPath = join(__dirname, 'index.js');
-    child = utilityProcess.fork(backendPath, [], { serviceName: 'offerget-backend' });
+    child = utilityProcess.fork(backendPath, [], { serviceName: 'avery-backend' });
 
     child.once('spawn', () => {
       child?.stdout?.on('data', (chunk: Buffer) => process.stdout.write(chunk));

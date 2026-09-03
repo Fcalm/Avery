@@ -65,7 +65,7 @@ export class BusinessStore {
     this.workspacePath = workspacePath;
     mkdirSync(workspacePath, { recursive: true });
     EnsureWorkspaceDirectories(workspacePath);
-    this.databasePath = join(workspacePath, 'offerget.db');
+    this.databasePath = join(workspacePath, 'avery.db');
     this.profilePath = join(workspacePath, 'profile.json');
     if (existsSync(this.databasePath) && statSync(this.databasePath).size === 0) throw new Error('Existing business database is empty or truncated.');
     this.db = new Database(this.databasePath);
@@ -163,7 +163,7 @@ export class BusinessStore {
     const directory = join(this.workspacePath, 'backups', directoryName);
     mkdirSync(directory, { recursive: false });
     try {
-      const databaseBackupPath = join(directory, 'offerget.db');
+      const databaseBackupPath = join(directory, 'avery.db');
       this.db.exec(`VACUUM INTO '${databaseBackupPath.replace(/'/g, "''")}'`);
       const backupDb = new Database(databaseBackupPath, { readonly: true, fileMustExist: true });
       try {
@@ -185,13 +185,13 @@ export class BusinessStore {
       const attachments = hasAttachments ? this.db.prepare('SELECT sha256, storage_key FROM attachments WHERE deleted_at IS NULL ORDER BY sha256').all() : [];
       writeFileSync(join(directory, 'manifest.json'), JSON.stringify({
         createdAt: GetNow(), type: 'pre_upgrade', fromSchemaVersion: fromVersion, toSchemaVersion: toVersion,
-        database: { file: 'offerget.db', sha256: createHash('sha256').update(databaseBytes).digest('hex') },
+        database: { file: 'avery.db', sha256: createHash('sha256').update(databaseBytes).digest('hex') },
         profile: profileBytes ? { file: 'profile.json', sha256: createHash('sha256').update(profileBytes).digest('hex') } : null,
         attachments,
       }, null, 2), 'utf8');
       return { directoryName, fromVersion, toVersion };
     } catch (error) {
-      for (const name of ['manifest.json', 'profile.json', 'offerget.db']) {
+      for (const name of ['manifest.json', 'profile.json', 'avery.db']) {
         const candidate = join(directory, name);
         try {
           if (existsSync(candidate)) unlinkSync(candidate);

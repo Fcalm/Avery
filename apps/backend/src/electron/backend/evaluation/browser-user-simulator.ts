@@ -1,4 +1,4 @@
-import type { EvalDatasetCase, EvalUserSimulatorStrategy } from '@offerget/contracts';
+import type { EvalDatasetCase, EvalUserSimulatorStrategy } from '@avery/contracts';
 import type { EvalBrowserFixtureState } from './browser-fixture-server';
 
 /** 固定策略用户模拟器；它只能收窄确认，不得改变工具白名单或绕过 Browser Runtime 校验。 */

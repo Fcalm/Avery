@@ -190,7 +190,7 @@ describe('agent-modules-defaults', () => {
   it('BrowserFillForm 只在投递场景接受非空字段并复用浏览器执行端口', async () => {
     const prepare = vi.fn(async ({ toolName, arguments: args }: any) => ({
       proposalHash: 'fill-form-hash', toolName, canonicalArguments: args, summary: '填写 2 个输入框', risk: 'medium' as const,
-      forceConfirmation: false, pageRevision: 3, resourceIds: ['browser:offerget-default'],
+      forceConfirmation: false, pageRevision: 3, resourceIds: ['browser:avery-default'],
     }));
     const execute = vi.fn(async () => ({ status: 'succeeded' as const, data: { filledCount: 2, pageRevision: 3 } }));
     const applicationContext = CreateToolContext({

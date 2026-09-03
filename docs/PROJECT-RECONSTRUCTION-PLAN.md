@@ -1,8 +1,8 @@
-# OfferGet 完整项目重建计划
+# Avery 完整项目重建计划
 
-> 本文档用于指导将灾后恢复的 OfferGet 工作区重建为可维护、可测试、可发布的 TypeScript 项目。
+> 本文档用于指导将灾后恢复的 Avery 工作区重建为可维护、可测试、可发布的 TypeScript 项目。
 >
-> 当前工作区：`D:\OfferGet-Rebuild\project`。原始损坏目录 `C:\Users\fanweiqian\Desktop\offerget` 仅保留作证据与回退，不得被本计划覆盖。
+> 当前工作区：`D:\Avery-Rebuild\project`。原始损坏目录 `C:\Users\fanweiqian\Desktop\avery` 仅保留作证据与回退，不得被本计划覆盖。
 
 ## 1. 当前状态与原则
 
@@ -61,7 +61,7 @@
 3. 明确区分：
    - `dependencies`：应用运行必需依赖；
    - `devDependencies`：构建、测试和打包依赖；
-   - `@offerget/*`：内部 workspace 包。
+   - `@avery/*`：内部 workspace 包。
 4. 固化 Windows 图标路径为 `build/icon.ico`。
 5. 统一命令：`dev`、`build`、`test`、`smoke`、`pack:win`。
 
@@ -160,7 +160,7 @@
 3. `npm test`
 4. Electron 冒烟测试
 5. `pack:win`
-6. 检查 `.ico`、`OfferGet.exe` 和安装包图标
+6. 检查 `.ico`、`Avery.exe` 和安装包图标
 7. 在隔离目录安装并启动
 8. 生成 SHA-256、版本说明与发布清单
 
@@ -178,8 +178,8 @@
 
 - 五个 TypeScript workspace 包和 Vite 前端可以构建。
 - Electron 重建目录包的隔离冒烟测试通过：Renderer 已加载，Backend 状态为 `ready`。
-- Windows 图标已生成并用于 `OfferGet.exe` 与 NSIS 安装包。
-- 当前正式安装包：`D:\OfferGet-Rebuild\package-project\release-rebuild\OfferGet Setup 0.1.0.exe`。
+- Windows 图标已生成并用于 `Avery.exe` 与 NSIS 安装包。
+- 当前正式安装包：`D:\Avery-Rebuild\package-project\release-rebuild\Avery Setup 0.1.0.exe`。
 
 ## 6. 风险与待办
 

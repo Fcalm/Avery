@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import type { AgentObservability, AgentTraceEvent } from '@offerget/contracts';
+import type { AgentObservability, AgentTraceEvent } from '@avery/contracts';
 import { Icon } from '../../../shared/components/Icon';
 import { Modal, Button, Select } from '../../../shared/components/UI';
 

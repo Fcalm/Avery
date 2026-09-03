@@ -16,7 +16,7 @@ function ToolCall(index: number, name: string, args: Record<string, unknown> = {
 function CreateProvider(next: (index: number) => ModelCompletion) {
   let index = 0;
   return {
-    packageName: 'offerget.failure-test', name: 'failure-provider', version: '0.1.0', sdkVersion: '0.1.0', slot: 'model-provider' as const, capabilities: ['model:test'],
+    packageName: 'avery.failure-test', name: 'failure-provider', version: '0.1.0', sdkVersion: '0.1.0', slot: 'model-provider' as const, capabilities: ['model:test'],
     Configure: vi.fn(), TestConnection: vi.fn(), GetBalance: vi.fn(), GetModels: vi.fn(),
     GetStatus: vi.fn(async () => ({ configured: true, provider: 'Test', model: 'failure-model' })),
     ResolveRequestModel: vi.fn(() => 'failure-model'), BaseUrl: vi.fn(() => 'https://example.test'),
@@ -40,7 +40,7 @@ function Proposal(toolName: BrowserActionProposal['toolName'], canonicalArgument
 }
 
 async function CreateHost(provider: ReturnType<typeof CreateProvider>, browser: BrowserAutomationPort & { Close(): Promise<void> }) {
-  const root = await mkdtemp(join(tmpdir(), 'offerget-agent-host-browser-failure-'));
+  const root = await mkdtemp(join(tmpdir(), 'avery-agent-host-browser-failure-'));
   temporaryRoots.push(root);
   const events: any[] = [];
   const observability = {

@@ -1,5 +1,5 @@
 {
-  "name": "offerget",
+  "name": "avery",
   "private": true,
   "version": "0.1.0",
   "description": "Avery 本地优先的 AI 求职与简历助手（灾后重建工作区）",
@@ -14,7 +14,7 @@
   "scripts": {
     "dev": "node node_modules/vite/bin/vite.js --host 127.0.0.1",
     "start": "node node_modules/electron/cli.js .",
-    "build:packages": "npm run build --workspace @offerget/contracts && npm run build --workspace @offerget/agent-sdk && npm run build --workspace @offerget/agent-core && npm run build --workspace @offerget/agent-module-host && npm run build --workspace @offerget/agent-modules-defaults && npm run build --workspace @offerget/backend && npm run build --workspace @offerget/desktop",
+    "build:packages": "npm run build --workspace @avery/contracts && npm run build --workspace @avery/agent-sdk && npm run build --workspace @avery/agent-core && npm run build --workspace @avery/agent-module-host && npm run build --workspace @avery/agent-modules-defaults && npm run build --workspace @avery/backend && npm run build --workspace @avery/desktop",
     "build:renderer": "node node_modules/vite/bin/vite.js build",
     "build": "npm run build:packages && npm run build:renderer",
     "test": "npm run test:vitest && npm run test --workspaces --if-present",
@@ -33,13 +33,13 @@
   },
   "dependencies": {
     "@napi-rs/canvas": "0.1.80",
-    "@offerget/agent-core": "0.1.0",
-    "@offerget/agent-module-host": "0.1.0",
-    "@offerget/agent-modules-defaults": "0.1.0",
-    "@offerget/agent-sdk": "0.1.0",
-    "@offerget/backend": "0.1.0",
-    "@offerget/contracts": "0.1.0",
-    "@offerget/desktop": "0.1.0",
+    "@avery/agent-core": "0.1.0",
+    "@avery/agent-module-host": "0.1.0",
+    "@avery/agent-modules-defaults": "0.1.0",
+    "@avery/agent-sdk": "0.1.0",
+    "@avery/backend": "0.1.0",
+    "@avery/contracts": "0.1.0",
+    "@avery/desktop": "0.1.0",
     "@tanstack/react-query": "^5.59.0",
     "@tesseract.js-data/chi_sim": "1.0.0",
     "@tesseract.js-data/eng": "1.0.0",
@@ -67,7 +67,7 @@
     "vitest": "4.1.11"
   },
   "build": {
-    "appId": "com.offerget.app",
+    "appId": "com.avery.app",
     "productName": "Avery",
     "icon": "build/icon.ico",
     "asar": true,
@@ -82,7 +82,7 @@
       "skills/**",
       "electron/**",
       "migrations/**",
-      "node_modules/@offerget/**",
+      "node_modules/@avery/**",
       "node_modules/agent-browser/**",
       "package.json"
     ],

@@ -12,7 +12,7 @@ afterEach(() => {
 
 describe('AgentHost 会话 usage 恢复', () => {
   it('重启后恢复同一会话的 Provider usage，不回退为估算值或其他会话数据', async () => {
-    const userDataPath = mkdtempSync(join(tmpdir(), 'offerget-agent-state-'));
+    const userDataPath = mkdtempSync(join(tmpdir(), 'avery-agent-state-'));
     directories.push(userDataPath);
     const usage = {
       source: 'actual', inputTokens: 11, contextLimit: 64_000, compressionCount: 2, compressionThreshold: 80,

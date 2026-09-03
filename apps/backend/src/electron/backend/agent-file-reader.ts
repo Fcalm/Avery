@@ -127,7 +127,7 @@ export class AgentFileReader {
   constructor(ResolveAttachmentUri: (uri: string) => Promise<unknown>, options: { ocrCacheRoot?: string | null; ocrRuntimeRoot?: string; ocrEngine?: OcrEngine } = {}) {
     this._resolveAttachment = ResolveAttachmentUri;
     this.ocrCacheRoot = options.ocrCacheRoot ?? null;
-    this.ocrEngine = options.ocrEngine ?? new LocalTesseractOcrEngine(options.ocrRuntimeRoot ?? path.join(process.cwd(), '.offerget-ocr-runtime'));
+    this.ocrEngine = options.ocrEngine ?? new LocalTesseractOcrEngine(options.ocrRuntimeRoot ?? path.join(process.cwd(), '.avery-ocr-runtime'));
   }
 
   SetOcrCacheRoot(cacheRoot: string | null): void {
@@ -180,7 +180,7 @@ export class AgentFileReader {
 
   /** 将受限 Glob 模式转换为文件名匹配正则，先保护双星号以避免被单星号二次替换。 */
   CreateGlobMatcher(pattern: string): RegExp {
-    const placeholder = '__OFFERGET_GLOBSTAR__';
+    const placeholder = '__AVERY_GLOBSTAR__';
     const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*\*/g, placeholder).replace(/\*/g, '[^/\\\\]*').replace(/\?/g, '.').replace(new RegExp(placeholder, 'g'), '.*');
     return new RegExp(`^${escaped}$`, 'i');
   }

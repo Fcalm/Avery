@@ -33,7 +33,7 @@ function ValidateBackupManifest(manifestPath: string | null, databasePath: strin
   if (!stat.isFile() || stat.isSymbolicLink()) throw new Error('Recovery manifest is unsafe.');
   const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as any;
   if (manifest?.database && typeof manifest.database === 'object') {
-    if (manifest.database.file !== 'offerget.db' || !/^[a-f0-9]{64}$/.test(manifest.database.sha256 || '') || FileSha256(databasePath) !== manifest.database.sha256) {
+    if (manifest.database.file !== 'avery.db' || !/^[a-f0-9]{64}$/.test(manifest.database.sha256 || '') || FileSha256(databasePath) !== manifest.database.sha256) {
       throw new Error('Recovery database hash does not match its manifest.');
     }
   }
@@ -77,7 +77,7 @@ export class DatabaseRecoveryStore {
 
   constructor({ workspacePath, cause }: { workspacePath: string; cause: Error }) {
     this.workspacePath = path.resolve(workspacePath);
-    this.databasePath = path.join(this.workspacePath, 'offerget.db');
+    this.databasePath = path.join(this.workspacePath, 'avery.db');
     this.profilePath = path.join(this.workspacePath, 'profile.json');
     this.reason = String(cause?.message || 'Database startup validation failed.').replaceAll(this.workspacePath, '[WORKSPACE]').slice(0, 300).replace(/[A-Za-z]:\\[^\r\n]+/g, '[PATH]');
     mkdirSync(path.join(this.workspacePath, 'backups'), { recursive: true });
@@ -99,7 +99,7 @@ export class DatabaseRecoveryStore {
       .map((entry) => {
         const directory = path.join(root, entry.name);
         try {
-          const validation = ValidateRecoverySet(path.join(directory, 'offerget.db'), path.join(directory, 'profile.json'), path.join(directory, 'manifest.json'));
+          const validation = ValidateRecoverySet(path.join(directory, 'avery.db'), path.join(directory, 'profile.json'), path.join(directory, 'manifest.json'));
           return { id: entry.name, valid: true, schemaVersion: validation.schemaVersion, createdAt: statSync(directory).mtimeMs };
         } catch {
           return { id: entry.name, valid: false, schemaVersion: null, createdAt: statSync(directory).mtimeMs };
@@ -136,7 +136,7 @@ export class DatabaseRecoveryStore {
     if (!backupStat || !backupStat.isDirectory() || backupStat.isSymbolicLink()) throw new Error('Backup directory is unsafe.');
     const backupReal = realpathSync(backupDirectory);
     if (path.dirname(backupReal) !== realpathSync(backupRoot)) throw new Error('Backup directory escapes workspace.');
-    ValidateRecoverySet(path.join(backupDirectory, 'offerget.db'), path.join(backupDirectory, 'profile.json'), path.join(backupDirectory, 'manifest.json'));
+    ValidateRecoverySet(path.join(backupDirectory, 'avery.db'), path.join(backupDirectory, 'profile.json'), path.join(backupDirectory, 'manifest.json'));
     const recoveryId = randomUUID();
     const staging = path.join(this.workspacePath, `.database-recovery-${recoveryId}`);
     const sceneRoot = path.join(backupRoot, 'recovery-scenes');
@@ -149,15 +149,15 @@ export class DatabaseRecoveryStore {
     this.AssertDirectoryWithin(scene, sceneRoot);
     let originalsMoved = false;
     try {
-      copyFileSync(path.join(backupDirectory, 'offerget.db'), path.join(staging, 'offerget.db'));
+      copyFileSync(path.join(backupDirectory, 'avery.db'), path.join(staging, 'avery.db'));
       if (existsSync(path.join(backupDirectory, 'profile.json'))) copyFileSync(path.join(backupDirectory, 'profile.json'), path.join(staging, 'profile.json'));
-      ValidateRecoverySet(path.join(staging, 'offerget.db'), path.join(staging, 'profile.json'));
-      for (const name of ['offerget.db', 'offerget.db-wal', 'offerget.db-shm', 'profile.json']) {
+      ValidateRecoverySet(path.join(staging, 'avery.db'), path.join(staging, 'profile.json'));
+      for (const name of ['avery.db', 'avery.db-wal', 'avery.db-shm', 'profile.json']) {
         const current = path.join(this.workspacePath, name);
         if (existsSync(current)) renameSync(current, path.join(scene, name));
       }
       originalsMoved = true;
-      renameSync(path.join(staging, 'offerget.db'), this.databasePath);
+      renameSync(path.join(staging, 'avery.db'), this.databasePath);
       if (existsSync(path.join(staging, 'profile.json'))) renameSync(path.join(staging, 'profile.json'), this.profilePath);
       writeFileSync(path.join(scene, 'diagnostic.json'), JSON.stringify({ reason: this.reason, restoredFrom: backupId, sceneId: path.basename(scene) }, null, 2), 'utf8');
       rmSync(staging, { recursive: true, force: true });
@@ -165,7 +165,7 @@ export class DatabaseRecoveryStore {
       return { restored: true, backupId, sceneId: path.basename(scene) };
     } catch (error) {
       if (originalsMoved) {
-        for (const name of ['offerget.db', 'offerget.db-wal', 'offerget.db-shm', 'profile.json']) {
+        for (const name of ['avery.db', 'avery.db-wal', 'avery.db-shm', 'profile.json']) {
           const current = path.join(this.workspacePath, name);
           const original = path.join(scene, name);
           if (existsSync(current)) renameSync(current, path.join(scene, `failed-recovery-${name}`));

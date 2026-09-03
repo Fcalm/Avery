@@ -1,10 +1,10 @@
 import type {
   ApplicationDto, ChatMessageDto, ConversationDto, JobDto, ProfileItemDto, ResumeDto, SettingsDto,
-} from '@offerget/contracts';
+} from '@avery/contracts';
 
 export type PageId = 'assistant' | 'jobs' | 'applications' | 'resumes' | 'profiles' | 'settings' | 'developer';
 
-export type { ApplicationStatus, Channel, EmploymentType, JobScore, ProfileCategory } from '@offerget/contracts';
+export type { ApplicationStatus, Channel, EmploymentType, JobScore, ProfileCategory } from '@avery/contracts';
 
 /** 前端业务 ViewModel：统一以契约 DTO 为模型来源，避免双类型源漂移。 */
 export type Conversation = ConversationDto;

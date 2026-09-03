@@ -23,7 +23,7 @@ afterEach(() => {
 
 describe('Agent Usage 三方对账', () => {
   it('同一 Provider usage 事实同步进入会话展示源、持久化状态与 Trace', async () => {
-    const userDataPath = mkdtempSync(join(tmpdir(), 'offerget-usage-reconciliation-'));
+    const userDataPath = mkdtempSync(join(tmpdir(), 'avery-usage-reconciliation-'));
     directories.push(userDataPath);
     const observability = new ObservabilityStore(userDataPath);
     vi.stubGlobal('fetch', vi.fn(async () => UsageResponse()));

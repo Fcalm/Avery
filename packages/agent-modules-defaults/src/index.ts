@@ -4,4 +4,4 @@ export type { AgentDefaultPorts, ObservabilityStorePort, ProviderConfig } from '
 export {
   ApplicationScenario, ApplicationScenarioPlaceholder, BuildApplicationCompiledInstructions, BuildApplicationPromptFragments, BuildDefaultCompiledInstructions, BuildDefaultPromptFragments, CompilePrompt, DefaultScenario,
 } from './prompts';
-export type { PromptFragment } from '@offerget/agent-sdk';
+export type { PromptFragment } from '@avery/agent-sdk';

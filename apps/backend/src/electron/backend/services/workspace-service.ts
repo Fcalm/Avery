@@ -40,7 +40,7 @@ export class WorkspaceService {
     this.profilePath = profilePath;
     this.attachmentLifecycle = attachmentLifecycle;
     this.workspaceOperations = workspaceOperations;
-    this.databasePath = path.join(workspacePath, 'offerget.db');
+    this.databasePath = path.join(workspacePath, 'avery.db');
     this.attachmentConverter = attachmentConverter ?? new MarkItDownAttachmentConverter();
   }
 
@@ -87,11 +87,11 @@ export class WorkspaceService {
     }
     if (existsSync(targetPath) && readdirSync(targetPath).length > 0) throw new Error('The destination directory must be empty before migration.');
     const operationId = this.workspaceOperations.Begin('copy_workspace', { destinationPath: targetPath });
-    const temporaryPath = `${targetPath}.offerget-migration-${operationId}`;
+    const temporaryPath = `${targetPath}.avery-migration-${operationId}`;
     mkdirSync(temporaryPath, { recursive: true });
     try {
       EnsureWorkspaceDirectories(temporaryPath);
-      const copiedDatabasePath = path.join(temporaryPath, 'offerget.db');
+      const copiedDatabasePath = path.join(temporaryPath, 'avery.db');
       this.db.exec(`VACUUM INTO '${copiedDatabasePath.replace(/'/g, "''")}'`);
       if (existsSync(this.profilePath)) copyFileSync(this.profilePath, path.join(temporaryPath, 'profile.json'));
       for (const directory of ['attachments', 'exports', 'backups', 'derived']) {
@@ -258,7 +258,7 @@ export class WorkspaceService {
     const directory = path.join(this.workspacePath, 'backups', directoryName);
     try {
       mkdirSync(directory, { recursive: true });
-      const databaseBackupPath = path.join(directory, 'offerget.db');
+      const databaseBackupPath = path.join(directory, 'avery.db');
       const escapedPath = databaseBackupPath.replace(/'/g, "''");
       this.db.exec(`VACUUM INTO '${escapedPath}'`);
       const Database = require('better-sqlite3') as any;
@@ -268,7 +268,7 @@ export class WorkspaceService {
       const profileBackupPath = path.join(directory, 'profile.json');
       if (existsSync(this.profilePath)) copyFileSync(this.profilePath, profileBackupPath);
       const attachments = this.db.prepare('SELECT sha256, storage_key FROM attachments WHERE deleted_at IS NULL ORDER BY sha256').all();
-      writeFileSync(path.join(directory, 'manifest.json'), JSON.stringify({ createdAt: GetNow(), database: 'offerget.db', profile: existsSync(profileBackupPath) ? 'profile.json' : null, attachments }, null, 2), 'utf8');
+      writeFileSync(path.join(directory, 'manifest.json'), JSON.stringify({ createdAt: GetNow(), database: 'avery.db', profile: existsSync(profileBackupPath) ? 'profile.json' : null, attachments }, null, 2), 'utf8');
       this.workspaceOperations.Advance(operationId, 'file_written');
       this.workspaceOperations.Advance(operationId, 'db_committed');
       this.PruneDailyBackups();

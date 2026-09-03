@@ -1,4 +1,4 @@
-import type { LogEntry, ObservabilityModule, ProviderUsageFact } from '@offerget/agent-sdk';
+import type { LogEntry, ObservabilityModule, ProviderUsageFact } from '@avery/agent-sdk';
 import { AgentDefaultPorts } from './ports';
 
 /** 观测入口统一脱敏：覆盖凭据、绝对路径及常见无关联系方式，保留可诊断的结构。 */
@@ -39,8 +39,8 @@ export function CreateObservabilityModule(ports: AgentDefaultPorts): Observabili
   }
 
   return {
-    packageName: '@offerget/agent-modules-defaults',
-    name: 'offerget.agent-defaults',
+    packageName: '@avery/agent-modules-defaults',
+    name: 'avery.agent-defaults',
     version: '0.1.0',
     sdkVersion: '0.1.0',
     slot: 'observability',

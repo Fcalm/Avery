@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { CreateResumeDocumentMarkup } from '@offerget/contracts';
+import { CreateResumeDocumentMarkup } from '@avery/contracts';
 import { useUiStore } from '../../../app/UiStore';
 import { useDeleteResume, useRenameResume, useResumes, LoadResumeRevisions, SetResumeRevisionPinned, ExportResumeFile } from '../../../features/resume/api/resumeQueries';
 import { Button, Drawer, EmptyState, FormField, Modal } from '../../../shared/components/UI';

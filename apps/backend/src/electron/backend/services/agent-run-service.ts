@@ -44,7 +44,7 @@ export class AgentRunService {
   /** 返回不含本地路径的浏览器运行时状态。 */
   GetBrowserRuntimeStatus(): any { return this.agent.GetBrowserRuntimeStatus(); }
 
-  /** 清除 OfferGet 独立浏览器登录身份。 */
+  /** 清除 Avery 独立浏览器登录身份。 */
   ClearBrowserProfile(): any { return this.agent.ClearBrowserProfile(); }
 
   /** 用户开始编辑简历前获取互斥锁。 */

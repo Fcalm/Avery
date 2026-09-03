@@ -6,14 +6,14 @@ import { isIP } from 'node:net';
 import { basename, isAbsolute, join, resolve, sep } from 'node:path';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { setTimeout as Delay } from 'node:timers/promises';
-import type { BrowserActionProposal, BrowserAutomationPort, BrowserToolName } from '@offerget/agent-sdk';
+import type { BrowserActionProposal, BrowserAutomationPort, BrowserToolName } from '@avery/agent-sdk';
 
 const MaxStdoutBytes = 1024 * 1024;
 const MaxStderrBytes = 64 * 1024;
 // 冷启动时首次 CDP 导航在低性能 Windows 环境可接近 30 秒；具体工具仍会用更短 deadline 收窄普通动作。
 const DefaultCommandTimeoutMs = 60_000;
 const MaxUploadBytes = 25 * 1024 * 1024;
-const FixedSessionId = 'offerget-default';
+const FixedSessionId = 'avery-default';
 
 export type AgentBrowserCliEnvelope = { success?: boolean; data?: any; error?: string; message?: string };
 type CliEnvelope = AgentBrowserCliEnvelope;
@@ -29,13 +29,13 @@ export class AgentBrowserError extends Error {
 export function BuildBrowserCompanionArgs(input: { appPath?: string; profilePath: string; parentPid: number; unattended?: boolean }): string[] {
   return [
     ...(input.appPath ? [input.appPath] : []),
-    '--offerget-browser-companion',
-    `--offerget-browser-profile=${input.profilePath}`,
-    `--offerget-browser-parent-pid=${input.parentPid}`,
+    '--avery-browser-companion',
+    `--avery-browser-profile=${input.profilePath}`,
+    `--avery-browser-parent-pid=${input.parentPid}`,
     '--remote-debugging-address=127.0.0.1',
     '--remote-debugging-port=0',
     `--user-data-dir=${input.profilePath}`,
-    ...(input.unattended ? ['--offerget-browser-hidden'] : []),
+    ...(input.unattended ? ['--avery-browser-hidden'] : []),
   ];
 }
 
@@ -152,7 +152,7 @@ export class AgentBrowserRuntime implements BrowserAutomationPort {
   private tabs = new Set<string>();
   // namespace 同时绑定 Backend 进程与 companion 代次；companion 换端口后绝不复用旧 daemon 的 CDP 会话。
   private namespaceGeneration = 0;
-  private daemonNamespace = `offerget-${process.pid}-0`;
+  private daemonNamespace = `avery-${process.pid}-0`;
   private daemonActive = false;
   private lastRuntimeError: { code: string; message: string } | null = null;
   private unattended = false;
@@ -204,7 +204,7 @@ export class AgentBrowserRuntime implements BrowserAutomationPort {
     await unlink(portFile).catch((error: any) => { if (error?.code !== 'ENOENT') throw error; });
     const args = BuildBrowserCompanionArgs({ appPath: this.companionAppPath, profilePath: this.profilePath, parentPid: process.pid, unattended: this.unattended });
     const env = this.SanitizedEnvironment();
-    for (const key of Object.keys(env)) if (/^OFFERGET_(DESKTOP_SMOKE|SMOKE_|LIFECYCLE_|INSTALLED_VISUAL_)/i.test(key)) delete env[key];
+    for (const key of Object.keys(env)) if (/^AVERY_(DESKTOP_SMOKE|SMOKE_|LIFECYCLE_|INSTALLED_VISUAL_)/i.test(key)) delete env[key];
     const child = spawn(this.companionExecutablePath, args, { cwd: this.runtimeRoot, env, shell: false, windowsHide: false, stdio: 'ignore' });
     let startErrorMessage: string | undefined;
     child.once('error', (error) => { startErrorMessage = error.message; });
@@ -267,7 +267,7 @@ export class AgentBrowserRuntime implements BrowserAutomationPort {
     await this.AcquireRuntimeLock();
     await mkdir(this.profilePath, { recursive: true });
     this.namespaceGeneration += 1;
-    this.daemonNamespace = `offerget-${process.pid}-${this.namespaceGeneration}`;
+    this.daemonNamespace = `avery-${process.pid}-${this.namespaceGeneration}`;
     const handle = await this.LaunchIsolatedCompanion();
     if (!Number.isSafeInteger(handle.port) || handle.port <= 0 || handle.port > 65_535) {
       await handle.close().catch(() => undefined);
@@ -318,7 +318,7 @@ export class AgentBrowserRuntime implements BrowserAutomationPort {
         if (ownerAlive) {
           try { process.kill(ownerPid, 0); } catch { ownerAlive = false; }
         }
-        if (ownerAlive) throw new AgentBrowserError('BROWSER_PROFILE_BUSY', 'The browser profile is already controlled by another OfferGet process.');
+        if (ownerAlive) throw new AgentBrowserError('BROWSER_PROFILE_BUSY', 'The browser profile is already controlled by another Avery process.');
         await unlink(this.runtimeLockPath).catch((unlinkError: any) => { if (unlinkError?.code !== 'ENOENT') throw unlinkError; });
       }
     }

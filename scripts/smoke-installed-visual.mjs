@@ -4,13 +4,13 @@ import { tmpdir } from 'node:os';
 import { join, relative, resolve } from 'node:path';
 
 const root = join(import.meta.dirname, '..');
-const installer = process.env.OFFERGET_INSTALLED_VISUAL_INSTALLER ? join(root, process.env.OFFERGET_INSTALLED_VISUAL_INSTALLER) : join(root, 'release', 'OfferGet-Setup-0.1.0-x64.exe');
+const installer = process.env.AVERY_INSTALLED_VISUAL_INSTALLER ? join(root, process.env.AVERY_INSTALLED_VISUAL_INSTALLER) : join(root, 'release', 'Avery-Setup-0.1.0-x64.exe');
 if (!existsSync(installer)) throw new Error('Installed visual smoke requires the current NSIS installer.');
-const temporaryRoot = mkdtempSync(join(tmpdir(), 'offerget-installed-visual-'));
+const temporaryRoot = mkdtempSync(join(tmpdir(), 'avery-installed-visual-'));
 const installDirectory = join(temporaryRoot, 'app');
 const userData = join(temporaryRoot, 'user-data');
 const attachment = join(temporaryRoot, 'visual-large-attachment.txt');
-const visualOutputDirectory = process.env.OFFERGET_INSTALLED_VISUAL_OUTPUT || 'output/playwright/v1-2.3';
+const visualOutputDirectory = process.env.AVERY_INSTALLED_VISUAL_OUTPUT || 'output/playwright/v1-2.3';
 const outputDirectory = resolve(root, visualOutputDirectory);
 if (relative(root, outputDirectory).startsWith('..')) throw new Error('Installed visual output must stay inside the repository.');
 mkdirSync(outputDirectory, { recursive: true });
@@ -20,7 +20,7 @@ function RunSmoke(resultName, extra) {
   const resultPath = join(temporaryRoot, resultName);
   const result = spawnSync(process.execPath, [join(root, 'scripts', 'smoke-packaged-app.mjs')], {
     cwd: root,
-    env: { ...process.env, OFFERGET_PACKAGED_EXE: join(installDirectory, 'OfferGet.exe'), OFFERGET_SMOKE_USER_DATA: userData, OFFERGET_SMOKE_RESULT_PATH: resultPath, ...extra },
+    env: { ...process.env, AVERY_PACKAGED_EXE: join(installDirectory, 'Avery.exe'), AVERY_SMOKE_USER_DATA: userData, AVERY_SMOKE_RESULT_PATH: resultPath, ...extra },
     windowsHide: true,
     encoding: 'utf8',
   });
@@ -30,10 +30,10 @@ function RunSmoke(resultName, extra) {
 
 try {
   const installation = spawnSync(installer, ['/S', `/D=${installDirectory}`], { cwd: root, windowsHide: true, encoding: 'utf8' });
-  if (installation.status !== 0 || !existsSync(join(installDirectory, 'OfferGet.exe'))) throw new Error('Installed visual setup failed.');
-  const seed = RunSmoke('seed.json', { OFFERGET_LIFECYCLE_MODE: 'seed', OFFERGET_LIFECYCLE_ATTACHMENT: attachment, OFFERGET_LIFECYCLE_API_KEY: 'visual-smoke-credential' });
+  if (installation.status !== 0 || !existsSync(join(installDirectory, 'Avery.exe'))) throw new Error('Installed visual setup failed.');
+  const seed = RunSmoke('seed.json', { AVERY_LIFECYCLE_MODE: 'seed', AVERY_LIFECYCLE_ATTACHMENT: attachment, AVERY_LIFECYCLE_API_KEY: 'visual-smoke-credential' });
   writeFileSync(join(outputDirectory, '2.3-installed-seed-report.json'), JSON.stringify(seed, null, 2), 'utf8');
-  const visual = RunSmoke('visual.json', { OFFERGET_INSTALLED_VISUAL_OUTPUT: outputDirectory });
+  const visual = RunSmoke('visual.json', { AVERY_INSTALLED_VISUAL_OUTPUT: outputDirectory });
   const report = { electron: visual.electron, startupReadyMs: visual.startupReadyMs, seedPerformance: seed.lifecycle?.performance, installedVisual: visual.installedVisual, passed: visual.installedVisual?.passed === true && visual.startupReadyMs <= 2000 };
   writeFileSync(join(outputDirectory, '2.3-installed-report.json'), JSON.stringify(report, null, 2), 'utf8');
   console.log(JSON.stringify(report));

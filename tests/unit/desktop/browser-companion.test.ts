@@ -11,9 +11,9 @@ import { IsAllowedBrowserCompanionUrl, IsBrowserCompanionProcess } from '../../.
 
 describe('隔离浏览器伴随进程', () => {
   it('只由固定 companion 标记进入隔离模式', () => {
-    expect(IsBrowserCompanionProcess(['OfferGet.exe', '--offerget-browser-companion'])).toBe(true);
-    expect(IsBrowserCompanionProcess(['OfferGet.exe', '--offerget-browser-companion=true'])).toBe(false);
-    expect(IsBrowserCompanionProcess(['OfferGet.exe'])).toBe(false);
+    expect(IsBrowserCompanionProcess(['Avery.exe', '--avery-browser-companion'])).toBe(true);
+    expect(IsBrowserCompanionProcess(['Avery.exe', '--avery-browser-companion=true'])).toBe(false);
+    expect(IsBrowserCompanionProcess(['Avery.exe'])).toBe(false);
   });
 
   it('网页 target 拒绝本地协议、脚本协议与内嵌凭据', () => {

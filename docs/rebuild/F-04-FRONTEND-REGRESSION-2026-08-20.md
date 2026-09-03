@@ -11,7 +11,7 @@
 | 设置、简历、岗位、投递、档案、附件、备份与导出 | 通过 | Electron 生命周期 seed/verify：设置已完成、1 份简历（2 个版本）、1 条岗位、1 条投递、1 条档案、附件保留、备份 1 份，PDF/DOCX/PNG 导出均成功。 |
 | Renderer / Backend 启动 | 通过 | `rendererLoaded: true`、`backendReady: true`；verify 启动 1708ms，小于 2 秒门槛。 |
 | 1280×800 与 1024×680 主页面 | 通过 | 实际 Electron 依次进入求职助手、岗位库、投递管理、简历库、档案库、开发者工具，共 12 项；均无横向溢出、关键操作越界或 Renderer console error。 |
-| Desktop TypeScript 迁移产物 | 通过 | `npm run build --workspace @offerget/desktop` 通过。 |
+| Desktop TypeScript 迁移产物 | 通过 | `npm run build --workspace @avery/desktop` 通过。 |
 | 构建与已有回归 | 通过 | `npm test`、`npm run build`、`git diff --check` 均通过。Vitest：36 passed、6 expected fail（均为 Agent 已知差距，不属于前端回归失败）。 |
 
 ## 发现与处理

@@ -17,7 +17,7 @@ interface MarkItDownConverterOptions {
 }
 
 function ResolveCommand(): string {
-  const configured = process.env.OFFERGET_MARKITDOWN_EXECUTABLE?.trim();
+  const configured = process.env.AVERY_MARKITDOWN_EXECUTABLE?.trim();
   if (configured) return configured;
   const resourcesPath = (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath;
   if (resourcesPath) {

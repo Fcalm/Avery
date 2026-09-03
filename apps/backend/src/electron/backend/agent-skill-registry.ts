@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { readdir, readFile, realpath, stat } from 'node:fs/promises';
 import * as path from 'node:path';
-import type { AgentMessage, FrozenSkill, SkillManifest, SkillSnapshot } from '@offerget/agent-sdk';
+import type { AgentMessage, FrozenSkill, SkillManifest, SkillSnapshot } from '@avery/agent-sdk';
 
 const { load: ParseYaml } = require('js-yaml') as { load(source: string): unknown };
 
@@ -82,12 +82,12 @@ function ParseSkillFrontmatter(content: string): { name: string; description: st
   if (/[<>]/.test(description)) throw new Error('Skill description cannot contain angle brackets.');
   const metadata = source.metadata;
   if (metadata !== undefined && (!metadata || typeof metadata !== 'object' || Array.isArray(metadata))) throw new Error('Skill metadata must be an object.');
-  const offerget = (metadata as Record<string, unknown> | undefined)?.offerget;
-  if (offerget !== undefined && (!offerget || typeof offerget !== 'object' || Array.isArray(offerget))) throw new Error('Skill metadata.offerget must be an object.');
-  const scenarioValue = (offerget as Record<string, unknown> | undefined)?.scenarios ?? ['default'];
-  const scenarios = [...new Set(RequireTextArray(scenarioValue, 'metadata.offerget.scenarios', 2, 20))];
+  const avery = (metadata as Record<string, unknown> | undefined)?.avery;
+  if (avery !== undefined && (!avery || typeof avery !== 'object' || Array.isArray(avery))) throw new Error('Skill metadata.avery must be an object.');
+  const scenarioValue = (avery as Record<string, unknown> | undefined)?.scenarios ?? ['default'];
+  const scenarios = [...new Set(RequireTextArray(scenarioValue, 'metadata.avery.scenarios', 2, 20))];
   if (!scenarios.length || scenarios.some((scenario) => scenario !== 'default' && scenario !== 'application')) {
-    throw new Error('Skill metadata.offerget.scenarios may contain only default and application.');
+    throw new Error('Skill metadata.avery.scenarios may contain only default and application.');
   }
   return { name, description, scenarios };
 }

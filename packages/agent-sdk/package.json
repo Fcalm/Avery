@@ -1,8 +1,8 @@
 {
-  "name": "@offerget/agent-sdk",
+  "name": "@avery/agent-sdk",
   "version": "0.1.0",
   "private": true,
-  "description": "OfferGet Agent 模块化 SDK：六槽接口、窄 Port、Manifest 与 Tool 契约的唯一来源；纯类型零运行时依赖",
+  "description": "Avery Agent 模块化 SDK：六槽接口、窄 Port、Manifest 与 Tool 契约的唯一来源；纯类型零运行时依赖",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {

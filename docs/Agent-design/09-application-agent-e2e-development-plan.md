@@ -202,7 +202,7 @@ ScriptedProvider 每一步校验可见工具清单等于投递场景冻结白名
 
 - `npm test`：通过；Vitest 25 个文件通过、1 个跳过，100 个用例通过、1 个跳过；Backend Node Test 8/8 通过。
 - `npm run smoke:agent-application`：通过；入口为 `AgentHost.Send`，实际结果为 6 个岗位、1 个普通下拉、2 组级联下拉、3 次强制确认、`submissionCount=1`、回执 `LOCAL-APPLICATION-0001`。
-- `npm run smoke:browser-companion`：通过；Snapshot、Fill、Click 正常，CDP 仅暴露 2 个 companion target，未暴露 OfferGet 主窗口。
+- `npm run smoke:browser-companion`：通过；Snapshot、Fill、Click 正常，CDP 仅暴露 2 个 companion target，未暴露 Avery 主窗口。
 - Backend、Desktop main TypeScript 编译通过；Desktop preload 使用 `--noEmit` 类型检查通过；Renderer Vite 构建通过。
 - 根 `npm run build` 的唯一失败发生在写入已被当前 Electron 进程映射的 `electron/preload.cjs`，错误为 Windows user-mapped section 文件锁；本次未修改 preload，类型检查与其余构建已分别通过。关闭占用该文件的应用后仍需补跑一次完整根构建，不能据此将 AP-06 标记完成。
 - E2E 暴露并修复 Windows CLI 误超时：`agent-browser` daemon 可能继承管道句柄，等待 ChildProcess `close` 会拖到超时；Runtime 改用单次 CLI 进程 `exit` 作为命令终态，并用进程级 namespace 避免复用崩溃遗留 daemon。
@@ -222,7 +222,7 @@ ScriptedProvider 每一步校验可见工具清单等于投递场景冻结白名
 
 - Windows 目录包构建通过，输出为 `release-rebuild/ap06/win-unpacked`。
 - 打包桌面冒烟通过：Renderer 已加载、Backend ready，Renderer 经 preload/IPC 读取 AgentHost 和 Browser Runtime 状态均成功，启动就绪 627 ms。
-- 打包投递冒烟通过：只使用包内 `agent-browser` CLI 与 `OfferGet.exe` companion，最终 `submissionCount=1`，回执为 `LOCAL-APPLICATION-0001`。
+- 打包投递冒烟通过：只使用包内 `agent-browser` CLI 与 `Avery.exe` companion，最终 `submissionCount=1`，回执为 `LOCAL-APPLICATION-0001`。
 - 上述桌面 IPC 与打包投递是两条独立证据，尚未覆盖 Renderer 在同一事务中发起投递并观察确认卡、停止/恢复和最终状态；不据此勾选完整桌面 UI 验收项。
 - DeepSeek `deepseek-v4-flash` 已完成 10 次固定评估：10/10 成功，平均 28.2 模型轮次，平均耗时 79.55 秒。旧版 70 个“错误”中包含 30 个正常确认等待；实际问题以 stale ref 为主，分类与修复见 `10-application-release-validation.md`。
 - 真实招聘站需要测试账号、可撤销材料及逐站授权，本轮未执行任何真实投递、上传或消息发送。

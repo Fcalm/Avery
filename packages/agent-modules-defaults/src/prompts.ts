@@ -1,10 +1,10 @@
 /**
- * OfferGet 的系统与场景提示词集中定义。
+ * Avery 的系统与场景提示词集中定义。
  *
  * 模型 Provider 与上下文压缩都从这里读取，便于独立审查和迭代提示词，避免提示词散落在业务实现中。
  */
 import { createHash } from 'node:crypto';
-import type { CompiledInstructions, PromptFragment, PromptManifest, ScenarioSnapshot } from '@offerget/agent-sdk';
+import type { CompiledInstructions, PromptFragment, PromptManifest, ScenarioSnapshot } from '@avery/agent-sdk';
 
 /** 默认场景快照：允许处理并持久化本地简历与档案，不含浏览器能力。 */
 export const DefaultScenario: ScenarioSnapshot = {

@@ -1,7 +1,7 @@
 import { ipcMain } from 'electron';
 import type { BrowserWindow, IpcMain, IpcMainInvokeEvent } from 'electron';
-import { FunctionRouteChannels, MethodRoutes, WriteCommandChannels } from '@offerget/backend/dist/router';
-import { WriteCommandEnvelopeSchema } from '@offerget/contracts';
+import { FunctionRouteChannels, MethodRoutes, WriteCommandChannels } from '@avery/backend/dist/router';
+import { WriteCommandEnvelopeSchema } from '@avery/contracts';
 
 export const MaxGatewayPayloadBytes = 10 * 1024 * 1024;
 export const WindowControlChannels = ['window:minimize', 'window:toggle-maximize', 'window:close'] as const;

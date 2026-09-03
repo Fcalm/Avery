@@ -1,6 +1,6 @@
 import {
   ErrorCode, type ErrorCodeValue, type ResultEnvelope, type DesktopAgentBridge, type DesktopEvaluationBridge, type WorkspaceBridge, type SettingsDto, type WriteCommandOptions,
-} from '@offerget/contracts';
+} from '@avery/contracts';
 
 /** 统一业务错误：携带稳定错误码与可选诊断明细，页面只消费 code，不再解析异常字符串。 */
 export class AppError extends Error {
@@ -42,19 +42,19 @@ export async function Unwrap<T>(envelope: ResultEnvelope<T> | Promise<ResultEnve
 
 /** 只读访问 Agent Bridge；未在桌面客户端时抛统一业务错误。 */
 function RequireAgent(): DesktopAgentBridge {
-  if (!window.offergetAgent) throw new AppError(ErrorCode.INTERNAL_ERROR, '请使用 Avery 桌面客户端启动。');
-  return window.offergetAgent;
+  if (!window.averyAgent) throw new AppError(ErrorCode.INTERNAL_ERROR, '请使用 Avery 桌面客户端启动。');
+  return window.averyAgent;
 }
 
 /** 只读访问 Workspace Bridge；未在桌面客户端时抛统一业务错误。 */
 function RequireWorkspace(): WorkspaceBridge {
-  if (!window.offergetWorkspace) throw new AppError(ErrorCode.INTERNAL_ERROR, '请使用 Avery 桌面客户端启动。');
-  return window.offergetWorkspace;
+  if (!window.averyWorkspace) throw new AppError(ErrorCode.INTERNAL_ERROR, '请使用 Avery 桌面客户端启动。');
+  return window.averyWorkspace;
 }
 
 function RequireEvaluation(): DesktopEvaluationBridge {
-  if (!window.offergetEvaluation) throw new AppError(ErrorCode.INTERNAL_ERROR, '请使用 Avery 桌面客户端启动测评系统。');
-  return window.offergetEvaluation;
+  if (!window.averyEvaluation) throw new AppError(ErrorCode.INTERNAL_ERROR, '请使用 Avery 桌面客户端启动测评系统。');
+  return window.averyEvaluation;
 }
 
 /**
@@ -167,5 +167,5 @@ void bridgeClientCompleteness;
 
 /** 判断当前页面是否由带安全桥接的桌面客户端承载。 */
 export function IsDesktopClientAvailable() {
-  return Boolean(window.offergetAgent);
+  return Boolean(window.averyAgent);
 }

@@ -10,7 +10,7 @@ function CreatePorts() {
 function Proposal(overrides: Partial<BrowserActionProposal> = {}): BrowserActionProposal {
   return {
     proposalHash: 'proposal-hash', toolName: 'BrowserClick', canonicalArguments: { ref: '@e1', pageRevision: 1 },
-    summary: '点击下一步', risk: 'medium', forceConfirmation: false, pageRevision: 1, url: 'https://example.com/jobs', resourceIds: ['browser:offerget-default'],
+    summary: '点击下一步', risk: 'medium', forceConfirmation: false, pageRevision: 1, url: 'https://example.com/jobs', resourceIds: ['browser:avery-default'],
     ...overrides,
   };
 }

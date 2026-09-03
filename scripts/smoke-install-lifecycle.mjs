@@ -5,9 +5,9 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
 const root = join(import.meta.dirname, '..');
-const currentInstaller = process.env.OFFERGET_LIFECYCLE_CURRENT_INSTALLER
-  ? join(root, process.env.OFFERGET_LIFECYCLE_CURRENT_INSTALLER)
-  : join(root, 'release', 'OfferGet-Setup-0.1.0-x64.exe');
+const currentInstaller = process.env.AVERY_LIFECYCLE_CURRENT_INSTALLER
+  ? join(root, process.env.AVERY_LIFECYCLE_CURRENT_INSTALLER)
+  : join(root, 'release', 'Avery-Setup-0.1.0-x64.exe');
 const fixtureRoot = join(root, 'release', 'fixtures');
 const candidateManifestPath = join(fixtureRoot, 'previous-candidate.json');
 if (!existsSync(currentInstaller) || !existsSync(candidateManifestPath)) throw new Error('Current or previous candidate installer is missing.');
@@ -16,13 +16,13 @@ const previousInstaller = join(fixtureRoot, candidateManifest.name);
 const previousHash = createHash('sha256').update(readFileSync(previousInstaller)).digest('hex');
 if (previousHash !== candidateManifest.sha256 || candidateManifest.version !== '0.0.9') throw new Error('Previous candidate manifest verification failed.');
 
-const testRoot = mkdtempSync(join(tmpdir(), 'offerget-lifecycle-'));
+const testRoot = mkdtempSync(join(tmpdir(), 'avery-lifecycle-'));
 const attachmentPath = join(testRoot, 'lifecycle-attachment.txt');
 writeFileSync(attachmentPath, Buffer.alloc(5 * 1024 * 1024, 0x41));
 
 function Install(installer, installDir) {
   const result = spawnSync(installer, ['/S', `/D=${installDir}`], { cwd: root, windowsHide: true, stdio: 'pipe', encoding: 'utf8' });
-  if (result.error || result.status !== 0 || !existsSync(join(installDir, 'OfferGet.exe'))) throw new Error(`Silent install failed (${result.status ?? 'spawn'}).`);
+  if (result.error || result.status !== 0 || !existsSync(join(installDir, 'Avery.exe'))) throw new Error(`Silent install failed (${result.status ?? 'spawn'}).`);
 }
 
 function Uninstall(installDir) {
@@ -35,7 +35,7 @@ function Uninstall(installDir) {
 function RunCurrent(executable, userData, mode, resultPath) {
   const smoke = spawnSync(process.execPath, [join(root, 'scripts', 'smoke-packaged-app.mjs')], {
     cwd: root,
-    env: { ...process.env, OFFERGET_PACKAGED_EXE: executable, OFFERGET_SMOKE_USER_DATA: userData, OFFERGET_SMOKE_RESULT_PATH: resultPath, OFFERGET_LIFECYCLE_MODE: mode, OFFERGET_LIFECYCLE_ATTACHMENT: attachmentPath, OFFERGET_LIFECYCLE_API_KEY: 'lifecycle-smoke-credential' },
+    env: { ...process.env, AVERY_PACKAGED_EXE: executable, AVERY_SMOKE_USER_DATA: userData, AVERY_SMOKE_RESULT_PATH: resultPath, AVERY_LIFECYCLE_MODE: mode, AVERY_LIFECYCLE_ATTACHMENT: attachmentPath, AVERY_LIFECYCLE_API_KEY: 'lifecycle-smoke-credential' },
     windowsHide: true,
     stdio: 'inherit',
   });
@@ -52,11 +52,11 @@ function RunCandidateScript(executable, userData, scriptName, resultPath, extra 
     env: {
       ...process.env,
       ELECTRON_RUN_AS_NODE: '1',
-      OFFERGET_INSTALLED_RESOURCES: installedResources,
-      OFFERGET_LIFECYCLE_WORKSPACE: join(userData, 'OfferGet Workspace'),
-      OFFERGET_LIFECYCLE_USER_DATA: userData,
-      OFFERGET_LIFECYCLE_ATTACHMENT: attachmentPath,
-      OFFERGET_LIFECYCLE_RESULT: resultPath,
+      AVERY_INSTALLED_RESOURCES: installedResources,
+      AVERY_LIFECYCLE_WORKSPACE: join(userData, 'Avery Workspace'),
+      AVERY_LIFECYCLE_USER_DATA: userData,
+      AVERY_LIFECYCLE_ATTACHMENT: attachmentPath,
+      AVERY_LIFECYCLE_RESULT: resultPath,
       ...extra,
     },
     windowsHide: true,
@@ -94,7 +94,7 @@ try {
   const freshUserData = join(freshRoot, 'user-data');
   mkdirSync(freshUserData, { recursive: true });
   Install(currentInstaller, freshInstallDir);
-  const freshSeed = RunCurrent(join(freshInstallDir, 'OfferGet.exe'), freshUserData, 'seed', join(freshRoot, 'seed.json'));
+  const freshSeed = RunCurrent(join(freshInstallDir, 'Avery.exe'), freshUserData, 'seed', join(freshRoot, 'seed.json'));
   report.freshInstall = {
     healthy: freshSeed.schemaVersion === 6 && freshSeed.integrity === 'ok',
     initialized: freshSeed.counts.resumes === 1 && freshSeed.counts.profiles === 1,
@@ -105,9 +105,9 @@ try {
 
   // 普通卸载不得删除 AppData；重装后读取并继续使用原数据。
   Uninstall(freshInstallDir);
-  report.uninstallReinstall.preservedAfterUninstall = existsSync(join(freshUserData, 'OfferGet Workspace', 'offerget.db')) && existsSync(join(freshUserData, 'agent-config.json'));
+  report.uninstallReinstall.preservedAfterUninstall = existsSync(join(freshUserData, 'Avery Workspace', 'avery.db')) && existsSync(join(freshUserData, 'agent-config.json'));
   Install(currentInstaller, freshInstallDir);
-  const freshReloaded = RunCurrent(join(freshInstallDir, 'OfferGet.exe'), freshUserData, 'verify', join(freshRoot, 'reloaded.json'));
+  const freshReloaded = RunCurrent(join(freshInstallDir, 'Avery.exe'), freshUserData, 'verify', join(freshRoot, 'reloaded.json'));
   report.uninstallReinstall.state = CompareState(freshSeed, freshReloaded);
   report.uninstallReinstall.provider = freshReloaded.providerConfigured && freshReloaded.credentialEncrypted;
   report.uninstallReinstall.exports = Object.values(freshReloaded.exports).every(Boolean);
@@ -119,13 +119,13 @@ try {
   const upgradeUserData = join(upgradeRoot, 'user-data');
   mkdirSync(upgradeUserData, { recursive: true });
   Install(previousInstaller, upgradeInstallDir);
-  const candidateExe = join(upgradeInstallDir, 'OfferGet.exe');
+  const candidateExe = join(upgradeInstallDir, 'Avery.exe');
   const v4 = RunCandidateScript(candidateExe, upgradeUserData, 'lifecycle-v4-seed.cjs', join(upgradeRoot, 'v4.json'));
   const interrupted = await InterruptUpgrade(currentInstaller, upgradeInstallDir);
-  const oldStillUsable = RunCandidateScript(candidateExe, upgradeUserData, 'lifecycle-candidate-probe.cjs', join(upgradeRoot, 'interrupted-probe.json'), { OFFERGET_LIFECYCLE_EXPECTATION: 'open-v4' }).passed;
+  const oldStillUsable = RunCandidateScript(candidateExe, upgradeUserData, 'lifecycle-candidate-probe.cjs', join(upgradeRoot, 'interrupted-probe.json'), { AVERY_LIFECYCLE_EXPECTATION: 'open-v4' }).passed;
   report.abnormal.interruptedInstaller = interrupted && oldStillUsable;
   Install(currentInstaller, upgradeInstallDir);
-  const upgraded = RunCurrent(join(upgradeInstallDir, 'OfferGet.exe'), upgradeUserData, 'verify', join(upgradeRoot, 'upgraded.json'));
+  const upgraded = RunCurrent(join(upgradeInstallDir, 'Avery.exe'), upgradeUserData, 'verify', join(upgradeRoot, 'upgraded.json'));
   report.upgrade = {
     sourceSchema: v4.schemaVersion,
     targetSchema: upgraded.schemaVersion,
@@ -138,7 +138,7 @@ try {
   // 降级保护：复制已升级工作空间并注入未来 schema，当前安装版必须只读拒写并提供兼容版本引导所需恢复状态。
   const futureUserData = join(upgradeRoot, 'future-user-data');
   cpSync(upgradeUserData, futureUserData, { recursive: true });
-  const currentExe = join(upgradeInstallDir, 'OfferGet.exe');
+  const currentExe = join(upgradeInstallDir, 'Avery.exe');
   RunCandidateScript(currentExe, futureUserData, 'lifecycle-future-schema.cjs', join(upgradeRoot, 'future-schema.json'));
   const futureRecovery = RunCurrent(currentExe, futureUserData, 'recovery', join(upgradeRoot, 'future-recovery.json'));
   report.abnormal.downgradeRejected = futureRecovery.recoveryReadOnly === true && futureRecovery.recoveryCanRestore === true && futureRecovery.recoveryMode === 'recovery';

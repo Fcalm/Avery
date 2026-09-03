@@ -1,5 +1,5 @@
-import type { AgentModules, SlotName } from '@offerget/agent-sdk';
-import { SlotOrder, SlotToModuleKey } from '@offerget/agent-sdk';
+import type { AgentModules, SlotName } from '@avery/agent-sdk';
+import { SlotOrder, SlotToModuleKey } from '@avery/agent-sdk';
 
 /** 宿主当前支持的 SDK 契约版本；模块 sdkVersion 必须与之完全匹配，否则拒绝启动（不做静默回退）。 */
 export const HostSdkVersion = '0.1.0';

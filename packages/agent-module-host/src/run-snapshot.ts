@@ -1,4 +1,4 @@
-import type { CompiledInstructions, RegisteredAgentTool, ScenarioSnapshot } from '@offerget/agent-sdk';
+import type { CompiledInstructions, RegisteredAgentTool, ScenarioSnapshot } from '@avery/agent-sdk';
 
 /** Run 可读取的数据边界；快照只记录授权标识，不包含凭据或业务正文。 */
 export interface RunDataScopeSnapshot {

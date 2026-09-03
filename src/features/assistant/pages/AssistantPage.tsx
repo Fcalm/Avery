@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type CSSProperties, type KeyboardEvent, type MouseEvent } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useLayoutEffect } from 'react';
-import type { AgentObservability, AgentStreamEvent, BrowserActionState, ConfirmationMode, ReasoningEffort } from '@offerget/contracts';
-import { CreateResumeDocumentMarkup } from '@offerget/contracts';
+import type { AgentObservability, AgentStreamEvent, BrowserActionState, ConfirmationMode, ReasoningEffort } from '@avery/contracts';
+import { CreateResumeDocumentMarkup } from '@avery/contracts';
 import { useUiStore } from '../../../app/UiStore';
 import { WORKSPACE_QUERY_KEY } from '../../../features/workspace/api/workspaceData';
 import {
@@ -802,7 +802,7 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
   const reasoningEffortIndex = Math.max(0, reasoningEffortOptions.indexOf(reasoningEffort));
   return <div className={`assistant-layout ${isComposerCompact ? 'is-composer-compact' : ''}`} style={{ '--assistant-main-min-width': `${ASSISTANT_MAIN_MIN_WIDTH}px` } as CSSProperties}>
     {assistantView === 'trace' ? <section className="assistant-main assistant-trace" aria-label="当前对话轨迹"><TraceViewer traces={observability?.traces ?? []} conversations={conversations} focusConversationId={activeConversationId} onSelectTrace={GetAgentTraceEvents} /></section> : <section className={`assistant-main ${isEmptyConversation ? 'is-empty-conversation' : ''}`}>
-      {conversation?.messages.length ? <div ref={messageListRef} className="message-list"><div className="message-thread">{conversation.messages.map((message) => <article key={message.id} className={`chat-message ${message.role}`}><div className="message-meta">{message.role === 'assistant' ? <><span className="agent-dot" />OFFERGET 回信</> : '你'}<time>{FormatTime(message.createdAt)}</time></div>{message.role === 'assistant' && settings.thinkingEnabled && message.thinkingContent && <details className="thinking-block"><summary>思考内容</summary><div className="thinking-content"><MarkdownText content={message.thinkingContent} /></div></details>}<MarkdownText content={message.content} /></article>)}</div></div> : <EmptyAssistant scenarioId={scenarioId} />}
+      {conversation?.messages.length ? <div ref={messageListRef} className="message-list"><div className="message-thread">{conversation.messages.map((message) => <article key={message.id} className={`chat-message ${message.role}`}><div className="message-meta">{message.role === 'assistant' ? <><span className="agent-dot" />AVERY 回信</> : '你'}<time>{FormatTime(message.createdAt)}</time></div>{message.role === 'assistant' && settings.thinkingEnabled && message.thinkingContent && <details className="thinking-block"><summary>思考内容</summary><div className="thinking-content"><MarkdownText content={message.thinkingContent} /></div></details>}<MarkdownText content={message.content} /></article>)}</div></div> : <EmptyAssistant scenarioId={scenarioId} />}
       <div className="composer-dock">
         {isTaskActive && agentTodos.length > 0 && <div className="task-dock"><div className="task-summary"><span className={`task-status-icon ${GetTodoPresentation(activeTodo?.status ?? 'pending').className}`} aria-hidden="true">{GetTodoPresentation(activeTodo?.status ?? 'pending').symbol}</span><span className="task-summary-copy">{activeTodo?.title ?? '正在处理任务'}</span><span className={`task-summary-status ${GetTodoPresentation(activeTodo?.status ?? 'pending').className}`}>{GetTodoPresentation(activeTodo?.status ?? 'pending').label}</span></div><div className="task-card" aria-label="Todo 列表"><div className="task-card-heading">Todo · {agentTodos.length} 项</div><div className="task-list">{agentTodos.map((todo) => { const presentation = GetTodoPresentation(todo.status); return <div key={todo.id} className={`task-list-item ${presentation.className}`}><span className="task-status-icon" aria-hidden="true">{presentation.symbol}</span><span className="task-list-title">{todo.title}</span><span className="task-list-status">{presentation.label}</span></div>; })}</div></div></div>}
         {!hasComposerBlocker && attachments.length > 0 && <div className="attachment-row">{attachments.map((attachment) => <span className="attachment-chip" key={`${attachment.name}-${attachment.path}`}><Icon name="resume" size={14} /><span className="attachment-name">{attachment.name}</span><button type="button" aria-label={`移除 ${attachment.name}`} onClick={() => setAttachments((current) => current.filter((item) => item !== attachment))}><Icon name="close" size={13} /></button></span>)}</div>}
@@ -895,9 +895,9 @@ function ConfirmationComposer({ title, description, preview, confirmLabel, onCan
 
 function EmptyAssistant({ scenarioId }: { scenarioId: 'default' | 'application' }) {
   if (scenarioId === 'application') {
-    return <div className="assistant-empty application-assistant-empty"><div className="assistant-start-island"><p className="eyebrow">OFFERGET 投递助手 · 公开测试</p><h2>在真实招聘网站上开始求职</h2><p>Agent 可搜索岗位、读取 JD、填写表单和上传已授权材料。登录与验证码由你接管，发送消息、勾选协议和最终提交仍会请求确认。</p></div></div>;
+    return <div className="assistant-empty application-assistant-empty"><div className="assistant-start-island"><p className="eyebrow">AVERY 投递助手 · 公开测试</p><h2>在真实招聘网站上开始求职</h2><p>Agent 可搜索岗位、读取 JD、填写表单和上传已授权材料。登录与验证码由你接管，发送消息、勾选协议和最终提交仍会请求确认。</p></div></div>;
   }
-  return <div className="assistant-empty"><div className="assistant-start-island"><p className="eyebrow">OFFERGET 简历助手</p><h2>今天想从哪里开始？</h2><p>写下一个求职目标，或从下面的常用任务开始。</p></div></div>;
+  return <div className="assistant-empty"><div className="assistant-start-island"><p className="eyebrow">AVERY 简历助手</p><h2>今天想从哪里开始？</h2><p>写下一个求职目标，或从下面的常用任务开始。</p></div></div>;
 }
 
 function QuickStart({ scenarioId, onUse }: { scenarioId: 'default' | 'application'; onUse: (prompt: string) => void }) {

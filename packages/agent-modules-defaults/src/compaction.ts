@@ -1,5 +1,5 @@
-import type { AgentMessage, CompactionModule } from '@offerget/agent-sdk';
-import { DropOldestTurnGroups, IsUserTurn, KeepRecentTurnGroups, SplitTurnGroups } from '@offerget/agent-sdk';
+import type { AgentMessage, CompactionModule } from '@avery/agent-sdk';
+import { DropOldestTurnGroups, IsUserTurn, KeepRecentTurnGroups, SplitTurnGroups } from '@avery/agent-sdk';
 
 const SkillControlKinds = new Set(['skill_index', 'loaded_skill', 'loaded_skill_resource', 'skill_state_reset']);
 
@@ -30,8 +30,8 @@ function FlattenGroup(group: ReturnType<typeof SplitTurnGroups>[number]): AgentM
 /** 压缩模块：判定、切分与降级原语；摘要生成由 model-provider 承担，重试循环在 Kernel。 */
 export function CreateCompactionModule(): CompactionModule {
   return {
-    packageName: '@offerget/agent-modules-defaults',
-    name: 'offerget.agent-defaults',
+    packageName: '@avery/agent-modules-defaults',
+    name: 'avery.agent-defaults',
     version: '0.1.0',
     sdkVersion: '0.1.0',
     slot: 'compaction',

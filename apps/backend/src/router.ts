@@ -12,7 +12,7 @@ import {
   ResumeUpsertSchema,
   SettingsSubmitSchema,
   type ErrorCodeValue,
-} from '@offerget/contracts';
+} from '@avery/contracts';
 
 /** 单条命令 payload 上限；合法业务负载（如批量会话消息）远小于此，超过视为调用方缺陷。 */
 export const MaxCommandPayloadBytes = 10 * 1024 * 1024;

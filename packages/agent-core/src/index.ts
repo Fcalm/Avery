@@ -2,4 +2,4 @@
 export { RunAgentLoop, ScrubTraceContent } from './kernel';
 export { BuildRuntimeReminder, CreateRuntimeReminderMessage, ShouldInjectRuntimeReminder } from './runtime-reminder';
 export type { RuntimeReminderState } from './runtime-reminder';
-export type { KernelRunFunction, KernelRunInput, KernelRunResult } from '@offerget/agent-sdk';
+export type { KernelRunFunction, KernelRunInput, KernelRunResult } from '@avery/agent-sdk';

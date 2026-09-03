@@ -4,11 +4,11 @@ import { join, resolve } from 'node:path';
 
 const root = join(import.meta.dirname, '..');
 const packageJson = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
-const packageRoot = process.env.OFFERGET_PACKAGED_ROOT
-  ? resolve(process.env.OFFERGET_PACKAGED_ROOT)
+const packageRoot = process.env.AVERY_PACKAGED_ROOT
+  ? resolve(process.env.AVERY_PACKAGED_ROOT)
   : join(root, 'release-rebuild', 'win-unpacked');
-const executable = process.env.OFFERGET_PACKAGED_EXE
-  ? resolve(process.env.OFFERGET_PACKAGED_EXE)
+const executable = process.env.AVERY_PACKAGED_EXE
+  ? resolve(process.env.AVERY_PACKAGED_EXE)
   : join(packageRoot, `${packageJson.build?.productName || packageJson.name}.exe`);
 const binaryName = process.platform === 'win32'
   ? `agent-browser-win32-${process.arch}.exe`
@@ -22,9 +22,9 @@ const child = spawn(process.execPath, [join(root, 'scripts', 'smoke-agent-applic
   cwd: root,
   env: {
     ...process.env,
-    OFFERGET_AGENT_BROWSER_EXECUTABLE: cli,
-    OFFERGET_COMPANION_EXECUTABLE: executable,
-    OFFERGET_COMPANION_APP_PATH: '',
+    AVERY_AGENT_BROWSER_EXECUTABLE: cli,
+    AVERY_COMPANION_EXECUTABLE: executable,
+    AVERY_COMPANION_APP_PATH: '',
   },
   windowsHide: true,
   stdio: ['ignore', 'pipe', 'pipe'],

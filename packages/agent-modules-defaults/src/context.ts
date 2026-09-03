@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import type { AgentMessage, ContextBuilderModule, RuntimeContext, SessionContextSnapshot } from '@offerget/agent-sdk';
+import type { AgentMessage, ContextBuilderModule, RuntimeContext, SessionContextSnapshot } from '@avery/agent-sdk';
 import { AgentDefaultPorts } from './ports';
 
 /** 上下文构建模块：读取业务只读快照并序列化为会话上下文；不读取工作空间或项目规则文件。 */
@@ -8,8 +8,8 @@ export function CreateContextBuilderModule(ports: AgentDefaultPorts): ContextBui
   const snapshotHashes = new Map<string, string>();
 
   return {
-    packageName: '@offerget/agent-modules-defaults',
-    name: 'offerget.agent-defaults',
+    packageName: '@avery/agent-modules-defaults',
+    name: 'avery.agent-defaults',
     version: '0.1.0',
     sdkVersion: '0.1.0',
     slot: 'context-builder',

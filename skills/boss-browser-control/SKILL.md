@@ -2,7 +2,7 @@
 name: boss-browser-control
 description: Operate BOSS直聘 through atomic browser actions for job search, recruiter messaging, and controlled applications. Use only for tasks explicitly targeting BOSS直聘.
 metadata:
-  offerget:
+  avery:
     scenarios:
       - application
 ---

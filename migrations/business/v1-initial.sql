@@ -1,4 +1,4 @@
--- v1 initial：OfferGet 业务数据库初始 schema（含 app_state 与 attachments 载体）。
+-- v1 initial：Avery 业务数据库初始 schema（含 app_state 与 attachments 载体）。
 CREATE TABLE IF NOT EXISTS schema_migrations (
   version INTEGER PRIMARY KEY,
   checksum TEXT NOT NULL UNIQUE,

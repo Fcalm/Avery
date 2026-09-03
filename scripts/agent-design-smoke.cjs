@@ -1,9 +1,9 @@
 'use strict';
 /* Agent 设计关键纠正点冒烟验证：不依赖真实网络/数据库，使用内存桩。 */
 const assert = require('node:assert/strict');
-const { CreateDefaultModules } = require('@offerget/agent-modules-defaults');
-const { RunAgentLoop } = require('@offerget/agent-core');
-const { KeepRecentTurnGroups } = require('@offerget/agent-sdk');
+const { CreateDefaultModules } = require('@avery/agent-modules-defaults');
+const { RunAgentLoop } = require('@avery/agent-core');
+const { KeepRecentTurnGroups } = require('@avery/agent-sdk');
 
 function CreateStubPorts() {
   const lockCalls = [];
@@ -277,7 +277,7 @@ async function main() {
 
   // 8. Prompt 编译结果稳定且 Provider 不再拥有业务 Prompt 所有权（编译指令可注入）。
   {
-    const { BuildDefaultCompiledInstructions, CompilePrompt, BuildDefaultPromptFragments } = require('@offerget/agent-modules-defaults');
+    const { BuildDefaultCompiledInstructions, CompilePrompt, BuildDefaultPromptFragments } = require('@avery/agent-modules-defaults');
     const first = BuildDefaultCompiledInstructions('tools-v1');
     const second = CompilePrompt(BuildDefaultPromptFragments(), 'default', 'tools-v1');
     assert.equal(first.manifest.compiledHash, second.manifest.compiledHash);

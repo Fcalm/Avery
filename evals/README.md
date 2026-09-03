@@ -1,4 +1,4 @@
-# OfferGet Agent 测评集
+# Avery Agent 测评集
 
 本目录包含 6 套可独立导入开发者测评页面的数据集。每套目录中的 `dataset.jsonl` 与 `rubric.md` 必须配套使用。
 

@@ -8,7 +8,7 @@ import { CreateRegisteredTool } from './test-helpers';
 
 function CreateModule(slot: SlotName) {
   return {
-    packageName: '@offerget/test-module',
+    packageName: '@avery/test-module',
     name: `test-${slot}`,
     version: '1.2.3',
     sdkVersion: HostSdkVersion,

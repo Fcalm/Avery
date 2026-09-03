@@ -1,6 +1,6 @@
 # Agent 架构决策记录
 
-本目录维护 OfferGet 的架构决策记录。Agent 领域使用 `ADR-AGENT-*` 前缀，避免与后端、Desktop 等领域后续编号冲突。
+本目录维护 Avery 的架构决策记录。Agent 领域使用 `ADR-AGENT-*` 前缀，避免与后端、Desktop 等领域后续编号冲突。
 
 | ADR | 状态 | 决策 |
 | --- | --- | --- |

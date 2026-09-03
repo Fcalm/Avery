@@ -8,7 +8,7 @@ const root = join(import.meta.dirname, '..');
 const sourceCommit = execFileSync('git.exe', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim();
 const candidateVersion = '0.0.9';
 const temporaryRoot = mkdtempSync(join(tmpdir(), 'ogv9-'));
-const candidateCache = join(tmpdir(), 'offerget-candidate-npm-cache');
+const candidateCache = join(tmpdir(), 'avery-candidate-npm-cache');
 const project = join(temporaryRoot, 'project');
 const fixtureRoot = join(root, 'release', 'fixtures');
 mkdirSync(fixtureRoot, { recursive: true });
@@ -31,28 +31,28 @@ try {
   const pkgPath = join(project, 'package.json');
   const pkg = JSON.parse(readFileSync(pkgPath, 'utf8'));
   pkg.version = candidateVersion;
-  pkg.description = 'OfferGet V1 previous candidate lifecycle fixture';
-  pkg.author = 'OfferGet';
+  pkg.description = 'Avery V1 previous candidate lifecycle fixture';
+  pkg.author = 'Avery';
   pkg.license = 'UNLICENSED';
   pkg.build = {
-    appId: 'com.offerget.desktop', productName: 'OfferGet', asar: true,
+    appId: 'com.avery.desktop', productName: 'Avery', asar: true,
     asarUnpack: ['node_modules/better-sqlite3/**'], npmRebuild: false,
     directories: { output: 'release' },
     files: [
       'dist/**', 'apps/backend/dist/**', 'apps/backend/package.json', 'packages/*/dist/**', 'packages/*/package.json',
       'electron/**/*.cjs', 'migrations/**', 'package.json',
       '!electron/smoke-*.cjs', '!node_modules/**/{docs,doc,test,tests,example,examples}/**', '!node_modules/**/*.map',
-      { from: 'packages', to: 'node_modules/@offerget', filter: ['*/dist/**', '*/package.json'] },
-      { from: 'apps/backend', to: 'node_modules/@offerget/backend', filter: ['dist/**', 'package.json'] },
+      { from: 'packages', to: 'node_modules/@avery', filter: ['*/dist/**', '*/package.json'] },
+      { from: 'apps/backend', to: 'node_modules/@avery/backend', filter: ['dist/**', 'package.json'] },
     ],
     win: { icon: 'build/icon.ico', target: ['nsis'] },
-    nsis: { oneClick: false, allowToChangeInstallationDirectory: true, deleteAppDataOnUninstall: false, artifactName: 'OfferGet-Setup-${version}-${arch}.${ext}' },
+    nsis: { oneClick: false, allowToChangeInstallationDirectory: true, deleteAppDataOnUninstall: false, artifactName: 'Avery-Setup-${version}-${arch}.${ext}' },
   };
   writeFileSync(pkgPath, `${JSON.stringify(pkg, null, 2)}\n`, 'utf8');
 
   const builder = join(root, 'node_modules', '.bin', 'electron-builder.cmd');
   ExecCmd(builder, ['--projectDir', project, '--win', 'nsis', '--x64', '--publish', 'never'], root);
-  const name = `OfferGet-Setup-${candidateVersion}-x64.exe`;
+  const name = `Avery-Setup-${candidateVersion}-x64.exe`;
   const source = join(project, 'release', name);
   const target = join(fixtureRoot, name);
   copyFileSync(source, target);

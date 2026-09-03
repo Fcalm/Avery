@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
-import type { DesktopAgentBridge, DesktopEvaluationBridge, WorkspaceBridge, WriteCommandOptions } from '@offerget/contracts';
+import type { DesktopAgentBridge, DesktopEvaluationBridge, WorkspaceBridge, WriteCommandOptions } from '@avery/contracts';
 
 type Invoke = (channel: string, ...args: unknown[]) => Promise<unknown>;
 const invoke: Invoke = (channel, ...args) => ipcRenderer.invoke(channel, ...args);
@@ -115,9 +115,9 @@ const evaluationBridge: DesktopEvaluationBridge = {
   },
 };
 
-contextBridge.exposeInMainWorld('offergetAgent', agentBridge);
-contextBridge.exposeInMainWorld('offergetWorkspace', workspaceBridge);
-contextBridge.exposeInMainWorld('offergetEvaluation', evaluationBridge);
-contextBridge.exposeInMainWorld('offergetWindow', {
+contextBridge.exposeInMainWorld('averyAgent', agentBridge);
+contextBridge.exposeInMainWorld('averyWorkspace', workspaceBridge);
+contextBridge.exposeInMainWorld('averyEvaluation', evaluationBridge);
+contextBridge.exposeInMainWorld('averyWindow', {
   Minimize: () => invoke('window:minimize'), ToggleMaximize: () => invoke('window:toggle-maximize'), Close: () => invoke('window:close'),
 });

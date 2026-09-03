@@ -32,7 +32,7 @@ afterEach(() => {
 
 describe('AgentHost 会话前缀快照', () => {
   it('模型调用 LoadSkill 后保持 assistant/tool/user 协议顺序并加载冻结正文', async () => {
-    const userDataPath = mkdtempSync(join(tmpdir(), 'offerget-skill-tool-session-'));
+    const userDataPath = mkdtempSync(join(tmpdir(), 'avery-skill-tool-session-'));
     directories.push(userDataPath);
     const observability = new ObservabilityStore(userDataPath);
     const storedSnapshots = new Map<string, any>();
@@ -77,7 +77,7 @@ describe('AgentHost 会话前缀快照', () => {
   });
 
   it('首次发送以 user role 注入 Skill 索引，显式指令正文位于真实用户消息之后且跨 Run 幂等', async () => {
-    const userDataPath = mkdtempSync(join(tmpdir(), 'offerget-skill-session-'));
+    const userDataPath = mkdtempSync(join(tmpdir(), 'avery-skill-session-'));
     directories.push(userDataPath);
     const observability = new ObservabilityStore(userDataPath);
     const storedSnapshots = new Map<string, any>();
@@ -143,7 +143,7 @@ describe('AgentHost 会话前缀快照', () => {
   });
 
   it('新会话的空工具占位不应阻止首次绑定投递场景', async () => {
-    const userDataPath = mkdtempSync(join(tmpdir(), 'offerget-application-session-'));
+    const userDataPath = mkdtempSync(join(tmpdir(), 'avery-application-session-'));
     directories.push(userDataPath);
     const observability = new ObservabilityStore(userDataPath);
     const storedSnapshots = new Map<string, any>([
@@ -200,7 +200,7 @@ describe('AgentHost 会话前缀快照', () => {
   it('跨 Run 复用完整快照并保留旧 runtime reminder，满 24 小时后才重建', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-08-22T02:08:00.000Z'));
-    const userDataPath = mkdtempSync(join(tmpdir(), 'offerget-session-prefix-'));
+    const userDataPath = mkdtempSync(join(tmpdir(), 'avery-session-prefix-'));
     directories.push(userDataPath);
     const observability = new ObservabilityStore(userDataPath);
     const storedSnapshots = new Map<string, any>();

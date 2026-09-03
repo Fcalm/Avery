@@ -3,7 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import type {
   BrowserActionProposal, BrowserToolName, RegisteredAgentTool, ToolCallFragment, ToolContext, ToolExecutionResult, ToolLedgerEntry,
   ToolReceipt, ToolsModule,
-} from '@offerget/agent-sdk';
+} from '@avery/agent-sdk';
 import { AgentDefaultPorts } from './ports';
 import { CreateToolResult, RequireString, type PendingResumeEdit } from './helpers';
 
@@ -150,7 +150,7 @@ function BuildRegistry(): RegisteredAgentTool[] {
       resourceKeys: () => ['run:todos'],
     },
     {
-      definition: CreateDefinition('LoadSkill', 'Load a trusted OfferGet skill when its index matches the current task. Call it as the only tool in the batch and wait for the injected instructions. Omit resource to load SKILL.md first; load a listed resource only after the main skill is loaded.', {
+      definition: CreateDefinition('LoadSkill', 'Load a trusted Avery skill when its index matches the current task. Call it as the only tool in the batch and wait for the injected instructions. Omit resource to load SKILL.md first; load a listed resource only after the main skill is loaded.', {
         type: 'object',
         properties: {
           skillId: { type: 'string', minLength: 1, maxLength: 80 },
@@ -237,7 +237,7 @@ function BuildRegistry(): RegisteredAgentTool[] {
     timeoutMs: 30_000,
     isConcurrencySafe: false,
     allowedScenarios: ['application'],
-    resourceKeys: () => ['browser:offerget-default'],
+    resourceKeys: () => ['browser:avery-default'],
   } satisfies Partial<RegisteredAgentTool>;
   registry.push(
     {
@@ -1024,8 +1024,8 @@ export function CreateToolsModule(ports: AgentDefaultPorts): ToolsModule {
   }
 
   return {
-    packageName: '@offerget/agent-modules-defaults',
-    name: 'offerget.agent-defaults',
+    packageName: '@avery/agent-modules-defaults',
+    name: 'avery.agent-defaults',
     version: '0.1.0',
     sdkVersion: '0.1.0',
     slot: 'tools',

@@ -1,5 +1,5 @@
 import { useCallback } from 'react';
-import type { ChatMessageInput, ConversationDto } from '@offerget/contracts';
+import type { ChatMessageInput, ConversationDto } from '@avery/contracts';
 import { platformClient, Unwrap } from '../../../shared/platform/platformClient';
 import type { ChatMessage, Conversation } from '../../../types/domain';
 import { useWorkspaceData } from '../../workspace/api/useWorkspaceData';

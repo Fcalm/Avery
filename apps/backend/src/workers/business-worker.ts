@@ -1,6 +1,6 @@
 import { parentPort, workerData } from 'node:worker_threads';
 import { BusinessStore } from '../business-store';
-import { NormalizeError } from '@offerget/contracts';
+import { NormalizeError } from '@avery/contracts';
 import { DatabaseRecoveryStore } from '../electron/backend/services/database-recovery-service';
 
 if (!parentPort) throw new Error('parentPort is unavailable in this worker.');

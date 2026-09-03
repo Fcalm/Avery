@@ -7,18 +7,18 @@ import { AgentBrowserError, AgentBrowserRuntime } from '../apps/backend/dist/ele
 import { StartBrowserFixture } from '../tests/fixtures/browser-site/server.mjs';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const apiKey = String(process.env.OFFERGET_DEEPSEEK_API_KEY || process.env.DEEPSEEK_API_KEY || '').trim();
-if (!apiKey) throw new Error('OFFERGET_DEEPSEEK_API_KEY or DEEPSEEK_API_KEY is required; evaluation results are never synthesized without a live credential.');
-const model = String(process.env.OFFERGET_DEEPSEEK_MODEL || 'deepseek-v4-flash').trim();
-const requestedRuns = Number(process.env.OFFERGET_EVALUATION_RUNS || 10);
-if (!Number.isSafeInteger(requestedRuns) || requestedRuns < 1 || requestedRuns > 100) throw new Error('OFFERGET_EVALUATION_RUNS must be an integer from 1 to 100.');
-const outputRoot = resolve(process.env.OFFERGET_EVALUATION_OUTPUT || join(projectRoot, 'artifacts', 'application-evaluation', new Date().toISOString().replaceAll(':', '-')));
+const apiKey = String(process.env.AVERY_DEEPSEEK_API_KEY || process.env.DEEPSEEK_API_KEY || '').trim();
+if (!apiKey) throw new Error('AVERY_DEEPSEEK_API_KEY or DEEPSEEK_API_KEY is required; evaluation results are never synthesized without a live credential.');
+const model = String(process.env.AVERY_DEEPSEEK_MODEL || 'deepseek-v4-flash').trim();
+const requestedRuns = Number(process.env.AVERY_EVALUATION_RUNS || 10);
+if (!Number.isSafeInteger(requestedRuns) || requestedRuns < 1 || requestedRuns > 100) throw new Error('AVERY_EVALUATION_RUNS must be an integer from 1 to 100.');
+const outputRoot = resolve(process.env.AVERY_EVALUATION_OUTPUT || join(projectRoot, 'artifacts', 'application-evaluation', new Date().toISOString().replaceAll(':', '-')));
 const platformName = process.platform === 'darwin' ? 'darwin' : process.platform === 'win32' ? 'win32' : 'linux';
-const companionExecutable = process.env.OFFERGET_COMPANION_EXECUTABLE || (process.platform === 'win32'
+const companionExecutable = process.env.AVERY_COMPANION_EXECUTABLE || (process.platform === 'win32'
   ? join(projectRoot, 'node_modules', 'electron', 'dist', 'electron.exe')
   : join(projectRoot, 'node_modules', 'electron', 'dist', process.platform === 'darwin' ? 'Electron.app/Contents/MacOS/Electron' : 'electron'));
-const companionAppPath = process.env.OFFERGET_COMPANION_APP_PATH ?? projectRoot;
-const agentBrowserExecutable = process.env.OFFERGET_AGENT_BROWSER_EXECUTABLE || join(projectRoot, 'node_modules', 'agent-browser', 'bin', `agent-browser-${platformName}-${process.arch}${process.platform === 'win32' ? '.exe' : ''}`);
+const companionAppPath = process.env.AVERY_COMPANION_APP_PATH ?? projectRoot;
+const agentBrowserExecutable = process.env.AVERY_AGENT_BROWSER_EXECUTABLE || join(projectRoot, 'node_modules', 'agent-browser', 'bin', `agent-browser-${platformName}-${process.arch}${process.platform === 'win32' ? '.exe' : ''}`);
 
 function CreateExactOriginNormalizer(origin) {
   const allowed = new URL(origin);
@@ -146,11 +146,11 @@ function BuildRunLog(history, events, observability) {
 async function EvaluateOnce(runIndex) {
   const startedAt = new Date().toISOString();
   const startedMs = Date.now();
-  const temporaryRoot = await mkdtemp(join(tmpdir(), `offerget-deepseek-eval-${runIndex}-`));
+  const temporaryRoot = await mkdtemp(join(tmpdir(), `avery-deepseek-eval-${runIndex}-`));
   const fixture = await StartBrowserFixture();
   const resumePath = join(temporaryRoot, 'authorized-resume.txt');
   const fileId = `attachment://deepseek-evaluation/${runIndex}/resume.txt`;
-  await writeFile(resumePath, 'OfferGet DeepSeek application evaluation resume', 'utf8');
+  await writeFile(resumePath, 'Avery DeepSeek application evaluation resume', 'utf8');
   const events = [];
   const observability = CreateObservabilityStore();
   const runtime = new AgentBrowserRuntime({

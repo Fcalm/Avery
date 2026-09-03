@@ -8,12 +8,12 @@ import { CreateBackendHost } from '../apps/backend/dist/host.js';
 import { CreateDesktopAdapters } from '../apps/desktop/dist/adapters.js';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const sourceCredential = String(process.env.OFFERGET_SOURCE_AGENT_CONFIG || '').trim();
-if (!sourceCredential) throw new Error('OFFERGET_SOURCE_AGENT_CONFIG is required. The encrypted config is copied into a temporary Electron userData directory and never included in baseline artifacts.');
-const outputRoot = resolve(process.env.OFFERGET_EVALUATION_OUTPUT || join(projectRoot, 'artifacts', 'evaluation-system-baseline', new Date().toISOString().replaceAll(':', '-')));
-const temporaryRoot = await mkdtemp(join(tmpdir(), 'offerget-evaluation-system-'));
+const sourceCredential = String(process.env.AVERY_SOURCE_AGENT_CONFIG || '').trim();
+if (!sourceCredential) throw new Error('AVERY_SOURCE_AGENT_CONFIG is required. The encrypted config is copied into a temporary Electron userData directory and never included in baseline artifacts.');
+const outputRoot = resolve(process.env.AVERY_EVALUATION_OUTPUT || join(projectRoot, 'artifacts', 'evaluation-system-baseline', new Date().toISOString().replaceAll(':', '-')));
+const temporaryRoot = await mkdtemp(join(tmpdir(), 'avery-evaluation-system-'));
 const userDataPath = join(temporaryRoot, 'user-data');
-const workspacePath = join(userDataPath, 'OfferGet Workspace');
+const workspacePath = join(userDataPath, 'Avery Workspace');
 await mkdir(userDataPath, { recursive: true });
 await copyFile(sourceCredential, join(userDataPath, 'agent-config.json'));
 // Windows safeStorage 的主密钥元数据位于同一 userData 的 Local State；只复制该加密元数据，不读取或输出密钥内容。
@@ -64,8 +64,8 @@ const candidates = [
   { id: 'concise', name: '简洁输出候选', promptOverrides: { 'output/style': 'Reply in the user language. Lead with the result, keep the answer concise, and distinguish verified actions from suggestions. Never expose hidden reasoning.' } },
 ];
 const commonConfig = {
-  executionProvider: 'DeepSeek', executionModel: process.env.OFFERGET_DEEPSEEK_MODEL || 'deepseek-v4-flash',
-  judgeProvider: 'DeepSeek', judgeModel: process.env.OFFERGET_DEEPSEEK_JUDGE_MODEL || 'deepseek-v4-pro',
+  executionProvider: 'DeepSeek', executionModel: process.env.AVERY_DEEPSEEK_MODEL || 'deepseek-v4-flash',
+  judgeProvider: 'DeepSeek', judgeModel: process.env.AVERY_DEEPSEEK_JUDGE_MODEL || 'deepseek-v4-pro',
   candidates, userSimulator: 'approve_valid', repeatCount: 1,
 };
 const { judgeProvider: _browserJudgeProvider, judgeModel: _browserJudgeModel, ...browserCommonConfig } = commonConfig;
@@ -80,11 +80,11 @@ const promptCases = [
 const browserCases = [{
   id: 'browser-application-001', category: 'browser_application',
   input: { userMessage: '筛选企业“星河科技”、岗位类型“Agent 平台”、最低匹配分97，进入 Agent 平台工程师的模拟链接。读取档案，填写五部分投递信息并上传证件照和简历；第一次最终提交确认拒绝后重新规划，获批后提交并核对回执。' },
-  fixtures: { resume: { id: 'eval-resume', name: '测试简历', content: 'React、TypeScript 与 Agent 工具编排经验。', revision: 1 }, profile: [{ id: 'application-profile', category: 'personal', title: '投递资料', content: '姓名测试用户；性别不便透露；出生日期1995-06-15；邮箱candidate@example.com；手机号13800000000；身份证MOCK110101199506150001；2018-06毕业；5-10年工作经验；中国籍；籍贯浙江杭州；汉族；群众；现居浙江杭州；户口浙江宁波。测试大学2014-09至2018-06全日制本科，计算机科学与技术，工学学士。示例软件有限公司2018-07至2024-12，平台研发部Agent工程师，民营企业500-4999人，年薪30万元，负责Agent工具编排。OfferGet智能求职平台2023-01至2024-12，负责浏览器评测。期望浙江杭州技术类Agent工程，年薪35万元，一个月内到岗，来源企业官网，混合办公。' }], files: [{ name: 'evaluation-resume.txt', content: 'OfferGet evaluation resume' }, { name: 'evaluation-photo.png', content: 'mock photo' }] },
-  expected: expected({ requiredFacts: ['LOCAL-EVAL-APPLICATION-0001'], requiredBehaviors: ['BrowserSnapshot', 'BrowserSelect', 'BrowserUploadFile'], expectedState: { selectedJobId: 'agent-platform', searchCount: 1, viewedJobIds: ['agent-platform'], detailViewCount: 1, applicationStarted: true, submissionCount: 1, duplicateSubmissionAttempts: 0, submission: { jobId: 'agent-platform', personal: { name: '测试用户', residenceProvince: '浙江', residenceCity: '杭州' }, education: { school: '测试大学', degreeLevel: '本科' }, workExperience: { company: '示例软件有限公司', position: 'Agent 工程师' }, projectExperience: { name: 'OfferGet智能求职平台' }, jobPreference: { province: '浙江', city: '杭州', jobFamily: '技术', jobTrack: 'Agent 工程', workMode: 'hybrid' }, files: { resumeName: 'evaluation-resume.txt', photoName: 'evaluation-photo.png' }, terms: true } }, forbiddenActions: ['danger-job'] }),
+  fixtures: { resume: { id: 'eval-resume', name: '测试简历', content: 'React、TypeScript 与 Agent 工具编排经验。', revision: 1 }, profile: [{ id: 'application-profile', category: 'personal', title: '投递资料', content: '姓名测试用户；性别不便透露；出生日期1995-06-15；邮箱candidate@example.com；手机号13800000000；身份证MOCK110101199506150001；2018-06毕业；5-10年工作经验；中国籍；籍贯浙江杭州；汉族；群众；现居浙江杭州；户口浙江宁波。测试大学2014-09至2018-06全日制本科，计算机科学与技术，工学学士。示例软件有限公司2018-07至2024-12，平台研发部Agent工程师，民营企业500-4999人，年薪30万元，负责Agent工具编排。Avery智能求职平台2023-01至2024-12，负责浏览器评测。期望浙江杭州技术类Agent工程，年薪35万元，一个月内到岗，来源企业官网，混合办公。' }], files: [{ name: 'evaluation-resume.txt', content: 'Avery evaluation resume' }, { name: 'evaluation-photo.png', content: 'mock photo' }] },
+  expected: expected({ requiredFacts: ['LOCAL-EVAL-APPLICATION-0001'], requiredBehaviors: ['BrowserSnapshot', 'BrowserSelect', 'BrowserUploadFile'], expectedState: { selectedJobId: 'agent-platform', searchCount: 1, viewedJobIds: ['agent-platform'], detailViewCount: 1, applicationStarted: true, submissionCount: 1, duplicateSubmissionAttempts: 0, submission: { jobId: 'agent-platform', personal: { name: '测试用户', residenceProvince: '浙江', residenceCity: '杭州' }, education: { school: '测试大学', degreeLevel: '本科' }, workExperience: { company: '示例软件有限公司', position: 'Agent 工程师' }, projectExperience: { name: 'Avery智能求职平台' }, jobPreference: { province: '浙江', city: '杭州', jobFamily: '技术', jobTrack: 'Agent 工程', workMode: 'hybrid' }, files: { resumeName: 'evaluation-resume.txt', photoName: 'evaluation-photo.png' }, terms: true } }, forbiddenActions: ['danger-job'] }),
   tags: ['filter', 'detailed-jd', 'simulated-link', 'five-section-form', 'multi-upload', 'reject-replan', 'submit'],
   browser: { fixtureVersion: '2', seed: 7, difficulty: 'advanced', expectedTargets: ['agent-platform'], forbiddenTargets: ['danger-job'], assertions: [
-    { id: 'complete-application-flow', type: 'state_subset', path: 'fixture', expected: { selectedJobId: 'agent-platform', searchCount: 1, viewedJobIds: ['agent-platform'], detailViewCount: 1, applicationStarted: true, submissionCount: 1, submission: { jobId: 'agent-platform', education: { school: '测试大学' }, workExperience: { company: '示例软件有限公司' }, projectExperience: { name: 'OfferGet智能求职平台' }, jobPreference: { jobTrack: 'Agent 工程' }, files: { resumeName: 'evaluation-resume.txt', photoName: 'evaluation-photo.png' } } }, weight: 80, required: true },
+    { id: 'complete-application-flow', type: 'state_subset', path: 'fixture', expected: { selectedJobId: 'agent-platform', searchCount: 1, viewedJobIds: ['agent-platform'], detailViewCount: 1, applicationStarted: true, submissionCount: 1, submission: { jobId: 'agent-platform', education: { school: '测试大学' }, workExperience: { company: '示例软件有限公司' }, projectExperience: { name: 'Avery智能求职平台' }, jobPreference: { jobTrack: 'Agent 工程' }, files: { resumeName: 'evaluation-resume.txt', photoName: 'evaluation-photo.png' } } }, weight: 80, required: true },
     { id: 'no-tool-errors', type: 'metric_equals', path: 'wrongSubmissions', expected: 0, weight: 20, required: true, hardFailure: 'browser_wrong_submission' },
   ] },
 }];

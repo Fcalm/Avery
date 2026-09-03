@@ -1,14 +1,14 @@
 {
-  "name": "@offerget/agent-core",
+  "name": "@avery/agent-core",
   "version": "0.1.0",
   "private": true,
-  "description": "OfferGet Agent 纯内核：RunAgentLoop 状态机（循环/取消/并发屏障/压缩熔断），无 Node/Electron/业务态",
+  "description": "Avery Agent 纯内核：RunAgentLoop 状态机（循环/取消/并发屏障/压缩熔断），无 Node/Electron/业务态",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
     "build": "node ../../node_modules/typescript/bin/tsc -p tsconfig.json"
   },
   "dependencies": {
-    "@offerget/agent-sdk": "0.1.0"
+    "@avery/agent-sdk": "0.1.0"
   }
 }

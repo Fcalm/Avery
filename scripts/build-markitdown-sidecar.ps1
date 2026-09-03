@@ -3,7 +3,7 @@ $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $sourceRoot = Join-Path $projectRoot 'tools\markitdown-sidecar'
 $outputRoot = Join-Path $projectRoot 'build\markitdown'
-$temporaryRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("offerget-markitdown-build-" + [guid]::NewGuid().ToString('N'))
+$temporaryRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("avery-markitdown-build-" + [guid]::NewGuid().ToString('N'))
 $virtualEnvironment = Join-Path $temporaryRoot 'venv'
 
 function Assert-NativeSuccess([string]$step) {

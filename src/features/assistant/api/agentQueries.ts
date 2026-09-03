@@ -1,9 +1,9 @@
-import type { AgentConfiguration, AgentModuleConfiguration, AgentSendRequest, AgentSessionAssistantState, AgentStreamEvent, ConfirmationMode, ReasoningEffort } from '@offerget/contracts';
+import type { AgentConfiguration, AgentModuleConfiguration, AgentSendRequest, AgentSessionAssistantState, AgentStreamEvent, ConfirmationMode, ReasoningEffort } from '@avery/contracts';
 import { platformClient, Unwrap } from '../../../shared/platform/platformClient';
 
 /** 判断当前页面是否由带安全桥接的桌面客户端承载。 */
 export function IsDesktopAgentAvailable() {
-  return Boolean(window.offergetAgent);
+  return Boolean(window.averyAgent);
 }
 
 /** 保存模型配置，API Key 仅经 IPC 进入主进程；失败抛统一业务错误。 */

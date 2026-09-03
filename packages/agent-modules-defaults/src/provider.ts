@@ -1,4 +1,4 @@
-import type { AgentMessage, ModelCompletion, ModelDelta, ModelProviderModule, ModelUsage, ReasoningEffort, RegisteredAgentTool } from '@offerget/agent-sdk';
+import type { AgentMessage, ModelCompletion, ModelDelta, ModelProviderModule, ModelUsage, ReasoningEffort, RegisteredAgentTool } from '@avery/agent-sdk';
 import { AgentDefaultPorts, ProviderConfig } from './ports';
 import { RequireString } from './helpers';
 import { SummaryPrompt } from './prompts';
@@ -204,8 +204,8 @@ export function CreateProviderModule(ports: AgentDefaultPorts): ModelProviderMod
   }
 
   return {
-    packageName: '@offerget/agent-modules-defaults',
-    name: 'offerget.agent-defaults',
+    packageName: '@avery/agent-modules-defaults',
+    name: 'avery.agent-defaults',
     version: '0.1.0',
     sdkVersion: '0.1.0',
     slot: 'model-provider',

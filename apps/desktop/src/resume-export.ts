@@ -1,7 +1,7 @@
 import { writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import type { BrowserWindowConstructorOptions } from 'electron';
-import { CreateResumeDocumentMarkup } from '@offerget/contracts';
+import { CreateResumeDocumentMarkup } from '@avery/contracts';
 
 type HiddenWindow = { loadURL: (url: string) => Promise<void>; webContents: { executeJavaScript: (source: string) => Promise<unknown>; printToPDF: (options: Electron.PrintToPDFOptions) => Promise<Buffer>; capturePage: (rect: Electron.Rectangle) => Promise<Electron.NativeImage> }; setContentSize: (width: number, height: number) => void; isDestroyed: () => boolean; destroy: () => void };
 type BrowserWindowFactory = new (options: BrowserWindowConstructorOptions) => HiddenWindow;

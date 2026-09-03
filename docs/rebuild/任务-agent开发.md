@@ -104,7 +104,7 @@ A-01 agent 五包单测（最先，依赖 B-03 骨架）──→ A-03 实现差
 - SDK/Core 将每次已完成模型请求统一转换为 `ProviderUsageFact`；完整且自洽的 Provider 数值标记为 `provider`，缺失或无效值显式标记为 `unavailable`，不再用 `undefined` 表达跨模块语义。
 - DeepSeek 流请求固定发送 `stream_options.include_usage=true`；Adapter 只接受非负安全整数且满足 `total_tokens = prompt_tokens + completion_tokens` 的唯一 Usage 块。Usage 可位于空 `choices` 附加块或无正文/思考/工具增量的纯终止 choice；重复块及 Usage 与真实增量混合仍按协议错误拒绝。数字字符串、`null` 和矛盾总数不得进入账本。
 - AgentHost 使用同一 Usage 事实同时更新会话展示源、`agent-state.json` 和 Trace `provider_usage`；Mock 集成对账已验证三处均为 `11 / 7 / 18`。ObservabilityStore 同步收紧等式校验，`unavailable` 只允许零值。
-- 新增真实 DeepSeek 门禁：仅当 `OFFERGET_DEEPSEEK_LIVE=1` 且提供 `DEEPSEEK_API_KEY` 时执行，普通 CI 不消耗额度。当前环境无 Key，因此该用例按设计跳过，不能据此宣称“真实请求三方对账”验收完成。
+- 新增真实 DeepSeek 门禁：仅当 `AVERY_DEEPSEEK_LIVE=1` 且提供 `DEEPSEEK_API_KEY` 时执行，普通 CI 不消耗额度。当前环境无 Key，因此该用例按设计跳过，不能据此宣称“真实请求三方对账”验收完成。
 - 自动化验证：`npm test` 通过（Vitest 57 passed、1 个真实联调用例 skipped；Backend 8/8）。A-04 保持未关闭，待有效凭据执行真实门禁并由 F-05 复核 UI 后再完成里程碑 G。
 
 ## 3. 提交与协作约定

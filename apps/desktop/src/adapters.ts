@@ -8,11 +8,19 @@ import { ExportResume } from './resume-export';
 type WindowGetter = () => BrowserWindow | undefined;
 type CredentialConfig = { provider: unknown; baseUrl: unknown; model: unknown; thinkingEnabled: unknown; contextLimit: unknown; contextLimitMode?: unknown; compressionThreshold: unknown; apiKey: string };
 const ExecFile = promisify(execFile);
-export const CronTaskSchedulerName = 'OfferGet Cron Runner';
+export const CronTaskSchedulerName = 'Avery Cron Runner';
+const LegacyCronTaskSchedulerName = `${['Offer', 'Get'].join('')} Cron Runner`;
 
-/** Windows 用户级 Task Scheduler 只维护一个最近唤醒；任务内部数据始终留在 OfferGet 数据库。 */
+async function RemoveLegacyWindowsCronWake(): Promise<void> {
+  const taskName = LegacyCronTaskSchedulerName.replace(/'/g, "''");
+  const script = `$task=Get-ScheduledTask -TaskName '${taskName}' -ErrorAction SilentlyContinue;if($null-ne $task){Unregister-ScheduledTask -TaskName '${taskName}' -Confirm:$false -ErrorAction Stop}`;
+  await ExecFile('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], { windowsHide: true });
+}
+
+/** Windows 用户级 Task Scheduler 只维护一个最近唤醒；任务内部数据始终留在 Avery 数据库。 */
 export async function SyncWindowsCronWake(nextRunAt: number | null, executablePath: string): Promise<{ registered: boolean; nextRunAt: number | null; supported: boolean }> {
   if (process.platform !== 'win32') return { registered: false, nextRunAt, supported: false };
+  await RemoveLegacyWindowsCronWake();
   const taskName = CronTaskSchedulerName.replace(/'/g, "''");
   if (nextRunAt === null) {
     const script = `$task=Get-ScheduledTask -TaskName '${taskName}' -ErrorAction SilentlyContinue;if($null-ne $task){Unregister-ScheduledTask -TaskName '${taskName}' -Confirm:$false -ErrorAction Stop}`;

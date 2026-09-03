@@ -9,11 +9,11 @@ import { promisify } from 'node:util';
 const ExecFile = promisify(execFile);
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const platformName = process.platform === 'darwin' ? 'darwin' : process.platform === 'win32' ? 'win32' : 'linux';
-const electronExecutable = process.env.OFFERGET_COMPANION_EXECUTABLE || (process.platform === 'win32'
+const electronExecutable = process.env.AVERY_COMPANION_EXECUTABLE || (process.platform === 'win32'
   ? join(projectRoot, 'node_modules', 'electron', 'dist', 'electron.exe')
   : join(projectRoot, 'node_modules', 'electron', 'dist', process.platform === 'darwin' ? 'Electron.app/Contents/MacOS/Electron' : 'electron'));
-const companionAppPath = process.env.OFFERGET_COMPANION_APP_PATH ?? projectRoot;
-const agentBrowserExecutable = process.env.OFFERGET_AGENT_BROWSER_EXECUTABLE || join(projectRoot, 'node_modules', 'agent-browser', 'bin', `agent-browser-${platformName}-${process.arch}${process.platform === 'win32' ? '.exe' : ''}`);
+const companionAppPath = process.env.AVERY_COMPANION_APP_PATH ?? projectRoot;
+const agentBrowserExecutable = process.env.AVERY_AGENT_BROWSER_EXECUTABLE || join(projectRoot, 'node_modules', 'agent-browser', 'bin', `agent-browser-${platformName}-${process.arch}${process.platform === 'win32' ? '.exe' : ''}`);
 
 function Assert(condition, message) {
   if (!condition) throw new Error(message);
@@ -61,11 +61,11 @@ async function RunBatch(baseArgs, commands) {
   });
 }
 
-const root = await mkdtemp(join(tmpdir(), 'offerget-browser-companion-smoke-'));
+const root = await mkdtemp(join(tmpdir(), 'avery-browser-companion-smoke-'));
 const profilePath = join(root, 'profile');
 const env = { ...process.env };
 delete env.ELECTRON_RUN_AS_NODE;
-for (const key of Object.keys(env)) if (/^OFFERGET_(DESKTOP_SMOKE|SMOKE_|LIFECYCLE_|INSTALLED_VISUAL_)/i.test(key)) delete env[key];
+for (const key of Object.keys(env)) if (/^AVERY_(DESKTOP_SMOKE|SMOKE_|LIFECYCLE_|INSTALLED_VISUAL_)/i.test(key)) delete env[key];
 
 const server = createServer((_request, response) => {
   response.setHeader('content-type', 'text/html; charset=utf-8');
@@ -76,9 +76,9 @@ const address = server.address();
 const fixturePort = typeof address === 'object' && address ? address.port : 0;
 const child = spawn(electronExecutable, [
   ...(companionAppPath ? [companionAppPath] : []),
-  '--offerget-browser-companion',
-  `--offerget-browser-profile=${profilePath}`,
-  `--offerget-browser-parent-pid=${process.pid}`,
+  '--avery-browser-companion',
+  `--avery-browser-profile=${profilePath}`,
+  `--avery-browser-parent-pid=${process.pid}`,
   '--remote-debugging-address=127.0.0.1',
   '--remote-debugging-port=0',
   `--user-data-dir=${profilePath}`,
@@ -102,7 +102,7 @@ try {
   Assert(initialTargets.length === 1, `expected one isolated companion target, received ${initialTargets.length}`);
   Assert(initialTargets.every((target) => String(target.url || '').startsWith('http://127.0.0.1:')), 'companion exposed a non-internal initial target');
 
-  const namespace = `offerget-companion-smoke-${process.pid}`;
+  const namespace = `avery-companion-smoke-${process.pid}`;
   const discoveryArgs = ['--namespace', namespace, '--session', 'companion-smoke', '--cdp', String(cdpPort), '--no-auto-dialog', '--content-boundaries', '--max-output', '50000', '--idle-timeout', '1h'];
   const tabs = await RunCli(discoveryArgs, 'tab');
   Assert(Array.isArray(tabs.tabs) && tabs.tabs.length === 1, 'agent-browser did not discover the companion target');
@@ -123,7 +123,7 @@ try {
 
   const finalTargets = await (await fetch(`http://127.0.0.1:${cdpPort}/json/list`)).json();
   Assert(Array.isArray(finalTargets) && finalTargets.length === 1, 'companion exposed an unexpected target count');
-  Assert(!finalTargets.some((target) => String(target.title || '').includes('OfferGet Main')), 'OfferGet main target leaked into companion CDP');
+  Assert(!finalTargets.some((target) => String(target.title || '').includes('Avery Main')), 'Avery main target leaked into companion CDP');
   console.log(JSON.stringify({ passed: true, cdpTargetCount: finalTargets.length, internalShellTarget: true, snapshot: true, fillBatch: true, click: true, mainTargetExposed: false }));
 } finally {
   try { child.kill(); } catch { /* 已退出时无需重复终止。 */ }

@@ -11,7 +11,7 @@ describe('AgentSkillRegistry', () => {
   afterEach(async () => { await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
 
   it('跳过没有 SKILL.md 的普通目录，但不掩盖已注册 Skill 的损坏 frontmatter', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'offerget-skill-registry-')); roots.push(root);
+    const root = await mkdtemp(join(tmpdir(), 'avery-skill-registry-')); roots.push(root);
     const draft = join(root, 'Draft');
     await mkdir(draft);
     await writeFile(join(draft, 'notes.md'), '# Draft', 'utf8');

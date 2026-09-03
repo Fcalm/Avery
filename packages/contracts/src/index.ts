@@ -1,4 +1,4 @@
-/** OfferGet 跨进程契约包：错误码、信封、DTO 与 Bridge 类型的唯一来源。 */
+/** Avery 跨进程契约包：错误码、信封、DTO 与 Bridge 类型的唯一来源。 */
 export { ErrorCode } from './error-codes';
 export type { ErrorCodeValue } from './error-codes';
 export { ErrorInfoSchema, RequestEnvelopeSchema, ResultEnvelopeSchema, WriteCommandEnvelopeSchema, CreateResultSuccess, CreateResultFailure } from './envelope';

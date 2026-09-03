@@ -4,7 +4,7 @@ type MarkdownTableAlignment = 'left' | 'center' | 'right';
 
 function SafeHref(value: string) {
   try {
-    const url = new URL(value, 'https://offerget.local');
+    const url = new URL(value, 'https://avery.local');
     if (url.protocol === 'https:' || url.protocol === 'http:' || url.protocol === 'mailto:') return value;
   } catch {
     // Invalid URLs are rendered as ordinary text.

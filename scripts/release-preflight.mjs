@@ -23,7 +23,7 @@ else {
   const version = execFileSync(electronPath, ['--version'], { encoding: 'utf8', env: { ...process.env, ELECTRON_RUN_AS_NODE: undefined } }).trim().replace(/^v/, '');
   if (version !== expectedElectron) errors.push(`Electron executable version is ${version}.`);
 }
-const forbidden = ['offerget.db', 'profile.json', '.env'];
+const forbidden = ['avery.db', 'profile.json', '.env'];
 for (const name of forbidden) if (existsSync(join(root, name))) errors.push(`Workspace/private file must not exist at repository root: ${name}`);
 const cacheRoot = join(process.env.LOCALAPPDATA || '', 'electron-builder', 'Cache');
 const cacheEntries = existsSync(cacheRoot) ? readdirSync(cacheRoot).filter((name) => statSync(join(cacheRoot, name)).isDirectory()) : [];

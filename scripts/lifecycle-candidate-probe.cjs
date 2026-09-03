@@ -2,10 +2,10 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 async function Run() {
-  const resources = process.env.OFFERGET_INSTALLED_RESOURCES;
-  const workspacePath = process.env.OFFERGET_LIFECYCLE_WORKSPACE;
-  const resultPath = process.env.OFFERGET_LIFECYCLE_RESULT;
-  const expectation = process.env.OFFERGET_LIFECYCLE_EXPECTATION;
+  const resources = process.env.AVERY_INSTALLED_RESOURCES;
+  const workspacePath = process.env.AVERY_LIFECYCLE_WORKSPACE;
+  const resultPath = process.env.AVERY_LIFECYCLE_RESULT;
+  const expectation = process.env.AVERY_LIFECYCLE_EXPECTATION;
   if (![resources, workspacePath, resultPath, expectation].every(Boolean)) throw new Error('Candidate probe environment is incomplete.');
   const { BusinessStore } = require(path.join(resources, 'app.asar', 'apps', 'backend', 'dist', 'business-store.js'));
   let opened = false;
