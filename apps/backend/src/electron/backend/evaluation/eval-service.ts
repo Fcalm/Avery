@@ -132,7 +132,7 @@ export async function RunEvaluationTaskPool<T>(tasks: Array<() => Promise<T>>, m
 }
 
 const StrictComparisonFields = [
-  'runnerType', 'datasetVersion', 'toolsetHash', 'versions', 'config.executionModel', 'config.judgeModel',
+  'runnerType', 'datasetVersion', 'toolsetHash', 'versions', 'config.executionProvider', 'config.executionModel', 'config.judgeProvider', 'config.judgeModel',
   'config.toolNames', 'config.fixtureBranch', 'config.maxModelTurns', 'config.userSimulator',
   'environment.repeatCount', 'environment.maxConcurrency',
 ] as const;
@@ -193,12 +193,14 @@ export class EvalService {
   private committingRuns = new Set<string>();
   private userDataPath: string;
   private artifactEventTail: Promise<void> = Promise.resolve();
+  private credentialPort: any;
 
   constructor(options: EvalServiceOptions) {
     this.userDataPath = options.userDataPath;
     this.store = options.store;
     this.getStoredSettings = options.getStoredSettings;
     this.Emit = options.Emit;
+    this.credentialPort = options.credentialPort;
     this.artifacts = new EvalArtifactStore(options.userDataPath);
     this.promptRunner = options.promptRunner ?? new PromptEvalRunner({ credentialPort: options.credentialPort });
     this.scorer = options.scorer ?? new EvalScorer({ credentialPort: options.credentialPort });
@@ -285,7 +287,7 @@ export class EvalService {
     return { valid: errors.length === 0, errors };
   }
 
-  private BuildSnapshot(project: any, cases: EvalDatasetCase[]): Record<string, unknown> {
+  private BuildSnapshot(project: any, cases: EvalDatasetCase[], runConfig = project.config): Record<string, unknown> {
     const scenarioId = project.runnerType === 'browser' ? 'application' : 'default';
     const productionFragments = project.runnerType === 'browser' ? BuildApplicationPromptFragments() : BuildDefaultPromptFragments();
     const definitions = CreateDefaultModules({
@@ -295,7 +297,7 @@ export class EvalService {
       .filter((tool) => project.config.toolNames.includes(tool.definition.function.name))
       .map((tool) => tool.definition);
     const toolsetHash = createHash('sha256').update(JSON.stringify(definitions)).digest('hex');
-    const candidates = project.config.candidates.map((candidate: EvalPromptCandidate) => {
+    const candidates = runConfig.candidates.map((candidate: EvalPromptCandidate) => {
       const fragments = productionFragments.map((fragment) => candidate.promptOverrides[fragment.id] === undefined
         ? fragment
         : { ...fragment, version: `${fragment.version}-eval`, content: candidate.promptOverrides[fragment.id], contentHash: '' });
@@ -304,10 +306,24 @@ export class EvalService {
     });
     return {
       schemaVersion: 1, createdAt: Date.now(), projectId: project.id, projectRevision: project.revision,
-      runnerType: project.runnerType, config: { ...project.config, candidates }, rubric: project.rubric,
+      runnerType: project.runnerType, config: { ...runConfig, candidates }, rubric: project.rubric,
       datasetVersion: project.datasetVersion, cases, toolDefinitions: definitions, toolsetHash,
-      versions: { snapshot: 2, promptRunner: 2, browserRunner: 2, scorer: project.runnerType === 'browser' ? 'browser-deterministic-2' : 'prompt-judge-2', assertions: 1, trace: 1, application: '0.1.0' },
-      environment: { repeatCount: project.config.repeatCount, maxConcurrency: project.runnerType === 'browser' ? 1 : 2 },
+      versions: { snapshot: 2, promptRunner: 2, browserRunner: 2, scorer: project.runnerType === 'browser' ? 'browser-deterministic-2' : 'prompt-judge-3', assertions: 1, trace: 1, application: '0.1.0' },
+      environment: { repeatCount: runConfig.repeatCount, maxConcurrency: project.runnerType === 'browser' ? 1 : 2 },
+    };
+  }
+
+  /** 旧测评项目不会随全局 Provider 设置迁移；Run 创建时冻结实际可用的 Provider/模型，避免跨供应商发送旧模型名。 */
+  private async ResolveRunConfig(project: any): Promise<any> {
+    const stored = await this.credentialPort?.Load?.();
+    const activeProvider = stored?.provider === 'Z.AI' ? 'Z.AI' : stored?.provider === 'DeepSeek' ? 'DeepSeek' : null;
+    const activeModel = typeof stored?.model === 'string' && stored.model.trim() ? stored.model.trim() : null;
+    if (!activeProvider || !activeModel || activeProvider === project.config.executionProvider) return project.config;
+    return {
+      ...project.config,
+      executionProvider: activeProvider,
+      executionModel: activeModel,
+      ...(project.runnerType === 'prompt' ? { judgeProvider: activeProvider, judgeModel: activeModel } : {}),
     };
   }
 
@@ -347,7 +363,7 @@ export class EvalService {
     if (!validation.valid) throw Object.assign(new Error(validation.errors.join('；')), { code: 'VALIDATION_ERROR', details: { errors: validation.errors } });
     const project = await this.store.ReadEvalProjectRecord(projectId);
     const cases = ParseEvalDataset(await this.artifacts.ReadDataset(project.id, project.datasetVersion));
-    const snapshot = this.BuildSnapshot(project, cases);
+    const snapshot = this.BuildSnapshot(project, cases, await this.ResolveRunConfig(project));
     const snapshotHash = createHash('sha256').update(JSON.stringify(snapshot)).digest('hex');
     const id = `run-${randomUUID()}`;
     const record = await this.store.CreateEvalRunRecord({ id, projectId, projectName: project.name, runnerType: project.runnerType, status: 'queued', snapshotHash, snapshot, createdAt: Date.now() });

@@ -60,6 +60,29 @@ describe('Agent evaluation service', () => {
     const base = { runnerType: 'prompt', datasetVersion: 'v1', toolsetHash: 'tools', versions: { snapshot: 2 }, config: { executionModel: 'model', judgeModel: 'judge', toolNames: ['ReadResume'], maxModelTurns: 30, userSimulator: 'approve_valid' }, environment: { repeatCount: 1, maxConcurrency: 1 } };
     expect(FindEvalSnapshotDifferences(base, { ...base, environment: { ...base.environment, maxConcurrency: 2 } })).toContain('environment.maxConcurrency');
     expect(FindEvalSnapshotDifferences(base, structuredClone(base))).toEqual([]);
+    expect(FindEvalSnapshotDifferences(base, { ...base, config: { ...base.config, executionProvider: 'Z.AI' } })).toContain('config.executionProvider');
+  });
+
+  it('切换 Provider 后 Run 快照与 Runner 使用当前唯一可用模型', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'offerget-eval-provider-switch-')); roots.push(root);
+    const store = new ObservabilityStore(root);
+    const execute = vi.fn(async () => ({
+      finalResponse: 'answer', events: [], finalState: {},
+      metrics: { modelTurns: 1, toolCalls: 0, toolErrors: 0, promptTokens: 1, completionTokens: 1, totalTokens: 2, completed: true },
+    }));
+    const service = new EvalService({
+      userDataPath: root, store,
+      credentialPort: { Load: vi.fn(async () => ({ provider: 'Z.AI', model: 'glm-5.3-flash' })) },
+      getStoredSettings: async () => ({ developerMode: true }), Emit: vi.fn(),
+      promptRunner: { Execute: execute } as any, scorer: scorer as any,
+    });
+    await service.Initialize();
+    let project = await service.CreateProject({ ...projectInput, config: { ...projectInput.config, candidates: [projectInput.config.candidates[0]] } });
+    await service.ImportDataset(project.id, dataset, project.rubric, project.revision); project = await service.ReadProject(project.id);
+    const run = await service.StartRun(project.id); const completed = await WaitForTerminal(service, run.id);
+    expect(execute).toHaveBeenCalledWith(expect.objectContaining({ model: 'glm-5.3-flash' }));
+    expect((completed.snapshot as any).config).toMatchObject({ executionProvider: 'Z.AI', executionModel: 'glm-5.3-flash', judgeProvider: 'Z.AI', judgeModel: 'glm-5.3-flash' });
+    await service.Close(); store.Close();
   });
   it('JSONL 任一坏行或重复 ID 会整体拒绝并报告行号', () => {
     expect(() => ParseEvalDataset(`${dataset}\n{bad`)).toThrow(/line 2/);
@@ -124,6 +147,7 @@ describe('Agent evaluation service', () => {
     expect(snapshotText).not.toContain(root);
     const frozen = completed.snapshot as any;
     expect(frozen.environment.maxConcurrency).toBe(2);
+    expect(frozen.versions.scorer).toBe('prompt-judge-3');
     expect(frozen.toolDefinitions.map((definition: any) => definition.function.name)).toEqual(['ReadResume']);
     expect(frozen.config.candidates[0].compiledPrompt.manifest.toolPolicyHash).toBe(frozen.toolsetHash);
     const preview = await service.PreviewProject(project.id);
