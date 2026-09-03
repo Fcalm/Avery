@@ -156,7 +156,7 @@ export function CreateBackendHost({ appContext, desktopCapabilities = {}, onEven
       if (!channels.includes(channel)) throw Object.assign(new Error(`Unknown IPC channel: ${channel}.`), { code: 'INTERNAL_ERROR' });
       const requestId = `req-${commandSessionId}-${nextRequestId++}`;
       const timeout = channel === 'cron:run-due' ? 30 * 60 * 1000
-        : channel === 'agent:send' ? 5 * 60 * 1000
+        : channel === 'agent:send' ? 10 * 60 * 1000
         : channel === 'workspace:migrate' ? 2 * 60 * 1000
           : 30000;
       return new Promise((resolve, reject) => {
