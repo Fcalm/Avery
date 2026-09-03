@@ -7,25 +7,32 @@ function Event(ordinal: number, eventType: string, payload: unknown): AgentTrace
 }
 
 describe('TraceViewer timeline', () => {
-  it('按 API 请求显示真实消息，并将 tool call 与每条 result 分开', () => {
+  it('以 API input 为权威去除跨请求历史和 append 重复，同时保留终态输出', () => {
     const events = [
       Event(1, 'provider_request', { apiRequestIndex: 1, kind: 'completion' }),
       Event(2, 'message', { apiRequestIndex: 1, direction: 'input', kind: 'completion', messageIndex: 0, message: { role: 'system', content: 'prompt' } }),
-      Event(3, 'message', { apiRequestIndex: 1, direction: 'output', source: 'provider', message: { role: 'assistant', content: '', tool_calls: [{ id: 'a' }, { id: 'b' }] } }),
-      Event(4, 'message', { apiRequestIndex: 1, direction: 'append', source: 'tool', message: { role: 'tool', tool_call_id: 'a', content: '{"ok":true}' } }),
-      Event(5, 'message', { apiRequestIndex: 1, direction: 'append', source: 'tool', message: { role: 'tool', tool_call_id: 'b', content: '{"ok":false}' } }),
-      Event(6, 'provider_request', { apiRequestIndex: 2, kind: 'completion' }),
-      Event(7, 'message', { apiRequestIndex: 2, direction: 'input', kind: 'completion', messageIndex: 0, message: { role: 'system', content: 'prompt' } }),
+      Event(3, 'message', { apiRequestIndex: 1, direction: 'input', kind: 'completion', messageIndex: 1, message: { role: 'user', content: 'question' } }),
+      Event(4, 'message', { apiRequestIndex: 1, direction: 'output', source: 'provider', message: { role: 'assistant', content: '', tool_calls: [{ id: 'a' }, { id: 'b' }] } }),
+      Event(5, 'message', { apiRequestIndex: 1, direction: 'append', source: 'tool', message: { role: 'tool', tool_call_id: 'a', content: '{"ok":true}' } }),
+      Event(6, 'message', { apiRequestIndex: 1, direction: 'append', source: 'tool', message: { role: 'tool', tool_call_id: 'b', content: '{"ok":false}' } }),
+      Event(7, 'provider_request', { apiRequestIndex: 2, kind: 'completion' }),
+      Event(8, 'message', { apiRequestIndex: 2, direction: 'input', kind: 'completion', messageIndex: 0, message: { role: 'system', content: 'prompt' } }),
+      Event(9, 'message', { apiRequestIndex: 2, direction: 'input', kind: 'completion', messageIndex: 1, message: { role: 'user', content: 'question' } }),
+      Event(10, 'message', { apiRequestIndex: 2, direction: 'input', kind: 'completion', messageIndex: 2, message: { role: 'assistant', content: '', tool_calls: [{ id: 'a' }, { id: 'b' }] } }),
+      Event(11, 'message', { apiRequestIndex: 2, direction: 'input', kind: 'completion', messageIndex: 3, message: { role: 'tool', tool_call_id: 'a', content: '{"ok":true}' } }),
+      Event(12, 'message', { apiRequestIndex: 2, direction: 'input', kind: 'completion', messageIndex: 4, message: { role: 'tool', tool_call_id: 'b', content: '{"ok":false}' } }),
+      Event(13, 'message', { apiRequestIndex: 2, direction: 'output', source: 'provider', message: { role: 'assistant', content: 'done' } }),
     ];
 
     const timeline = BuildTimeline('run-1', 1, events);
 
-    expect(timeline).toHaveLength(5);
-    expect(timeline.map((event) => event.title)).toEqual(['System', 'Assistant', 'Tool', 'Tool', 'System']);
-    expect(timeline[1].detail).toContain('2 tool calls');
-    expect(timeline[2].payload).toMatchObject({ tool_call_id: 'a' });
-    expect(timeline[3].payload).toMatchObject({ tool_call_id: 'b' });
-    expect(timeline.map((event) => event.apiRequestIndex)).toEqual([1, 1, 1, 1, 2]);
+    expect(timeline).toHaveLength(6);
+    expect(timeline.map((event) => event.title)).toEqual(['System', 'User', 'Assistant', 'Tool', 'Tool', 'Assistant']);
+    expect(timeline[2].detail).toContain('2 tool calls');
+    expect(timeline[3].payload).toMatchObject({ tool_call_id: 'a' });
+    expect(timeline[4].payload).toMatchObject({ tool_call_id: 'b' });
+    expect(timeline.map((event) => event.apiRequestIndex)).toEqual([1, 1, 2, 2, 2, 2]);
+    expect(new Set(timeline.map((event) => JSON.stringify(event.payload))).size).toBe(timeline.length);
   });
 
   it('旧 Trace 的 tool_call 和 tool_result 也不再合并', () => {

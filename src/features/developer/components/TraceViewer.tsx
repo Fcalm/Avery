@@ -100,16 +100,64 @@ function MessageDetail(payload: Record<string, unknown>, message: Record<string,
   return source ? `Appended by ${source}` : 'Appended message';
 }
 
-/** 新 Trace 严格按 Provider request/message 展示；旧 Trace 保持兼容，但不再合并工具调用与结果。 */
+function MessageFingerprint(message: Record<string, unknown>) {
+  return JSON.stringify(message);
+}
+
+/**
+ * Provider 请求会重复携带完整历史，append 事件又会在下一请求中成为 input；直接平铺会把同一消息展示两次。
+ * API input 是实际发送事实，优先作为权威来源；相邻同类请求只展示新增后缀，未进入后续请求的终态 output 才保留。
+ */
+function SelectCanonicalMessageOrdinals(events: AgentTraceEvent[]) {
+  const visibleInputOrdinals = new Set<number>();
+  const laterInputOrdinalsByFingerprint = new Map<string, number[]>();
+  let previousKind = '';
+  let previousInputFingerprints: string[] = [];
+  const requestInputs = new Map<number, Array<{ event: AgentTraceEvent; message: Record<string, unknown>; kind: string }>>();
+  for (const event of events) {
+    if (event.eventType !== 'message') continue;
+    const payload = EventPayload(event);
+    if (payload.direction !== 'input') continue;
+    const message = payload.message && typeof payload.message === 'object' ? payload.message as Record<string, unknown> : {};
+    const apiRequestIndex = Math.max(1, Number(payload.apiRequestIndex) || 1);
+    const items = requestInputs.get(apiRequestIndex) ?? [];
+    items.push({ event, message, kind: String(payload.kind ?? 'completion') });
+    requestInputs.set(apiRequestIndex, items);
+    const fingerprint = MessageFingerprint(message);
+    laterInputOrdinalsByFingerprint.set(fingerprint, [...(laterInputOrdinalsByFingerprint.get(fingerprint) ?? []), event.ordinal]);
+  }
+  for (const [, items] of [...requestInputs].sort(([left], [right]) => left - right)) {
+    const kind = items[0]?.kind ?? 'completion';
+    const fingerprints = items.map((item) => MessageFingerprint(item.message));
+    let commonPrefixLength = 0;
+    if (kind === previousKind) {
+      while (commonPrefixLength < fingerprints.length
+        && commonPrefixLength < previousInputFingerprints.length
+        && fingerprints[commonPrefixLength] === previousInputFingerprints[commonPrefixLength]) commonPrefixLength += 1;
+    }
+    items.slice(commonPrefixLength).forEach(({ event }) => visibleInputOrdinals.add(event.ordinal));
+    previousKind = kind;
+    previousInputFingerprints = fingerprints;
+  }
+  return { visibleInputOrdinals, laterInputOrdinalsByFingerprint };
+}
+
+/** 新 Trace 以去重后的 Provider input 为权威；旧 Trace 保持兼容，但不再合并工具调用与结果。 */
 export function BuildTimeline(requestId: string, runIndex: number, events: AgentTraceEvent[]) {
   const timeline: TimelineEvent[] = [];
   const hasMessageEvents = events.some((event) => event.eventType === 'message');
+  const { visibleInputOrdinals, laterInputOrdinalsByFingerprint } = SelectCanonicalMessageOrdinals(events);
   for (let index = 0; index < events.length; index += 1) {
     const event = events[index];
     const payload = EventPayload(event);
     const tokenCount = event.tokenCount || EstimateTokenCount(event.payload);
     if (event.eventType === 'message') {
       const message = payload.message && typeof payload.message === 'object' ? payload.message as Record<string, unknown> : {};
+      if (payload.direction === 'input' && !visibleInputOrdinals.has(event.ordinal)) continue;
+      if (payload.direction !== 'input') {
+        const laterInputs = laterInputOrdinalsByFingerprint.get(MessageFingerprint(message)) ?? [];
+        if (laterInputs.some((ordinal) => ordinal > event.ordinal)) continue;
+      }
       const title = MessageTitle(message.role);
       const apiRequestIndex = Math.max(1, Number(payload.apiRequestIndex) || 1);
       const requestKind = payload.kind === 'summary' ? 'summary' : 'completion';
