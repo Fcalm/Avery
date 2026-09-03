@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { CreateVisionUserMessage, DetectSupportedImageMimeType, HydrateVisionMessage } from '../../../apps/backend/src/electron/backend/vision-input';
+import { CreateVisionUserMessage, DetectSupportedImageMimeType, HydrateVisionMessage, SupportsVisionInput } from '../../../apps/backend/src/electron/backend/vision-input';
 
 const temporaryDirectories: string[] = [];
 
@@ -10,7 +10,13 @@ afterEach(() => {
   for (const directory of temporaryDirectories.splice(0)) rmSync(directory, { recursive: true, force: true });
 });
 
-describe('DeepSeek vision input', () => {
+describe('vision input', () => {
+  it('只为声明支持视觉的官方模型启用图片输入', () => {
+    expect(SupportsVisionInput('DeepSeek', 'deepseek-v4-flash-vision-exp')).toBe(true);
+    expect(SupportsVisionInput('Z.AI', 'glm-5.3-flash')).toBe(true);
+    expect(SupportsVisionInput('DeepSeek', 'deepseek-v4-flash')).toBe(false);
+    expect(SupportsVisionInput('自定义', 'glm-5.3-flash')).toBe(false);
+  });
   it('按真实文件签名识别官方支持格式，不信任文件名', () => {
     expect(DetectSupportedImageMimeType(Buffer.from([0xff, 0xd8, 0xff, 0x00]))).toBe('image/jpeg');
     expect(DetectSupportedImageMimeType(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))).toBe('image/png');

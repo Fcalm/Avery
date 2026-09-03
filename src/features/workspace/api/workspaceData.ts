@@ -14,7 +14,7 @@ export interface WorkspaceData extends WorkspaceViewModel {
 export const DefaultSettings: SettingsDraft = {
   nickname: '',
   provider: 'DeepSeek',
-  baseUrl: 'https://api.deepseek.com/v1',
+  baseUrl: 'https://api.deepseek.com',
   model: 'deepseek-v4-flash',
   contextLength: '256K',
   contextLimitMode: 'default',

@@ -3,6 +3,7 @@ import * as path from 'node:path';
 import type { AgentMessage } from '@offerget/agent-sdk';
 
 export const DeepSeekVisionModel = 'deepseek-v4-flash-vision-exp';
+export const GlmVisionModel = 'glm-5.3-flash';
 const MaximumInlineImageBytes = 32 * 1024 * 1024;
 
 type SupportedImageMimeType = NonNullable<AgentMessage['imageAttachments']>[number]['mimeType'];
@@ -49,12 +50,17 @@ async function ReadImage(uri: string, displayName: string, resolveAttachment: (u
     if (declaredAsImage || namedAsImage) throw new Error(`Attachment ${displayName} is not a valid JPEG, PNG, GIF, or WebP image.`);
     return null;
   }
-  if (size <= 0 || size > MaximumInlineImageBytes) throw new Error(`Image ${displayName} must be no larger than 32 MiB for inline DeepSeek vision input.`);
+  if (size <= 0 || size > MaximumInlineImageBytes) throw new Error(`Image ${displayName} must be no larger than 32 MiB for inline vision input.`);
   const bytes = await readFile(resolved.physicalPath);
   return {
     reference: { uri, mimeType, detail },
     dataUrl: `data:${mimeType};base64,${bytes.toString('base64')}`,
   };
+}
+
+/** 仅官方声明支持视觉内容的 Provider/模型组合才接收图片块。 */
+export function SupportsVisionInput(provider: unknown, model: unknown): boolean {
+  return (provider === 'DeepSeek' && model === DeepSeekVisionModel) || (provider === 'Z.AI' && model === GlmVisionModel);
 }
 
 /** 将本轮附件转换为官方 OpenAI 兼容的 text + image_url 块，同时只保留可持久化的虚拟 URI 引用。 */

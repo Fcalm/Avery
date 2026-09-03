@@ -8,7 +8,7 @@ import type { DesktopEvaluationBridge } from './evaluation';
 /** Agent 确认级别；完全信任仍受场景白名单、Schema、资源授权与幂等约束。 */
 export type ConfirmationMode = 'always_confirm' | 'allow_low_risk' | 'fully_trusted';
 
-/** 会话级思考强度；DeepSeek Provider 会按官方规则映射实际 effort。 */
+/** 会话级思考强度；Provider 会按模型官方规则映射实际 effort。 */
 export type ReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 
 /** Agent 请求的显式窄字段：确认模式、附件、项目 ID 与简历 ID；业务只读快照（简历/档案）由后端按 ID 读取，不再整包透传前端组合态。 */
@@ -69,7 +69,7 @@ export interface AgentStreamEvent {
 
 /** Agent 模型配置：API Key 仅经 IPC 进入主进程 safeStorage。 */
 export interface AgentConfiguration {
-  provider: 'DeepSeek' | '自定义';
+  provider: 'DeepSeek' | 'Z.AI' | '自定义';
   apiKey: string;
   baseUrl: string;
   model: string;

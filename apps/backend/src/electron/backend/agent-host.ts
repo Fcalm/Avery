@@ -8,7 +8,7 @@ import type { AgentMessage, AgentModules, BrowserAutomationPort, CompiledInstruc
 import { AgentFileReader } from './agent-file-reader';
 import { AgentResumePort } from './agent-resume-port';
 import { ResumeLockStore } from './resume-lock-store';
-import { CreateVisionUserMessage, DeepSeekVisionModel, HydrateVisionMessage } from './vision-input';
+import { CreateVisionUserMessage, HydrateVisionMessage, SupportsVisionInput } from './vision-input';
 import { AgentBrowserRuntime } from './agent-browser-runtime';
 import { AgentSkillRegistry } from './agent-skill-registry';
 import { CreateCronTaskSchema } from '@offerget/contracts';
@@ -1109,12 +1109,12 @@ export class AgentHost {
       : [];
     const snapshot = this.modules.contextBuilder.CreateDynamicSnapshot(sessionId, runtimeContext);
     const baseRequestHistory = snapshot.changed ? [...history, snapshot.message] : history;
-    const usesDeepSeekVision = status.provider === 'DeepSeek' && model === DeepSeekVisionModel;
+    const usesVisionInput = SupportsVisionInput(status.provider, model);
     const resolveAttachment = (uri: string) => this.business?.ResolveAttachmentUri?.(uri) ?? Promise.resolve(null);
-    const requestHistory: AgentMessage[] = usesDeepSeekVision
+    const requestHistory: AgentMessage[] = usesVisionInput
       ? await Promise.all(baseRequestHistory.map((message: AgentMessage) => HydrateVisionMessage(message, resolveAttachment)))
       : baseRequestHistory;
-    const userMessage = usesDeepSeekVision
+    const userMessage = usesVisionInput
       ? await CreateVisionUserMessage(userContent, attachments, resolveAttachment)
       : { role: 'user' as const, content: userContent };
     const controller = new AbortController();

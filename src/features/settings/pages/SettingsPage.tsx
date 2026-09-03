@@ -21,11 +21,12 @@ const Tabs: Array<{ id: SettingTab; label: string; description: string }> = [
 ];
 const FallbackDeepSeekModels = ['deepseek-v4-flash', 'deepseek-v4-pro', 'deepseek-v4-flash-vision-exp'];
 
-function UpgradeDeepSeekSettings(settings: SettingsDraft): SettingsDraft {
+function NormalizeProviderSettings(settings: SettingsDraft): SettingsDraft {
   const contextLimitMode = settings.contextLimitMode ?? (settings.provider === '自定义' ? 'custom' : 'default');
   const contextLength = settings.provider === 'DeepSeek' && contextLimitMode === 'default' && settings.contextLength === '64K' ? '256K' : settings.contextLength;
-  const model = settings.provider === 'DeepSeek' && (settings.model === 'deepseek-chat' || settings.model === 'deepseek-reasoner') ? 'deepseek-v4-flash' : settings.model;
-  return { ...settings, model, contextLength, contextLimitMode };
+  const model = settings.provider === 'Z.AI' ? 'glm-5.3-flash' : settings.provider === 'DeepSeek' && (!settings.model.startsWith('deepseek-') || settings.model === 'deepseek-chat' || settings.model === 'deepseek-reasoner') ? 'deepseek-v4-flash' : settings.model;
+  const baseUrl = settings.provider === 'Z.AI' ? 'https://open.bigmodel.cn/api/paas/v4' : settings.provider === 'DeepSeek' ? 'https://api.deepseek.com' : settings.baseUrl;
+  return { ...settings, model, baseUrl, contextLength, contextLimitMode, thinkingEnabled: settings.provider === 'Z.AI' ? true : settings.thinkingEnabled };
 }
 
 function IsValidContextLength(value: string): boolean {
@@ -43,7 +44,7 @@ function SettingsPage({ onNavigateDeveloper }: { onNavigateDeveloper: () => void
   const queryClient = useQueryClient();
   const { settings, saveSettingsNow } = useSettingsStore();
   const [tab, setTab] = useState<SettingTab>('account');
-  const [draft, setDraft] = useState<SettingsDraft>(() => UpgradeDeepSeekSettings(settings));
+  const [draft, setDraft] = useState<SettingsDraft>(() => NormalizeProviderSettings(settings));
   const [deepSeekModels, setDeepSeekModels] = useState<string[]>(FallbackDeepSeekModels);
   const [refreshingModels, setRefreshingModels] = useState(false);
   const [dirty, setDirty] = useState(false);
@@ -58,7 +59,15 @@ function SettingsPage({ onNavigateDeveloper }: { onNavigateDeveloper: () => void
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
   const [moduleConfiguration, setModuleConfiguration] = useState<AgentModuleConfiguration | null>(null);
   const [updatingModules, setUpdatingModules] = useState(false);
-  useEffect(() => { setDraft(UpgradeDeepSeekSettings(settings)); }, [settings]);
+  const [apiKeyConfigured, setApiKeyConfigured] = useState(false);
+  const [configuredProvider, setConfiguredProvider] = useState<SettingsDraft['provider'] | null>(null);
+  useEffect(() => { setDraft(NormalizeProviderSettings(settings)); }, [settings]);
+  /** API Key 不进入 Renderer；只以主进程返回的脱敏配置状态驱动成功标记。 */
+  useEffect(() => {
+    const isCurrentProviderConfigured = apiKeyConfigured && configuredProvider === draft.provider;
+    document.body.classList.toggle('settings-has-configured-api-key', isCurrentProviderConfigured);
+    return () => document.body.classList.remove('settings-has-configured-api-key');
+  }, [apiKeyConfigured, configuredProvider, draft.provider]);
   async function RefreshDeepSeekModels(manual = false) {
     if (!IsDesktopAgentAvailable()) return;
     setRefreshingModels(true);
@@ -78,18 +87,20 @@ function SettingsPage({ onNavigateDeveloper }: { onNavigateDeveloper: () => void
   useEffect(() => {
     if (tab !== 'api' || !IsDesktopAgentAvailable()) return;
     void GetAgentStatus().then((status) => {
+      setApiKeyConfigured(status.configured);
+      setConfiguredProvider(status.provider === 'Z.AI' ? 'Z.AI' : status.provider === '自定义' ? '自定义' : 'DeepSeek');
       const contextLimit = status.contextLimit;
       if (!contextLimit) return;
-      setDraft((current) => UpgradeDeepSeekSettings({
+      setDraft((current) => NormalizeProviderSettings({
         ...current,
-        provider: status.provider === '自定义' ? '自定义' : 'DeepSeek',
+        provider: status.provider === '自定义' ? '自定义' : status.provider === 'Z.AI' ? 'Z.AI' : 'DeepSeek',
         model: status.model,
         baseUrl: status.baseUrl ?? current.baseUrl,
         contextLength: FormatContextLength(contextLimit),
         contextLimitMode: status.contextLimitMode ?? 'default',
         compressionThreshold: status.compressionThreshold ?? current.compressionThreshold,
       }));
-    }).catch(() => undefined);
+    }).catch(() => { setApiKeyConfigured(false); setConfiguredProvider(null); });
   }, [tab]);
   useEffect(() => {
     if (tab === 'developer' && IsDesktopAgentAvailable()) void RefreshModuleConfiguration();
@@ -98,7 +109,7 @@ function SettingsPage({ onNavigateDeveloper }: { onNavigateDeveloper: () => void
     if (tab === 'browser') void RefreshBrowserRuntime();
   }, [tab]);
   function UpdateDraft(patch: Partial<SettingsDraft>) {
-    setDraft((current) => ({ ...current, ...patch }));
+    setDraft((current) => ({ ...current, ...patch, ...(patch.provider && patch.provider !== current.provider ? { apiKey: '' } : {}) }));
     if (patch.traceRetention !== undefined || patch.compressionThreshold !== undefined || patch.contextLength !== undefined || patch.contextLimitMode !== undefined) setFieldErrors((current) => ({ ...current, ...(patch.traceRetention !== undefined ? { traceRetention: undefined } : {}), ...(patch.compressionThreshold !== undefined ? { compressionThreshold: undefined } : {}), ...(patch.contextLength !== undefined || patch.contextLimitMode !== undefined ? { contextLength: undefined } : {}) }));
     setDirty(true);
   }
@@ -109,11 +120,14 @@ function SettingsPage({ onNavigateDeveloper }: { onNavigateDeveloper: () => void
     if (draft.contextLimitMode === 'custom' && !IsValidContextLength(draft.contextLength)) nextErrors.contextLength = '请输入 8K–2000K，例如 128K 或 128000。';
     setFieldErrors(nextErrors);
     if (Object.keys(nextErrors).length) { ShowNotice('请修正标记的设置项后再保存'); return false; }
+    ShowNotice(tab === 'api' ? '正在保存 API 配置…' : '正在保存设置…', 'pending');
     if (tab === 'api' && IsDesktopAgentAvailable()) {
       try {
         await ConfigureAgent({ provider: draft.provider, apiKey: draft.apiKey, baseUrl: draft.baseUrl, model: draft.model, thinkingEnabled: draft.thinkingEnabled, contextLength: draft.contextLength, contextLimitMode: draft.contextLimitMode, compressionThreshold: draft.compressionThreshold });
+        setApiKeyConfigured(true);
+        setConfiguredProvider(draft.provider);
       } catch (error) {
-        ShowNotice(error instanceof Error ? error.message : 'API 配置保存失败');
+        ShowNotice(error instanceof Error ? error.message : 'API 配置保存失败', 'error');
         return false;
       }
     }
@@ -121,7 +135,7 @@ function SettingsPage({ onNavigateDeveloper }: { onNavigateDeveloper: () => void
       try {
         await SetAgentTraceRetention(draft.traceRetention);
       } catch (error) {
-        ShowNotice(error instanceof Error ? error.message : 'Trace 留存设置保存失败');
+        ShowNotice(error instanceof Error ? error.message : 'Trace 留存设置保存失败', 'error');
         return false;
       }
     }
@@ -130,14 +144,14 @@ function SettingsPage({ onNavigateDeveloper }: { onNavigateDeveloper: () => void
     try {
       await saveSettingsNow({ ...safeDraft, apiKey: '' });
     } catch (error) {
-      ShowNotice(error instanceof Error ? error.message : '设置持久化失败');
+      ShowNotice(error instanceof Error ? error.message : '设置持久化失败', 'error');
       return false;
     }
-    setDirty(false); setFieldErrors({}); ShowNotice(tab === 'api' ? 'API 配置与上下文限制已保存' : '设置已保存');
+    setDirty(false); setFieldErrors({}); ShowNotice(tab === 'api' ? 'API 配置与上下文限制已保存' : '设置已保存', 'success');
     return true;
   }
   function SwitchTab(target: SettingTab) { if (!dirty) { setTab(target); return; } setNextTab(target); setShowLeave(true); }
-  function DiscardAndSwitch() { if (!nextTab) return; setDraft(UpgradeDeepSeekSettings(settings)); setDirty(false); setTab(nextTab); setNextTab(null); setShowLeave(false); }
+  function DiscardAndSwitch() { if (!nextTab) return; setDraft(NormalizeProviderSettings(settings)); setDirty(false); setTab(nextTab); setNextTab(null); setShowLeave(false); }
   async function ClearDeveloperObservability() {
     if (IsDesktopAgentAvailable()) await ClearAgentObservability();
     setShowClear(false);
@@ -214,7 +228,7 @@ function SettingsPage({ onNavigateDeveloper }: { onNavigateDeveloper: () => void
      {tab === 'account' && <div className="settings-panel"><FormField label="账户昵称"><input value={draft.nickname} onChange={(event) => UpdateDraft({ nickname: event.target.value })} /><small>将显示在侧边栏与欢迎页面中。</small></FormField><FormField label="会话自定义上下文"><textarea rows={6} value={draft.customContext ?? ''} onChange={(event) => UpdateDraft({ customContext: event.target.value })} placeholder="例如：我偏好简洁直白的表达，简历经历需包含量化成果…" /><small>该上下文将注入每个 Avery 会话，不会读取你开发项目目录中的规则文档。</small></FormField></div>}
     {tab === 'workspace' && <div className="settings-panel"><FormField label="当前工作空间"><input value={draft.workspaceName ?? ''} readOnly disabled /><small>工作空间目录由本地服务管理；迁移时通过下方按钮选择目标空目录。</small></FormField><div className="setting-note"><b>迁移说明</b><p>迁移会复制数据库、档案、附件、导出和备份文件，校验后切换到目标空目录；原目录不会删除。Agent 运行中不可迁移。</p><Button onClick={() => setShowMigrate(true)}>迁移工作空间</Button></div><div className="setting-note"><b>本地备份</b><p>立即备份数据库与档案文件；系统仅保留最近 7 份每日备份。</p><Button onClick={() => void CreateWorkspaceBackupHandler()}>立即创建备份</Button></div></div>}
     {tab === 'browser' && <><div className="settings-panel browser-settings-panel"><div className={`browser-runtime-bar ${browserRuntime?.running ? 'is-running' : ''} ${browserRuntime?.state === 'unhealthy' ? 'is-unhealthy' : ''}`}><span><Icon name="browser" size={15} /><b>{!browserRuntime ? '隔离浏览器状态未知' : browserRuntime.state === 'not_installed' ? '隔离浏览器组件缺失' : browserRuntime.state === 'unhealthy' ? '隔离浏览器连接异常' : browserRuntime.running ? '隔离浏览器运行中' : '隔离浏览器已就绪'}</b><small title={browserRuntime?.message ?? '招聘网页运行在独立 Electron 进程中，不暴露 Avery 主界面 target'}>{browserRuntime?.message ?? browserRuntime?.currentUrl ?? '使用应用内置引擎，登录状态独立持久保存'} · 进程级页面隔离</small></span><div><Button variant="quiet" disabled={browserRuntimeBusy} onClick={() => void RefreshBrowserRuntime()}>刷新状态</Button></div></div><div className="setting-note"><b>浏览器登录数据</b><p>Cookie、站点存储和登录状态只保存在 Avery 的独立浏览器 Profile 中；清除后不会影响系统浏览器。</p><Button variant="danger" disabled={browserRuntimeBusy || !browserRuntime?.profileExists} onClick={() => setShowClearBrowserProfile(true)}>清除登录数据</Button></div></div><Modal open={showClearBrowserProfile} title="清除浏览器登录数据" onClose={() => setShowClearBrowserProfile(false)}><p className="modal-copy">这会关闭 Agent 浏览器并删除 Avery 独立 Profile 中的 Cookie、站点存储和登录状态，且无法撤销。不会影响系统浏览器。</p><div className="modal-actions"><Button onClick={() => setShowClearBrowserProfile(false)}>取消</Button><Button variant="danger" disabled={browserRuntimeBusy} onClick={() => void ClearBrowserProfileHandler()}>确认清除</Button></div></Modal></>}
-    {tab === 'api' && <div className="settings-panel api-panel"><div className="segmented"><button className={draft.provider === 'DeepSeek' ? 'selected' : ''} onClick={() => UpdateDraft({ provider: 'DeepSeek', model: draft.model === 'deepseek-chat' || draft.model === 'deepseek-reasoner' ? 'deepseek-v4-flash' : draft.model })}>DeepSeek</button><button className={draft.provider === '自定义' ? 'selected' : ''} onClick={() => UpdateDraft({ provider: '自定义' })}>自定义</button></div><FormField label="API Key"><input type="password" value={draft.apiKey} onChange={(event) => UpdateDraft({ apiKey: event.target.value })} /></FormField>{draft.provider === 'DeepSeek' ? <><FormField label="可用模型" hint="从 DeepSeek 官方接口同步，未配置凭据时使用当前 V4 默认模型。"><div className="model-select-row"><Select value={draft.model} onChange={(model) => UpdateDraft({ model })} ariaLabel="可用模型" options={[...new Set([draft.model, ...deepSeekModels])].map((model) => ({ value: model, label: model }))} /><Button variant="quiet" disabled={refreshingModels} onClick={() => void RefreshDeepSeekModels(true)}>{refreshingModels ? '同步中…' : '刷新模型'}</Button></div></FormField><label className="switch-line"><span><b>思考模式</b><small>开启后，助手回复会展示可折叠的思考内容。</small></span><input type="checkbox" checked={draft.thinkingEnabled} onChange={(event) => UpdateDraft({ thinkingEnabled: event.target.checked })} /></label></> : <><FormField label="Base URL"><input value={draft.baseUrl} onChange={(event) => UpdateDraft({ baseUrl: event.target.value })} /></FormField><FormField label="模型名称"><input value={draft.model} onChange={(event) => UpdateDraft({ model: event.target.value })} /></FormField></>}<label className="switch-line"><span><b>自定义上下文限制</b><small>关闭时默认使用 256K；若模型上限更小，则自动使用模型上限。</small></span><input type="checkbox" checked={draft.contextLimitMode === 'custom'} onChange={(event) => UpdateDraft({ contextLimitMode: event.target.checked ? 'custom' : 'default' })} /></label>{draft.contextLimitMode === 'custom' && <FormField label="上下文限制" hint="支持 128K 或 128000；已知模型不能超过其官方上限。"><input value={draft.contextLength} aria-invalid={Boolean(fieldErrors.contextLength)} aria-describedby={fieldErrors.contextLength ? 'context-limit-error' : undefined} onChange={(event) => UpdateDraft({ contextLength: event.target.value })} />{fieldErrors.contextLength && <small className="field-error" id="context-limit-error" role="alert">{fieldErrors.contextLength}</small>}</FormField>}<div className="api-actions"><Button onClick={() => void TestApiConnection()}>测试连接</Button><Button variant="primary" onClick={() => void SaveSettings()}>保存配置</Button></div></div>}
+    {tab === 'api' && <div className="settings-panel api-panel"><div className="segmented"><button className={draft.provider === 'DeepSeek' ? 'selected' : ''} onClick={() => UpdateDraft({ provider: 'DeepSeek', baseUrl: 'https://api.deepseek.com', model: draft.model.startsWith('deepseek-') && draft.model !== 'deepseek-chat' && draft.model !== 'deepseek-reasoner' ? draft.model : 'deepseek-v4-flash' })}>DeepSeek</button><button className={draft.provider === 'Z.AI' ? 'selected' : ''} onClick={() => UpdateDraft({ provider: 'Z.AI', baseUrl: 'https://open.bigmodel.cn/api/paas/v4', model: 'glm-5.3-flash', thinkingEnabled: true })}>GLM</button><button className={draft.provider === '自定义' ? 'selected' : ''} onClick={() => UpdateDraft({ provider: '自定义' })}>自定义</button></div><FormField label="API Key"><input type="password" value={draft.apiKey} onChange={(event) => UpdateDraft({ apiKey: event.target.value })} autoComplete="off" /></FormField>{draft.provider === 'DeepSeek' ? <><FormField label="可用模型" hint="从 DeepSeek 官方接口同步，未配置凭据时使用当前 V4 默认模型。"><div className="model-select-row"><Select value={draft.model} onChange={(model) => UpdateDraft({ model })} ariaLabel="可用模型" options={[...new Set([draft.model, ...deepSeekModels])].map((model) => ({ value: model, label: model }))} /><Button variant="quiet" disabled={refreshingModels} onClick={() => void RefreshDeepSeekModels(true)}>{refreshingModels ? '同步中…' : '刷新模型'}</Button></div></FormField><label className="switch-line"><span><b>思考模式</b><small>开启后，助手回复会展示可折叠的思考内容。</small></span><input type="checkbox" checked={draft.thinkingEnabled} onChange={(event) => UpdateDraft({ thinkingEnabled: event.target.checked })} /></label></> : draft.provider === 'Z.AI' ? <><FormField label="模型"><input value="glm-5.3-flash" readOnly /></FormField><FormField label="API 端点"><input value="https://open.bigmodel.cn/api/paas/v4" readOnly /></FormField><div className="setting-note"><b>GLM 思考模式</b><p>使用智谱中国区官方 API。GLM-5.3-Flash 强制启用思考；会话中的思考强度仍可调整，并按官方 low、high、max 三档发送。</p></div></> : <><FormField label="Base URL"><input value={draft.baseUrl} onChange={(event) => UpdateDraft({ baseUrl: event.target.value })} /></FormField><FormField label="模型名称"><input value={draft.model} onChange={(event) => UpdateDraft({ model: event.target.value })} /></FormField></>}<label className="switch-line"><span><b>自定义上下文限制</b><small>关闭时默认使用 256K；若模型上限更小，则自动使用模型上限。</small></span><input type="checkbox" checked={draft.contextLimitMode === 'custom'} onChange={(event) => UpdateDraft({ contextLimitMode: event.target.checked ? 'custom' : 'default' })} /></label>{draft.contextLimitMode === 'custom' && <FormField label="上下文限制" hint="支持 128K 或 128000；已知模型不能超过其官方上限。"><input value={draft.contextLength} aria-invalid={Boolean(fieldErrors.contextLength)} aria-describedby={fieldErrors.contextLength ? 'context-limit-error' : undefined} onChange={(event) => UpdateDraft({ contextLength: event.target.value })} />{fieldErrors.contextLength && <small className="field-error" id="context-limit-error" role="alert">{fieldErrors.contextLength}</small>}</FormField>}<div className="api-actions"><Button onClick={() => void TestApiConnection()}>测试连接</Button><Button variant="primary" onClick={() => void SaveSettings()}>保存配置</Button></div></div>}
     {tab === 'developer' && <div className="settings-panel developer-settings"><label className="switch-line"><span><b>启用开发者模式</b><small>开启后在侧边栏显示本地开发者工具。</small></span><input type="checkbox" checked={draft.developerMode} onChange={(event) => UpdateDraft({ developerMode: event.target.checked })} /></label><FormField label="Trace 保留数量" hint="默认 50，最多保留 100 条本地 Trace。"><input type="number" min="1" max="100" value={draft.traceRetention} aria-invalid={Boolean(fieldErrors.traceRetention)} aria-describedby={fieldErrors.traceRetention ? 'trace-retention-error' : undefined} onChange={(event) => UpdateDraft({ traceRetention: Number(event.target.value) })} />{fieldErrors.traceRetention && <small className="field-error" id="trace-retention-error" role="alert">{fieldErrors.traceRetention}</small>}</FormField><FormField label="自动压缩阈值"><div className="input-suffix"><input type="number" min="1" max="80" value={draft.compressionThreshold} aria-invalid={Boolean(fieldErrors.compressionThreshold)} aria-describedby={fieldErrors.compressionThreshold ? 'compression-threshold-error' : undefined} onChange={(event) => UpdateDraft({ compressionThreshold: Number(event.target.value) })} /><span>%</span></div>{fieldErrors.compressionThreshold && <small className="field-error" id="compression-threshold-error" role="alert">{fieldErrors.compressionThreshold}</small>}<small>按 System、Tools 和 Messages 的完整输入计算；只能配置为 1–80 的整数。</small></FormField><div className="setting-note"><b>Trace 隐私提示</b><p>真实 Trace 可能包含简历、JD 与附件片段，仅保存在本机；关闭开发者模式后不再新增 Trace。</p></div><div className="danger-zone"><div><b>清空 Trace</b><p>删除所有本地 Trace，不可撤销。</p></div><Button variant="danger" onClick={() => setShowClear(true)}>一键清空</Button></div>{draft.developerMode && <Button onClick={onNavigateDeveloper}>打开开发者工具</Button>}</div>}
   </section><Modal open={showLeave} title="存在未保存的修改" onClose={() => setShowLeave(false)}><p className="modal-copy">切换设置项前，请选择如何处理当前修改。</p><div className="modal-actions"><Button onClick={() => setShowLeave(false)}>继续编辑</Button><Button onClick={DiscardAndSwitch}>放弃修改</Button><Button variant="primary" onClick={async () => { if (await SaveSettings() && nextTab) setTab(nextTab); setNextTab(null); setShowLeave(false); }}>保存并切换</Button></div></Modal><Modal open={showClear} title="确认清空全部 Trace？" onClose={() => setShowClear(false)}><p className="modal-copy">将删除本地全部运行日志、Trace 索引和事件。此操作不可撤销。</p><div className="modal-actions"><Button onClick={() => setShowClear(false)}>取消</Button><Button variant="danger" onClick={() => void ClearDeveloperObservability()}>确认清空</Button></div></Modal><Modal open={showMigrate} title="确认迁移工作空间？" onClose={() => setShowMigrate(false)}><p className="modal-copy">将复制并校验数据后切换到目标空目录，原工作空间会保留。Agent 运行期间无法迁移。</p><div className="modal-actions"><Button onClick={() => setShowMigrate(false)}>取消</Button><Button variant="primary" onClick={() => void MigrateWorkspaceHandler()}>确认迁移</Button></div></Modal>
   </div>;

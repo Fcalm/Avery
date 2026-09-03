@@ -6,8 +6,11 @@ import { SummaryPrompt } from './prompts';
 // 保留既有导出，供扩展模块和既有调用方兼容；实际定义集中在 prompts.ts。
 export { SummaryPrompt } from './prompts';
 
-/** DeepSeek 官方 API 根地址；自定义 Provider 使用用户配置的 BaseUrl。 */
+/** 官方 API 根地址；自定义 Provider 使用用户配置的 BaseUrl。 */
 export const DefaultBaseUrl = 'https://api.deepseek.com';
+/** 智谱中国区开放平台端点；国内控制台签发的 API Key 不能发送到国际站。 */
+export const DefaultZaiBaseUrl = 'https://open.bigmodel.cn/api/paas/v4';
+export const GlmFlashModel = 'glm-5.3-flash';
 const DefaultDeepSeekModels = ['deepseek-v4-flash', 'deepseek-v4-pro', 'deepseek-v4-flash-vision-exp'];
 const DeepSeekMaximumRequestBytes = 48 * 1024 * 1024;
 export const DefaultContextLimit = 256_000;
@@ -18,14 +21,41 @@ const DeepSeekModelContextLimits: Readonly<Record<string, number>> = {
   'deepseek-v4-pro': 1_000_000,
   'deepseek-v4-flash-vision-exp': 1_000_000,
 };
+const ZaiModelContextLimits: Readonly<Record<string, number>> = { [GlmFlashModel]: 1_000_000 };
 
 export type ContextLimitMode = 'default' | 'custom';
 
-/** DeepSeek V4 官方映射：前端保留五档语义，Provider 只发送服务端实际支持的三档。 */
+/** DeepSeek V4 与 GLM-5.3-Flash 的官方映射：前端保留五档语义，Provider 只发送服务端实际支持的三档。 */
 export function ResolveDeepSeekReasoningEffort(value: ReasoningEffort): 'low' | 'high' | 'max' {
   if (value === 'low') return 'low';
   if (value === 'max') return 'max';
   return 'high';
+}
+
+type SupportedProvider = 'DeepSeek' | 'Z.AI' | '自定义';
+
+function NormalizeProvider(value: unknown): SupportedProvider {
+  if (value === 'Z.AI') return 'Z.AI';
+  if (value === '自定义') return '自定义';
+  return 'DeepSeek';
+}
+
+function ResolveOfficialBaseUrl(provider: SupportedProvider, customBaseUrl?: unknown): string {
+  if (provider === 'DeepSeek') return DefaultBaseUrl;
+  if (provider === 'Z.AI') return DefaultZaiBaseUrl;
+  return RequireString(customBaseUrl, 'baseUrl', 500).replace(/\/$/, '');
+}
+
+function ResolveProviderModel(provider: SupportedProvider, value: unknown): string {
+  if (provider === 'Z.AI') return GlmFlashModel;
+  if (provider === 'DeepSeek') return NormalizeDeepSeekModel(value);
+  return RequireString(value, 'model', 200);
+}
+
+function ResolveModelMaximum(provider: SupportedProvider, model: string): number | undefined {
+  if (provider === 'DeepSeek') return DeepSeekModelContextLimits[model];
+  if (provider === 'Z.AI') return ZaiModelContextLimits[model];
+  return undefined;
 }
 
 /** 统一解析自动/自定义限制；自动值永不超过模型上限，自定义值超过已知上限时显式拒绝。 */
@@ -143,12 +173,12 @@ export function CreateProviderModule(ports: AgentDefaultPorts): ModelProviderMod
     configLoaded = true;
     const stored = (await ports.getConfig()) ?? null;
     if (!stored) return;
-    const provider = stored.provider === '自定义' ? '自定义' : 'DeepSeek';
-    const model = provider === 'DeepSeek' ? NormalizeDeepSeekModel(stored.model) : (stored.model || 'deepseek-v4-flash');
+    const provider = NormalizeProvider(stored.provider);
+    const model = ResolveProviderModel(provider, stored.model || 'deepseek-v4-flash');
     // DeepSeek 旧版 64K 是历史默认值而非用户选择；自定义 Provider 的旧值则由用户明确填写，必须保留。
     const contextLimitMode: ContextLimitMode = stored.contextLimitMode === 'custom' || stored.contextLimitMode === 'default'
       ? stored.contextLimitMode : provider === '自定义' ? 'custom' : 'default';
-    const modelMaximum = provider === 'DeepSeek' ? DeepSeekModelContextLimits[model] : undefined;
+    const modelMaximum = ResolveModelMaximum(provider, model);
     let contextLimit: number;
     try {
       contextLimit = ResolveContextLimit({ mode: contextLimitMode, value: stored.contextLimit, modelMaximum });
@@ -157,9 +187,9 @@ export function CreateProviderModule(ports: AgentDefaultPorts): ModelProviderMod
     }
     config = {
       provider,
-      baseUrl: provider === 'DeepSeek' ? DefaultBaseUrl : (stored.baseUrl || DefaultBaseUrl),
+      baseUrl: provider === '自定义' ? (stored.baseUrl || DefaultBaseUrl) : ResolveOfficialBaseUrl(provider),
       model,
-      thinkingEnabled: stored.thinkingEnabled !== false,
+      thinkingEnabled: provider === 'Z.AI' ? true : stored.thinkingEnabled !== false,
       contextLimit,
       contextLimitMode,
       compressionThreshold: stored.compressionThreshold ?? 80,
@@ -184,20 +214,27 @@ export function CreateProviderModule(ports: AgentDefaultPorts): ModelProviderMod
     async Configure(input: unknown) {
       await EnsureConfig();
       const cfg = (input ?? {}) as Record<string, unknown>;
-      const provider = cfg.provider === '自定义' ? '自定义' : 'DeepSeek';
-      const requestedModel = RequireString(cfg.model, 'model', 200);
+      const provider = NormalizeProvider(cfg.provider);
+      const requestedModel = provider === 'Z.AI' ? GlmFlashModel : RequireString(cfg.model, 'model', 200);
       const apiKey = typeof cfg.apiKey === 'string' ? cfg.apiKey.trim() : '';
-      const baseUrl = provider === 'DeepSeek' ? DefaultBaseUrl : RequireString(cfg.baseUrl, 'baseUrl', 500).replace(/\/$/, '');
+      const baseUrl = ResolveOfficialBaseUrl(provider, cfg.baseUrl);
       if (apiKey && /\*/.test(apiKey)) throw new Error('Please enter the complete API Key before saving.');
-      const model = provider === 'DeepSeek' ? NormalizeDeepSeekModel(requestedModel) : requestedModel;
+      const model = ResolveProviderModel(provider, requestedModel);
       if (provider === 'DeepSeek' && model !== requestedModel) throw new Error('请选择 DeepSeek 当前支持的模型。');
-      const next = { provider, baseUrl, model, thinkingEnabled: Boolean(cfg.thinkingEnabled), apiKey: apiKey || config.apiKey };
+      const next = {
+        provider,
+        baseUrl,
+        model,
+        thinkingEnabled: provider === 'Z.AI' ? true : Boolean(cfg.thinkingEnabled),
+        // 同一供应商修改非密钥设置可复用已保存凭据；跨供应商必须由用户重新提供，避免误发旧 Key。
+        apiKey: apiKey || (provider === config.provider ? config.apiKey : ''),
+      };
       if (!next.apiKey) throw new Error('API Key is required.');
       const contextLimitMode: ContextLimitMode = cfg.contextLimitMode === 'custom' ? 'custom' : 'default';
       const contextLimit = ResolveContextLimit({
         mode: contextLimitMode,
         value: cfg.contextLength,
-        modelMaximum: provider === 'DeepSeek' ? DeepSeekModelContextLimits[model] : undefined,
+        modelMaximum: ResolveModelMaximum(provider, model),
       });
       const compressionThreshold = ParseCompressionThreshold(cfg.compressionThreshold);
       await ports.saveConfig({ ...next, contextLimit, contextLimitMode, compressionThreshold });
@@ -207,17 +244,27 @@ export function CreateProviderModule(ports: AgentDefaultPorts): ModelProviderMod
     /** 使用当前表单值测试兼容 OpenAI 的模型服务，不写入配置或暴露密钥。 */
     async TestConnection(input: unknown) {
       const cfg = (input ?? {}) as Record<string, unknown>;
-      const provider = cfg.provider === '自定义' ? '自定义' : 'DeepSeek';
+      const provider = NormalizeProvider(cfg.provider);
       const apiKey = RequireString(cfg.apiKey, 'apiKey', 500);
       if (/\*/.test(apiKey)) throw new Error('Please enter the complete API Key before testing.');
-      const baseUrl = provider === 'DeepSeek' ? DefaultBaseUrl : RequireString(cfg.baseUrl, 'baseUrl', 500).replace(/\/$/, '');
-      const requestedModel = RequireString(cfg.model, 'model', 200);
-      const model = provider === 'DeepSeek' ? NormalizeDeepSeekModel(requestedModel) : requestedModel;
+      const baseUrl = ResolveOfficialBaseUrl(provider, cfg.baseUrl);
+      const requestedModel = provider === 'Z.AI' ? GlmFlashModel : RequireString(cfg.model, 'model', 200);
+      const model = ResolveProviderModel(provider, requestedModel);
       ResolveContextLimit({
         mode: cfg.contextLimitMode === 'custom' ? 'custom' : 'default',
         value: cfg.contextLength,
-        modelMaximum: provider === 'DeepSeek' ? DeepSeekModelContextLimits[model] : undefined,
+        modelMaximum: ResolveModelMaximum(provider, model),
       });
+      if (provider === 'Z.AI') {
+        const response = await providerFetch(`${baseUrl}/chat/completions`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+          signal: AbortSignal.timeout(30000),
+          body: JSON.stringify({ model, messages: [{ role: 'user', content: 'Reply OK.' }], stream: false, max_tokens: 1, thinking: { type: 'enabled' } }),
+        });
+        if (!response.ok) throw new Error(`Connection test failed (${response.status}).`);
+        return { connected: true, provider, baseUrl };
+      }
       const response = await providerFetch(`${baseUrl}/models`, { method: 'GET', headers: { Authorization: `Bearer ${apiKey}` }, signal: AbortSignal.timeout(15000) });
       if (!response.ok) throw new Error(`Connection test failed (${response.status}).`);
       return { connected: true, provider, baseUrl };
@@ -237,6 +284,10 @@ export function CreateProviderModule(ports: AgentDefaultPorts): ModelProviderMod
     },
     /** 校验单轮模型切换，DeepSeek 仅允许预设，自定义 Provider 固定使用已保存模型。 */
     ResolveRequestModel(requestedModel) {
+      if (config.provider === 'Z.AI') {
+        if (requestedModel !== undefined && requestedModel !== GlmFlashModel) throw new Error('The requested model is not available for Z.AI.');
+        return GlmFlashModel;
+      }
       if (config.provider !== 'DeepSeek') return config.model;
       if (requestedModel === undefined) return config.model;
       const model = NormalizeDeepSeekModel(requestedModel);
@@ -262,6 +313,7 @@ export function CreateProviderModule(ports: AgentDefaultPorts): ModelProviderMod
     /** 从 DeepSeek 官方 /models 同步当前凭据可用的模型；网络失败由调用层保留本地 V4 兜底。 */
     async GetModels() {
       await EnsureConfig();
+      if (config.provider === 'Z.AI') return { models: [GlmFlashModel] };
       if (!config.apiKey) throw new Error('请先保存 DeepSeek API Key。');
       if (config.provider !== 'DeepSeek') throw new Error('模型同步仅支持 DeepSeek。');
       const response = await providerFetch(`${DefaultBaseUrl}/models`, {
@@ -280,11 +332,13 @@ export function CreateProviderModule(ports: AgentDefaultPorts): ModelProviderMod
       await EnsureConfig();
       const systemContent = RequireString(request.instructions?.compiled, 'compiled instructions', 200000);
       const providerMessages = [{ role: 'system', content: systemContent }, ...request.history.map(ToProviderMessage)];
-      const thinking = config.provider === 'DeepSeek'
-        ? config.thinkingEnabled
-          ? { thinking: { type: 'enabled' }, reasoning_effort: ResolveDeepSeekReasoningEffort(request.reasoningEffort) }
-          : { thinking: { type: 'disabled' } }
-        : {};
+      const thinking = config.provider === 'Z.AI'
+        ? { thinking: { type: 'enabled', clear_thinking: false }, reasoning_effort: ResolveDeepSeekReasoningEffort(request.reasoningEffort), temperature: 1, top_p: 0.95, tool_stream: true }
+        : config.provider === 'DeepSeek'
+          ? config.thinkingEnabled
+            ? { thinking: { type: 'enabled' }, reasoning_effort: ResolveDeepSeekReasoningEffort(request.reasoningEffort) }
+            : { thinking: { type: 'disabled' } }
+          : {};
       const body = SerializeCompletionBody({ model: request.model, stream: true, ...thinking, ...(config.provider === 'DeepSeek' ? { stream_options: { include_usage: true } } : {}), messages: providerMessages, tools: request.tools.map((tool) => tool.definition), tool_choice: 'auto' }, config.provider === 'DeepSeek');
       request.onRequest?.({ kind: 'completion', model: request.model, messages: providerMessages, toolCount: request.tools.length });
       const response = await providerFetch(`${config.baseUrl}/chat/completions`, {
@@ -334,7 +388,8 @@ export function CreateProviderModule(ports: AgentDefaultPorts): ModelProviderMod
           const fn = deltaRecord.function && typeof deltaRecord.function === 'object' ? deltaRecord.function as Record<string, unknown> : null;
           call.id += typeof deltaRecord.id === 'string' ? deltaRecord.id : '';
           call.function.name += typeof fn?.name === 'string' ? fn.name : '';
-          call.function.arguments += typeof fn?.arguments === 'string' ? fn.arguments : '';
+          if (typeof fn?.arguments === 'string') call.function.arguments += fn.arguments;
+          else if (fn?.arguments && typeof fn.arguments === 'object' && !call.function.arguments) call.function.arguments = JSON.stringify(fn.arguments);
           toolCalls[index] = call;
         }
         if (reasoning) request.onDelta({ reasoning, content: '' });
@@ -359,7 +414,10 @@ export function CreateProviderModule(ports: AgentDefaultPorts): ModelProviderMod
     async CreateSummary(model, messages, onRequest) {
       await EnsureConfig();
       const providerMessages = [{ role: 'system', content: SummaryPrompt }, ...messages.map(ToProviderMessage)];
-      const body = JSON.stringify({ model, stream: false, messages: providerMessages });
+      const providerOptions = config.provider === 'Z.AI'
+        ? { thinking: { type: 'enabled', clear_thinking: false }, reasoning_effort: 'high', temperature: 1, top_p: 0.95 }
+        : {};
+      const body = JSON.stringify({ model, stream: false, messages: providerMessages, ...providerOptions });
       onRequest?.({ kind: 'summary', model, messages: providerMessages, toolCount: 0 });
       const response = await providerFetch(`${config.baseUrl}/chat/completions`, {
         method: 'POST',

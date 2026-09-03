@@ -95,7 +95,7 @@ export interface SettingsDto {
   nickname: string;
   /** 当前工作空间目录名的掩码（不含绝对路径），由后端动态注入，不参与持久化。 */
   workspaceName?: string;
-  provider: 'DeepSeek' | '自定义';
+  provider: 'DeepSeek' | 'Z.AI' | '自定义';
   baseUrl: string;
   model: string;
   contextLength: string;

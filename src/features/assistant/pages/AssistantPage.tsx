@@ -63,6 +63,12 @@ function UpgradeDeepSeekModel(model: string | undefined) {
   return model === 'deepseek-chat' || model === 'deepseek-reasoner' || !model ? 'deepseek-v4-flash' : model;
 }
 
+/** 官方单模型 Provider 不接受会话遗留的其他模型名；切换供应商后立即归一化本地会话选择。 */
+function ResolveProviderModel(provider: string, model: string | undefined) {
+  if (provider === 'Z.AI') return 'glm-5.3-flash';
+  return provider === 'DeepSeek' ? UpgradeDeepSeekModel(model) : model?.trim() || 'deepseek-v4-flash';
+}
+
 /** 当前模型列表只返回名称，没有随模型返回可用思考档位；后续接入元数据时仅需在此处替换回退列表。 */
 function GetReasoningEffortOptions(_model: string): ReasoningEffort[] {
   return FallbackReasoningEfforts;
@@ -153,7 +159,7 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
   const [showReasoningEffort, setShowReasoningEffort] = useState(false);
   const [showScenario, setShowScenario] = useState(false);
   const [scenarioId, setScenarioId] = useState<'default' | 'application'>('default');
-  const [model, setModel] = useState(UpgradeDeepSeekModel(settings.model));
+  const [model, setModel] = useState(ResolveProviderModel(settings.provider, settings.model));
   const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>('medium');
   const [deepSeekModels, setDeepSeekModels] = useState<string[]>(FallbackDeepSeekModels);
   const [isTaskActive, setIsTaskActive] = useState(false);
@@ -222,11 +228,11 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
     const states = ReadConversationComposerStates();
     const existing: StoredConversationComposerState = states[conversationId] ?? {
       confirmationMode: 'always_confirm' as ConfirmationMode,
-      model: UpgradeDeepSeekModel(settings.model),
+      model: ResolveProviderModel(settings.provider, settings.model),
       reasoningEffort: 'medium',
     };
     WriteConversationComposerStates({ ...states, [conversationId]: { ...existing, ...patch } });
-  }, [settings.model]);
+  }, [settings.model, settings.provider]);
   useEffect(() => { resumesRef.current = resumes; }, [resumes]);
 
   /** 仅在进入会话或一轮 Agent 成功结束时请求定位；不随流式增量抢占用户滚动位置。 */
@@ -385,7 +391,7 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
       const localComposerState = ReadConversationComposerStates()[sessionId];
       if (!localComposerState) {
         setPermission(next.confirmationMode);
-        setModel(UpgradeDeepSeekModel(next.model));
+        setModel(ResolveProviderModel(settings.provider, next.model));
         setReasoningEffort(next.reasoningEffort);
         PersistConversationComposerState(sessionId, { confirmationMode: next.confirmationMode, model: next.model, reasoningEffort: next.reasoningEffort });
       }
@@ -395,13 +401,13 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
         ShowNotice('会话状态恢复失败，当前 usage 未知');
       }
     }
-  }, [PersistConversationComposerState, ShowNotice]);
+  }, [PersistConversationComposerState, ShowNotice, settings.provider]);
 
   useEffect(() => { void RefreshSessionAssistantState(activeConversationId); }, [activeConversationId, RefreshSessionAssistantState]);
 
   /** 会话切换、页面重进和设置更新时优先恢复会话选择；没有缓存的旧会话才使用安全默认值。 */
   useEffect(() => {
-    const defaultModel = UpgradeDeepSeekModel(settings.model);
+    const defaultModel = ResolveProviderModel(settings.provider, settings.model);
     if (!activeConversationId) {
       setPermission('always_confirm');
       setModel(defaultModel);
@@ -410,9 +416,11 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
     }
     const stored = ReadConversationComposerStates()[activeConversationId];
     setPermission(stored?.confirmationMode ?? 'always_confirm');
-    setModel(stored?.model ?? defaultModel);
+    const restoredModel = ResolveProviderModel(settings.provider, stored?.model ?? defaultModel);
+    setModel(restoredModel);
+    if (stored && restoredModel !== stored.model) PersistConversationComposerState(activeConversationId, { model: restoredModel });
     setReasoningEffort(stored?.reasoningEffort ?? 'medium');
-  }, [activeConversationId, settings.model]);
+  }, [activeConversationId, PersistConversationComposerState, settings.model, settings.provider]);
   useEffect(() => {
     if (settings.provider !== 'DeepSeek') return;
     void GetDeepSeekModels().then((result) => { if (result.models.length) setDeepSeekModels(result.models); }).catch(() => undefined);

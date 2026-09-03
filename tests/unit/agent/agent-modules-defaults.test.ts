@@ -7,7 +7,7 @@ import { CreateObservabilityModule } from '../../../packages/agent-modules-defau
 import { ApplicationScenario, ApplicationScenarioPlaceholder, BuildApplicationCompiledInstructions, BuildDefaultCompiledInstructions, BuildDefaultPromptFragments, DefaultScenario } from '../../../packages/agent-modules-defaults/src/prompts';
 import { CreateToolsModule } from '../../../packages/agent-modules-defaults/src/tools';
 import type { AgentDefaultPorts } from '../../../packages/agent-modules-defaults/src/ports';
-import { CreateToolContext } from './test-helpers';
+import { CreateRegisteredTool, CreateToolContext } from './test-helpers';
 
 function CreatePorts(overrides: Partial<AgentDefaultPorts> = {}): AgentDefaultPorts {
   return {
@@ -80,6 +80,63 @@ describe('agent-modules-defaults', () => {
 
     expect(legacyDeepSeek.GetRuntimeLimits().contextLimit).toBe(256_000);
     expect(legacyCustom.GetRuntimeLimits().contextLimit).toBe(96_000);
+  });
+
+  it('Z.AI 配置固定使用官方端点与 glm-5.3-flash，并加密持久化用户 Key', async () => {
+    const saveConfig = vi.fn(async () => undefined);
+    const { CreateProviderModule, DefaultZaiBaseUrl, GlmFlashModel } = await import('../../../packages/agent-modules-defaults/src/provider');
+    const provider = CreateProviderModule(CreatePorts({ saveConfig }));
+
+    expect(DefaultZaiBaseUrl).toBe('https://open.bigmodel.cn/api/paas/v4');
+
+    await provider.Configure({
+      provider: 'Z.AI', model: '被忽略的模型', baseUrl: 'https://untrusted.example/v1', apiKey: 'zai-user-key', thinkingEnabled: false,
+      contextLimitMode: 'default', contextLength: '64K', compressionThreshold: 80,
+    });
+
+    await expect(provider.GetStatus()).resolves.toMatchObject({
+      provider: 'Z.AI', model: GlmFlashModel, baseUrl: DefaultZaiBaseUrl, contextLimit: 256_000,
+    });
+    expect(saveConfig).toHaveBeenCalledWith(expect.objectContaining({
+      provider: 'Z.AI', model: GlmFlashModel, baseUrl: DefaultZaiBaseUrl, apiKey: 'zai-user-key', thinkingEnabled: true,
+    }));
+    await expect(provider.GetModels()).resolves.toEqual({ models: [GlmFlashModel] });
+  });
+
+  it('加载旧 GLM 配置时自动从国际站迁移到智谱中国区端点', async () => {
+    const { CreateProviderModule, DefaultZaiBaseUrl } = await import('../../../packages/agent-modules-defaults/src/provider');
+    const provider = CreateProviderModule(CreatePorts({
+      getConfig: vi.fn(async () => ({ provider: 'Z.AI', baseUrl: 'https://api.z.ai/api/paas/v4', model: 'glm-5.3-flash', thinkingEnabled: true, contextLimit: 256_000, contextLimitMode: 'default', compressionThreshold: 80, apiKey: 'bigmodel-key' })),
+    }));
+
+    await expect(provider.GetStatus()).resolves.toMatchObject({ provider: 'Z.AI', baseUrl: DefaultZaiBaseUrl, model: 'glm-5.3-flash' });
+  });
+
+  it('切换到 Z.AI 时不复用其他供应商已保存的 API Key', async () => {
+    const { CreateProviderModule } = await import('../../../packages/agent-modules-defaults/src/provider');
+    const provider = CreateProviderModule(CreatePorts({
+      getConfig: vi.fn(async () => ({ provider: 'DeepSeek', baseUrl: 'https://api.deepseek.com', model: 'deepseek-v4-flash', thinkingEnabled: true, contextLimit: 256_000, contextLimitMode: 'default', compressionThreshold: 80, apiKey: 'deepseek-key' })),
+    }));
+
+    await expect(provider.Configure({ provider: 'Z.AI', apiKey: '', contextLimitMode: 'default', compressionThreshold: 80 }))
+      .rejects.toThrow(/API Key is required/);
+  });
+
+  it('Z.AI 连接测试使用 Chat Completion，不依赖未声明的 models 接口', async () => {
+    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => new Response(JSON.stringify({ choices: [{ message: { content: 'OK' } }] }), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    vi.resetModules();
+    const { CreateProviderModule, DefaultZaiBaseUrl, GlmFlashModel } = await import('../../../packages/agent-modules-defaults/src/provider');
+    const provider = CreateProviderModule(CreatePorts());
+
+    await expect(provider.TestConnection({ provider: 'Z.AI', apiKey: 'zai-user-key', model: '', baseUrl: '', contextLimitMode: 'default' }))
+      .resolves.toEqual({ connected: true, provider: 'Z.AI', baseUrl: DefaultZaiBaseUrl });
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(fetchMock.mock.calls[0][0]).toBe(`${DefaultZaiBaseUrl}/chat/completions`);
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toMatchObject({
+      model: GlmFlashModel, stream: false, max_tokens: 1, thinking: { type: 'enabled' },
+    });
   });
 
   it('默认场景暴露 18 个 PascalCase 本地工具，网络与投递能力不混入白名单', () => {
@@ -517,6 +574,40 @@ describe('agent-modules-defaults', () => {
     expect(requestBodies[0]).toMatchObject({ thinking: { type: 'enabled' }, reasoning_effort: 'high' });
     expect(requestBodies[1]).toMatchObject({ thinking: { type: 'disabled' } });
     expect(requestBodies[1]).not.toHaveProperty('reasoning_effort');
+  });
+
+  it('GLM-5.3-Flash 按官方参数流式输出思考、工具调用与真实 usage', async () => {
+    let requestBody: Record<string, unknown> = {};
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
+      requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      return SseResponse([
+        { choices: [{ delta: { reasoning_content: '分析' } }] },
+        { choices: [{ delta: { tool_calls: [{ index: 0, id: 'glm-call-1', type: 'function', function: { name: 'Read', arguments: '{"path":"README.md"}' } }] } }] },
+        { choices: [{ finish_reason: 'tool_calls', delta: {} }], usage: { prompt_tokens: 20, completion_tokens: 10, total_tokens: 30 } },
+        '[DONE]',
+      ]);
+    }));
+    vi.resetModules();
+    const { CreateProviderModule, DefaultZaiBaseUrl } = await import('../../../packages/agent-modules-defaults/src/provider');
+    const provider = CreateProviderModule(CreatePorts({
+      getConfig: vi.fn(async () => ({ provider: 'Z.AI', baseUrl: DefaultZaiBaseUrl, model: 'glm-5.3-flash', thinkingEnabled: true, contextLimit: 256_000, contextLimitMode: 'default', compressionThreshold: 80, apiKey: 'zai-key' })),
+    }));
+
+    const result = await provider.StreamCompletion({
+      requestId: 'glm-request', model: 'glm-5.3-flash', reasoningEffort: 'xhigh', history: [{ role: 'user', content: '读取文件' }],
+      tools: [CreateRegisteredTool('Read')],
+      signal: new AbortController().signal, instructions: BuildDefaultCompiledInstructions(), onDelta: vi.fn(),
+    });
+
+    expect(requestBody).toMatchObject({
+      model: 'glm-5.3-flash', stream: true, tool_stream: true, temperature: 1, top_p: 0.95,
+      thinking: { type: 'enabled', clear_thinking: false }, reasoning_effort: 'high',
+    });
+    expect(requestBody).not.toHaveProperty('stream_options');
+    expect(result).toMatchObject({
+      reasoningContent: '分析', usage: { promptTokens: 20, completionTokens: 10, totalTokens: 30 },
+      toolCalls: [{ id: 'glm-call-1', type: 'function', function: { name: 'Read', arguments: '{"path":"README.md"}' } }],
+    });
   });
 
   it('Provider 按 DeepSeek 官方协议发送视觉内容块且不透传宿主附件元数据', async () => {

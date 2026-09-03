@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useUiStore } from '../../../app/UiStore';
 import { useSettingsStore } from '../../../features/settings/api/settingsQueries';
 import { useProfiles, useSaveProfiles } from '../../../features/profile/api/profileQueries';
@@ -11,6 +11,16 @@ function UpgradeDeepSeekModel(model: string | undefined) {
   return model === 'deepseek-chat' || model === 'deepseek-reasoner' || !model ? 'deepseek-v4-flash' : model;
 }
 
+function ResolveInitialProviderModel(provider: 'DeepSeek' | 'Z.AI' | '自定义', model: string | undefined) {
+  return provider === 'Z.AI' ? 'glm-5.3-flash' : UpgradeDeepSeekModel(model);
+}
+
+function ResolveInitialProviderBaseUrl(provider: 'DeepSeek' | 'Z.AI' | '自定义', baseUrl: string | undefined) {
+  if (provider === 'Z.AI') return 'https://open.bigmodel.cn/api/paas/v4';
+  if (provider === 'DeepSeek') return 'https://api.deepseek.com';
+  return baseUrl ?? '';
+}
+
 /** 首次启动的一页分步向导，完成后把非敏感偏好写入工作空间。 */
 function OnboardingPage({ onComplete }: { onComplete: () => void }) {
   const { ShowNotice } = useUiStore();
@@ -20,10 +30,11 @@ function OnboardingPage({ onComplete }: { onComplete: () => void }) {
   const draft = settings.onboardingDraft;
   const [step, setStep] = useState(draft?.step ?? 0);
   const [nickname, setNickname] = useState(draft?.nickname ?? settings.nickname ?? '');
-  const [provider, setProvider] = useState<'DeepSeek' | '自定义'>(draft?.provider ?? settings.provider ?? 'DeepSeek');
+  const initialProvider = draft?.provider ?? settings.provider ?? 'DeepSeek';
+  const [provider, setProvider] = useState<'DeepSeek' | 'Z.AI' | '自定义'>(initialProvider);
   const [apiKey, setApiKey] = useState('');
-  const [baseUrl, setBaseUrl] = useState(draft?.baseUrl ?? settings.baseUrl ?? 'https://api.deepseek.com/v1');
-  const [model, setModel] = useState(UpgradeDeepSeekModel(draft?.model ?? settings.model));
+  const [baseUrl, setBaseUrl] = useState(ResolveInitialProviderBaseUrl(initialProvider, draft?.baseUrl ?? settings.baseUrl));
+  const [model, setModel] = useState(ResolveInitialProviderModel(initialProvider, draft?.model ?? settings.model));
   const [contextLength, setContextLength] = useState(draft?.contextLength ?? settings.contextLength ?? '256K');
   const [contextLimitMode, setContextLimitMode] = useState<'default' | 'custom'>(draft?.contextLimitMode ?? settings.contextLimitMode ?? (provider === '自定义' ? 'custom' : 'default'));
   const [jobType, setJobType] = useState(draft?.jobType ?? '校招');
@@ -36,7 +47,14 @@ function OnboardingPage({ onComplete }: { onComplete: () => void }) {
   const [connectionPassed, setConnectionPassed] = useState(Boolean(draft?.apiConfigurationSaved));
   const [apiConfigurationSaved, setApiConfigurationSaved] = useState(Boolean(draft?.apiConfigurationSaved));
   const [formError, setFormError] = useState<string | null>(null);
+  const previousProvider = useRef(provider);
   const isLast = step === Steps.length - 1;
+
+  useEffect(() => {
+    if (previousProvider.current === provider) return;
+    previousProvider.current = provider;
+    setApiKey('');
+  }, [provider]);
 
   /** 表单字段与步骤变化时暂存非敏感快照，供中断后从最近步骤恢复；快照绝不含 API Key。 */
   useEffect(() => {
@@ -61,8 +79,9 @@ function OnboardingPage({ onComplete }: { onComplete: () => void }) {
     if (!IsDesktopAgentAvailable()) { ShowNotice('请在桌面客户端中测试 API 连接'); return; }
     setTesting(true);
     try {
-      await TestAgentConnection({ provider, apiKey, baseUrl, model, thinkingEnabled: settings.thinkingEnabled, contextLength, contextLimitMode, compressionThreshold: settings.compressionThreshold });
-      await ConfigureAgent({ provider, apiKey, baseUrl, model, thinkingEnabled: settings.thinkingEnabled, contextLength, contextLimitMode, compressionThreshold: settings.compressionThreshold });
+      const thinkingEnabled = provider === 'Z.AI' || settings.thinkingEnabled;
+      await TestAgentConnection({ provider, apiKey, baseUrl, model, thinkingEnabled, contextLength, contextLimitMode, compressionThreshold: settings.compressionThreshold });
+      await ConfigureAgent({ provider, apiKey, baseUrl, model, thinkingEnabled, contextLength, contextLimitMode, compressionThreshold: settings.compressionThreshold });
       setConnectionPassed(true);
       setApiConfigurationSaved(true);
       setFormError(null);
@@ -79,7 +98,7 @@ function OnboardingPage({ onComplete }: { onComplete: () => void }) {
       const preference: ProfileItem = { id: 'profile-job-preference', category: 'other', title: '求职偏好', content: preferenceContent, updatedAt: Date.now() };
       const next = profiles.some((item) => item.id === preference.id) ? profiles.map((item) => (item.id === preference.id ? preference : item)) : [preference, ...profiles];
       await saveProfiles.mutateAsync({ items: next });
-      const completedSettings = { ...settings, nickname: nickname.trim(), provider, apiKey: '', baseUrl, model, contextLength, contextLimitMode, onboardingDraft: undefined, onboardingCompleted: true };
+      const completedSettings = { ...settings, nickname: nickname.trim(), provider, apiKey: '', baseUrl, model, contextLength, contextLimitMode, thinkingEnabled: provider === 'Z.AI' || settings.thinkingEnabled, onboardingDraft: undefined, onboardingCompleted: true };
       await saveSettingsNow(completedSettings);
       setSettings(() => completedSettings);
       ShowNotice('设置已完成，API 配置已加密保存到桌面端');
@@ -87,11 +106,11 @@ function OnboardingPage({ onComplete }: { onComplete: () => void }) {
     } catch (error) { ShowNotice(error instanceof Error ? error.message : 'API 配置保存失败'); }
   }
   const title = ['欢迎来到 Avery', '怎么称呼你？', '连接你的模型服务', '这次主要寻找什么机会？', '你的工作经验处于哪个阶段？', '目前的最高学历是？', '想去哪里，做什么？', '你的求职城市是？', '准备就绪'][step];
-  const description = ['让每一次经历，都成为投向理想岗位的一封好信。', '这个昵称只会显示在本地应用中。', '默认使用 DeepSeek；也可以填入自定义 OpenAI 兼容服务。', '它将帮助我们在后续界面中呈现更贴近你的内容。', '工作经验会影响简历建议的侧重点。', '用于整理教育背景信息。', '目标岗位最多选择三个，后续可在档案中补充。', '这一步可跳过，后续仍可补充。', '你可以从求职助手开始，继续补齐档案与简历。'][step];
+  const description = ['让每一次经历，都成为投向理想岗位的一封好信。', '这个昵称只会显示在本地应用中。', '可使用 DeepSeek、GLM-5.3-Flash，或填写自定义 OpenAI 兼容服务。', '它将帮助我们在后续界面中呈现更贴近你的内容。', '工作经验会影响简历建议的侧重点。', '用于整理教育背景信息。', '目标岗位最多选择三个，后续可在档案中补充。', '这一步可跳过，后续仍可补充。', '你可以从求职助手开始，继续补齐档案与简历。'][step];
   return <div className="onboarding-shell"><div className="onboarding-brand"><div className="brand-mark"><img src="./assets/avery-guiding-elf-icon-v2.png" alt="" /></div><b>Avery</b></div><div className="onboarding-card"><div className="onboarding-top"><span>首次设置</span><span>第 {step + 1} / {Steps.length} 步</span></div><div className="onboarding-progress"><span style={{ width: `${((step + 1) / Steps.length) * 100}%` }} /></div><div className="onboarding-content"><p className="eyebrow">{Steps[step]}</p><h1>{title}</h1><p>{description}</p>
     {step === 0 && <div className="welcome-letter"><span>To</span><strong>{nickname || '你'}</strong><small>从整理一段真实经历开始。</small></div>}
     {step === 1 && <FormField label="账户昵称"><input value={nickname} onChange={(event) => { setNickname(event.target.value); setFormError(null); }} placeholder="输入昵称" aria-invalid={Boolean(formError)} aria-describedby={formError ? 'onboarding-form-error' : undefined} />{formError && <small id="onboarding-form-error" className="field-error" role="alert">{formError}</small>}</FormField>}
-    {step === 2 && <div className="onboarding-form"><div className="segmented"><button className={provider === 'DeepSeek' ? 'selected' : ''} aria-pressed={provider === 'DeepSeek'} onClick={() => { setProvider('DeepSeek'); setModel('deepseek-v4-flash'); setConnectionPassed(false); setApiConfigurationSaved(false); setFormError(null); }}>DeepSeek</button><button className={provider === '自定义' ? 'selected' : ''} aria-pressed={provider === '自定义'} onClick={() => { setProvider('自定义'); setConnectionPassed(false); setApiConfigurationSaved(false); setFormError(null); }}>自定义</button></div><FormField label="API Key"><input type="password" value={apiKey} onChange={(event) => { setApiKey(event.target.value); setConnectionPassed(false); setApiConfigurationSaved(false); setFormError(null); }} autoComplete="off" aria-invalid={Boolean(formError)} aria-describedby={formError ? 'onboarding-form-error' : undefined} />{formError && <small id="onboarding-form-error" className="field-error" role="alert">{formError}</small>}</FormField>{provider === '自定义' && <><FormField label="Base URL"><input value={baseUrl} onChange={(event) => { setBaseUrl(event.target.value); setConnectionPassed(false); setApiConfigurationSaved(false); setFormError(null); }} placeholder="https://api.example.com/v1" /></FormField><FormField label="模型名称"><input value={model} onChange={(event) => { setModel(event.target.value); setConnectionPassed(false); setApiConfigurationSaved(false); setFormError(null); }} /></FormField></>}<label className="switch-line"><span><b>自定义上下文限制</b><small>关闭时默认使用 256K；模型上限更小时自动使用模型上限。</small></span><input type="checkbox" checked={contextLimitMode === 'custom'} onChange={(event) => { setContextLimitMode(event.target.checked ? 'custom' : 'default'); setConnectionPassed(false); setApiConfigurationSaved(false); setFormError(null); }} /></label>{contextLimitMode === 'custom' && <FormField label="上下文限制"><input value={contextLength} onChange={(event) => { setContextLength(event.target.value); setConnectionPassed(false); setApiConfigurationSaved(false); setFormError(null); }} placeholder="例如 128K" /></FormField>}<div className="api-test-row"><span>{connectionPassed ? '● 已通过连接测试并加密保存' : '需要通过测试后才能进入应用'}</span><Button disabled={testing} onClick={() => void TestConnection()}>{testing ? '测试中…' : '测试连接'}</Button></div></div>}
+    {step === 2 && <div className="onboarding-form"><div className="segmented"><button className={provider === 'DeepSeek' ? 'selected' : ''} aria-pressed={provider === 'DeepSeek'} onClick={() => { setProvider('DeepSeek'); setBaseUrl('https://api.deepseek.com'); setModel('deepseek-v4-flash'); setConnectionPassed(false); setApiConfigurationSaved(false); setFormError(null); }}>DeepSeek</button><button className={provider === 'Z.AI' ? 'selected' : ''} aria-pressed={provider === 'Z.AI'} onClick={() => { setProvider('Z.AI'); setBaseUrl('https://open.bigmodel.cn/api/paas/v4'); setModel('glm-5.3-flash'); setConnectionPassed(false); setApiConfigurationSaved(false); setFormError(null); }}>GLM</button><button className={provider === '自定义' ? 'selected' : ''} aria-pressed={provider === '自定义'} onClick={() => { setProvider('自定义'); setConnectionPassed(false); setApiConfigurationSaved(false); setFormError(null); }}>自定义</button></div><FormField label="API Key"><input type="password" value={apiKey} onChange={(event) => { setApiKey(event.target.value); setConnectionPassed(false); setApiConfigurationSaved(false); setFormError(null); }} autoComplete="off" aria-invalid={Boolean(formError)} aria-describedby={formError ? 'onboarding-form-error' : undefined} />{formError && <small id="onboarding-form-error" className="field-error" role="alert">{formError}</small>}</FormField>{provider === 'Z.AI' && <div className="setting-note"><b>glm-5.3-flash</b><p>使用智谱中国区官方 API，支持视觉与工具调用；该模型始终启用思考模式。</p></div>}{provider === '自定义' && <><FormField label="Base URL"><input value={baseUrl} onChange={(event) => { setBaseUrl(event.target.value); setConnectionPassed(false); setApiConfigurationSaved(false); setFormError(null); }} placeholder="https://api.example.com/v1" /></FormField><FormField label="模型名称"><input value={model} onChange={(event) => { setModel(event.target.value); setConnectionPassed(false); setApiConfigurationSaved(false); setFormError(null); }} /></FormField></>}<label className="switch-line"><span><b>自定义上下文限制</b><small>关闭时默认使用 256K；模型上限更小时自动使用模型上限。</small></span><input type="checkbox" checked={contextLimitMode === 'custom'} onChange={(event) => { setContextLimitMode(event.target.checked ? 'custom' : 'default'); setConnectionPassed(false); setApiConfigurationSaved(false); setFormError(null); }} /></label>{contextLimitMode === 'custom' && <FormField label="上下文限制"><input value={contextLength} onChange={(event) => { setContextLength(event.target.value); setConnectionPassed(false); setApiConfigurationSaved(false); setFormError(null); }} placeholder="例如 128K" /></FormField>}<div className="api-test-row"><span>{connectionPassed ? '● 已通过连接测试并加密保存' : '需要通过测试后才能进入应用'}</span><Button disabled={testing} onClick={() => void TestConnection()}>{testing ? '测试中…' : '测试连接'}</Button></div></div>}
     {step === 3 && <OptionGrid value={jobType} onChange={setJobType} options={['社招', '校招', '实习']} />}
     {step === 4 && <OptionGrid value={experience} onChange={setExperience} options={['在校学生', '刚毕业', '工作 1-3 年', '工作 3-5 年', '工作 5 年以上']} />}
     {step === 5 && <OptionGrid value={education} onChange={setEducation} options={['高中及以下', '大专', '本科', '硕士', '博士']} />}

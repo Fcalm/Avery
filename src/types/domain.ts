@@ -26,7 +26,7 @@ export interface OnboardingDraft {
   /** 凭据已经通过主进程安全存储保存；草稿本身绝不包含 API Key。 */
   apiConfigurationSaved?: boolean;
   nickname?: string;
-  provider?: 'DeepSeek' | '自定义';
+  provider?: 'DeepSeek' | 'Z.AI' | '自定义';
   baseUrl?: string;
   model?: string;
   contextLength?: string;

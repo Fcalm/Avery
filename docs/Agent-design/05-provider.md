@@ -88,6 +88,7 @@ interface ModelCapabilities {
 
 - 自动模式的运行时限制为 `min(256_000, model.contextLimit)`；模型上限不足 256K 时使用其最大值。
 - DeepSeek `/models` 只返回模型 ID，不提供上下文元数据，因此官方已知模型的上限由 Adapter 版本化维护；当前 V4 Flash、V4 Pro 与视觉实验模型均按官方 1M 上限登记。
+- Z.AI `glm-5.3-flash` 按官方 1M 上限登记；自动模式仍取 256K，自定义模式最高可配到 1M。
 - API 设置允许用户开启自定义上下文限制。自定义值必须在 8K–2000K 内，且不得超过已知模型上限；未知的自定义 Provider 无法自动发现上限，由用户配置承担能力声明职责。
 - 旧 DeepSeek 64K 属于历史默认值，迁移到自动 256K；旧自定义 Provider 的既有值继续按用户自定义处理。
 - Kernel、压缩器、Usage 展示只能消费 Provider 解析后的单一 `contextLimit`，不得各自重复推断。
@@ -99,8 +100,9 @@ interface ModelCapabilities {
 | Adapter | 协议 | 0.2.0 定位 | 关键差异 |
 | --- | --- | --- | --- |
 | DeepSeek | 官方 Chat Completions API | 唯一正式发布门禁 | 多轮历史由客户端维护；thinking + tool calls 可能要求回传 Provider-specific reasoning state |
+| Z.AI GLM | 官方 Chat Completions API | `glm-5.3-flash` 正式模型 | 原生多模态；强制思考；保留历史 reasoning；支持流式工具调用 |
 
-0.2.0 只以现有 DeepSeek Adapter 的稳定性作为发布门禁。正式支持意味着必须同时具备：
+DeepSeek 与 Z.AI Adapter 都必须通过下列正式支持门禁；DeepSeek 继续作为既有回归基线：
 
 - 产品配置入口和凭据存储。
 - 模型发现或受控模型清单。
@@ -112,7 +114,16 @@ DeepSeek Chat Completions 的思考参数由 Adapter 统一生成：全局思考
 
 Agent 请求始终携带工具定义，因此历史 assistant 消息的 `reasoning_content` 必须完整回传；Provider Adapter 不得因上一轮没有工具调用而删除该字段。
 
-### 4.2 OpenAI 后续独立 Adapter
+### 4.2 Z.AI GLM-5.3-Flash
+
+- 用户在 API 配置中选择 `GLM` 并填写自己的智谱中国区 API Key；Key 经宿主 `safeStorage` 加密，不进入 Renderer 持久化数据。
+- 中国区标准端点固定为 `https://open.bigmodel.cn/api/paas/v4`，模型固定为 `glm-5.3-flash`。Provider 加载旧配置时忽略曾使用的国际站地址并自动切换到中国区端点；需要其他区域或 Coding Plan 专用端点时使用“自定义”配置。
+- 连接测试调用一次最小非流式 Chat Completion，不依赖官方文档未声明的 `/models` 接口。
+- 正式请求发送 `thinking.type=enabled`、`thinking.clear_thinking=false`、`tool_stream=true`、`temperature=1`、`top_p=0.95`；会话五档思考强度映射为官方 `low/high/high/high/max`。
+- 图片使用 `messages[].content[]` 的 `image_url` 块，支持 URL 或受控附件转换得到的 Base64 Data URL；物理路径和 Base64 不写入会话历史。
+- 切换供应商时禁止复用原供应商的已保存 Key，必须由用户重新输入并通过连接测试。
+
+### 4.3 OpenAI 后续独立 Adapter
 
 OpenAI 使用官方 Responses API，属于后续扩展，不是 0.2.0 发布阻断项：
 
@@ -129,7 +140,7 @@ OpenAI 使用官方 Responses API，属于后续扩展，不是 0.2.0 发布阻�
 
 0.2.0 及后续正式范围都不因 OpenAI 计划而自动支持自定义 OpenAI-compatible Endpoint，不提供自定义 Base URL、任意 Header 或第三方兼容服务配置。
 
-### 4.3 MiMo 候选扩展
+### 4.4 MiMo 候选扩展
 
 MiMo 只作为候选 Provider，不属于首批支持范围：
 
