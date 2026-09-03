@@ -45,7 +45,7 @@ OfferGet 是一款面向校招、实习招聘和毕业初期求职者的本地�
 
 ### 1. 安装并启动
 
-普通用户应优先从项目的 [GitHub Releases](https://github.com/Fcalm/Offerget/releases) 页面下载 Windows 安装包。安装后启动 Avery，按照首次启动向导创建本地工作空间。
+普通用户应优先从项目的 [GitHub Releases](https://github.com/Fcalm/Avery/releases) 页面下载 Windows 安装包。安装后启动 Avery，按照首次启动向导创建本地工作空间。
 
 如果 Releases 页面暂时没有适合当前版本的安装包，可以按照下方“开发者指南”从源码运行。请不要从非项目发布页下载要求你提供模型密钥的安装包。
 
@@ -108,8 +108,8 @@ OfferGet 采用本地优先架构。简历、档案、岗位、投递记录、�
 克隆仓库并安装依赖：
 
 ```powershell
-git clone https://github.com/Fcalm/Offerget.git
-cd Offerget
+git clone https://github.com/Fcalm/Avery.git
+cd Avery
 npm ci
 npm run build:packages
 ```
