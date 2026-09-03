@@ -1,4 +1,13 @@
-import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+
+type NoticeTone = 'success' | 'error' | 'pending';
+type Notice = { id: number; message: string; tone: NoticeTone };
+
+function InferNoticeTone(message: string): NoticeTone {
+  if (/失败|错误|无法|请先|不可|冲突|异常|未知|被占用|未获取|缺失/.test(message)) return 'error';
+  if (/处理中|测试中|保存中|加载中|同步中|刷新中|迁移中|等待/.test(message)) return 'pending';
+  return 'success';
+}
 
 /** 跨页面轻量 UI 状态：只存导航、抽屉、当前实体与 Toast 等非事实源状态。 */
 interface UiStoreValue {
@@ -16,8 +25,8 @@ interface UiStoreValue {
   setAssistantView: (view: 'chat' | 'trace') => void;
   developerView: 'logs' | 'evaluation';
   setDeveloperView: (view: 'logs' | 'evaluation') => void;
-  notice: string;
-  ShowNotice: (message: string) => void;
+  notice: Notice | null;
+  ShowNotice: (message: string, tone?: NoticeTone) => void;
   profileConflict: boolean;
   setProfileConflict: (open: boolean) => void;
 }
@@ -32,12 +41,22 @@ function UiStoreProvider({ children }: { children: ReactNode }) {
   const [rightPanelExpanded, setRightPanelExpanded] = useState(false);
   const [assistantView, setAssistantView] = useState<'chat' | 'trace'>('chat');
   const [developerView, setDeveloperView] = useState<'logs' | 'evaluation'>('logs');
-  const [notice, setNotice] = useState('');
+  const [notice, setNotice] = useState<Notice | null>(null);
+  const noticeTimerRef = useRef<number | null>(null);
+  const noticeIdRef = useRef(0);
   const [profileConflict, setProfileConflict] = useState(false);
 
-  const ShowNotice = useCallback((message: string) => {
-    setNotice(message);
-    window.setTimeout(() => setNotice(''), 2600);
+  useEffect(() => () => {
+    if (noticeTimerRef.current !== null) window.clearTimeout(noticeTimerRef.current);
+  }, []);
+
+  const ShowNotice = useCallback((message: string, tone: NoticeTone = InferNoticeTone(message)) => {
+    if (noticeTimerRef.current !== null) window.clearTimeout(noticeTimerRef.current);
+    setNotice({ id: ++noticeIdRef.current, message, tone });
+    noticeTimerRef.current = window.setTimeout(() => {
+      setNotice(null);
+      noticeTimerRef.current = null;
+    }, 3200);
   }, []);
 
   const value = useMemo(() => ({

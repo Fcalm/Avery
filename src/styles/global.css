@@ -3025,3 +3025,133 @@ select:focus, select:focus-visible,
   .confirmation-composer > footer { align-items: stretch; flex-direction: column; }
   .confirmation-composer > footer > div { justify-content: flex-end; }
 }
+
+/* 设置页：表单、状态行与操作行共用同一列宽和垂直节奏。 */
+.settings-page { grid-template-columns: 224px minmax(0, 1fr); align-items: stretch; }
+.settings-nav { display: flex; min-width: 0; flex-direction: column; }
+.settings-nav > div { flex: 0 0 auto; }
+.settings-content { min-width: 0; }
+.settings-content .page-header, .settings-panel { width: min(100%, 760px); }
+.settings-panel {
+  gap: var(--space-4);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-card);
+  padding: var(--space-5);
+  background: var(--color-surface-card);
+  box-shadow: none;
+}
+.settings-panel .form-field { grid-template-columns: 132px minmax(0, 1fr); column-gap: var(--space-4); row-gap: var(--space-2); align-items: start; }
+.settings-panel .form-field > span { grid-column: 1; padding-top: 10px; color: var(--color-text-primary); font-size: var(--text-ui); line-height: 20px; }
+.settings-panel .form-field > :is(input, textarea, .input-suffix, .model-select-row, .custom-select) { grid-column: 2; min-width: 0; }
+.settings-panel .form-field > small { grid-column: 2; margin: 0; color: var(--color-text-secondary); }
+.settings-panel .form-field > textarea { min-height: 136px; }
+.settings-panel .model-select-row { align-items: stretch; gap: var(--space-2); }
+.settings-panel .model-select-row .custom-select { min-width: 0; flex: 1 1 auto; }
+.settings-panel .model-select-row .button { flex: 0 0 auto; min-height: 40px; }
+.settings-panel .api-actions { display: flex; justify-content: flex-end; gap: var(--space-2); margin-top: 0; }
+.settings-panel .switch-line {
+  display: grid;
+  min-height: 48px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-4);
+  border-top: 1px solid var(--color-border);
+  padding-top: var(--space-3);
+}
+.settings-panel .switch-line > span { min-width: 0; }
+.settings-panel .switch-line b { color: var(--color-text-primary); font-size: var(--text-ui); font-weight: 500; }
+.settings-panel .switch-line small { color: var(--color-text-secondary); font-size: var(--text-meta); line-height: 18px; }
+.settings-panel .switch-line input[type='checkbox'] {
+  position: relative;
+  width: 36px !important;
+  min-height: 20px !important;
+  height: 20px !important;
+  flex: 0 0 36px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-control);
+  padding: 0 !important;
+  appearance: none;
+  background: var(--color-control-light);
+  cursor: pointer;
+  transition: background var(--transition-standard), border-color var(--transition-standard);
+}
+.settings-panel .switch-line input[type='checkbox']::after {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: var(--radius-control);
+  background: var(--color-surface-card);
+  content: '';
+  transition: transform var(--transition-standard);
+}
+.settings-panel .switch-line input[type='checkbox']:checked { border-color: var(--color-control-dark); background: var(--color-control-dark); }
+.settings-panel .switch-line input[type='checkbox']:checked::after { transform: translateX(16px); }
+.settings-panel .switch-line input[type='checkbox']:focus-visible { outline: 2px solid var(--color-text-primary); outline-offset: 2px; }
+.settings-panel .switch-line input[type='checkbox']:disabled { cursor: not-allowed; opacity: .5; }
+.settings-panel .form-field:has(input[type='password']) > span::after {
+  display: inline-block;
+  margin-left: var(--space-2);
+  color: var(--color-tag-text);
+  content: '';
+  font-size: var(--text-meta);
+  font-weight: 500;
+}
+body.settings-has-configured-api-key .settings-panel.api-panel .form-field:has(input[type='password']) > span::after { content: '✓ 已配置'; }
+.browser-runtime-bar { min-height: 64px; margin: 0; border-color: var(--color-border); border-radius: var(--radius-control); background: var(--color-control-light); box-shadow: none; }
+.settings-panel .setting-note { border: 1px solid var(--color-border); border-radius: var(--radius-control); background: var(--color-control-light); }
+.settings-panel .danger-zone { align-items: center; border-color: var(--color-border); }
+
+@media (max-width: 619px) {
+  .settings-page { grid-template-columns: minmax(0, 1fr); }
+  .settings-panel .form-field { grid-template-columns: minmax(0, 1fr); }
+  .settings-panel .form-field > span, .settings-panel .form-field > :is(input, textarea, .input-suffix, .model-select-row, .custom-select, small) { grid-column: 1; }
+  .settings-panel .form-field > span { padding-top: 0; }
+}
+
+/* 全局操作反馈：所有保存结果由应用根节点统一展示，避免页面切换时丢失提示。 */
+.app-toast {
+  position: fixed;
+  z-index: 300;
+  top: calc(36px + var(--space-4));
+  left: 50%;
+  display: inline-flex;
+  overflow: hidden;
+  max-width: min(calc(100vw - 32px), 480px);
+  align-items: center;
+  gap: var(--space-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-control);
+  padding: 10px var(--space-4);
+  background: var(--toast-background);
+  box-shadow: 0 8px 24px color-mix(in srgb, var(--toast-color) 16%, transparent);
+  color: var(--color-text-primary);
+  font-size: var(--text-ui);
+  line-height: 20px;
+  transform: translateX(-50%);
+  animation: app-toast-enter .18s ease-out both;
+}
+.app-toast-indicator {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 8px;
+  background: var(--toast-color);
+}
+.app-toast::after {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  height: 3px;
+  background: var(--toast-color);
+  content: '';
+  opacity: .66;
+  transform-origin: left;
+  animation: app-toast-progress 3.2s linear forwards;
+}
+.app-toast-success { --toast-color: var(--success); --toast-background: #edf6ef; }
+.app-toast-error { --toast-color: var(--danger); --toast-background: #fbedeb; }
+.app-toast-pending { --toast-color: var(--warning); --toast-background: #fbf5e8; }
+@keyframes app-toast-enter { from { opacity: 0; transform: translate(-50%, -8px); } to { opacity: 1; transform: translate(-50%, 0); } }
+@keyframes app-toast-progress { from { transform: scaleX(1); } to { transform: scaleX(0); } }
