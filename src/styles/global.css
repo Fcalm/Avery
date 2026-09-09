@@ -3155,3 +3155,74 @@ body.settings-has-configured-api-key .settings-panel.api-panel .form-field:has(i
 .app-toast-pending { --toast-color: var(--warning); --toast-background: #fbf5e8; }
 @keyframes app-toast-enter { from { opacity: 0; transform: translate(-50%, -8px); } to { opacity: 1; transform: translate(-50%, 0); } }
 @keyframes app-toast-progress { from { transform: scaleX(1); } to { transform: scaleX(0); } }
+
+/* 档案按分类模板展示为可扫描表单，而非整段文本编辑。 */
+.application-profile-form { display: grid; gap: var(--space-4); }
+.application-profile-section {
+  min-width: 0;
+  margin: 0;
+  border: 0;
+  padding: 0;
+}
+.application-profile-section > h3 {
+  margin: 0;
+  color: var(--color-text-secondary);
+  font: inherit;
+  font-size: var(--text-meta);
+  line-height: 18px;
+}
+.application-profile-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-3);
+  margin-top: var(--space-2);
+}
+.application-profile-field {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: 96px minmax(0, 1fr);
+  align-items: center;
+  gap: var(--space-1);
+  color: var(--color-text-primary);
+  font-size: var(--text-ui);
+  line-height: 20px;
+}
+.application-profile-field > span { white-space: nowrap; }
+.profile-template-tip { margin: 0; color: var(--color-text-secondary); font-size: var(--text-meta); line-height: 18px; }
+.profile-field-optional { display: inline; margin-right: 2px; color: var(--danger); font-style: normal; font-weight: 500; }
+.application-profile-field.is-multiline {
+  grid-column: 1 / -1;
+  align-items: start;
+}
+.application-profile-field :is(input, select) {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  min-height: 36px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-control);
+  background: var(--color-surface-card);
+}
+.application-profile-field textarea {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 76px;
+  resize: vertical;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-control);
+  background: var(--color-surface-card);
+}
+.application-profile-field input::placeholder { color: var(--color-text-secondary); opacity: 1; }
+.application-profile-field textarea::placeholder { color: var(--color-text-secondary); opacity: 1; }
+.application-profile-field :is(input, select):hover { border-color: color-mix(in srgb, var(--color-border) 72%, var(--color-text-primary)); }
+.application-profile-field textarea:hover { border-color: color-mix(in srgb, var(--color-border) 72%, var(--color-text-primary)); }
+.profile-draft-basics {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-3);
+}
+@media (max-width: 619px) {
+  .application-profile-fields { grid-template-columns: minmax(0, 1fr); }
+  .application-profile-field { grid-template-columns: 96px minmax(0, 1fr); }

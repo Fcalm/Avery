@@ -12,8 +12,8 @@ export type Channel = (typeof ChannelValues)[number];
 export const ApplicationStatusValues = ['saved', 'applied', 'written_test', 'interviewing', 'ended'] as const;
 export type ApplicationStatus = (typeof ApplicationStatusValues)[number];
 
-/** 档案分类：项目经历 / 工作经历 / 教育背景 / 技能证书 / 其他附件。 */
-export const ProfileCategoryValues = ['project', 'work', 'education', 'skill_certificate', 'other'] as const;
+/** 档案分类：个人信息、教育/工作/项目经历、求职意向、技能证书及其他资料。 */
+export const ProfileCategoryValues = ['application', 'project', 'work', 'education', 'job_intention', 'skill_certificate', 'other'] as const;
 export type ProfileCategory = (typeof ProfileCategoryValues)[number];
 
 /** 岗位匹配分档：待计算 / 较差 / 优良 / 极好。 */

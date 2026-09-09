@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { closeSync, existsSync, fsyncSync, openSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { GetNow } from './helpers';
-import { ProfileItemToStorage, ProfileItemToDisplay } from './enum-map';
+import { IsCurrentProfileCategory, ProfileItemToStorage, ProfileItemToDisplay } from './enum-map';
 
 /** 档案的唯一事实源 profile.json；以临时文件写入后 fsync 原子替换，并维护哈希基线供外部修改检测。 */
 export class ProfileRepository {
@@ -18,7 +18,9 @@ export class ProfileRepository {
       const raw = readFileSync(this.profilePath, 'utf8');
       const parsed = JSON.parse(raw) as { items?: unknown };
       const hash = createHash('sha256').update(raw).digest('hex');
-      const items = Array.isArray(parsed?.items) ? parsed.items.map(ProfileItemToDisplay) : fallback;
+      const items = Array.isArray(parsed?.items)
+        ? parsed.items.map(ProfileItemToDisplay).filter((item) => IsCurrentProfileCategory(item?.category))
+        : fallback;
       this.profileHash = hash;
       return { items, hash };
     } catch {

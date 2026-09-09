@@ -1,4 +1,4 @@
-/** 中英枚举映射：契约层使用稳定英文值，持久化层保持存量中文兼容；双向转换集中在本模块供各 Repository 读写边界使用。 */
+import { ProfileCategoryValues } from '@avery/contracts';
 
 export const EmploymentTypeStorage: Record<string, string> = { intern: '实习', full_time: '正式工' };
 export const EmploymentTypeDisplay: Record<string, string> = { 实习: 'intern', 正式工: 'full_time' };
@@ -6,8 +6,14 @@ export const ChannelStorage: Record<string, string> = { boss_zhipin: 'BOSS直聘
 export const ChannelDisplay: Record<string, string> = { BOSS直聘: 'boss_zhipin', 企业官网: 'company_website', 其他: 'other' };
 export const ApplicationStatusStorage: Record<string, string> = { saved: '已收藏', applied: '已投递', written_test: '笔试中', interviewing: '面试中', ended: '已结束' };
 export const ApplicationStatusDisplay: Record<string, string> = { 已收藏: 'saved', 已投递: 'applied', 笔试中: 'written_test', 面试中: 'interviewing', 已结束: 'ended' };
-export const ProfileCategoryStorage: Record<string, string> = { project: '项目经历', work: '工作经历', education: '教育背景', skill_certificate: '技能/证书', other: '其他附件' };
-export const ProfileCategoryDisplay: Record<string, string> = { 项目经历: 'project', 工作经历: 'work', 教育背景: 'education', '技能/证书': 'skill_certificate', 其他附件: 'other' };
+export const ProfileCategoryStorage: Record<string, string> = { application: '个人信息', project: '项目经历', work: '工作经历', education: '教育经历', job_intention: '求职意向', skill_certificate: '技能/证书', other: '其他资料' };
+export const ProfileCategoryDisplay: Record<string, string> = { 个人信息: 'application', 项目经历: 'project', 工作经历: 'work', 教育经历: 'education', 求职意向: 'job_intention', '技能/证书': 'skill_certificate', 其他资料: 'other' };
+const CurrentProfileCategories = new Set<string>(ProfileCategoryValues);
+
+/** 仅当前模板分类可进入档案读写和表单填写流程。 */
+export function IsCurrentProfileCategory(value: unknown): value is string {
+  return typeof value === 'string' && CurrentProfileCategories.has(value);
+}
 
 /** 英文值映射为存储中文值；已是中文或未知值原样透传（容忍存量与未列枚举）。 */
 export function ToStorage(value: unknown, storageMap: Record<string, string>): unknown {
