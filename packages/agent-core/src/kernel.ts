@@ -32,6 +32,11 @@ function ScrubToolArguments(toolName: string, value: string): string {
         ? { ...(field as Record<string, unknown>), text: '[REDACTED_BROWSER_INPUT]' }
         : '[REDACTED_BROWSER_FIELD]');
     }
+    if (Array.isArray(parsed.decisions)) {
+      parsed.decisions = parsed.decisions.map((decision) => decision && typeof decision === 'object' && !Array.isArray(decision)
+        ? { ...(decision as Record<string, unknown>), value: '[REDACTED_BROWSER_INPUT]' }
+        : '[REDACTED_BROWSER_DECISION]');
+    }
     if ('fileId' in parsed) parsed.fileId = '[REDACTED_FILE_ID]';
     return ScrubTraceContent(JSON.stringify(parsed));
   } catch {
@@ -39,63 +44,63 @@ function ScrubToolArguments(toolName: string, value: string): string {
   }
 }
 
-/** Trace 以真实 API 请求为边界，逐条保存本次请求实际包含的 message。 */
+/** 构造可安全写入 Trace 的消息副本；图片正文和敏感工具参数不得进入可观测性库。 */
+function CreateTraceMessage(message: Record<string, unknown>): Record<string, unknown> {
+  const traceMessage = { ...message };
+  const content = traceMessage.content;
+  if (Array.isArray(content)) {
+    traceMessage.content = content.map((part) => {
+      if (!part || typeof part !== 'object') return part;
+      const record = part as Record<string, unknown>;
+      if (record.type !== 'image_url' || !record.image_url || typeof record.image_url !== 'object') return record;
+      const image = record.image_url as Record<string, unknown>;
+      return { ...record, image_url: { ...image, url: typeof image.url === 'string' && image.url.startsWith('data:') ? '[REDACTED_IMAGE_DATA]' : image.url } };
+    });
+  } else {
+    traceMessage.content = ScrubTraceContent(content);
+  }
+  if (Array.isArray(traceMessage.tool_calls)) {
+    traceMessage.tool_calls = traceMessage.tool_calls.map((value) => {
+      if (!value || typeof value !== 'object') return value;
+      const call = value as Record<string, unknown>;
+      const fn = call.function && typeof call.function === 'object' ? call.function as Record<string, unknown> : null;
+      if (!fn) return call;
+      const name = String(fn.name ?? '');
+      return { ...call, function: { ...fn, arguments: ScrubToolArguments(name, String(fn.arguments ?? '')) } };
+    });
+  }
+  if (typeof traceMessage.reasoning_content === 'string') traceMessage.reasoning_content = ScrubTraceContent(traceMessage.reasoning_content);
+  return traceMessage;
+}
+
+/** 每次 Provider 请求只追加一个不可变请求事实；完整输入留在详情中，不再伪装成新的消息事件。 */
 function RecordProviderRequest(input: KernelRunInput, apiRequestIndex: number, snapshot: ProviderRequestSnapshot): void {
+  const messages = snapshot.messages.map((message) => CreateTraceMessage(message));
   input.modules.observability.AppendTraceEvent(input.requestId, 'provider_request', {
     apiRequestIndex,
     kind: snapshot.kind,
     model: snapshot.model,
-    messageCount: snapshot.messages.length,
+    messageCount: messages.length,
     toolCount: snapshot.toolCount,
-  });
-  snapshot.messages.forEach((message, messageIndex) => {
-    const traceMessage = { ...message };
-    const content = traceMessage.content;
-    if (Array.isArray(content)) {
-      traceMessage.content = content.map((part) => {
-        if (!part || typeof part !== 'object') return part;
-        const record = part as Record<string, unknown>;
-        if (record.type !== 'image_url' || !record.image_url || typeof record.image_url !== 'object') return record;
-        const image = record.image_url as Record<string, unknown>;
-        return { ...record, image_url: { ...image, url: typeof image.url === 'string' && image.url.startsWith('data:') ? '[REDACTED_IMAGE_DATA]' : image.url } };
-      });
-    }
-    if (Array.isArray(traceMessage.tool_calls)) {
-      traceMessage.tool_calls = traceMessage.tool_calls.map((value) => {
-        if (!value || typeof value !== 'object') return value;
-        const call = value as Record<string, unknown>;
-        const fn = call.function && typeof call.function === 'object' ? call.function as Record<string, unknown> : null;
-        if (!fn) return call;
-        const name = String(fn.name ?? '');
-        return { ...call, function: { ...fn, arguments: ScrubToolArguments(name, String(fn.arguments ?? '')) } };
-      });
-    }
-    input.modules.observability.AppendTraceEvent(input.requestId, 'message', {
-      apiRequestIndex,
-      messageIndex,
-      direction: 'input',
-      kind: snapshot.kind,
-      message: traceMessage,
-    }, EstimateTraceTokens(JSON.stringify(traceMessage)));
-  });
+    messages,
+  }, EstimateTraceTokens(JSON.stringify(messages)));
 }
 
-/** 保存 Provider 输出或随后加入 Transcript 的消息，不把 assistant tool_calls 拆成虚构消息。 */
-function RecordAppendedMessage(input: KernelRunInput, apiRequestIndex: number, source: 'provider' | 'tool' | 'runtime', message: AgentMessage, kind: ProviderRequestSnapshot['kind'] = 'completion'): void {
-  const providerMessage: Record<string, unknown> = {
+/** 消息仅在真正加入 Transcript 时追加一次；messageId 是身份，不依赖正文猜测去重。 */
+function RecordAppendedMessage(input: KernelRunInput, apiRequestIndex: number, source: 'system' | 'user' | 'provider' | 'tool' | 'runtime', message: AgentMessage): void {
+  const traceMessage = CreateTraceMessage({
     role: message.role,
-    content: ScrubTraceContent(message.content),
-    ...(message.tool_calls ? { tool_calls: message.tool_calls.map((call) => ({ ...call, function: { ...call.function, arguments: ScrubToolArguments(call.function.name, call.function.arguments) } })) } : {}),
+    content: message.content,
+    ...(message.tool_calls ? { tool_calls: message.tool_calls } : {}),
     ...(message.tool_call_id ? { tool_call_id: message.tool_call_id } : {}),
-    ...(message.reasoning_content ? { reasoning_content: ScrubTraceContent(message.reasoning_content) } : {}),
-  };
-  input.modules.observability.AppendTraceEvent(input.requestId, 'message', {
+    ...(message.reasoning_content ? { reasoning_content: message.reasoning_content } : {}),
+  });
+  input.modules.observability.AppendTraceEvent(input.requestId, 'message_appended', {
+    messageId: input.createId(),
     apiRequestIndex,
-    direction: source === 'provider' ? 'output' : 'append',
     source,
-    kind,
-    message: providerMessage,
-  }, EstimateTraceTokens(JSON.stringify(providerMessage)));
+    message: traceMessage,
+  }, EstimateTraceTokens(JSON.stringify(traceMessage)));
 }
 
 /** 提取不含 system 消息的完整 append-only transcript；只有显式压缩可以改变历史前缀。 */
@@ -103,8 +108,19 @@ function HistorySnapshot(transcript: AgentMessage[]): AgentMessage[] {
   return transcript.filter((message) => message.role !== 'system').map(({ providerContent: _providerContent, ...message }) => message);
 }
 
-/** Skill 工具结果的合成 user 消息只能在所有 tool result 完整追加后进入 Transcript。 */
-function CommitSkillFollowups(input: KernelRunInput, results: ToolExecutionResult[]): AgentMessage[] {
+/**
+ * 将已提交的 transcript 同步到宿主并建立持久化屏障。
+ * 历史只能由已经越过取消检查的消息组成；流式增量和取消后迟到的 Provider 结果绝不能进入这里。
+ */
+function CommitHistory(input: KernelRunInput, transcript: AgentMessage[]): AgentMessage[] {
+  const history = HistorySnapshot(transcript);
+  input.histories.set(input.sessionId, history);
+  input.persistHistory();
+  return history;
+}
+
+/** 工具结果的合成 user 消息只能在所有 tool result 完整追加后进入 Transcript。 */
+function CommitToolFollowups(input: KernelRunInput, results: ToolExecutionResult[]): AgentMessage[] {
   const messages: AgentMessage[] = [];
   for (const result of results) {
     for (const message of result.followupMessages ?? []) {
@@ -204,7 +220,7 @@ function CreateTurnBudgetExhaustedResult(call: ToolCallFragment): ToolExecutionR
 /** 按真实用户轮次压缩早期历史；重试循环内置 3 次熔断，全部失败抛出压缩错误（宿主据此传播）。 */
 async function CompressIfNeeded(input: KernelRunInput, history: AgentMessage[], onCompressed: () => void, nextApiRequestIndex: () => number): Promise<AgentMessage[]> {
   const { modules, toolArray } = input;
-  const { contextLimit, threshold } = modules.modelProvider.GetRuntimeLimits();
+  const { contextLimit, threshold } = modules.modelProvider.GetRuntimeLimits(input.provider);
   const estimate = modules.modelProvider.EstimateTokens({
     system: input.instructions.compiled,
     tools: toolArray,
@@ -227,15 +243,23 @@ async function CompressIfNeeded(input: KernelRunInput, history: AgentMessage[], 
         return candidate;
       }
       let apiRequestIndex = 0;
-      const summary = await modules.modelProvider.CreateSummary(input.model, earlier, (snapshot) => {
+      const summary = await modules.modelProvider.CreateSummary(input.provider, input.model, earlier, (snapshot) => {
         apiRequestIndex = nextApiRequestIndex();
         RecordProviderRequest(input, apiRequestIndex, snapshot);
       });
       ThrowIfRunCancelled(input.signal);
       input.onModelUsage?.(CreateProviderUsageFact(summary.usage));
-      if (apiRequestIndex) RecordAppendedMessage(input, apiRequestIndex, 'provider', { role: 'assistant', content: summary.content }, 'summary');
+      if (apiRequestIndex) {
+        const response = CreateTraceMessage({ role: 'assistant', content: summary.content });
+        modules.observability.AppendTraceEvent(input.requestId, 'provider_response', {
+          apiRequestIndex,
+          kind: 'summary',
+          message: response,
+        }, EstimateTraceTokens(JSON.stringify(response)));
+      }
       const compacted: AgentMessage[] = [{ role: 'user', content: `<summary summary_id="summary-${input.createId()}">${summary.content}</summary>` }, ...recent];
-      input.histories.set(input.sessionId, HistorySnapshot(compacted));
+      RecordAppendedMessage(input, apiRequestIndex + 1, 'runtime', compacted[0]);
+      CommitHistory(input, compacted);
       onCompressed();
       modules.observability.AppendTraceEvent(input.requestId, 'context_compressed', { retry, removed: earlier.length });
       modules.observability.RecordLog('INFO', 'context.compressed', `retry=${retry}; removed=${earlier.length}`);
@@ -362,6 +386,7 @@ export async function RunAgentLoop(input: KernelRunInput): Promise<KernelRunResu
   const maxTurns = input.scenario?.budgets?.maxModelTurns ?? input.maxTurns;
   // 场景只有显式配置时才限制工具总数；投递场景依赖较多原子浏览器动作，不另设浏览器动作预算。
   const maxToolCalls = input.scenario?.budgets?.maxToolCalls ?? Number.POSITIVE_INFINITY;
+  const hadHistoryAtRunStart = input.requestHistory.length > 0;
 
   try {
     // 压缩熔断错误进入 catch，统一 FinishTrace/emit error（旧实现压缩在 try 外，抛错会跳过 Trace 收尾导致 running 幽灵 Trace）。
@@ -375,11 +400,20 @@ export async function RunAgentLoop(input: KernelRunInput): Promise<KernelRunResu
       input.userMessage ?? { role: 'user', content: input.userContent },
       ...afterUser,
     ];
+    const firstCompletionRequestIndex = apiRequestCount + 1;
+    if (!hadHistoryAtRunStart) {
+      RecordAppendedMessage(input, firstCompletionRequestIndex, 'system', { role: 'system', content: input.instructions.compiled });
+      RecordAppendedMessage(input, firstCompletionRequestIndex, 'system', transcript[0]);
+    }
+    beforeUser.forEach((message) => RecordAppendedMessage(input, firstCompletionRequestIndex, 'runtime', message));
+    RecordAppendedMessage(input, firstCompletionRequestIndex, 'user', input.userMessage ?? { role: 'user', content: input.userContent });
+    afterUser.forEach((message) => RecordAppendedMessage(input, firstCompletionRequestIndex, 'runtime', message));
+    // 用户输入一旦进入模型可见 transcript，即使本轮随后取消也必须能在下一轮恢复。
+    CommitHistory(input, transcript);
     inputTokens = modules.modelProvider.EstimateTokens({ system: input.instructions.compiled, tools: input.toolArray, messages: transcript });
     while (true) {
       // 取消不经循环顶部轮询：模型流经 signal 中止抛错，由 catch 统一 FinishTrace 并 emit cancelled。
       if (turn >= maxTurns) {
-        input.histories.set(input.sessionId, HistorySnapshot(transcript));
         modules.observability.RecordLog('WARN', 'conversation.circuit_open', 'iteration_limit');
         modules.observability.FinishTrace(requestId, 'circuit_open', 'Circuit opened: iteration_limit. Transcript preserved for automatic recovery.');
         emit({ type: 'error', requestId, message: '本轮迭代达到上限，已暂停；会话上下文与历史已保留，可继续提问' });
@@ -398,8 +432,11 @@ export async function RunAgentLoop(input: KernelRunInput): Promise<KernelRunResu
           confirmationMode: currentConfirmationMode,
           finalTurn,
           loadedSkillIds: input.runtimeReminder.getLoadedSkillIds?.() ?? [],
+          boundResumeName: input.runtimeReminder.getBoundResumeName?.() ?? null,
         }, reminderRevision);
         transcript = [...transcript, reminder];
+        RecordAppendedMessage(input, apiRequestCount + 1, 'runtime', reminder);
+        CommitHistory(input, transcript);
         modules.observability.AppendTraceEvent(requestId, 'runtime_reminder', {
           reminderRevision,
           injectedAtTurn: turn,
@@ -417,6 +454,7 @@ export async function RunAgentLoop(input: KernelRunInput): Promise<KernelRunResu
       let acceptsProviderDelta = true;
       const completion = await modules.modelProvider.StreamCompletion({
         requestId,
+        provider: input.provider,
         model: input.model,
         reasoningEffort: input.reasoningEffort,
         history: transcript,
@@ -443,12 +481,13 @@ export async function RunAgentLoop(input: KernelRunInput): Promise<KernelRunResu
       };
       transcript = [...transcript, assistantMessage];
       if (apiRequestIndex) RecordAppendedMessage(input, apiRequestIndex, 'provider', assistantMessage);
+      CommitHistory(input, transcript);
       if (!completion.toolCalls.length) break;
       if (finalTurn) {
         const exhaustedResults = completion.toolCalls.map(CreateTurnBudgetExhaustedResult);
         transcript = [...transcript, ...exhaustedResults];
         if (apiRequestIndex) exhaustedResults.forEach((message) => RecordAppendedMessage(input, apiRequestIndex, 'runtime', message));
-        input.histories.set(input.sessionId, HistorySnapshot(transcript));
+        CommitHistory(input, transcript);
         modules.observability.RecordLog('WARN', 'conversation.circuit_open', 'iteration_limit');
         modules.observability.FinishTrace(requestId, 'circuit_open', 'Final model turn attempted new tool calls.');
         emit({ type: 'error', requestId, message: '本轮模型轮数已用尽，最后一轮的新工具调用未执行；上下文已保存，可继续提问' });
@@ -456,7 +495,6 @@ export async function RunAgentLoop(input: KernelRunInput): Promise<KernelRunResu
       }
       toolCallCount += completion.toolCalls.length;
       if (toolCallCount > maxToolCalls) {
-        input.histories.set(input.sessionId, HistorySnapshot(transcript));
         modules.observability.RecordLog('WARN', 'conversation.circuit_open', 'tool_call_limit');
         modules.observability.FinishTrace(requestId, 'circuit_open', 'Circuit opened: tool_call_limit.');
         emit({ type: 'error', requestId, message: '本轮工具调用达到上限，已暂停；可继续提问或缩小目标' });
@@ -464,29 +502,30 @@ export async function RunAgentLoop(input: KernelRunInput): Promise<KernelRunResu
       }
       const { results, disposition } = await RunToolBatch(input, completion.toolCalls);
       const toolResults = results as ToolExecutionResult[];
-      const skillFollowups = CommitSkillFollowups(input, toolResults);
+      const toolFollowups = CommitToolFollowups(input, toolResults);
       const protocolResults = toolResults.map(({ followupMessages: _followupMessages, ...result }) => result);
-      transcript = [...transcript, ...protocolResults, ...skillFollowups];
+      transcript = [...transcript, ...protocolResults, ...toolFollowups];
       if (apiRequestIndex) {
         protocolResults.forEach((message) => RecordAppendedMessage(input, apiRequestIndex, 'tool', message));
-        skillFollowups.forEach((message) => RecordAppendedMessage(input, apiRequestIndex, 'runtime', message));
+        toolFollowups.forEach((message) => RecordAppendedMessage(input, apiRequestIndex, 'runtime', message));
       }
+      CommitHistory(input, transcript);
       if (disposition !== 'continue') {
         const waitOutcome = disposition === 'waiting_user_input' ? 'waiting_user_input' : disposition === 'waiting_confirmation' ? 'waiting_confirmation' : 'paused';
-        input.histories.set(input.sessionId, HistorySnapshot(transcript));
         modules.observability.RecordLog('INFO', `conversation.${waitOutcome}`, `turns=${turn}`);
         modules.observability.FinishTrace(requestId, waitOutcome, `Waiting or paused after ${turn} loop turn(s).`);
         emit({ type: waitOutcome, requestId, message: waitOutcome === 'waiting_user_input' ? '等待用户回答问题' : waitOutcome === 'waiting_confirmation' ? '等待用户确认提案' : '运行已暂停' });
         return { outcome: waitOutcome, disposition: waitOutcome, transcript: HistorySnapshot(transcript), inputTokens, compressionCount };
       }
     }
-    input.histories.set(input.sessionId, HistorySnapshot(transcript));
     modules.observability.RecordLog('INFO', 'conversation.completed', `turns=${turn}`);
     modules.observability.FinishTrace(requestId, 'completed', `Completed in ${turn} loop turn(s).`);
     emit({ type: 'completed', requestId, content: assistantContent, thinkingContent: reasoningContent });
     return { outcome: 'completed', disposition: 'completed', transcript: HistorySnapshot(transcript), inputTokens, compressionCount };
   } catch (error) {
     if (signal.aborted) {
+      // 取消前已构建的用户输入、已完成的模型回复和工具结果仍属于会话事实；取消前尚未建好 transcript 时保留旧历史。
+      if (transcript.length) CommitHistory(input, transcript);
       modules.observability.FinishTrace(requestId, 'cancelled', 'Cancelled by user.');
       emit({ type: 'cancelled', requestId });
       return { outcome: 'cancelled', disposition: 'cancelled', transcript: HistorySnapshot(transcript), inputTokens, compressionCount };

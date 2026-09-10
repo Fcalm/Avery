@@ -25,6 +25,8 @@ export interface RegisteredAgentTool {
   };
   /** 允许使用该工具的场景 ID 白名单；缺省表示仅默认场景。 */
   allowedScenarios?: string[];
+  /** Harness 在工具执行入口统一校验的会话资源；禁止各工具自行复制授权判断。 */
+  requiredResources?: Array<'bound_resume'>;
 }
 
 /** 业务幂等键与工具账本端口：写工具在执行前落 started，完成后落 succeeded/failed/status_unknown。 */
@@ -76,19 +78,23 @@ export interface CronTaskPort {
   Delete(cronTaskId: string): Promise<unknown>;
 }
 
-/** 投递状态端口：Agent 必须先读取现有记录，再以显式 job/application ID 原子更新跟踪状态。 */
+/** 岗位与投递跟踪端口：岗位可独立保存；投递记录仍必须关联本次使用的简历。 */
 export interface ApplicationTrackingPort {
   Read(input?: { company?: string; title?: string; url?: string }): Promise<{ jobs: unknown[]; applications: unknown[]; truncated?: boolean }>;
+  SaveJob(input: Record<string, unknown>): Promise<unknown>;
   Update(input: Record<string, unknown>): Promise<unknown>;
 }
 
 export type BrowserToolName =
   | 'BrowserNavigate'
   | 'BrowserSnapshot'
+  | 'BrowserScreenshot'
   | 'BrowserReadPage'
+  | 'BrowserInspectForm'
   | 'BrowserClick'
   | 'BrowserFill'
   | 'BrowserFillForm'
+  | 'BrowserValidateForm'
   | 'BrowserSelect'
   | 'BrowserSetChecked'
   | 'BrowserPressKey'
@@ -96,6 +102,8 @@ export type BrowserToolName =
   | 'BrowserWait'
   | 'BrowserSwitchTab'
   | 'BrowserGoBack';
+
+export type BrowserEngine = 'electron' | 'chrome' | 'edge';
 
 /** 浏览器动作提案由宿主根据当前页面引用生成；模型不能自行构造哈希或内部路径。 */
 export interface BrowserActionProposal {
@@ -110,17 +118,20 @@ export interface BrowserActionProposal {
   resourceIds: string[];
 }
 
-/** agent-browser 窄端口：准备阶段只校验并分类，执行阶段只接受冻结提案。 */
+/** 浏览器窄端口：准备阶段只校验并分类，执行阶段只接受冻结提案，底层驱动不向模型暴露。 */
 export interface BrowserAutomationPort {
   Prepare(input: { toolName: BrowserToolName; arguments: Record<string, unknown> }): Promise<BrowserActionProposal>;
   Execute(input: { proposal: BrowserActionProposal; signal?: AbortSignal; deadline?: number }): Promise<{ data: unknown; status: 'succeeded' | 'status_unknown' }>;
-  GetStatus(): Promise<{ available: boolean; profileExists: boolean; running: boolean; pageRevision: number; currentUrl?: string }>;
+  /** probeConnection 仅由用户显式检测触发；普通状态读取不得启动 CDP 握手或弹出浏览器授权。 */
+  GetStatus(probeConnection?: boolean): Promise<{ available: boolean; profileExists: boolean; running: boolean; pageRevision: number; currentUrl?: string }>;
   ClearProfile(): Promise<{ cleared: boolean }>;
   /** 新 Run 或用户接管后废弃全部元素引用，强制先重新 Snapshot。 */
   ResetPageReferences(): void;
   Close(): Promise<void>;
-  /** Cron Runner 可请求后台窗口模式；只影响展示，不改变 Profile、工具或导航权限。 */
-  SetUnattended?(value: boolean): Promise<void> | void;
+  /** Cron Runner 设置可信任务上下文；任务级持久授权与浏览器在线状态分别校验。 */
+  SetUnattended?(value: boolean, context?: { cronTaskId?: string; browserAuthorized?: boolean }): Promise<void> | void;
+  /** 设置下一次浏览器动作使用的内核；切换时必须淘汰旧会话，不能跨 Profile 复用引用。 */
+  SetEngine?(value: BrowserEngine): Promise<void> | void;
 }
 
 /** 文件读取端口：由宿主注入（agent-file-reader）；路径校验与资源边界由宿主持有，模块不可绕过。 */
@@ -150,8 +161,18 @@ export interface FileReadPort {
   CreateGlobMatcher(pattern: string): RegExp;
 }
 
-/** 简历只读端口：宿主按 resumeId 提供当前只读快照（含 revision）。 */
+/** 简历索引项不含正文；模型先读取索引，再按 ID 渐进加载并绑定正文。 */
+export interface ResumeIndexItem {
+  id: string;
+  name: string;
+  updatedAt: string;
+  revision?: number;
+  targetRoles?: string[];
+}
+
+/** 简历只读端口：宿主提供无正文索引，并按授权的 resumeId 返回当前只读快照。 */
 export interface ResumeReadPort {
+  List(): Promise<ResumeIndexItem[]>;
   ReadCurrent(resumeId: string): Promise<ResumeSnapshot | null>;
 }
 
@@ -198,8 +219,10 @@ export interface ToolContext {
   projectRoot: string | null;
   attachments: AttachmentDescriptor[];
   profileSnapshot: ProfileSnapshotItem[];
-  resumeSnapshot: ResumeSnapshot | null;
-  resumeId?: string;
+  /** 仅由成功的 ReadResume({resumeId}) 建立；正文不由用户消息或 runtime-context 注入。 */
+  boundResume: ResumeSnapshot | null;
+  /** 宿主持久化或清除会话级绑定；工具不得直接伪造 resumeId。 */
+  bindResume: (resume: ResumeSnapshot | null) => Promise<void> | void;
   ports: ToolPorts;
   /** 会话内任务表：宿主持有的 Map 引用，工具直接增删。 */
   tasks: Map<string, TaskItem>;
@@ -232,4 +255,6 @@ export interface ToolContext {
   pendingSkillLoads?: Set<string>;
   /** 无人值守 Cron Run 已在创建时获得周期级授权；只由宿主内部入口设置。 */
   unattended?: boolean;
+  /** 当前 Provider/模型是否接受 image_url；截图工具据此在调用 CLI 前拒绝不兼容模型。 */
+  supportsVisionInput?: boolean;
 }

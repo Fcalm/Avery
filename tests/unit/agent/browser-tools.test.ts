@@ -16,6 +16,90 @@ function Proposal(overrides: Partial<BrowserActionProposal> = {}): BrowserAction
 }
 
 describe('浏览器工具 Harness', () => {
+  it('BOSS 风控错误经 Harness 暂停并请求用户接管', async () => {
+    const error = Object.assign(new Error('BOSS requires security verification.'), { code: 'BROWSER_SITE_RISK_DETECTED' });
+    const browser = { Prepare: vi.fn(async () => { throw error; }), Execute: vi.fn(), GetStatus: vi.fn(), ClearProfile: vi.fn(), ResetPageReferences: vi.fn(), Close: vi.fn() };
+    const base = CreateToolContext();
+    const context = CreateToolContext({ scenarioId: 'application', ports: { ...base.ports, browser } });
+
+    const result = await CreateToolsModule(CreatePorts()).ExecuteToolCall({
+      id: 'boss-risk', type: 'function', function: { name: 'BrowserSnapshot', arguments: '{}' },
+    }, context);
+
+    expect(result.disposition).toBe('wait_user_input');
+    expect(JSON.parse(result.content)).toMatchObject({ ok: false, code: 'BROWSER_SITE_RISK_DETECTED' });
+    expect(context.emit).toHaveBeenCalledWith(expect.objectContaining({ type: 'browser_user_action' }));
+    expect(browser.Execute).not.toHaveBeenCalled();
+  });
+
+  it('无人值守 BOSS 请求经 Harness 暂停且不启动浏览器', async () => {
+    const error = Object.assign(new Error('BOSS requires a visible browser.'), { code: 'BROWSER_SITE_VISIBLE_REQUIRED' });
+    const browser = { Prepare: vi.fn(async () => { throw error; }), Execute: vi.fn(), GetStatus: vi.fn(), ClearProfile: vi.fn(), ResetPageReferences: vi.fn(), Close: vi.fn() };
+    const base = CreateToolContext();
+    const context = CreateToolContext({ scenarioId: 'application', unattended: true, ports: { ...base.ports, browser } });
+
+    const result = await CreateToolsModule(CreatePorts()).ExecuteToolCall({
+      id: 'boss-headless', type: 'function', function: { name: 'BrowserNavigate', arguments: JSON.stringify({ url: 'https://www.zhipin.com/web/geek/job' }) },
+    }, context);
+
+    expect(result.disposition).toBe('pause');
+    expect(JSON.parse(result.content)).toMatchObject({ ok: false, code: 'BROWSER_SITE_VISIBLE_REQUIRED' });
+    expect(browser.Execute).not.toHaveBeenCalled();
+  });
+
+  it('CronTask 个人浏览器授权失效时暂停并保留待接管会话', async () => {
+    const error = Object.assign(new Error('Authorize this CronTask again.'), { code: 'BROWSER_CRON_ACCESS_REQUIRED' });
+    const browser = { Prepare: vi.fn(async () => { throw error; }), Execute: vi.fn(), GetStatus: vi.fn(), ClearProfile: vi.fn(), ResetPageReferences: vi.fn(), Close: vi.fn() };
+    const base = CreateToolContext();
+    const context = CreateToolContext({ scenarioId: 'application', unattended: true, ports: { ...base.ports, browser } });
+
+    const result = await CreateToolsModule(CreatePorts()).ExecuteToolCall({
+      id: 'cron-browser-expired', type: 'function', function: { name: 'BrowserSnapshot', arguments: '{}' },
+    }, context);
+
+    expect(result.disposition).toBe('pause');
+    expect(JSON.parse(result.content)).toMatchObject({ ok: false, code: 'BROWSER_CRON_ACCESS_REQUIRED' });
+    expect(browser.Execute).not.toHaveBeenCalled();
+  });
+
+  it.each(['BROWSER_EXISTING_BROWSER_UNAVAILABLE', 'BROWSER_EXISTING_BROWSER_PERMISSION_REQUIRED', 'BROWSER_BOSS_TAB_REQUIRED', 'BROWSER_USER_BROWSER_INTERACTIVE_ONLY'])('%s 经 Harness 等待用户准备个人浏览器', async (code) => {
+    const error = Object.assign(new Error('Prepare the logged-in browser.'), { code });
+    const browser = { Prepare: vi.fn(async () => { throw error; }), Execute: vi.fn(), GetStatus: vi.fn(), ClearProfile: vi.fn(), ResetPageReferences: vi.fn(), Close: vi.fn() };
+    const base = CreateToolContext();
+    const context = CreateToolContext({ scenarioId: 'application', ports: { ...base.ports, browser } });
+
+    const result = await CreateToolsModule(CreatePorts()).ExecuteToolCall({
+      id: `personal-${code}`, type: 'function', function: { name: 'BrowserSnapshot', arguments: '{}' },
+    }, context);
+
+    expect(result.disposition).toBe('wait_user_input');
+    expect(JSON.parse(result.content)).toMatchObject({ ok: false, code });
+    expect(browser.Execute).not.toHaveBeenCalled();
+  });
+
+  it('BrowserScreenshot 仅为视觉模型注入图片且不在 tool result 中回显 Base64', async () => {
+    const imageDataUrl = 'data:image/png;base64,iVBORw0KGgo=';
+    const browser = {
+      Prepare: vi.fn(async () => Proposal({ toolName: 'BrowserScreenshot', canonicalArguments: {}, risk: 'low', pageRevision: 2 })),
+      Execute: vi.fn(async () => ({ status: 'succeeded' as const, data: { imageDataUrl, byteSize: 8, pageRevision: 2, currentUrl: 'https://example.com/jobs' } })),
+      GetStatus: vi.fn(), ClearProfile: vi.fn(), ResetPageReferences: vi.fn(), Close: vi.fn(),
+    };
+    const base = CreateToolContext();
+    const module = CreateToolsModule(CreatePorts());
+    const call = { id: 'screenshot-1', type: 'function' as const, function: { name: 'BrowserScreenshot', arguments: '{}' } };
+
+    const unsupported = await module.ExecuteToolCall(call, CreateToolContext({ scenarioId: 'application', ports: { ...base.ports, browser } }));
+    expect(JSON.parse(unsupported.content)).toMatchObject({ ok: false, code: 'BROWSER_VISION_UNAVAILABLE' });
+    expect(browser.Prepare).not.toHaveBeenCalled();
+
+    const result = await module.ExecuteToolCall(call, CreateToolContext({ scenarioId: 'application', supportsVisionInput: true, ports: { ...base.ports, browser } }));
+    expect(result.content).not.toContain('base64');
+    expect(result.followupMessages).toEqual([expect.objectContaining({
+      role: 'user',
+      providerContent: expect.arrayContaining([expect.objectContaining({ type: 'image_url', image_url: { url: imageDataUrl, detail: 'auto' } })]),
+    })]);
+  });
+
   it('未加入当前 Run 的文件不能进入 Runtime', async () => {
     const browser = { Prepare: vi.fn(), Execute: vi.fn(), GetStatus: vi.fn(), ClearProfile: vi.fn(), ResetPageReferences: vi.fn(), Close: vi.fn() };
     const base = CreateToolContext();

@@ -57,6 +57,8 @@ export interface CronTaskDto {
   message: string;
   scenarioId: 'default' | 'application';
   resumeId?: string;
+  /** 用户在创建确认中授予该任务的个人浏览器权限；不代表浏览器当前在线。 */
+  browserAuthorized: boolean;
   schedule: CronSchedule;
   state: CronTaskState;
   consumedOccurrences: number;

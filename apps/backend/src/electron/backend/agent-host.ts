@@ -1,10 +1,10 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import * as path from 'node:path';
-import { RunAgentLoop, ScrubTraceContent } from '@avery/agent-core';
+import { RunAgentLoop } from '@avery/agent-core';
 import { CreateRunSnapshot, ResolveModules } from '@avery/agent-module-host';
 import { ApplicationScenario, BuildApplicationCompiledInstructions, BuildDefaultCompiledInstructions, CreateDefaultModules, DefaultScenario } from '@avery/agent-modules-defaults';
-import type { AgentMessage, AgentModules, BrowserAutomationPort, CompiledInstructions, ConfirmationMode, ProviderUsageFact, ReasoningEffort, ScenarioSnapshot, SkillSnapshot } from '@avery/agent-sdk';
+import type { AgentMessage, AgentModules, BrowserAutomationPort, BrowserEngine, CompiledInstructions, ConfirmationMode, ProviderUsageFact, ReasoningEffort, ScenarioSnapshot, SkillSnapshot } from '@avery/agent-sdk';
 import { AgentFileReader } from './agent-file-reader';
 import { AgentResumePort } from './agent-resume-port';
 import { ResumeLockStore } from './resume-lock-store';
@@ -17,6 +17,11 @@ import { CreateCronTaskSchema } from '@avery/contracts';
 const UserLockOwnerId = 'user-main';
 const SessionSnapshotTtlMs = 24 * 60 * 60 * 1000;
 const RuntimeTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+type SupportedProvider = 'DeepSeek' | 'Z.AI' | '自定义';
+
+function NormalizeProvider(value: unknown, fallback: SupportedProvider = 'DeepSeek'): SupportedProvider {
+  return value === 'DeepSeek' || value === 'Z.AI' || value === '自定义' ? value : fallback;
+}
 
 /** 兼容迁移旧版中文权限值；所有新运行统一使用稳定的英文枚举。 */
 function NormalizeConfirmationMode(value: unknown): ConfirmationMode {
@@ -64,18 +69,35 @@ function NormalizeSessionUsage(value: unknown): any {
 
 /** 会话级助手偏好不含凭据；模型仅保存可公开的 Provider 模型 ID。 */
 interface SessionAssistantState {
+  provider: SupportedProvider;
   model: string;
   confirmationMode: ConfirmationMode;
   reasoningEffort: ReasoningEffort;
 }
 
+interface SessionResumeBinding {
+  resumeId: string;
+  revision?: number;
+  boundAt: number;
+}
+
+function NormalizeSessionResumeBinding(value: unknown): SessionResumeBinding | null {
+  if (!value || typeof value !== 'object') return null;
+  const candidate = value as { resumeId?: unknown; revision?: unknown; boundAt?: unknown };
+  if (typeof candidate.resumeId !== 'string' || !candidate.resumeId || candidate.resumeId.length > 200) return null;
+  if (!Number.isFinite(candidate.boundAt)) return null;
+  if (candidate.revision !== undefined && !Number.isSafeInteger(candidate.revision)) return null;
+  return { resumeId: candidate.resumeId, ...(candidate.revision !== undefined ? { revision: candidate.revision as number } : {}), boundAt: candidate.boundAt as number };
+}
+
 function NormalizeSessionAssistantState(value: unknown): SessionAssistantState | null {
   if (!value || typeof value !== 'object') return null;
-  const candidate = value as { model?: unknown; confirmationMode?: unknown; reasoningEffort?: unknown };
+  const candidate = value as { provider?: unknown; model?: unknown; confirmationMode?: unknown; reasoningEffort?: unknown };
   if (typeof candidate.model !== 'string') return null;
   const model = candidate.model.trim();
   if (!model || model.length > 200) return null;
-  return { model, confirmationMode: NormalizeConfirmationMode(candidate.confirmationMode), reasoningEffort: NormalizeReasoningEffort(candidate.reasoningEffort) };
+  const inferredProvider: SupportedProvider = model === 'glm-5.3-flash' ? 'Z.AI' : model.startsWith('deepseek-') ? 'DeepSeek' : '自定义';
+  return { provider: NormalizeProvider(candidate.provider, inferredProvider), model, confirmationMode: NormalizeConfirmationMode(candidate.confirmationMode), reasoningEffort: NormalizeReasoningEffort(candidate.reasoningEffort) };
 }
 
 /** 校验字符串字段，避免 IPC 输入直接进入请求层。 */
@@ -84,19 +106,10 @@ function RequireString(value: unknown, field: string, maxLength = 20000): string
   return value.trim();
 }
 
-/** 逐事件 token 仅用于开发者 Trace 的量级观察，不替代 Provider 最终账单。 */
-function EstimateTraceTokens(value: unknown): number {
-  const text = String(value ?? '');
-  if (!text) return 0;
-  let units = 0;
-  for (const character of text) units += /[\u3400-\u9fff\uf900-\ufaff]/.test(character) ? 1 : 0.25;
-  return Math.max(1, Math.ceil(units));
-}
-
 type AgentHostBrowserRuntime = BrowserAutomationPort & {
   Close(): Promise<void>;
   ResetPageReferences(): void;
-  GetStatus(): Promise<unknown>;
+  GetStatus(probeConnection?: boolean): Promise<unknown>;
   ClearProfile(): Promise<unknown>;
 };
 
@@ -112,6 +125,7 @@ export interface AgentHostOptions {
   agentBrowserExecutablePath?: string;
   browserCompanionExecutablePath?: string;
   browserCompanionAppPath?: string;
+  externalBrowserPaths?: Partial<Record<'chrome' | 'edge', string>>;
   /** 构造期 Skill 固定目录测试接缝；生产环境使用应用内置 skills 目录。 */
   skillRootPath?: string;
   /** 构造期测试接缝；生产组合根不传入，不能由 Renderer、IPC 或环境变量选择。 */
@@ -155,6 +169,7 @@ export class AgentHost {
   private sessionUsage = new Map<string, any>();
   private sessionScenarios = new Map<string, 'default' | 'application'>();
   private sessionAssistantStates = new Map<string, SessionAssistantState>();
+  private sessionResumeBindings = new Map<string, SessionResumeBinding>();
   private loadedSkills = new Map<string, Map<string, string>>();
   private loadedSkillResources = new Map<string, Set<string>>();
   private lastContextUsage: { inputTokens: number; contextLimit: number } = { inputTokens: 0, contextLimit: 256000 };
@@ -171,6 +186,7 @@ export class AgentHost {
   private modules: any;
   private compileInstructions: (scenarioId: 'default' | 'application', toolPolicyHash: string) => CompiledInstructions;
   private scenarioOverride?: ScenarioSnapshot;
+  private readonly defaultBrowserEngine: BrowserEngine;
   private skillRegistry: AgentSkillRegistry;
   private onCronScheduleChanged: () => Promise<void> | void;
   private scheduledRequestIds = new Set<string>();
@@ -206,16 +222,25 @@ export class AgentHost {
       ? BuildApplicationCompiledInstructions(toolPolicyHash)
       : BuildDefaultCompiledInstructions(toolPolicyHash));
     this.scenarioOverride = options.scenarioOverride;
+    this.defaultBrowserEngine = options.scenarioOverride
+      ? 'electron'
+      : options.externalBrowserPaths?.edge
+        ? 'edge'
+        : options.externalBrowserPaths?.chrome
+          ? 'chrome'
+          : 'electron';
     this.skillRegistry = new AgentSkillRegistry(options.skillRootPath);
     this.browserRuntime = options.browserRuntime ?? new AgentBrowserRuntime({
       executablePath: options.agentBrowserExecutablePath ?? path.join(options.userDataPath, 'agent-browser', 'runtime-unavailable'),
       companionExecutablePath: options.browserCompanionExecutablePath ?? path.join(options.userDataPath, 'agent-browser', 'companion-unavailable'),
       companionAppPath: options.browserCompanionAppPath,
+      externalBrowserPaths: options.externalBrowserPaths,
       runtimeRoot: path.join(options.userDataPath, 'agent-browser'),
       resolveUploadFile: async (fileId) => {
         const resolved = await this.business?.ResolveAttachmentUri?.(fileId);
         return typeof resolved === 'string' ? resolved : resolved?.physicalPath ?? null;
       },
+      recordLog: (level, event, detail) => options.observability?.RecordLog?.(level, event, detail),
     });
     this.moduleError = null;
     this.moduleConfiguration = { enabled: false, trusted: false, status: 'default', directoryName: null, modules: [] };
@@ -362,6 +387,9 @@ export class AgentHost {
       this.sessionAssistantStates = new Map((Array.isArray(state.sessionAssistantStates) ? state.sessionAssistantStates : [])
         .map(([sessionId, value]: [string, unknown]) => [sessionId, NormalizeSessionAssistantState(value)] as const)
         .filter(([sessionId, value]: readonly [string, SessionAssistantState | null]) => typeof sessionId === 'string' && value !== null) as Array<[string, SessionAssistantState]>);
+      this.sessionResumeBindings = new Map((Array.isArray(state.sessionResumeBindings) ? state.sessionResumeBindings : [])
+        .map(([sessionId, value]: [string, unknown]) => [sessionId, NormalizeSessionResumeBinding(value)] as const)
+        .filter(([sessionId, value]: readonly [string, SessionResumeBinding | null]) => typeof sessionId === 'string' && value !== null) as Array<[string, SessionResumeBinding]>);
       this.toolLedger = new Map((Array.isArray(state.toolLedger) ? state.toolLedger : [])
         .filter((entry: unknown) => Array.isArray(entry) && typeof entry[0] === 'string' && entry[1] && typeof entry[1] === 'object'));
       this.pendingBrowserActions = new Map((Array.isArray(state.pendingBrowserActions) ? state.pendingBrowserActions : [])
@@ -390,6 +418,7 @@ export class AgentHost {
       sessionUsage: [...this.sessionUsage.entries()],
       sessionScenarios: [...this.sessionScenarios.entries()],
       sessionAssistantStates: [...this.sessionAssistantStates.entries()],
+      sessionResumeBindings: [...this.sessionResumeBindings.entries()],
       toolLedger: [...this.toolLedger.entries()],
       pendingBrowserActions: [...this.pendingBrowserActions.entries()],
       pendingCronTasks: [...this.pendingCronTasks.entries()],
@@ -410,7 +439,10 @@ export class AgentHost {
   /** 查询已加密保存的 DeepSeek Key 对应余额；不会向渲染层暴露凭据。 */
   GetBalance(): any { this.EnsureModulesReady(); return this.modules.modelProvider.GetBalance(); }
   /** 查询当前凭据可访问的 DeepSeek 模型；不会向渲染层暴露凭据。 */
-  GetModels(): any { this.EnsureModulesReady(); return this.modules.modelProvider.GetModels(); }
+  GetModels(): any { this.EnsureModulesReady(); return this.modules.modelProvider.GetModels('DeepSeek'); }
+
+  /** 返回全部已配置 Provider 的模型目录；不包含 Base URL 之外的私有配置或凭据。 */
+  GetProviderCatalog(): any { this.EnsureModulesReady(); return this.modules.modelProvider.GetProviderCatalog(); }
   /** 返回脱敏的配置状态。 */
   GetStatus(): any { return this.modules.modelProvider.GetStatus(); }
 
@@ -467,24 +499,30 @@ export class AgentHost {
   }
 
   /** 应用或丢弃待确认的简历补丁：接受时经简历写端口落库并释放 Agent 锁。 */
-  ConfirmResumeEdit(confirmationId: string, accepted: boolean): any {
-    return this.modules.interaction.ConfirmResumeEdit(confirmationId, accepted, {
+  async ConfirmResumeEdit(confirmationId: string, accepted: boolean): Promise<any> {
+    const pending = this.pendingEdits.get(confirmationId) as { kind?: string; sessionId?: string; resumeId?: string } | undefined;
+    const result = await this.modules.interaction.ConfirmResumeEdit(confirmationId, accepted, {
       pendingEdits: this.pendingEdits,
       ports: { resumeWrite: this.resumeWritePort },
       ledger: this.CreateToolLedgerPort(),
       emit: (event: unknown) => this.Emit(event),
     });
+    if (result.applied && pending?.kind === 'edit' && pending.sessionId && pending.resumeId) {
+      const current = await this.resumeReadPort.ReadCurrent(pending.resumeId);
+      if (current) {
+        this.sessionResumeBindings.set(pending.sessionId, { resumeId: current.id, ...(current.revision !== undefined ? { revision: current.revision } : {}), boundAt: Date.now() });
+        this.SaveState();
+      }
+    }
+    return result;
   }
 
-  /** 冻结 CronTask 创建参数；投递任务必须绑定当前会话已选择的简历，避免后台运行时缺少授权材料。 */
+  /** 冻结 CronTask 创建参数；简历是可选授权资源，纯岗位搜索和 JD 阅读不得被强制绑定。 */
   private PrepareCronTask(input: unknown, context: { requestId: string; resumeId?: string }): { confirmationId: string; summary: string; scenarioId: 'default' | 'application' } {
     const parsed = CreateCronTaskSchema.parse(input);
-    if (parsed.scenarioId === 'application' && !context.resumeId) {
-      throw Object.assign(new Error('Select a resume before creating an unattended application CronTask.'), { code: 'VALIDATION_ERROR' });
-    }
     const confirmationId = `cron-confirmation-${randomUUID()}`;
     const summary = parsed.scenarioId === 'application'
-      ? '系统可在计划时间唤醒或后台启动应用。该计划将在整个周期内以无人值守完全信任模式复用独立浏览器登录，可能填写表单、发送招聘消息并提交投递；执行时不会逐项确认。第一版只能读取所选简历内容，不携带临时附件；网页强制上传文件时会标记为需要你接管。'
+      ? `系统可在计划时间唤醒或后台启动应用。确认创建即授权此任务在整个周期内以无人值守完全信任模式操作个人浏览器，可能搜索和读取岗位、填写表单、发送招聘消息并提交投递；执行时不会逐项确认。授权只属于此任务，任务结束、删除或手动撤销后失效；浏览器未连接或未登录时任务仍会暂停。${context.resumeId ? '任务可通过 ReadResume 读取创建前已绑定的简历，但不携带临时附件；网页强制上传文件时会标记为需要你接管。' : '当前未绑定简历；岗位搜索和 JD 阅读可以继续，任何需要简历内容、文件或投递状态写入的步骤都必须停止并请你接管。'}`
       : '系统可在计划时间唤醒或后台启动应用。该计划将在整个周期内以无人值守完全信任模式创建新会话并执行指定消息；执行时不会逐项确认。';
     this.pendingCronTasks.set(confirmationId, { input: parsed, resumeId: context.resumeId, requestId: context.requestId, createdAt: Date.now(), summary });
     this.SaveState();
@@ -502,7 +540,10 @@ export class AgentHost {
     if (!Number.isFinite(pending.createdAt) || Date.now() - pending.createdAt > SessionSnapshotTtlMs) {
       throw Object.assign(new Error('CronTask confirmation expired. Create the schedule again.'), { code: 'VALIDATION_ERROR' });
     }
-    const task = await this.business.CreateCronTask(pending.input, { ...(pending.resumeId ? { resumeId: pending.resumeId } : {}) });
+    const task = await this.business.CreateCronTask(pending.input, {
+      ...(pending.resumeId ? { resumeId: pending.resumeId } : {}),
+      ...(pending.input.scenarioId === 'application' ? { browserAuthorized: true } : {}),
+    });
     try {
       await this.onCronScheduleChanged();
     } catch (error) {
@@ -561,7 +602,7 @@ export class AgentHost {
       startedAt: Date.now(),
     });
     try {
-      const timeoutMs = pending.proposal.toolName === 'BrowserFillForm' ? 60_000 : 30_000;
+      const timeoutMs = pending.proposal.toolName === 'BrowserFillForm' ? 120_000 : 30_000;
       const outcome = await this.browserRuntime.Execute({ proposal: pending.proposal, signal: execution.signal, deadline: Date.now() + timeoutMs });
       if (execution.signal?.aborted) throw Object.assign(new Error('Browser action completion arrived after cancellation.'), { code: 'CANCELLED' });
       if (outcome.status === 'status_unknown') {
@@ -607,14 +648,46 @@ export class AgentHost {
     });
   }
 
-  /** 返回浏览器运行时状态；Renderer 看不到可执行文件和 Profile 物理路径。 */
-  GetBrowserRuntimeStatus(): any { return this.browserRuntime.GetStatus(); }
+  private async SyncBrowserEngine(force = false): Promise<void> {
+    // 设置页可能在投递 Run 期间刷新状态；此时只保存偏好，不得关闭正在使用的浏览器。
+    if (this.browserRunId && !force) return;
+    const settings = (await this.business?.GetStoredSettings?.()) ?? {};
+    const engine = settings.browserEngine === 'electron' || settings.browserEngine === 'chrome' || settings.browserEngine === 'edge'
+      ? settings.browserEngine
+      : this.defaultBrowserEngine;
+    await this.browserRuntime.SetEngine?.(engine);
+  }
+
+  /** 返回浏览器运行时状态；显式探测会做只读握手，Renderer 始终看不到本地物理路径。 */
+  async GetBrowserRuntimeStatus(probeConnection: unknown = false): Promise<any> {
+    if (typeof probeConnection !== 'boolean') throw Object.assign(new Error('probeConnection must be a boolean.'), { code: 'VALIDATION_ERROR' });
+    await this.SyncBrowserEngine();
+    return this.browserRuntime.GetStatus(probeConnection);
+  }
+
+  /** 返回投递 CronTask 的持久授权状态；不暴露任务消息、浏览器端点或本地路径。 */
+  async GetCronBrowserAccess(): Promise<any> {
+    const result = await this.business.ReadCronTask({});
+    const tasks = (Array.isArray(result?.tasks) ? result.tasks : [])
+      .filter((task: any) => task?.scenarioId === 'application' && task?.state === 'active')
+      .map((task: any) => ({ id: String(task.id), title: String(task.title).slice(0, 200), nextRunAt: typeof task.nextRunAt === 'number' ? task.nextRunAt : null, browserAuthorized: task.browserAuthorized === true }));
+    return { tasks };
+  }
+
+  async RevokeCronBrowserAccess(input: unknown): Promise<any> {
+    if (this.IsBusy()) throw Object.assign(new Error('Stop the current Agent run before revoking CronTask browser access.'), { code: 'AGENT_BUSY' });
+    if (!input || typeof input !== 'object' || Array.isArray(input)) throw Object.assign(new Error('Cron browser access is invalid.'), { code: 'VALIDATION_ERROR' });
+    const cronTaskId = RequireString((input as any).cronTaskId, 'cronTaskId', 200);
+    const task = await this.business.RevokeCronTaskBrowserAuthorization(cronTaskId);
+    return { revoked: task?.browserAuthorized !== true, task };
+  }
 
   /** 清除 Avery 独立浏览器身份；调用方必须先展示破坏性确认。 */
   async ClearBrowserProfile(): Promise<any> {
     if (this.IsBusy()) throw Object.assign(new Error('Stop the current Agent run before clearing the browser profile.'), { code: 'AGENT_BUSY' });
     this.browserRunId = 'maintenance:clear';
     try {
+      await this.SyncBrowserEngine(true);
       this.pendingBrowserActions.clear();
       this.SaveState();
       return await this.browserRuntime.ClearProfile();
@@ -679,24 +752,24 @@ export class AgentHost {
   }
 
   /** 解析已保存模型：无效值回退当前 Provider 默认；网络不可用时保留本地结构校验后的选择。 */
-  private async ResolvePersistedSessionModel(value: unknown, status: any): Promise<string> {
-    const fallback = this.modules.modelProvider.ResolveRequestModel(undefined);
+  private async ResolvePersistedSessionModel(value: unknown, provider: SupportedProvider, status: any): Promise<string> {
+    const fallback = this.modules.modelProvider.ResolveRequestModel(undefined, provider);
     if (typeof value !== 'string' || !value.trim()) return fallback;
     let model: string;
     try {
-      model = this.modules.modelProvider.ResolveRequestModel(value.trim());
+      model = this.modules.modelProvider.ResolveRequestModel(value.trim(), provider);
     } catch {
       return fallback;
     }
-    if (!status.configured || status.provider !== 'DeepSeek') return model;
+    if (!status.configured || provider !== 'DeepSeek') return model;
     try {
-      const result = await this.modules.modelProvider.GetModels();
+      const result = await this.modules.modelProvider.GetModels(provider);
       const models = Array.isArray(result?.models) ? result.models.filter((item: unknown): item is string => typeof item === 'string') : [];
       if (!models.length || models.includes(model)) return model;
       if (models.includes(fallback)) return fallback;
       const providerFallback = models.find((item: string) => {
         try {
-          return this.modules.modelProvider.ResolveRequestModel(item) === item;
+          return this.modules.modelProvider.ResolveRequestModel(item, provider) === item;
         } catch {
           return false;
         }
@@ -711,13 +784,16 @@ export class AgentHost {
   /** 恢复并校验会话偏好，模型回退后立即写回会话快照，避免下次重载重复命中失效值。 */
   private async RestoreSessionAssistantState(sessionId: string): Promise<SessionAssistantState> {
     const stored = await this.ReadPersistedSessionAssistantState(sessionId);
-    const status = await this.modules.modelProvider.GetStatus();
+    const activeStatus = await this.modules.modelProvider.GetStatus();
+    const provider = stored?.provider ?? NormalizeProvider(activeStatus.provider);
+    const status = await this.modules.modelProvider.GetStatus(provider);
     const next: SessionAssistantState = {
-      model: await this.ResolvePersistedSessionModel(stored?.model, status),
+      provider,
+      model: await this.ResolvePersistedSessionModel(stored?.model, provider, status),
       confirmationMode: stored?.confirmationMode ?? 'always_confirm',
       reasoningEffort: stored?.reasoningEffort ?? 'medium',
     };
-    if (!stored || stored.model !== next.model || stored.confirmationMode !== next.confirmationMode || stored.reasoningEffort !== next.reasoningEffort) {
+    if (!stored || stored.provider !== next.provider || stored.model !== next.model || stored.confirmationMode !== next.confirmationMode || stored.reasoningEffort !== next.reasoningEffort) {
       await this.PersistSessionAssistantState(sessionId, next);
     }
     return next;
@@ -765,7 +841,7 @@ export class AgentHost {
   async GetSessionAssistantState(sessionId: string): Promise<any> {
     const normalizedSessionId = RequireString(sessionId, 'sessionId', 200);
     const assistantState = await this.RestoreSessionAssistantState(normalizedSessionId);
-    const { contextLimit, threshold } = this.modules.modelProvider.GetRuntimeLimits();
+    const { contextLimit, threshold } = this.modules.modelProvider.GetRuntimeLimits(assistantState.provider);
     const storedUsage = this.sessionUsage.get(normalizedSessionId) ?? null;
     const project = this.projectEnvironments.get(normalizedSessionId) ?? null;
     return {
@@ -784,6 +860,7 @@ export class AgentHost {
       project: project ? { projectId: project.projectId, name: project.name } : null,
       scenarioId: this.sessionScenarios.get(normalizedSessionId) ?? 'default',
       model: assistantState.model,
+      provider: assistantState.provider,
       confirmationMode: assistantState.confirmationMode,
       reasoningEffort: assistantState.reasoningEffort,
     };
@@ -836,13 +913,29 @@ export class AgentHost {
   }
 
   /** 构建不可变的 Tool Array 快照：内置工具固定前缀、MCP 预留末尾；不保存 MCP 凭据。 */
+  private HashToolPolicy(tools: any[]): string {
+    const policy = tools.map((tool: any) => ({
+      definition: tool.definition,
+      timeoutMs: tool.timeoutMs,
+      isConcurrencySafe: tool.isConcurrencySafe,
+      sideEffect: tool.sideEffect,
+      risk: tool.risk,
+      confirmation: tool.confirmation,
+      idempotency: tool.idempotency,
+      limits: tool.limits,
+      allowedScenarios: tool.allowedScenarios,
+      requiredResources: tool.requiredResources,
+    }));
+    return createHash('sha256').update(JSON.stringify(policy)).digest('hex');
+  }
+
   private BuildToolSnapshot(sessionId: string, sessionRevision: number, scenarioId: 'default' | 'application'): any {
     const registeredTools = this.modules.tools.GetToolDefinitions(scenarioId);
     const builtInTools = this.scenarioOverride
       ? registeredTools.filter((tool: any) => this.scenarioOverride?.toolNames.includes(tool.definition.function.name))
       : registeredTools;
     const orderedToolNames = builtInTools.map((tool: any) => tool.definition.function.name);
-    const toolsetHash = createHash('sha256').update(JSON.stringify(builtInTools.map((tool: any) => tool.definition))).digest('hex');
+    const toolsetHash = this.HashToolPolicy(builtInTools);
     return { snapshotId: randomUUID(), sessionId, sessionRevision, scenarioId, builtInTools, mcpTools: [], orderedToolNames, toolsetHash };
   }
 
@@ -920,7 +1013,7 @@ export class AgentHost {
   private HasCompleteToolBundle(tool: any, instructions: any): boolean {
     if (!Array.isArray(tool?.builtInTools) || !Array.isArray(tool?.orderedToolNames) || typeof tool?.toolsetHash !== 'string') return false;
     if (typeof instructions?.compiled !== 'string' || typeof instructions?.manifest?.compiledHash !== 'string') return false;
-    const definitionsHash = createHash('sha256').update(JSON.stringify(tool.builtInTools.map((item: any) => item?.definition))).digest('hex');
+    const definitionsHash = this.HashToolPolicy(tool.builtInTools);
     const orderedNames = tool.builtInTools.map((item: any) => item?.definition?.function?.name);
     const promptHash = createHash('sha256').update(instructions.compiled).digest('hex');
     return definitionsHash === tool.toolsetHash
@@ -1023,7 +1116,10 @@ export class AgentHost {
     this.scheduledRequestIds.add(requestId);
     const output = { content: '', thinkingContent: '', needsAttention: false };
     this.scheduledOutput.set(requestId, output);
-    await this.browserRuntime.SetUnattended?.(true);
+    await this.browserRuntime.SetUnattended?.(true, {
+      cronTaskId: typeof input?.cronTaskId === 'string' ? input.cronTaskId : undefined,
+      browserAuthorized: input?.browserAuthorized === true,
+    });
     try {
       const result = await this.Send({ ...input, confirmationMode: 'fully_trusted', attachments: [], projectId: undefined });
       return { ...result, ...output };
@@ -1051,18 +1147,22 @@ export class AgentHost {
     const runScenario = unattended ? { ...scenario, toolNames: scenario.toolNames.filter((name) => !cronToolNames.has(name)) } : scenario;
     if (scenarioId === 'application' && this.browserRunId) throw Object.assign(new Error('Another browser Agent run is already active.'), { code: 'AGENT_BUSY' });
     if (scenarioId === 'application') {
+      await this.SyncBrowserEngine();
       this.browserRunId = requestId;
       // 页面元素引用不得跨 Run 复用；用户可能在两次发送之间接管可见浏览器并改变 DOM。
       this.browserRuntime.ResetPageReferences();
     }
     try {
-    const status = await this.modules.modelProvider.GetStatus();
-    if (!status.configured) throw new Error('API Key is not configured.');
     const restoredAssistantState = await this.RestoreSessionAssistantState(sessionId);
+    const provider = NormalizeProvider(input?.provider, restoredAssistantState.provider);
+    const status = await this.modules.modelProvider.GetStatus(provider);
+    if (!status.configured) throw new Error(`${provider} API Key is not configured.`);
     const hasRequestedModel = input?.model !== undefined;
     const model = hasRequestedModel
-      ? this.modules.modelProvider.ResolveRequestModel(input.model)
-      : restoredAssistantState.model;
+      ? this.modules.modelProvider.ResolveRequestModel(input.model, provider)
+      : provider === restoredAssistantState.provider
+        ? restoredAssistantState.model
+        : this.modules.modelProvider.ResolveRequestModel(undefined, provider);
     if (this.controllers.has(requestId)) throw new Error('The request is already running.');
     const confirmationMode = input?.confirmationMode === undefined
       ? restoredAssistantState.confirmationMode
@@ -1070,22 +1170,34 @@ export class AgentHost {
     const reasoningEffort = input?.reasoningEffort === undefined
       ? restoredAssistantState.reasoningEffort
       : NormalizeReasoningEffort(input.reasoningEffort);
-    const assistantStateChanged = model !== restoredAssistantState.model || confirmationMode !== restoredAssistantState.confirmationMode || reasoningEffort !== restoredAssistantState.reasoningEffort;
-    this.sessionAssistantStates.set(sessionId, { model, confirmationMode, reasoningEffort });
+    const assistantStateChanged = provider !== restoredAssistantState.provider || model !== restoredAssistantState.model || confirmationMode !== restoredAssistantState.confirmationMode || reasoningEffort !== restoredAssistantState.reasoningEffort;
+    this.sessionAssistantStates.set(sessionId, { provider, model, confirmationMode, reasoningEffort });
     const attachments = Array.isArray(input?.attachments) ? input.attachments.slice(0, 10).map((attachment: any) => ({
       name: String(attachment?.name ?? '').slice(0, 200), path: String(attachment?.path ?? '').slice(0, 1000),
     })).filter((attachment: any) => attachment.name && attachment.path) : [];
-    const resumeId = typeof input?.resumeId === 'string' && input.resumeId ? input.resumeId.slice(0, 200) : '';
+    // Renderer 选中的简历不再自动注入或绑定；只有受信 Cron 入口可携带冻结的简历授权范围。
+    const authorizedResumeId = unattended && typeof input?.resumeId === 'string' && input.resumeId ? input.resumeId.slice(0, 200) : '';
     const projectId = typeof input?.projectId === 'string' ? input.projectId.slice(0, 200) : '';
     // 快照可能因 TTL 刷新并追加 Skill reset；必须先完成刷新，再读取本次请求历史。
     const snapshots = await this.LoadOrCreateSnapshots(sessionId, scenarioId);
     this.EnsureModuleSnapshotCompatible(snapshots.module);
-    if (assistantStateChanged) await this.PersistSessionAssistantState(sessionId, { model, confirmationMode, reasoningEffort });
+    if (assistantStateChanged) await this.PersistSessionAssistantState(sessionId, { provider, model, confirmationMode, reasoningEffort });
     const projectRoot = await this.BindProjectEnvironment(sessionId, projectId);
     const profiles = (await this.business?.GetProfiles?.())?.items ?? [];
-    const resumeSnapshot = resumeId ? (await this.resumeReadPort.ReadCurrent(resumeId)) ?? null : null;
-    const resumeEditing = resumeId ? this.resumePort.IsUserEditing(resumeId) : false;
-    const runtimeContext = { resumeEditing, resume: resumeSnapshot, profiles, attachments, projectId };
+    const persistedBinding = this.sessionResumeBindings.get(sessionId);
+    let boundResumeSnapshot = persistedBinding ? await this.resumeReadPort.ReadCurrent(persistedBinding.resumeId) : null;
+    if (persistedBinding && (!boundResumeSnapshot || boundResumeSnapshot.revision !== persistedBinding.revision)) {
+      this.sessionResumeBindings.delete(sessionId);
+      boundResumeSnapshot = null;
+    }
+    let resumeEditing = boundResumeSnapshot ? this.resumePort.IsUserEditing(boundResumeSnapshot.id) : false;
+    const runtimeContext = {
+      resumeEditing,
+      boundResume: boundResumeSnapshot ? { id: boundResumeSnapshot.id, name: boundResumeSnapshot.name, revision: boundResumeSnapshot.revision } : null,
+      profiles,
+      attachments,
+      projectId,
+    };
     const history = this.histories.get(sessionId) || [];
     const sessionLoadedSkills = this.loadedSkills.get(sessionId) ?? new Map<string, string>();
     const sessionLoadedResources = this.loadedSkillResources.get(sessionId) ?? new Set<string>();
@@ -1099,7 +1211,7 @@ export class AgentHost {
       sessionLoadedResources.clear();
       loadedResourcesBeforeRun.forEach((resource) => sessionLoadedResources.add(resource));
     };
-    const messagesBeforeUser: AgentMessage[] = history.some((message: AgentMessage) => message.metadata?.kind === 'skill_index' && message.metadata.snapshotId === snapshots.skills.snapshotId)
+    const skillIndexMessages: AgentMessage[] = history.some((message: AgentMessage) => message.metadata?.kind === 'skill_index' && message.metadata.snapshotId === snapshots.skills.snapshotId)
       ? []
       : [this.skillRegistry.CreateIndexMessage(snapshots.skills)];
     const explicitSkill = this.skillRegistry.MatchExplicitCommand(userContent, snapshots.skills);
@@ -1110,12 +1222,16 @@ export class AgentHost {
       ? [this.skillRegistry.Load(snapshots.skills, scenarioId, { skillId: explicitSkill.manifest.id }).message]
       : [];
     const snapshot = this.modules.contextBuilder.CreateDynamicSnapshot(sessionId, runtimeContext);
-    const baseRequestHistory = snapshot.changed ? [...history, snapshot.message] : history;
-    const usesVisionInput = SupportsVisionInput(status.provider, model);
+    // 动态快照是本次 Run 新加入的消息，不应伪装成既有历史，否则 append-only Trace 无法识别其真实加入时刻。
+    const messagesBeforeUser: AgentMessage[] = [
+      ...(snapshot.changed && snapshot.message ? [snapshot.message] : []),
+      ...skillIndexMessages,
+    ];
+    const usesVisionInput = SupportsVisionInput(provider, model);
     const resolveAttachment = (uri: string) => this.business?.ResolveAttachmentUri?.(uri) ?? Promise.resolve(null);
     const requestHistory: AgentMessage[] = usesVisionInput
-      ? await Promise.all(baseRequestHistory.map((message: AgentMessage) => HydrateVisionMessage(message, resolveAttachment)))
-      : baseRequestHistory;
+      ? await Promise.all(history.map((message: AgentMessage) => HydrateVisionMessage(message, resolveAttachment)))
+      : history;
     const userMessage = usesVisionInput
       ? await CreateVisionUserMessage(userContent, attachments, resolveAttachment)
       : { role: 'user' as const, content: userContent };
@@ -1130,7 +1246,7 @@ export class AgentHost {
     if (missingScenarioTools.length) {
       throw new Error(`Active tool registry does not match the ${scenario.id} scenario: missing=${missingScenarioTools.join(',') || 'none'}.`);
     }
-    const { contextLimit, threshold } = this.modules.modelProvider.GetRuntimeLimits();
+    const { contextLimit, threshold } = this.modules.modelProvider.GetRuntimeLimits(provider);
     const runSnapshot = CreateRunSnapshot({
       snapshotId: randomUUID(),
       sessionId,
@@ -1141,12 +1257,14 @@ export class AgentHost {
       dataScope: {
         ...(projectId ? { projectId } : {}),
         ...(projectRoot ? { projectRoot } : {}),
-        ...(resumeId ? { resumeId } : {}),
+        resumeLibrary: !unattended,
+        ...(authorizedResumeId ? { resumeId: authorizedResumeId } : {}),
         attachmentPaths: attachments.map((attachment: any) => attachment.path),
       },
       provider: {
         moduleName: this.modules.modelProvider.name,
         moduleVersion: this.modules.modelProvider.version,
+        provider,
         model,
         capabilities: [...this.modules.modelProvider.capabilities],
         contextLimit,
@@ -1162,25 +1280,48 @@ export class AgentHost {
     }
     this.SaveState();
     const contextContent = this.modules.contextBuilder.SerializeSessionContext(snapshots.session);
-    const systemPrompt = ScrubTraceContent(contextContent);
-    const tracedUserMessage = ScrubTraceContent(userContent);
-    this.modules.observability.AppendTraceEvent(requestId, 'system_prompt', { content: systemPrompt }, EstimateTraceTokens(systemPrompt));
-    this.modules.observability.AppendTraceEvent(requestId, 'user_message', { content: tracedUserMessage }, EstimateTraceTokens(tracedUserMessage));
     const sessionTasks = this.tasks.get(sessionId) ?? new Map();
     this.tasks.set(sessionId, sessionTasks);
-    const toolContext = {
+    const scopedResumeRead = {
+      List: async () => {
+        const resumes = await this.resumeReadPort.List();
+        if (!unattended) return resumes;
+        return authorizedResumeId ? resumes.filter((resume) => resume.id === authorizedResumeId) : [];
+      },
+      ReadCurrent: async (requestedResumeId: string) => {
+        if (unattended && requestedResumeId !== authorizedResumeId) return null;
+        return this.resumeReadPort.ReadCurrent(requestedResumeId);
+      },
+    };
+    let toolContext: any;
+    const BindResume = async (resume: any | null) => {
+      boundResumeSnapshot = resume;
+      resumeEditing = resume ? this.resumePort.IsUserEditing(resume.id) : false;
+      if (resume) {
+        this.sessionResumeBindings.set(sessionId, { resumeId: resume.id, ...(resume.revision !== undefined ? { revision: resume.revision } : {}), boundAt: Date.now() });
+      } else {
+        this.sessionResumeBindings.delete(sessionId);
+      }
+      if (toolContext) {
+        toolContext.boundResume = resume;
+        toolContext.resumeEditing = resumeEditing;
+      }
+      this.SaveState();
+    };
+    toolContext = {
       sessionId,
       requestId,
       confirmationMode,
+      supportsVisionInput: usesVisionInput,
       resumeEditing,
       projectRoot,
       attachments,
       profileSnapshot: profiles,
-      resumeSnapshot,
-      resumeId: resumeId || undefined,
+      boundResume: boundResumeSnapshot,
+      bindResume: BindResume,
       ports: {
         file: this.fileReader,
-        resumeRead: this.resumeReadPort,
+        resumeRead: scopedResumeRead,
         resumeWrite: this.resumeWritePort,
         profileWrite: {
           Save: async ({ profiles: nextProfiles }: any) => {
@@ -1194,7 +1335,7 @@ export class AgentHost {
           Load: async (skillInput: { skillId: string; resource?: string }) => this.skillRegistry.Load(snapshots.skills, scenarioId, skillInput),
         },
         ...(!unattended ? { cronTask: {
-          PrepareCreate: async (cronInput: Record<string, unknown>) => this.PrepareCronTask(cronInput, { requestId, ...(resumeId ? { resumeId } : {}) }),
+          PrepareCreate: async (cronInput: Record<string, unknown>) => this.PrepareCronTask(cronInput, { requestId, ...(toolContext.boundResume?.id ? { resumeId: toolContext.boundResume.id } : {}) }),
           Read: async (cronInput: { cronTaskId?: string; includeRuns?: boolean }) => this.business.ReadCronTask(cronInput),
           Update: async (cronInput: Record<string, unknown>) => {
             const task = await this.business.UpdateCronTask(cronInput);
@@ -1237,6 +1378,7 @@ export class AgentHost {
               truncated: matchedJobs.length > maxRecords || matchedApplications.length > maxRecords,
             };
           },
+          SaveJob: async (trackingInput: Record<string, unknown>) => this.business.SaveTrackedJob(trackingInput),
           Update: async (trackingInput: Record<string, unknown>) => this.business.UpdateApplicationTracking(trackingInput),
         } } : {}),
       },
@@ -1261,10 +1403,12 @@ export class AgentHost {
     try {
       let modelRequestCompleted = false;
       const result = await RunAgentLoop({
-        requestId, sessionId, model: runSnapshot.provider.model, reasoningEffort,
+        requestId, sessionId, provider: runSnapshot.provider.provider, model: runSnapshot.provider.model, reasoningEffort,
         systemContext: contextContent, requestHistory, userContent, userMessage,
         messagesBeforeUser, messagesAfterUser,
         histories: this.histories,
+        // 每个已提交消息都建立状态落盘屏障；取消只中止未提交的后续结果，不能抹掉已接受输入。
+        persistHistory: () => this.SaveState(),
         toolArray: runSnapshot.tools,
         modules: this.modules, toolContext,
         emit: (event: unknown) => this.Emit(event),
@@ -1275,6 +1419,7 @@ export class AgentHost {
           interval: runSnapshot.scenario.id === 'application' ? 10 : 5,
           timeZone: RuntimeTimeZone,
           getLoadedSkillIds: () => [...sessionLoadedSkills.keys()],
+          getBoundResumeName: () => toolContext.boundResume?.name ?? null,
         },
         contextLimit, thresholdPercent: threshold,
         createId: () => randomUUID(),

@@ -39,8 +39,9 @@ export interface ModelProviderModule extends ModuleManifest {
   Configure(input: unknown): Promise<{ configured: boolean; provider: string; model: string }>;
   TestConnection(input: unknown): Promise<{ connected: boolean; provider: string; baseUrl: string }>;
   GetBalance(): Promise<{ available: boolean; balances: Array<{ currency: string; totalBalance: string }> }>;
-  GetModels(): Promise<{ models: string[] }>;
-  GetStatus(): Promise<{
+  GetModels(provider?: string): Promise<{ models: string[] }>;
+  GetProviderCatalog(): Promise<{ providers: Array<{ provider: string; configured: boolean; model: string; models: string[]; baseUrl: string; contextLimit: number; contextLimitMode: 'default' | 'custom'; compressionThreshold: number; thinkingEnabled: boolean }> }>;
+  GetStatus(provider?: string): Promise<{
     configured: boolean;
     provider: string;
     model: string;
@@ -49,9 +50,10 @@ export interface ModelProviderModule extends ModuleManifest {
     contextLimitMode?: 'default' | 'custom';
     compressionThreshold?: number;
   }>;
-  ResolveRequestModel(requestedModel: string | undefined): string;
+  ResolveRequestModel(requestedModel: string | undefined, provider?: string): string;
   StreamCompletion(request: {
     requestId: string;
+    provider: string;
     model: string;
     reasoningEffort: ReasoningEffort;
     history: AgentMessage[];
@@ -63,12 +65,12 @@ export interface ModelProviderModule extends ModuleManifest {
     /** 运行前由 Prompt Compiler 编译的指令；Provider 不再持有业务 System Prompt 所有权。 */
     instructions: CompiledInstructions;
   }): Promise<ModelCompletion>;
-  CreateSummary(model: string, messages: AgentMessage[], onRequest?: (snapshot: ProviderRequestSnapshot) => void): Promise<ModelSummary>;
+  CreateSummary(provider: string, model: string, messages: AgentMessage[], onRequest?: (snapshot: ProviderRequestSnapshot) => void): Promise<ModelSummary>;
   EstimateTokens(value: unknown): number;
   /** 返回上下文长度上限与压缩阈值百分比；供 Kernel 与宿主读取。 */
-  GetRuntimeLimits(): { contextLimit: number; threshold: number };
+  GetRuntimeLimits(provider?: string): { contextLimit: number; threshold: number };
   /** 返回当前 BaseUrl，供连通性等只读展示（不含密钥）。 */
-  BaseUrl(): string;
+  BaseUrl(provider?: string): string;
 }
 
 /** 上下文构建槽：读取业务只读快照并序列化为会话上下文。 */

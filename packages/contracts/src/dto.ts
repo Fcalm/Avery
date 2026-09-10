@@ -1,4 +1,4 @@
-import type { ApplicationStatus, Channel, EmploymentType, ProfileCategory } from './enums';
+import type { ApplicationStatus, Channel, JobSeekingType, ProfileCategory } from './enums';
 
 /** 跨进程实体 DTO：形状与当前 preload / Repository 返回保持一致，作为前端 ViewModel 的稳定数据契约。 */
 
@@ -49,7 +49,7 @@ export interface JobDto {
   city: string;
   salary?: string;
   experience: string;
-  employmentType: EmploymentType;
+  jobSeekingType: JobSeekingType;
   channel: Channel;
   favorite: boolean;
   matchScore?: number;
@@ -107,6 +107,8 @@ export interface SettingsDto {
   compressionThreshold: number;
   onboardingCompleted?: boolean;
   customContext?: string;
+  /** Agent 浏览器内核；Electron 使用专用 Profile，Chrome/Edge 轻量连接用户已登录的 BOSS 页面。 */
+  browserEngine?: 'electron' | 'chrome' | 'edge';
 }
 
 /** 附件导入结果 DTO；只返回虚拟 URI，绝不暴露源文件物理路径。 */

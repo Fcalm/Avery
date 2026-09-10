@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { ModelDelta, ToolCallFragment } from '../../../packages/agent-sdk/src/index';
+import type { AgentMessage, ModelDelta, ToolCallFragment } from '../../../packages/agent-sdk/src/index';
 import { RunAgentLoop } from '../../../packages/agent-core/src/kernel';
 import { CreateKernelHarness, CreateRegisteredTool } from './test-helpers';
 
@@ -149,7 +149,7 @@ describe('agent-core RunAgentLoop', () => {
     expect(harness.events).toHaveLength(eventCount);
   });
 
-  it('Provider 忽略取消并迟到返回写工具 completion 时不得记录 Usage、历史或执行工具', async () => {
+  it('Provider 忽略取消并迟到返回写工具 completion 时保留已接受输入，但不得记录迟到结果或执行工具', async () => {
     const controller = new AbortController();
     const update = CreateRegisteredTool('UpdateProfile', { isConcurrencySafe: false, sideEffect: 'local_write' });
     const execute = vi.fn(async (call: ToolCallFragment) => ({ role: 'tool' as const, tool_call_id: call.id, content: '{"ok":true}' }));
@@ -190,9 +190,43 @@ describe('agent-core RunAgentLoop', () => {
     expect(harness.usages).toEqual([]);
     expect(execute).not.toHaveBeenCalled();
     expect(result.transcript.some((message) => message.role === 'assistant' || message.role === 'tool')).toBe(false);
+    expect(harness.input.histories.get('session-1')).toEqual(expect.arrayContaining([expect.objectContaining({ role: 'user', content: 'test request' })]));
+    expect(harness.input.histories.get('session-1')?.some((message) => message.role === 'assistant' || message.role === 'tool')).toBe(false);
+    expect(harness.input.persistHistory).toHaveBeenCalled();
     expect(harness.events.map((event) => event.type)).toEqual(['cancelled']);
     expect(harness.trace.finish).toHaveBeenCalledOnce();
     expect(harness.trace.finish).toHaveBeenCalledWith('request-1', 'cancelled', 'Cancelled by user.');
+  });
+
+  it('取消后的后续 Run 恢复已接受输入，且不重复追加 system prompt', async () => {
+    const controller = new AbortController();
+    let markStarted: (() => void) | undefined;
+    const started = new Promise<void>((resolve) => { markStarted = resolve; });
+    const cancelled = CreateKernelHarness({
+      signal: controller.signal,
+      streamCompletion: vi.fn(({ signal }) => new Promise((_, reject) => {
+        markStarted?.();
+        signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
+      })),
+    });
+
+    const running = RunAgentLoop(cancelled.input);
+    await started;
+    controller.abort();
+    await running;
+    const restoredHistory = cancelled.input.histories.get('session-1') ?? [];
+
+    const resumed = CreateKernelHarness({ history: restoredHistory, completions: [{ content: '继续完成', toolCalls: [] }] });
+    resumed.input.userContent = '继续';
+    await RunAgentLoop(resumed.input);
+
+    const appended = resumed.trace.append.mock.calls
+      .filter((call) => call[1] === 'message_appended')
+      .map((call) => (call[2] as { source: string; message: AgentMessage }));
+    expect(appended.filter((event) => event.source === 'system')).toHaveLength(0);
+    expect(appended.filter((event) => event.message.content === 'test request')).toHaveLength(0);
+    expect(appended.filter((event) => event.message.content === '继续')).toHaveLength(1);
+    expect(appended.filter((event) => event.message.content === '继续完成')).toHaveLength(1);
   });
 
   it('多模态用户消息进入 Provider，但历史快照只保留受控附件引用', async () => {
@@ -216,6 +250,24 @@ describe('agent-core RunAgentLoop', () => {
 
     expect(storedUserMessage?.providerContent).toBeUndefined();
     expect(storedUserMessage?.imageAttachments).toEqual([{ uri: 'attachment://image/test.png', mimeType: 'image/png', detail: 'auto' }]);
+  });
+
+  it('上下文压缩产生的摘要消息会按实际加入时刻记录一次', async () => {
+    const harness = CreateKernelHarness({
+      history: [{ role: 'user', content: 'old turn' }, { role: 'assistant', content: 'old answer' }],
+      shouldCompact: true,
+      completions: [{ content: 'current answer', toolCalls: [] }],
+    });
+
+    await RunAgentLoop(harness.input);
+
+    const appended = harness.trace.append.mock.calls
+      .filter((call) => call[1] === 'message_appended')
+      .map((call) => call[2] as { apiRequestIndex: number; source: string; message: AgentMessage });
+    const summaries = appended.filter(({ message }) => message.content.includes('<summary summary_id='));
+    expect(summaries).toHaveLength(1);
+    expect(summaries[0]).toMatchObject({ apiRequestIndex: 2, source: 'runtime' });
+    expect(appended.find(({ message }) => message.content === 'test request')).toMatchObject({ apiRequestIndex: 2, source: 'user' });
   });
 
   it('压缩连续失败时熔断并记录 circuit_open，不留下 running Trace', async () => {
@@ -412,10 +464,11 @@ describe('agent-core RunAgentLoop', () => {
     const tool = CreateRegisteredTool('BrowserFillForm', { sideEffect: 'external_action', isConcurrencySafe: false });
     const secretName = '张三-敏感姓名';
     const secretEmail = 'private@example.com';
+    const secretDecision = '中共党员-敏感选择';
     const harness = CreateKernelHarness({
       tools: [tool],
       completions: [
-        { content: '', toolCalls: [{ id: 'fill-form-1', type: 'function', function: { name: 'BrowserFillForm', arguments: JSON.stringify({ pageRevision: 2, fields: [{ ref: '@e1', text: secretName }, { ref: '@e2', text: secretEmail }] }) } }] },
+        { content: '', toolCalls: [{ id: 'fill-form-1', type: 'function', function: { name: 'BrowserFillForm', arguments: JSON.stringify({ pageRevision: 2, fields: [{ ref: '@e1', text: secretName }, { ref: '@e2', text: secretEmail }], decisions: [{ field: 'politicalStatus', value: secretDecision }] }) } }] },
         { content: 'done', toolCalls: [] },
       ],
     });
@@ -428,9 +481,10 @@ describe('agent-core RunAgentLoop', () => {
     expect(serialized).toContain('[REDACTED_BROWSER_INPUT]');
     expect(serialized).not.toContain(secretName);
     expect(serialized).not.toContain(secretEmail);
+    expect(serialized).not.toContain(secretDecision);
   });
 
-  it('按真实 API 请求逐条记录消息，并保留单条 assistant 中的多个 tool_calls', async () => {
+  it('消息按加入 transcript 的时刻只记录一次，API 请求单独保留完整输入', async () => {
     const tools = [CreateRegisteredTool('ReadA'), CreateRegisteredTool('ReadB')];
     const harness = CreateKernelHarness({
       tools,
@@ -447,16 +501,44 @@ describe('agent-core RunAgentLoop', () => {
     const traceEvents = harness.trace.append.mock.calls.map((call) => ({ type: call[1], payload: call[2] as Record<string, unknown> }));
     const requests = traceEvents.filter((event) => event.type === 'provider_request');
     expect(requests.map((event) => event.payload.apiRequestIndex)).toEqual([1, 2]);
-    const messages = traceEvents.filter((event) => event.type === 'message').map((event) => event.payload);
-    const firstInputs = messages.filter((payload) => payload.apiRequestIndex === 1 && payload.direction === 'input');
-    expect(firstInputs.map((payload) => (payload.message as { role: string }).role)).toEqual(['system', 'system', 'user', 'user']);
-    expect(firstInputs.map((payload) => (payload.message as { content: string }).content)).toContain('compiled system prompt');
-    expect(firstInputs.map((payload) => (payload.message as { content: string }).content)).toContain('session snapshot');
-    expect(firstInputs.some((payload) => (payload.message as { content: string }).content.includes('<runtime-reminder>'))).toBe(true);
-    const assistantToolMessage = messages.find((payload) => payload.apiRequestIndex === 1 && payload.direction === 'output');
+    const firstRequestMessages = requests[0].payload.messages as Array<{ role: string; content: string }>;
+    expect(firstRequestMessages.map((message) => message.role)).toEqual(['system', 'system', 'user', 'user']);
+    expect(firstRequestMessages.map((message) => message.content)).toContain('compiled system prompt');
+    expect(firstRequestMessages.map((message) => message.content)).toContain('session snapshot');
+
+    const messages = traceEvents.filter((event) => event.type === 'message_appended').map((event) => event.payload);
+    expect(traceEvents.some((event) => event.type === 'message')).toBe(false);
+    expect(messages.map((payload) => (payload.message as { role: string }).role)).toEqual(['system', 'system', 'user', 'user', 'assistant', 'tool', 'tool', 'assistant']);
+    expect(messages.filter((payload) => (payload.message as { content: string }).content === 'compiled system prompt')).toHaveLength(1);
+    expect(messages.filter((payload) => (payload.message as { content: string }).content === 'test request')).toHaveLength(1);
+    expect(messages.filter((payload) => (payload.message as { content: string }).content === 'session snapshot')).toHaveLength(1);
+    expect(messages.some((payload) => (payload.message as { content: string }).content.includes('<runtime-reminder>'))).toBe(true);
+    expect(new Set(messages.map((payload) => payload.messageId)).size).toBe(messages.length);
+    const assistantToolMessage = messages.find((payload) => (payload.message as { tool_calls?: ToolCallFragment[] }).tool_calls?.length);
     expect((assistantToolMessage?.message as { tool_calls: ToolCallFragment[] }).tool_calls.map((call) => call.id)).toEqual(['call-a', 'call-b']);
-    const toolMessages = messages.filter((payload) => payload.apiRequestIndex === 1 && payload.source === 'tool');
+    const toolMessages = messages.filter((payload) => payload.source === 'tool');
     expect(toolMessages.map((payload) => (payload.message as { tool_call_id: string }).tool_call_id)).toEqual(['call-a', 'call-b']);
+  });
+
+  it('后续 Run 不会把已有会话历史重新追加为轨迹消息', async () => {
+    const harness = CreateKernelHarness({
+      history: [
+        { role: 'user', content: 'previous question' },
+        { role: 'assistant', content: 'previous answer' },
+      ],
+      completions: [{ content: 'current answer', toolCalls: [] }],
+    });
+
+    await RunAgentLoop(harness.input);
+
+    const appended = harness.trace.append.mock.calls
+      .filter((call) => call[1] === 'message_appended')
+      .map((call) => (call[2] as { message: AgentMessage }).message);
+    expect(appended.some((message) => message.content === 'previous question')).toBe(false);
+    expect(appended.some((message) => message.content === 'previous answer')).toBe(false);
+    expect(appended.filter((message) => message.content === 'test request')).toHaveLength(1);
+    expect(appended.filter((message) => message.content === 'current answer')).toHaveLength(1);
+    expect(appended.some((message) => message.role === 'system')).toBe(false);
   });
 
   it('最后一轮返回工具调用时不执行工具并显式暂停', async () => {

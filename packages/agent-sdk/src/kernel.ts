@@ -9,6 +9,8 @@ export interface KernelRunInput {
   sessionId: string;
   /** 本次请求使用的模型。 */
   model: string;
+  /** 本次请求使用的 Provider；与模型一同来自不可变 Run 快照。 */
+  provider: string;
   /** 本次 Run 使用的会话级思考强度；运行中保持不变。 */
   reasoningEffort: ReasoningEffort;
   /** 会话上下文快照序列化后的 system 消息正文（transcript[0]）；业务系统提示由 Run 快照中的 instructions 提供。 */
@@ -23,6 +25,11 @@ export interface KernelRunInput {
   messagesAfterUser?: AgentMessage[];
   /** 会话 Transcript 表：宿主持有的 Map 引用；压缩与落库由 Kernel 更新。 */
   histories: Map<string, AgentMessage[]>;
+  /**
+   * Kernel 每次提交可恢复历史后调用的宿主持久化屏障。
+   * 取消只会阻止尚未提交的 Provider/Tool 结果，不能丢弃已接受的用户输入。
+   */
+  persistHistory: () => void;
   /** 本次请求的工具数组（来自会话 Tool 快照顺序）。 */
   toolArray: RegisteredAgentTool[];
   modules: AgentModules;
@@ -50,6 +57,8 @@ export interface KernelRunInput {
     now?: () => number;
     /** 会话级已加载 Skill 状态；Kernel 在每次提醒边界读取最新值。 */
     getLoadedSkillIds?: () => string[];
+    /** 当前会话绑定简历的展示名称；正文永不进入状态栏。 */
+    getBoundResumeName?: () => string | null;
   };
 }
 

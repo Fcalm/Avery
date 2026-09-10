@@ -54,7 +54,11 @@ describe('AgentSkillRegistry', () => {
   it('投递场景不披露默认场景 Skill', async () => {
     const snapshot = await registry.BuildSnapshot('session-2', 1, 'application');
 
-    expect(snapshot.skills.map((skill) => skill.manifest.id)).toEqual(['boss-browser-control', 'job-application', 'job-discovery']);
+    expect(snapshot.skills.map((skill) => skill.manifest.id)).toEqual(['boss-deliver-workflow', 'company-career-form', 'job-application', 'job-discovery']);
+    expect(registry.CreateIndexMessage(snapshot).content).toContain('boss-deliver-workflow');
+    expect(registry.Load(snapshot, 'application', { skillId: 'boss-deliver-workflow' }).message.content).toContain('# Boss直聘 Delivery Workflow');
+    expect(registry.CreateIndexMessage(snapshot).content).toContain('BrowserFillForm and BrowserValidateForm');
+    expect(registry.Load(snapshot, 'application', { skillId: 'company-career-form' }).message.content).toContain('BrowserFillForm → continue until done → BrowserValidateForm');
     expect(() => registry.Load(snapshot, 'application', { skillId: 'resume-tailoring' })).toThrow(/not available/i);
   });
 });

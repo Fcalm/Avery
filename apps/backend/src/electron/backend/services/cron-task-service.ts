@@ -2,7 +2,7 @@
 export class CronTaskService {
   constructor(private readonly repository: any, private readonly syncWake: (nextRunAt: number | null) => Promise<unknown> | unknown = () => undefined) {}
 
-  async Create(input: unknown, resourceContext?: { resumeId?: string }): Promise<any> { const task = this.repository.Create(input, resourceContext); await this.Sync(); return task; }
+  async Create(input: unknown, resourceContext?: { resumeId?: string; browserAuthorized?: boolean }): Promise<any> { const task = this.repository.Create(input, resourceContext); await this.Sync(); return task; }
   Read(input: { cronTaskId?: string; includeRuns?: boolean } = {}): any {
     if (input.cronTaskId) {
       const task = this.repository.Read(input.cronTaskId);
@@ -13,6 +13,7 @@ export class CronTaskService {
   }
   async Update(input: unknown, expectedRevision?: number): Promise<any> { const task = this.repository.Update(input, expectedRevision); await this.Sync(); return task; }
   async Delete(id: string): Promise<any> { const result = this.repository.Delete(id); await this.Sync(); return result; }
+  RevokeBrowserAuthorization(id: string): any { return this.repository.RevokeBrowserAuthorization(id); }
   ClaimDue(now?: number): any[] { return this.repository.ClaimDue(now); }
   AttachConversation(runId: string, conversationId: string): void { this.repository.AttachConversation(runId, conversationId); }
   FinishRun(runId: string, state: string, reason?: string): any { return this.repository.FinishRun(runId, state, reason); }

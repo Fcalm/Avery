@@ -276,6 +276,19 @@ export class BusinessStore {
   SetJobFavorite(id: string, favorite: boolean, expectedRevision?: number): any { return this.jobService.SetFavorite(id, favorite, expectedRevision); }
   /** 逻辑删除岗位。 */
   DeleteJob(id: string): any { return this.jobService.Delete(id); }
+  /** Agent 岗位保存：只写岗位库，不创建投递记录，也不依赖简历。 */
+  SaveTrackedJob(input: any): any {
+    if (!input || typeof input !== 'object') throw new Error('Job tracking input is invalid.');
+    const existingJob = this.jobs.ListAll().find((item: any) => item.id === input.jobId);
+    const savedJob = this.jobService.Upsert({
+      ...(existingJob ?? {}), id: input.jobId, company: input.company, title: input.title,
+      city: input.city ?? existingJob?.city ?? '', salary: input.salary ?? existingJob?.salary,
+      experience: input.experience ?? existingJob?.experience ?? '', jobSeekingType: input.jobSeekingType ?? input.employmentType ?? existingJob?.jobSeekingType ?? 'social_recruitment',
+      channel: input.channel ?? existingJob?.channel ?? 'company_website', favorite: input.favorite ?? existingJob?.favorite ?? false,
+      url: input.url, jd: input.jd ?? existingJob?.jd ?? '', matchScore: input.matchScore ?? existingJob?.matchScore,
+    }, existingJob?.revision);
+    return { jobId: savedJob.id, jobRevision: savedJob.revision };
+  }
   /** 创建或编辑投递；透传期望版本供外部修改冲突检测。 */
   UpsertApplication(application: any, expectedRevision?: number): any { return this.applicationService.Upsert(application, expectedRevision); }
   /** 推进投递状态并记录迁移事件；透传期望版本供外部修改冲突检测。 */
@@ -288,7 +301,7 @@ export class BusinessStore {
     const run = this.db.transaction(() => {
       const job = {
         id: input.jobId, company: input.company, title: input.title, city: input.city ?? '', experience: input.experience ?? '',
-        employmentType: input.employmentType ?? 'full_time', channel: input.channel ?? 'company_website', favorite: false,
+        jobSeekingType: input.jobSeekingType ?? input.employmentType ?? 'social_recruitment', channel: input.channel ?? 'company_website', favorite: false,
         url: input.url, jd: input.jd ?? '',
       };
       const existingJob = this.jobs.ListAll().find((item: any) => item.id === input.jobId);
@@ -303,13 +316,15 @@ export class BusinessStore {
     return run();
   }
   /** 创建已由交互 Harness 确认的定时任务。 */
-  CreateCronTask(input: unknown, resourceContext?: { resumeId?: string }): any { return this.cronTaskService.Create(input, resourceContext); }
+  CreateCronTask(input: unknown, resourceContext?: { resumeId?: string; browserAuthorized?: boolean }): any { return this.cronTaskService.Create(input, resourceContext); }
   /** 读取定时任务及可选运行历史。 */
   ReadCronTask(input?: { cronTaskId?: string; includeRuns?: boolean }): any { return this.cronTaskService.Read(input); }
   /** 修改计划内容、调度或暂停状态。 */
   UpdateCronTask(input: unknown, expectedRevision?: number): any { return this.cronTaskService.Update(input, expectedRevision); }
   /** 软删除定时任务，保留已经产生的会话和 CronRun。 */
   DeleteCronTask(id: string): any { return this.cronTaskService.Delete(id); }
+  /** 撤销任务创建确认中授予的个人浏览器权限；重新授权必须新建任务。 */
+  RevokeCronTaskBrowserAuthorization(id: string): any { return this.cronTaskService.RevokeBrowserAuthorization(id); }
   /** 原子领取到期 occurrence；只返回每个任务最近一次可执行项。 */
   ClaimDueCronTasks(now?: number): any { return this.cronTaskService.ClaimDue(now); }
   AttachCronRunConversation(runId: string, conversationId: string): any { this.cronTaskService.AttachConversation(runId, conversationId); return { runId, conversationId }; }

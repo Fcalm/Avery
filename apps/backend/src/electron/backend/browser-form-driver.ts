@@ -1,0 +1,1301 @@
+import {
+  AgentBrowserError,
+  CanonicalFormField,
+  EncodedFormFieldPrefix,
+  FormFieldAliases,
+  FormFields,
+  FormTextSimilarity,
+  NormalizeFormLabel,
+  type FormField,
+  type FormFillOperation,
+} from './browser-form-service';
+
+const DynamicPollIntervalMs = 60;
+const DynamicTransitionDelayMs = 60;
+const DynamicConfirmationDelayMs = 180;
+const OverlayTransitionDelayMs = 240;
+
+export const FormSemanticEnrichmentExpression = (() => {
+  const aliases = [...new Set(FormFieldAliases.flatMap(([, values]) => values))]
+    .sort((left, right) => NormalizeFormLabel(right).length - NormalizeFormLabel(left).length);
+  const fieldAliases = Object.fromEntries(FormFieldAliases);
+  const sectionAnchors = {
+    personal: ['name', 'phone', 'email', 'idNumber', 'gender', 'birthDate'],
+    education: ['school', 'major', 'educationType', 'degreeLevel', 'degree'],
+    work: ['company', 'position', 'department', 'companyNature', 'workDescription'],
+    project: ['projectName', 'projectRole', 'projectDescription', 'projectResponsibility'],
+    preference: ['targetRole', 'targetProvince', 'targetCity', 'salary', 'availability', 'workMode'],
+  };
+  return `(() => {
+    const aliases = ${JSON.stringify(aliases)};
+    const fieldAliases = ${JSON.stringify(fieldAliases)};
+    const sectionAnchors = ${JSON.stringify(sectionAnchors)};
+    const sectionNames = { personal: '个人信息', education: '教育经历', work: '工作经历', project: '项目经历', preference: '求职意向' };
+    const controlSelector = 'input,textarea,select,[contenteditable="true"],[role="combobox"],[aria-haspopup="listbox"]';
+    const normalize = (value) => String(value || '').toLowerCase()
+      .replace(/[\\s_\\-—–·:：()（）[\\]【】*＊]/g, '')
+      .replace(/必填/g, '');
+    const genericNames = new Set(['', '请输入', '请选择', '请填写', 'pleaseenter', 'pleaseselect']);
+    const canonicalLabel = (value) => {
+      const normalized = normalize(value);
+      if (!normalized || normalized.length > 80) return '';
+      for (const alias of aliases) {
+        const normalizedAlias = normalize(alias);
+        if (normalized === normalizedAlias
+          || normalized === normalizedAlias + '请输入'
+          || normalized === normalizedAlias + '请选择'
+          || (normalizedAlias.length >= 2 && normalized.includes(normalizedAlias))) return alias;
+      }
+      return '';
+    };
+    const text = (element) => String(element?.innerText || element?.textContent || '').replace(/\\s+/g, ' ').trim();
+    const sectionLabel = (value) => {
+      const normalized = normalize(value);
+      if (!normalized || normalized.length > 40) return '';
+      const sections = [
+        ['个人信息', ['个人信息', '基本信息', 'personalinformation', 'basicinformation']],
+        ['教育经历', ['教育经历', '教育背景', 'educationexperience', 'educationbackground']],
+        ['工作经历', ['工作经历', '任职经历', '工作经验', 'workexperience', 'employmentexperience']],
+        ['项目经历', ['项目经历', '项目经验', 'projectexperience']],
+        ['求职意向', ['求职意向', '职业意向', '求职偏好', 'jobintention', 'jobpreference']],
+      ];
+      const matches = sections.filter(([, values]) => values.some((candidate) => normalized.includes(normalize(candidate))));
+      const codes = { '个人信息': 'personal', '教育经历': 'education', '工作经历': 'work', '项目经历': 'project', '求职意向': 'preference' };
+      return matches.length === 1 ? codes[matches[0][0]] || '' : '';
+    };
+    const explicitLabel = (element) => {
+      const labelledBy = element.getAttribute('aria-labelledby');
+      if (labelledBy) {
+        const value = labelledBy.split(/\\s+/).map((id) => document.getElementById(id)?.textContent || '').join(' ');
+        const matched = canonicalLabel(value);
+        if (matched) return matched;
+      }
+      if (element.id) {
+        const label = document.querySelector('label[for="' + CSS.escape(element.id) + '"]');
+        const matched = canonicalLabel(text(label));
+        if (matched) return matched;
+      }
+      return canonicalLabel(text(element.closest('label')));
+    };
+    const nearbyLabel = (element) => {
+      let branch = element;
+      for (let depth = 0; branch?.parentElement && depth < 10; depth += 1) {
+        let sibling = branch.previousElementSibling;
+        for (let distance = 0; sibling && distance < 3; distance += 1, sibling = sibling.previousElementSibling) {
+          if (!sibling.querySelector('input,textarea,select,[contenteditable="true"]')) {
+            const matched = canonicalLabel(text(sibling));
+            if (matched) return matched;
+          }
+        }
+        const parent = branch.parentElement;
+        const labelledChildren = parent.querySelectorAll(':scope > label, :scope > [class*="label" i]');
+        for (const candidate of labelledChildren) {
+          if (candidate !== branch && !candidate.contains(element)) {
+            const matched = canonicalLabel(text(candidate));
+            if (matched) return matched;
+          }
+        }
+        branch = parent;
+      }
+      return '';
+    };
+    const rawExplicitLabel = (element) => {
+      const labelledBy = element.getAttribute('aria-labelledby');
+      if (labelledBy) {
+        const value = labelledBy.split(/\\s+/).map((id) => document.getElementById(id)?.textContent || '').join(' ');
+        if (text({ textContent: value })) return text({ textContent: value }).slice(0, 180);
+      }
+      if (element.id) {
+        const value = text(document.querySelector('label[for="' + CSS.escape(element.id) + '"]'));
+        if (value) return value.slice(0, 180);
+      }
+      return text(element.closest('label')).slice(0, 180);
+    };
+    const canonicalKey = (value) => {
+      const matched = canonicalLabel(value);
+      const normalized = normalize(matched);
+      if (!normalized) return '';
+      for (const [key, values] of Object.entries(fieldAliases)) {
+        if (values.some((candidate) => normalize(candidate) === normalized)) return key;
+      }
+      return '';
+    };
+    const anchorSection = (key) => {
+      for (const [section, keys] of Object.entries(sectionAnchors)) {
+        if (keys.includes(key)) return section;
+      }
+      return '';
+    };
+    const visibleForContext = (element) => {
+      if (!(element instanceof HTMLElement)) return false;
+      const style = getComputedStyle(element);
+      const rect = element.getBoundingClientRect();
+      return style.display !== 'none' && style.visibility !== 'hidden' && Number(style.opacity || 1) > 0
+        && rect.width > 0 && rect.height > 0;
+    };
+    const excludedContextRoot = (element) => !element
+      || ['HTML', 'BODY'].includes(element.tagName)
+      || Boolean(element.closest('nav,header,footer,[role="navigation"]'))
+      || ['dialog', 'alertdialog'].includes(String(element.getAttribute('role') || '').toLowerCase())
+      || /(^|[-_\\s])(modal|popup|popover|tooltip|overlay)([-_\\s]|$)/i.test(String(element.className || ''));
+    const contextLabel = (element) => [
+      rawExplicitLabel(element),
+      element.getAttribute('aria-label'),
+      element.getAttribute('placeholder'),
+      element.getAttribute('name'),
+      element.id,
+      nearbyLabel(element),
+    ].map(canonicalLabel).find(Boolean) || '';
+    const structuralEntries = [...document.querySelectorAll(controlSelector)]
+      .filter((element) => !element.closest('nav,header,footer,[role="navigation"]'))
+      .map((element) => {
+        const label = contextLabel(element);
+        const key = canonicalKey(label);
+        return { element, label, key, anchor: anchorSection(key) };
+      })
+      .filter((entry) => entry.label);
+    const contextEntries = structuralEntries.filter((entry) => visibleForContext(entry.element));
+    const visibleControlCount = (root) => [...root.querySelectorAll(controlSelector)].filter(visibleForContext).length;
+    const entriesWithin = (root) => contextEntries.filter((entry) => root === entry.element || root.contains(entry.element));
+    const structuralEntriesWithin = (root) => structuralEntries.filter((entry) => root === entry.element || root.contains(entry.element));
+    const unique = (values, limit) => [...new Set(values.map((value) => String(value || '').replace(/\\s+/g, ' ').trim()).filter(Boolean))].slice(0, limit);
+    const explicitSectionsWithin = (root) => unique([
+      ...(root.getAttribute('aria-labelledby') || '').split(/\\s+/).map((id) => sectionLabel(text(document.getElementById(id)))),
+      ...[...root.querySelectorAll(':scope > legend,:scope > h1,:scope > h2,:scope > h3,:scope > h4,:scope > h5,:scope > h6,:scope > [class*="title" i],:scope > [class*="header" i]')]
+        .map((heading) => sectionLabel(text(heading))),
+    ], 5);
+    const precedingSection = (root) => {
+      let sibling = root.previousElementSibling;
+      for (let distance = 0; sibling && distance < 8; distance += 1, sibling = sibling.previousElementSibling) {
+        if (visibleControlCount(sibling) > 0) break;
+        const section = sectionLabel(text(sibling)) || sectionLabel(text(sibling.querySelector('legend,h1,h2,h3,h4,h5,h6,[class*="title" i],[class*="header" i]')));
+        if (section) return section;
+      }
+      return '';
+    };
+    const inferredSection = (entries) => {
+      const keysBySection = new Map();
+      for (const entry of entries) {
+        if (!entry.anchor) continue;
+        const keys = keysBySection.get(entry.anchor) || new Set();
+        keys.add(entry.key);
+        keysBySection.set(entry.anchor, keys);
+      }
+      const ranked = [...keysBySection.entries()].sort((left, right) => right[1].size - left[1].size);
+      if ((ranked[0]?.[1].size || 0) < 2 || ranked[0]?.[1].size === ranked[1]?.[1].size) return '';
+      return ranked[0][0];
+    };
+    const formItemOf = (element) => {
+      const explicit = element.closest('label,fieldset,[class*="form-item" i],[class*="formitem" i],[class*="field" i],[class*="row" i]');
+      if (explicit && !excludedContextRoot(explicit) && visibleControlCount(explicit) <= 20) return explicit;
+      let current = element.parentElement;
+      let fallback = current;
+      for (let depth = 0; current && depth < 8 && !excludedContextRoot(current); depth += 1, current = current.parentElement) {
+        const count = visibleControlCount(current);
+        if (count > 20) break;
+        if (count <= 3) fallback = current;
+        if (count <= 3 && canonicalLabel(text(current))) return current;
+      }
+      return fallback || element;
+    };
+    const blockOf = (item) => {
+      let current = item;
+      for (let depth = 0; current && depth < 10 && !excludedContextRoot(current); depth += 1, current = current.parentElement) {
+        const controlCount = visibleControlCount(current);
+        if (controlCount > 20) continue;
+        const explicitSections = explicitSectionsWithin(current);
+        if (explicitSections.length === 1) return { root: current, section: explicitSections[0], heading: sectionNames[explicitSections[0]] || '' };
+        if (explicitSections.length > 1) continue;
+        const preceding = precedingSection(current);
+        if (preceding) return { root: current, section: preceding, heading: sectionNames[preceding] || '' };
+        const section = inferredSection(entriesWithin(current));
+        if (section) return { root: current, section, heading: sectionNames[section] || '' };
+      }
+      return undefined;
+    };
+    const orderedIndex = (element, entries) => {
+      const direct = entries.findIndex((entry) => entry.element === element || entry.element.contains(element) || element.contains(entry.element));
+      if (direct >= 0) return direct;
+      return entries.findIndex((entry) => Boolean(element.compareDocumentPosition(entry.element) & Node.DOCUMENT_POSITION_FOLLOWING));
+    };
+    const fallbackContext = (element) => {
+      const index = orderedIndex(element, contextEntries);
+      if (index < 0) return undefined;
+      const collectDirection = (step) => {
+        const entries = [];
+        let firstAnchor = '';
+        for (let offset = 1; offset <= 6; offset += 1) {
+          const entry = contextEntries[index + step * offset];
+          if (!entry) break;
+          if (entry.anchor && firstAnchor && entry.anchor !== firstAnchor) break;
+          if (entry.anchor && !firstAnchor) firstAnchor = entry.anchor;
+          entries.push(entry);
+        }
+        return step < 0 ? entries.reverse() : entries;
+      };
+      const before = collectDirection(-1);
+      const after = collectDirection(1);
+      const beforeSection = [...before].reverse().find((entry) => entry.anchor)?.anchor || '';
+      const afterSection = after.find((entry) => entry.anchor)?.anchor || '';
+      if (beforeSection && afterSection && beforeSection !== afterSection) return undefined;
+      const entries = [...before, ...contextEntries.slice(index, index + 1), ...after];
+      const section = inferredSection(entries);
+      return section ? { root: undefined, section, heading: sectionNames[section] || '', entries } : undefined;
+    };
+    const blockSignature = (root, section) => [...new Set(structuralEntriesWithin(root)
+      .filter((entry) => !entry.anchor || entry.anchor === section)
+      .map((entry) => entry.key).filter(Boolean))].sort().join('|');
+    const repeatedRecord = (block) => {
+      let root = block.root;
+      for (let depth = 0; root?.parentElement && depth < 3; depth += 1, root = root.parentElement) {
+        const signature = blockSignature(root, block.section);
+        if (!signature) continue;
+        const peers = [...root.parentElement.children].filter((candidate) => !excludedContextRoot(candidate)
+          && blockSignature(candidate, block.section) === signature
+          && inferredSection(structuralEntriesWithin(candidate)) === block.section);
+        if (peers.length > 1) return { root, index: peers.indexOf(root) };
+      }
+      return undefined;
+    };
+    const contextOf = (element) => {
+      const item = formItemOf(element);
+      const resolved = blockOf(item) || fallbackContext(element);
+      const blockEntries = resolved?.root ? entriesWithin(resolved.root) : resolved?.entries || [];
+      const index = orderedIndex(element, blockEntries);
+      const itemLabels = entriesWithin(item).map((entry) => entry.label);
+      const surroundingLabels = blockEntries.map((entry) => entry.label);
+      const record = resolved?.root ? repeatedRecord(resolved) : undefined;
+      return {
+        x: unique([...itemLabels, ...surroundingLabels], 8),
+        r: index > 0 ? unique(blockEntries.slice(Math.max(0, index - 4), index).map((entry) => entry.label), 4) : [],
+        f: index >= 0 ? unique(blockEntries.slice(index + 1, index + 5).map((entry) => entry.label), 4) : [],
+        s: String(resolved?.section || '').replace(/\\s+/g, ' ').trim().slice(0, 180),
+        g: String(resolved?.heading || '').replace(/\\s+/g, ' ').trim().slice(0, 180),
+        o: record && record.index >= 0 ? record.index : undefined,
+      };
+    };
+    const encodedName = (element, fallbackLabel) => {
+      const context = contextOf(element);
+      const rawLabel = rawExplicitLabel(element) || context.x[0] || fallbackLabel;
+      const filled = element instanceof HTMLInputElement && ['checkbox', 'radio'].includes(element.type)
+        ? element.checked
+        : element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement
+          ? String(element.value || '').trim().length > 0
+          : undefined;
+      const payload = {
+        l: String(rawLabel || fallbackLabel || '').replace(/\\s+/g, ' ').trim().slice(0, 180),
+        n: String(element.getAttribute('name') || '').slice(0, 120),
+        i: String(element.id || '').slice(0, 120),
+        p: String(element.getAttribute('placeholder') || '').slice(0, 180),
+        a: String(element.getAttribute('aria-label') || '').slice(0, 180),
+        b: String(element.getAttribute('aria-labelledby') || '').slice(0, 120),
+        v: filled,
+        ...context,
+      };
+      const bytes = new TextEncoder().encode(JSON.stringify(payload));
+      let binary = '';
+      for (const byte of bytes) binary += String.fromCharCode(byte);
+      return '${EncodedFormFieldPrefix}' + btoa(binary).replace(/\\+/g, '-').replace(/\\//g, '_').replace(/=+$/g, '');
+    };
+    const preserve = (element, attribute) => {
+      const suffix = attribute === 'aria-label' ? 'aria-label' : 'role';
+      element.setAttribute('data-avery-had-' + suffix, element.hasAttribute(attribute) ? '1' : '0');
+      if (element.hasAttribute(attribute)) element.setAttribute('data-avery-original-' + suffix, element.getAttribute(attribute) || '');
+    };
+    let annotated = 0;
+    let auxiliary = 0;
+    for (const element of document.querySelectorAll('input,textarea,select,[contenteditable="true"]')) {
+      if (!(element instanceof HTMLElement)) continue;
+      const type = String(element.getAttribute('type') || '').toLowerCase();
+      if (type === 'hidden' || type === 'password') continue;
+      if (element.closest('nav,header,footer,[role="navigation"]')) {
+        preserve(element, 'aria-label');
+        element.setAttribute('aria-label', '__avery_internal_form_control__');
+        element.setAttribute('data-avery-form-semantic', 'auxiliary');
+        auxiliary += 1;
+        continue;
+      }
+      const currentName = element.getAttribute('aria-label') || element.getAttribute('placeholder') || '';
+      const genericName = genericNames.has(normalize(currentName));
+      const interactiveAncestor = element.parentElement?.closest('[role="combobox"],[aria-haspopup="listbox"],[class*="select" i],[class*="cascader" i],[class*="picker" i],[class*="dropdown" i],[onclick]');
+      const ancestorMarker = String(interactiveAncestor?.className || '').toLowerCase();
+      const pickerAncestor = interactiveAncestor && (interactiveAncestor.getAttribute('role') === 'combobox'
+        || interactiveAncestor.getAttribute('aria-haspopup') === 'listbox'
+        || /(^|[-_\\s])(select|selector|cascader|picker|dropdown)([-_\\s]|$)/.test(ancestorMarker)
+        || normalize(text(interactiveAncestor)) === '请选择');
+      const nativeIdentity = canonicalLabel([
+        element.getAttribute('name'), element.id, element.getAttribute('autocomplete'),
+      ].filter(Boolean).join(' '));
+      const popupInput = type === 'search' || element.getAttribute('role') === 'searchbox'
+        || element.hasAttribute('aria-autocomplete') || element.hasAttribute('aria-controls');
+      const nativeInputType = ['tel', 'email', 'number', 'date', 'month'].includes(type);
+      // 自定义组件内部的可见搜索框也可能可编辑，不能仅凭尺寸将其当作普通字段。
+      // 手机号等真实输入框通过原生类型或稳定 name/id/autocomplete 保留。
+      const strongNativeField = !popupInput && (nativeInputType || Boolean(nativeIdentity));
+      if (genericName && pickerAncestor && interactiveAncestor !== element && !strongNativeField) {
+        preserve(element, 'aria-label');
+        element.setAttribute('aria-label', '__avery_internal_form_control__');
+        element.setAttribute('data-avery-form-semantic', 'auxiliary');
+        auxiliary += 1;
+        continue;
+      }
+      const label = canonicalLabel(currentName) || explicitLabel(element) || nearbyLabel(element);
+      if (!label) continue;
+      preserve(element, 'aria-label');
+      element.setAttribute('aria-label', encodedName(element, label));
+      element.setAttribute('data-avery-form-semantic', 'label');
+      element.setAttribute('data-avery-form-key', canonicalKey(label));
+      annotated += 1;
+    }
+    const visible = (element) => {
+      const style = getComputedStyle(element);
+      const rect = element.getBoundingClientRect();
+      return style.display !== 'none' && style.visibility !== 'hidden' && Number(style.opacity || 1) > 0
+        && rect.width > 0 && rect.height > 0;
+    };
+    const decoratedTriggers = new WeakSet();
+    const decoratedContainers = new WeakMap();
+    let customSelects = 0;
+    const seeds = document.querySelectorAll('[role="combobox"],[aria-haspopup="listbox"],[class*="select" i],[class*="cascader" i],[class*="picker" i],[class*="dropdown" i]');
+    for (const seed of seeds) {
+      if (!(seed instanceof HTMLElement) || !visible(seed)) continue;
+      if (seed.hasAttribute('data-avery-form-semantic')) continue;
+      if (seed.closest('nav,header,footer,[role="navigation"]')) {
+        preserve(seed, 'aria-label');
+        seed.setAttribute('aria-label', '__avery_internal_form_control__');
+        seed.setAttribute('data-avery-form-semantic', 'auxiliary');
+        auxiliary += 1;
+        continue;
+      }
+      const seedText = normalize(text(seed));
+      const seedMarker = String(seed.className || '').toLowerCase();
+      const hasCustomSemantics = seed.getAttribute('role') === 'combobox' || seed.getAttribute('aria-haspopup') === 'listbox'
+        || /(^|[-_\\s])(select|selector|cascader|picker|dropdown)([-_\\s]|$)/.test(seedMarker);
+      if (!seedText || seedText.length > 80 || (seedText !== '请选择' && !hasCustomSemantics)) continue;
+      let trigger = seed;
+      for (let depth = 0; trigger.parentElement && depth < 4; depth += 1) {
+        const parent = trigger.parentElement;
+        const marker = String(parent.className || '').toLowerCase();
+        if (normalize(text(parent)) !== seedText) break;
+        if (parent.getAttribute('role') === 'combobox' || parent.getAttribute('aria-haspopup') === 'listbox'
+          || /(^|[-_\\s])(select|selector|cascader|picker|dropdown)([-_\\s]|$)/.test(marker)) trigger = parent;
+        else break;
+      }
+      if (['input', 'textarea', 'select'].includes(trigger.tagName.toLowerCase())) continue;
+      if (decoratedTriggers.has(trigger)) continue;
+      const label = explicitLabel(trigger) || nearbyLabel(trigger);
+      if (!label) continue;
+      const container = trigger.closest('label,[class*="form-item" i],[class*="formitem" i],[class*="field" i]') || trigger;
+      const containerLabels = decoratedContainers.get(container) || new Set();
+      const normalizedLabel = normalize(label);
+      if (containerLabels.has(normalizedLabel)) continue;
+      containerLabels.add(normalizedLabel);
+      decoratedContainers.set(container, containerLabels);
+      preserve(trigger, 'aria-label');
+      preserve(trigger, 'role');
+      trigger.setAttribute('role', 'combobox');
+      trigger.setAttribute('aria-label', encodedName(trigger, label));
+      trigger.setAttribute('data-avery-form-semantic', 'custom-select');
+      trigger.setAttribute('data-avery-form-key', canonicalKey(label));
+      decoratedTriggers.add(trigger);
+      customSelects += 1;
+    }
+    return { annotated, auxiliary, customSelects };
+  })()`;
+})();
+
+/** 恢复 Inspect 临时写入的可访问性属性；旧版本遗留标记也在下次 Inspect 时一并清理。 */
+export const FormSemanticCleanupExpression = `(() => {
+  let cleaned = 0;
+  for (const element of document.querySelectorAll('[data-avery-form-semantic]')) {
+    if (!(element instanceof HTMLElement)) continue;
+    for (const attribute of ['aria-label', 'role']) {
+      const suffix = attribute === 'aria-label' ? 'aria-label' : 'role';
+      const had = element.getAttribute('data-avery-had-' + suffix);
+      const original = element.getAttribute('data-avery-original-' + suffix);
+      if (had === '1') element.setAttribute(attribute, original || '');
+      else if (had === '0'
+        || (had === null && attribute === 'aria-label')
+        || (had === null && attribute === 'role' && element.getAttribute('data-avery-form-semantic') === 'custom-select')) element.removeAttribute(attribute);
+      element.removeAttribute('data-avery-had-' + suffix);
+      element.removeAttribute('data-avery-original-' + suffix);
+    }
+    element.removeAttribute('data-avery-form-semantic');
+    element.removeAttribute('data-avery-form-key');
+    cleaned += 1;
+  }
+  return { cleaned };
+})()`;
+
+/** 将当前日期浮层的编辑器、年/月/日与确认动作临时编码为稳定语义，不读取或返回日期值。 */
+export const DateEditorEnrichmentExpression = `(() => {
+  const visible = (element) => {
+    const style = getComputedStyle(element);
+    const rect = element.getBoundingClientRect();
+    return style.display !== 'none' && style.visibility !== 'hidden' && Number(style.opacity || 1) > 0
+      && rect.width > 0 && rect.height > 0;
+  };
+  const text = (element) => String(element?.innerText || element?.textContent || '').replace(/\\s+/g, '').trim();
+  const roots = new Set([...document.querySelectorAll('[class*="calendar" i],[class*="datepicker" i],[class*="date-picker" i],[class*="month-picker" i],[role="dialog"]')]
+    .filter((element) => element instanceof HTMLElement && visible(element)
+      && (element.querySelector('[role="grid"],[role="gridcell"],[class*="year-panel" i],[class*="month-panel" i]') || element.matches('[class*="calendar" i]'))));
+  // 哈希类名日期浮层：定位层中同时出现年份或月份动作时才纳入，避免扫描表单正文。
+  for (const root of document.querySelectorAll('body *')) {
+    if (!(root instanceof HTMLElement) || !visible(root)) continue;
+    const position = getComputedStyle(root).position;
+    if (!['absolute', 'fixed'].includes(position)) continue;
+    const labels = [...root.querySelectorAll('[role="button"],[role="gridcell"],button,a')].slice(0, 200).map(text);
+    if (labels.some((label) => /^\\d{4}年?$/.test(label))
+      && labels.some((label) => /^(?:\\d{1,2}|[一二三四五六七八九十]{1,3})月$/.test(label))) roots.add(root);
+  }
+  const preserve = (element) => {
+    if (element.hasAttribute('data-avery-date-editor')) return false;
+    element.setAttribute('data-avery-date-editor', '1');
+    element.setAttribute('data-avery-date-original-label', element.getAttribute('aria-label') || '');
+    element.setAttribute('data-avery-date-had-label', element.hasAttribute('aria-label') ? '1' : '0');
+    element.setAttribute('data-avery-date-original-role', element.getAttribute('role') || '');
+    element.setAttribute('data-avery-date-had-role', element.hasAttribute('role') ? '1' : '0');
+    return true;
+  };
+  const annotate = (element, role, label) => {
+    if (!(element instanceof HTMLElement) || !visible(element) || !preserve(element)) return false;
+    element.setAttribute('role', role);
+    element.setAttribute('aria-label', label);
+    return true;
+  };
+  const monthNumber = (label) => {
+    const numeric = label.match(/^(\\d{1,2})月$/);
+    if (numeric) return Number(numeric[1]);
+    const chinese = { 一月: 1, 二月: 2, 三月: 3, 四月: 4, 五月: 5, 六月: 6, 七月: 7, 八月: 8, 九月: 9, 十月: 10, 十一月: 11, 十二月: 12 };
+    if (chinese[label]) return chinese[label];
+    const english = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
+    const index = english.findIndex((value) => label.toLowerCase().startsWith(value));
+    return index < 0 ? undefined : index + 1;
+  };
+  let annotated = 0;
+  for (const root of roots) {
+    for (const input of root.querySelectorAll('input')) {
+      // Phoenix 的 unText input 只是选择器的事件入口，直接 fill 会被组件判为无效并保持弹层打开。
+      // 将它交给后面的年/月/日点选状态机，避免先做一轮必然失败的写入与提交轮询。
+      if (input.matches('.phoenix-select__input--unText') || input.readOnly || input.type === 'hidden') continue;
+      if (annotate(input, 'textbox', '__avery_date_editor__')) annotated += 1;
+    }
+    const candidates = root.querySelectorAll('[role="button"],[role="gridcell"],button,a,select,[class*="year-select" i],[class*="month-select" i]');
+    for (const element of [...candidates].slice(0, 500)) {
+      if (!(element instanceof HTMLElement) || !visible(element)) continue;
+      // Phoenix 把文字 a 放在可点击 td 内；只标记事件实际绑定的 gridcell，避免同一动作产生两个 ref。
+      const containingCell = element.closest('[role="gridcell"],[data-avery-date-original-role="gridcell"]');
+      if (containingCell && containingCell !== element) continue;
+      const monthOnlyCalendar = Boolean(element.closest('.phoenix-calendar-month-calendar'));
+      // 月选择器同时渲染通用日历头和月面板头；前者不会驱动当前月面板，不能作为年份入口。
+      if (monthOnlyCalendar && element.matches('.phoenix-calendar-year-select,.phoenix-calendar-month-select')) continue;
+      // 年份按钮的文字 span 也会命中 class*=year-select；只标记实际绑定点击行为的父按钮。
+      const monthPanelYearButton = element.closest('.phoenix-calendar-month-panel-year-select');
+      if (monthPanelYearButton && monthPanelYearButton !== element) continue;
+      const monthPanelYear = element.matches('.phoenix-calendar-month-panel-year-select')
+        ? text(element.querySelector('.phoenix-calendar-month-panel-year-select-content'))
+        : '';
+      const label = monthPanelYear || text(element);
+      const marker = String(element.className || '').toLowerCase();
+      const inYearPanel = Boolean(element.closest('[class*="year-panel" i]'));
+      const inMonthPanel = Boolean(element.closest('[class*="month-panel" i]'));
+      const disabled = element.getAttribute('aria-disabled') === 'true' || element.hasAttribute('disabled')
+        || /(^|[-_\\s])disabled([-_\\s]|$)/i.test(marker);
+      if (disabled) continue;
+      if (/^\\d{4}年?$/.test(label)) {
+        const year = label.match(/\\d{4}/)?.[0];
+        const option = inYearPanel || element.getAttribute('role') === 'gridcell';
+        const headerPrefix = monthOnlyCalendar ? '__avery_date_month_year_header__:' : '__avery_date_year_header__:';
+        if (year && annotate(element, option ? 'option' : 'button', option ? '__avery_date_year_option__:' + year : headerPrefix + year)) annotated += 1;
+        continue;
+      }
+      const month = monthNumber(label);
+      if (month && (inMonthPanel || /month/.test(marker))) {
+        const header = /month-select/.test(marker) && !inMonthPanel;
+        if (annotate(element, header ? 'button' : 'option', header ? '__avery_date_month_header__:' + month : '__avery_date_month_option__:' + month)) annotated += 1;
+        continue;
+      }
+      if (/^\\d{1,2}日?$/.test(label) && element.getAttribute('role') === 'gridcell'
+        && !inYearPanel && !inMonthPanel && !/(last|next).*(month)|month.*(last|next)/i.test(marker)) {
+        const day = Number(label.replace(/\\D/g, ''));
+        if (day >= 1 && day <= 31 && annotate(element, 'option', '__avery_date_day_option__:' + day)) annotated += 1;
+        continue;
+      }
+      if (/^(确定|确认|完成|ok)$/i.test(label) && annotate(element, 'button', '__avery_date_confirmation__')) annotated += 1;
+    }
+  }
+  return { found: annotated > 0, annotated };
+})()`;
+
+export const DateEditorCleanupExpression = `(() => {
+  for (const element of document.querySelectorAll('[data-avery-date-editor]')) {
+    if (element.getAttribute('data-avery-date-had-label') === '1') element.setAttribute('aria-label', element.getAttribute('data-avery-date-original-label') || '');
+    else element.removeAttribute('aria-label');
+    if (element.getAttribute('data-avery-date-had-role') === '1') element.setAttribute('role', element.getAttribute('data-avery-date-original-role') || '');
+    else element.removeAttribute('role');
+    element.removeAttribute('data-avery-date-editor');
+    element.removeAttribute('data-avery-date-original-label');
+    element.removeAttribute('data-avery-date-had-label');
+    element.removeAttribute('data-avery-date-original-role');
+    element.removeAttribute('data-avery-date-had-role');
+  }
+  return { cleaned: true };
+})()`;
+
+/** 将门户式下拉/级联弹层中的真实可见条目临时暴露为 option，供原生 ref 点击。 */
+export const DynamicOptionEnrichmentExpression = `(() => {
+  const visible = (element) => {
+    const style = getComputedStyle(element);
+    const rect = element.getBoundingClientRect();
+    return style.display !== 'none' && style.visibility !== 'hidden' && Number(style.opacity || 1) > 0
+      && rect.width > 0 && rect.height > 0;
+  };
+  const roots = new Set([...document.querySelectorAll('[role="listbox"],[role="menu"],[class*="select-dropdown" i],[class*="dropdown-menu" i],[class*="cascader-menu" i],[class*="picker-panel" i],[class*="popup" i],[class*="popover" i],[class*="area-selector-container" i],[class*="constant-main-selector-container" i],[class*="constant-main-layer-container" i]')]
+    .filter((element) => element instanceof HTMLElement && visible(element)));
+  // 部分招聘站使用哈希类名和无 ARIA 的门户浮层；只把当前可见的定位层纳入候选范围，避免扫描整页正文。
+  for (const element of [...document.body.querySelectorAll('*')].slice(0, 5000)) {
+    if (!(element instanceof HTMLElement) || !visible(element)) continue;
+    const style = getComputedStyle(element);
+    if (style.position !== 'absolute' && style.position !== 'fixed') continue;
+    const text = String(element.innerText || element.textContent || '').replace(/\\s+/g, ' ').trim();
+    if (text && text.length <= 5000 && element.querySelector('li,[role="option"],[role="menuitem"],[role="treeitem"],[class*="option" i],[class*="menu-item" i],[class*="area-item" i]')) roots.add(element);
+  }
+  // React/Vue 的 portal 根节点本身可能是 static；由实际候选节点向上寻找最小可见控件根，不能只依赖定位样式。
+  for (const seed of document.querySelectorAll('[class*="area-item-container" i],[class*="area-text-label" i],[class*="list-item-container" i],[class*="item-text-label" i],[role="option"],[role="treeitem"],[class*="menu-item" i],[class*="option" i]')) {
+    if (!(seed instanceof HTMLElement) || !visible(seed)) continue;
+    let root = seed.parentElement;
+    for (let depth = 0; root?.parentElement && depth < 8; depth += 1, root = root.parentElement) {
+      if (root.matches('[class*="area-selector-container" i],[class*="constant-main-selector-container" i],[role="listbox"],[role="menu"],[class*="dropdown" i],[class*="popup" i],[class*="popover" i]')) break;
+      if (root.querySelectorAll('[class*="area-item-container" i],[role="option"],[role="treeitem"],[class*="menu-item" i],[class*="option" i]').length > 300) break;
+    }
+    if (root instanceof HTMLElement && visible(root) && !['BODY', 'HTML'].includes(root.tagName)) roots.add(root);
+  }
+  const candidateText = new Map();
+  const confirmations = new Set();
+  for (const root of roots) {
+    // 北森民族等常量选择器采用虚拟列表；目标项未渲染时，后续可通过这个固定搜索入口收窄列表。
+    for (const element of root.querySelectorAll('input[placeholder*="搜索"],input[placeholder*="search" i]')) {
+      if (!(element instanceof HTMLInputElement) || !visible(element) || element.hasAttribute('data-avery-dynamic-search')) continue;
+      element.setAttribute('data-avery-dynamic-search', '1');
+      element.setAttribute('data-avery-option-had-role', element.hasAttribute('role') ? '1' : '0');
+      element.setAttribute('data-avery-option-role', element.getAttribute('role') || '');
+      element.setAttribute('data-avery-option-had-label', element.hasAttribute('aria-label') ? '1' : '0');
+      element.setAttribute('data-avery-option-label', element.getAttribute('aria-label') || '');
+      element.setAttribute('data-avery-option-had-tabindex', element.hasAttribute('tabindex') ? '1' : '0');
+      element.setAttribute('data-avery-option-tabindex', element.getAttribute('tabindex') || '');
+      element.setAttribute('role', 'textbox');
+      element.setAttribute('aria-label', '__avery_dynamic_search__');
+    }
+    const elements = root.querySelectorAll('[role="option"],[role="menuitem"],[role="treeitem"],li,button,[tabindex],div,span,[class*="option" i],[class*="menu-item" i],[class*="menuitem" i],[class*="cascader-item" i]');
+    for (const element of [...elements].slice(0, 500)) {
+      if (!(element instanceof HTMLElement) || !visible(element)) continue;
+      const text = String(element.innerText || element.textContent || '').replace(/\\s+/g, ' ').trim();
+      if (!text || text.length > 80 || element.getAttribute('aria-disabled') === 'true' || element.hasAttribute('disabled')) continue;
+      const role = element.getAttribute('role');
+      const regionRow = (element.matches('[class*="area-item-container" i]')
+          && Boolean(element.querySelector('[class*="area-item-name" i],[class*="icon-container" i]')))
+        || (element.matches('[class*="area-item-name" i]')
+          && Boolean(element.parentElement?.matches('[class*="area-item-container" i]')))
+        || element.matches('[class*="area-text-label" i]');
+      // 北森文字 span 的无障碍 ref 点击坐标不稳定；使用它的 area-item-name 父节点承载同一导航动作。
+      if (element.matches('[class*="area-text-label" i]')
+        && element.parentElement?.matches('[class*="area-item-name" i]')) continue;
+      const interactive = element.tagName === 'LI' || element.tagName === 'BUTTON'
+        || role === 'option' || role === 'menuitem' || role === 'treeitem'
+        || element.hasAttribute('tabindex') || typeof element.onclick === 'function'
+        || getComputedStyle(element).cursor === 'pointer' || regionRow;
+      if (interactive) candidateText.set(element, text);
+    }
+    // 地区选择器常把“继续展开”和“选中当前项”拆成文字与无文本单选图标；为后者补上同级文字。
+    for (const element of [...root.querySelectorAll('[role="radio"],input[type="radio"],[class*="radio" i],[class*="icon-container" i]')].slice(0, 300)) {
+      if (!(element instanceof HTMLElement) || !visible(element)) continue;
+      if (String(element.innerText || element.textContent || '').trim()) continue;
+      const container = element.closest('[class*="item" i],li');
+      const label = String(container?.innerText || container?.textContent || '').replace(/\s+/g, ' ').trim();
+      if (!label || label.length > 80) continue;
+      candidateText.set(element, label);
+    }
+    for (const element of [...root.querySelectorAll('button,div,span')].slice(0, 500)) {
+      if (!(element instanceof HTMLElement) || !visible(element)) continue;
+      const label = String(element.innerText || element.textContent || '').replace(/\s+/g, ' ').trim();
+      const disabled = element.hasAttribute('disabled') || element.getAttribute('aria-disabled') === 'true'
+        || /(^|[-_\s])(disabled|disable)([-_\s]|$)/i.test(String(element.className || ''));
+      if (!disabled && /^(确定|确认|完成)$/.test(label)) {
+        candidateText.set(element, label);
+        confirmations.add(element);
+      }
+    }
+  }
+  const rawCandidates = [...candidateText].map(([element, text]) => ({
+    element,
+    text,
+    selectionControl: !confirmations.has(element) && !String(element.innerText || element.textContent || '').trim(),
+  }));
+  // 容器和内部文字节点可能同时可点击；地区文字行和无文本单选图标用途不同，必须同时保留。
+  const candidates = rawCandidates.filter((candidate, index) => !rawCandidates.some((other, otherIndex) => (
+    otherIndex !== index && candidate.element.contains(other.element) && candidate.text === other.text
+      && !(other.selectionControl && !candidate.selectionControl)
+  )));
+  let annotated = 0;
+  for (const { element, text, selectionControl } of candidates.slice(0, 300)) {
+    element.setAttribute('data-avery-dynamic-option', '1');
+    element.setAttribute('data-avery-option-had-role', element.hasAttribute('role') ? '1' : '0');
+    element.setAttribute('data-avery-option-role', element.getAttribute('role') || '');
+    element.setAttribute('data-avery-option-had-label', element.hasAttribute('aria-label') ? '1' : '0');
+    element.setAttribute('data-avery-option-label', element.getAttribute('aria-label') || '');
+    element.setAttribute('data-avery-option-had-tabindex', element.hasAttribute('tabindex') ? '1' : '0');
+    element.setAttribute('data-avery-option-tabindex', element.getAttribute('tabindex') || '');
+    const confirmation = confirmations.has(element);
+    // Phoenix Select 会把嵌套 option 从无障碍树折叠为空名称 listitem；button + tabindex 可稳定保留候选名称和 ref。
+    element.setAttribute('role', confirmation || !selectionControl ? 'button' : 'radio');
+    element.setAttribute('tabindex', '0');
+    element.setAttribute('aria-label', confirmation ? '__avery_dynamic_confirmation__' : text.slice(0, 120));
+    annotated += 1;
+  }
+  return { roots: roots.size, annotated };
+})()`;
+
+export const DynamicOptionCleanupExpression = `(() => {
+  for (const element of document.querySelectorAll('[data-avery-dynamic-option],[data-avery-dynamic-search]')) {
+    if (element.getAttribute('data-avery-option-had-role') === '1') element.setAttribute('role', element.getAttribute('data-avery-option-role') || '');
+    else element.removeAttribute('role');
+    if (element.getAttribute('data-avery-option-had-label') === '1') element.setAttribute('aria-label', element.getAttribute('data-avery-option-label') || '');
+    else element.removeAttribute('aria-label');
+    if (element.getAttribute('data-avery-option-had-tabindex') === '1') element.setAttribute('tabindex', element.getAttribute('data-avery-option-tabindex') || '');
+    else element.removeAttribute('tabindex');
+    for (const attribute of ['data-avery-dynamic-option', 'data-avery-dynamic-search', 'data-avery-option-had-role', 'data-avery-option-role', 'data-avery-option-had-label', 'data-avery-option-label', 'data-avery-option-had-tabindex', 'data-avery-option-tabindex']) element.removeAttribute(attribute);
+  }
+  return { cleaned: true };
+})()`;
+
+/** 只向页面根节点发送取消交互事件；不会点击按钮、提交表单或修改字段值。 */
+export const DismissTransientOverlayExpression = `(() => {
+  if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+  const root = document.documentElement;
+  for (const type of ['pointerdown', 'mousedown', 'mouseup', 'click']) root.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, clientX: 1, clientY: 1 }));
+  return { dismissed: true };
+})()`;
+
+export function DynamicOptionMatch(
+  data: Record<string, any>,
+  fieldKey: string,
+  desiredValue: string,
+  visitedActions: Set<string>,
+): { ref: string; label: string; complete: boolean; role: string; actionKey: string } | undefined {
+  const refs = data?.refs && typeof data.refs === 'object' ? data.refs as Record<string, Record<string, unknown>> : {};
+  const clickable = new Set<string>();
+  const snapshot = String(data?.snapshot ?? '');
+  for (const match of snapshot.matchAll(/\[[^\]\r\n]*\bref=(e\d+)\b[^\]\r\n]*\][^\r\n]*\bclickable\b/g)) clickable.add(match[1]);
+  const normalizeOption = (value: unknown) => {
+    const normalized = NormalizeFormLabel(value);
+    if (fieldKey === 'workYears') {
+      if (/^(在校学生|在读学生|学生)$/.test(normalized)) return 'student';
+      if (/^(刚毕业|应届毕业生|应届生)$/.test(normalized)) return 'graduate';
+    }
+    if (fieldKey === 'degree' && normalized === '本科') return '学士';
+    // 档案可能保存“汉”，而招聘站枚举通常展示“汉族”；仅去掉末尾族字，不做宽泛模糊匹配。
+    if (fieldKey === 'ethnicity') return normalized.replace(/族$/, '');
+    return normalized;
+  };
+  const desired = normalizeOption(desiredValue);
+  const regionField = ['nativePlace', 'residence', 'hukou', 'targetProvince', 'targetCity'].includes(fieldKey);
+  const geographic = (value: string) => value.replace(/特别行政区|自治区|省|市|区|县|[\/><>,，]/g, '');
+  const desiredGeographic = geographic(desired);
+  const candidates: Array<{ ref: string; label: string; score: number; complete: boolean; role: string; actionKey: string }> = [];
+  for (const [rawRef, metadata] of Object.entries(refs)) {
+    const role = String(metadata?.role ?? '').toLowerCase();
+    const label = String(metadata?.name ?? '').replace(/\s+/g, ' ').trim().slice(0, 120);
+    const normalized = normalizeOption(label);
+    if (!normalized || normalized.length > 80 || /^(请选择|请输入|确定|取消|关闭)$/.test(normalized)) continue;
+    // agent-browser 可能沿用标记前的可访问性角色，因此已补为 option 的原生 li 仍会回报 listitem。
+    if (!clickable.has(rawRef.replace(/^@/, '')) && !['button', 'option', 'listitem', 'menuitem', 'treeitem', 'radio'].includes(role)) continue;
+    const actionKey = `${role}:${normalized}`;
+    if (visitedActions.has(actionKey)) continue;
+    const normalizedGeographic = geographic(normalized);
+    let score = 0;
+    let complete = false;
+    if (normalized === desired) { score = 100; complete = true; }
+    else if (regionField && normalizedGeographic && normalizedGeographic === desiredGeographic) { score = 95; complete = true; }
+    else if (regionField && normalizedGeographic.length >= 2 && desiredGeographic.endsWith(normalizedGeographic)) { score = 90; complete = true; }
+    else if (normalized.length >= 2 && desired.includes(normalized)) score = 85;
+    else if (regionField && normalizedGeographic.length >= 2 && desiredGeographic.includes(normalizedGeographic)) score = 75;
+    else if (desired.length >= 2 && normalized.includes(desired)) { score = 65; complete = true; }
+    // 北森地区级联的中间层圆点只会选中当前级，不能展开下一级；仅允许在目标末级使用。
+    if (score && !(regionField && role === 'radio' && !complete)) {
+      candidates.push({ ref: `@${rawRef.replace(/^@/, '')}`, label, score, complete, role, actionKey });
+    }
+  }
+  const actionPriority = (candidate: typeof candidates[number]) => candidate.complete
+    ? (candidate.role === 'radio' ? 2 : 1)
+    : (candidate.role === 'radio' ? 0 : 2);
+  candidates.sort((left, right) => right.score - left.score
+    || actionPriority(right) - actionPriority(left)
+    || left.label.length - right.label.length);
+  if (!candidates.length) return undefined;
+  const best = candidates[0];
+  const tied = candidates.find((candidate) => candidate.score === best.score && NormalizeFormLabel(candidate.label) !== NormalizeFormLabel(best.label));
+  return tied ? undefined : best;
+}
+
+export function DynamicSearchMatch(data: Record<string, any>): { ref: string } | undefined {
+  const refs = data?.refs && typeof data.refs === 'object' ? data.refs as Record<string, Record<string, unknown>> : {};
+  const matches = Object.entries(refs).flatMap(([rawRef, metadata]) => {
+    const role = String(metadata?.role ?? '').toLowerCase();
+    const label = String(metadata?.name ?? '').replace(/\s+/g, ' ').trim();
+    return role === 'textbox' && label === '__avery_dynamic_search__'
+      ? [{ ref: `@${rawRef.replace(/^@/, '')}` }]
+      : [];
+  });
+  return matches.length === 1 ? matches[0] : undefined;
+}
+
+export function MatchingDynamicFormFields(fields: FormField[], operation: FormFillOperation): FormField[] {
+  const dynamic = fields.filter((field) => field.control === 'select' && !field.options?.length);
+  const semantic = dynamic.filter((field) => field.semantic.concept === operation.concept);
+  return semantic.length ? semantic : dynamic.filter((field) => CanonicalFormField(field.label) === operation.key);
+}
+
+export function DynamicConfirmationMatch(data: Record<string, any>): { ref: string; label: string } | undefined {
+  const refs = data?.refs && typeof data.refs === 'object' ? data.refs as Record<string, Record<string, unknown>> : {};
+  const clickable = new Set<string>();
+  const snapshot = String(data?.snapshot ?? '');
+  for (const match of snapshot.matchAll(/\[[^\]\r\n]*\bref=(e\d+)\b[^\]\r\n]*\][^\r\n]*\bclickable\b/g)) clickable.add(match[1]);
+  const matches = Object.entries(refs).flatMap(([rawRef, metadata]) => {
+    const label = String(metadata?.name ?? '').replace(/\s+/g, ' ').trim();
+    const role = String(metadata?.role ?? '').toLowerCase();
+    if (label !== '__avery_dynamic_confirmation__' && !/^(确定|确认|完成)$/.test(label)) return [];
+    if (!clickable.has(rawRef.replace(/^@/, '')) && !['button', 'option', 'listitem', 'menuitem'].includes(role)) return [];
+    return [{ ref: `@${rawRef.replace(/^@/, '')}`, label }];
+  });
+  return matches.length === 1 ? matches[0] : undefined;
+}
+
+type DateTarget = { year: number; month: number; day?: number };
+
+export function ParseDateTarget(value: string): DateTarget | undefined {
+  const match = value.trim().match(/^(\d{4})[-/.年](\d{1,2})(?:[-/.月](\d{1,2}))?/);
+  if (!match) return undefined;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = match[3] ? Number(match[3]) : undefined;
+  if (year < 1900 || year > 2200 || month < 1 || month > 12 || (day !== undefined && (day < 1 || day > 31))) return undefined;
+  return { year, month, ...(day === undefined ? {} : { day }) };
+}
+
+export function DynamicDateRef(
+  data: Record<string, any>,
+  predicate: (label: string, role: string) => boolean,
+): { ref: string; label: string; role: string } | undefined {
+  const refs = data?.refs && typeof data.refs === 'object' ? data.refs as Record<string, Record<string, unknown>> : {};
+  const clickable = new Set<string>();
+  const snapshot = String(data?.snapshot ?? '');
+  for (const match of snapshot.matchAll(/\[[^\]\r\n]*\bref=(e\d+)\b[^\]\r\n]*\][^\r\n]*\bclickable\b/g)) clickable.add(match[1]);
+  const matches = Object.entries(refs).flatMap(([rawRef, metadata]) => {
+    const role = String(metadata?.role ?? '').toLowerCase();
+    const label = String(metadata?.name ?? '').replace(/\s+/g, '').trim();
+    if (!predicate(label, role)) return [];
+    if (!clickable.has(rawRef.replace(/^@/, '')) && !['button', 'gridcell', 'option', 'listitem'].includes(role)) return [];
+    return [{ ref: `@${rawRef.replace(/^@/, '')}`, label, role }];
+  });
+  return matches.length === 1 ? matches[0] : undefined;
+}
+
+export function DynamicSelectionVerificationExpression(operation: FormFillOperation, selectedLabels: string[]): string {
+  const selected = selectedLabels.map(NormalizeFormLabel).filter(Boolean);
+  return `(() => {
+    const normalize = (value) => String(value || '').toLowerCase().replace(/[\\s_\\-—–·:：()（）[\\]【】*＊]/g, '');
+    const triggers = [...document.querySelectorAll('[data-avery-form-semantic="custom-select"]')]
+      .filter((element) => element.getAttribute('data-avery-form-key') === ${JSON.stringify(operation.key)});
+    const trigger = triggers[${operation.occurrence}] || triggers[0];
+    if (!(trigger instanceof HTMLElement)) return { filled: false };
+    const visibleControls = (root) => [...root.querySelectorAll('input,textarea,select,[role="combobox"],[aria-haspopup="listbox"]')]
+      .filter((element) => {
+        if (!(element instanceof HTMLElement)) return false;
+        const style = getComputedStyle(element);
+        const rect = element.getBoundingClientRect();
+        return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+      }).length;
+    let displayRoot = trigger;
+    for (let current = trigger; current?.parentElement; current = current.parentElement) {
+      if (['BODY', 'HTML'].includes(current.tagName)) break;
+      if (visibleControls(current) > 4) break;
+      displayRoot = current;
+      if (current.matches('label,[class*="form-item" i],[class*="formitem" i],[class*="field" i]')) break;
+    }
+    const inputValues = [...displayRoot.querySelectorAll('input,textarea')]
+      .map((element) => element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement ? element.value : '')
+      .join(' ');
+    const selectedState = [...displayRoot.querySelectorAll('[aria-selected="true"],[aria-checked="true"],input:checked,[class*="selected" i],[class*="checked" i]')]
+      .map((element) => element instanceof HTMLInputElement ? element.value : element.textContent || '')
+      .join(' ');
+    const displayText = [displayRoot.innerText, displayRoot.textContent, inputValues, selectedState].filter(Boolean).join(' ');
+    const display = normalize(displayText);
+    const selected = ${JSON.stringify(selected)};
+    const geographic = (value) => value.replace(/特别行政区|自治区|省|市|区|县|[\\/><>,，]/g, '');
+    const dateParts = (value) => {
+      const match = String(value || '').match(/(\\d{4})\\D{0,4}(\\d{1,2})(?:\\D{0,4}(\\d{1,2}))?/);
+      return match ? [Number(match[1]), Number(match[2]), match[3] ? Number(match[3]) : undefined] : undefined;
+    };
+    const geographicField = ${JSON.stringify(['nativePlace', 'residence', 'hukou', 'targetProvince', 'targetCity'].includes(operation.key))};
+    const exactOrContained = !geographicField && selected.some((label) => label && display.includes(label));
+    const geographicDisplay = geographic(display);
+    const desiredGeographic = geographic(normalize(${JSON.stringify(operation.value)}));
+    const selectedLeaf = geographic(selected[selected.length - 1] || '');
+    const geographicMatch = geographicField
+      && desiredGeographic.length >= 2
+      && (geographicDisplay.includes(desiredGeographic)
+        || (selectedLeaf.length >= 2
+          && desiredGeographic.endsWith(selectedLeaf) && geographicDisplay.includes(selectedLeaf)));
+    const desiredDate = dateParts(${JSON.stringify(operation.value)});
+    const observedDate = dateParts(displayText);
+    const dateMatch = ${JSON.stringify(['birthDate', 'startDate', 'endDate', 'availability'].includes(operation.key))}
+      && desiredDate && observedDate && desiredDate[0] === observedDate[0] && desiredDate[1] === observedDate[1]
+      && (desiredDate[2] === undefined || desiredDate[2] === observedDate[2]);
+    return { filled: display !== '请选择' && (exactOrContained || geographicMatch || dateMatch) };
+  })()`;
+}
+
+/** 仅在动态弹层仍可见时切换本次字段的触发器；固定字段语义由 Host 生成，模型不能提供选择器。 */
+export function DynamicOverlayDismissExpression(operation: FormFillOperation): string {
+  return `(() => {
+    const visible = (element) => {
+      const style = getComputedStyle(element);
+      const rect = element.getBoundingClientRect();
+      return style.display !== 'none' && style.visibility !== 'hidden' && Number(style.opacity || 1) > 0
+        && rect.width > 0 && rect.height > 0;
+    };
+    const overlays = [...document.querySelectorAll('[role="listbox"],[role="menu"],[class*="dropdown" i],[class*="cascader" i],[class*="picker" i],[class*="calendar" i],[class*="popover" i],[class*="popup" i],[class*="layer" i],[class*="selectList" i],[class*="area-selector-container" i]')]
+      .filter((element) => element instanceof HTMLElement && visible(element)
+        && (element.matches('[role="listbox"],[role="menu"],[class*="calendar" i],[class*="selectList" i],[class*="area-selector-container" i]')
+          || ['absolute', 'fixed'].includes(getComputedStyle(element).position))
+        && (element.matches('[role="listbox"],[role="menu"]') || element.querySelector('li,[role="option"],[role="gridcell"],[role="radio"],button,[class*="area-item" i]')));
+    if (!overlays.length) return { toggled: false };
+    const triggers = [...document.querySelectorAll('[data-avery-form-semantic="custom-select"]')]
+      .filter((element) => element.getAttribute('data-avery-form-key') === ${JSON.stringify(operation.key)});
+    const trigger = triggers[${operation.occurrence}] || triggers[0];
+    if (!(trigger instanceof HTMLElement)) return { toggled: false };
+    let branch = trigger;
+    let active = trigger.getAttribute('aria-expanded') === 'true';
+    for (let depth = 0; branch && depth < 4 && !active; depth += 1, branch = branch.parentElement) {
+      const marker = String(branch.className || '').toLowerCase();
+      active = /(select|picker|cascader|dropdown).*(active|open)|(active|open).*(select|picker|cascader|dropdown)/.test(marker);
+    }
+    if (!active) return { toggled: false };
+    trigger.click();
+    return { toggled: true };
+  })()`;
+}
+
+export type BrowserFormCommandEnvelope = { success?: boolean; data?: any; error?: string; message?: string };
+
+export type BrowserFormDriverPort = {
+  runCommand: (command: string[], options?: { signal?: AbortSignal; deadline?: number; json?: boolean; stdin?: string }) => Promise<BrowserFormCommandEnvelope>;
+  delay: (milliseconds: number, signal?: AbortSignal) => Promise<void>;
+  pageRevision: () => number;
+};
+
+/** 只处理表单 DOM 和控件状态机，不持有浏览器进程、Agent 提案或用户资料。 */
+export class BrowserFormDriver {
+  constructor(private readonly port: BrowserFormDriverPort) {}
+
+  async InspectForm(
+    options: { signal?: AbortSignal; deadline?: number },
+    retainSemantics = false,
+  ): Promise<BrowserFormCommandEnvelope> {
+    const cleanup = ['eval', '-b', Buffer.from(FormSemanticCleanupExpression, 'utf8').toString('base64')];
+    await this.port.runCommand(cleanup, options);
+    await this.port.runCommand(['eval', '-b', Buffer.from(FormSemanticEnrichmentExpression, 'utf8').toString('base64')], options);
+    try {
+      return await this.port.runCommand(['snapshot', '-i', '-c', '--urls'], options);
+    } finally {
+      if (!retainSemantics) {
+        try { await this.port.runCommand(cleanup, options); } catch { /* 快照结果优先，临时属性会在下次 Inspect 前再次清理。 */ }
+      }
+    }
+  }
+
+  private async SnapshotDynamicOptions(options: { signal?: AbortSignal; deadline?: number }): Promise<BrowserFormCommandEnvelope> {
+    const cleanup = ['eval', '-b', Buffer.from(DynamicOptionCleanupExpression, 'utf8').toString('base64')];
+    await this.port.runCommand(cleanup, options);
+    await this.port.runCommand(['eval', '-b', Buffer.from(DynamicOptionEnrichmentExpression, 'utf8').toString('base64')], options);
+    // 个人浏览器的 ref 包含严格语义指纹；标记必须保留到本次点击完成，下次快照会先清理。
+    return this.port.runCommand(['snapshot', '-i', '-c', '--urls'], options);
+  }
+
+  async DismissTransientOverlay(
+    options: { signal?: AbortSignal; deadline?: number },
+    operation?: FormFillOperation,
+  ): Promise<void> {
+    let toggled = false;
+    if (operation) {
+      const cleanup = ['eval', '-b', Buffer.from(FormSemanticCleanupExpression, 'utf8').toString('base64')];
+      try {
+        await this.port.runCommand(cleanup, options);
+        await this.port.runCommand(['eval', '-b', Buffer.from(FormSemanticEnrichmentExpression, 'utf8').toString('base64')], options);
+        const response = await this.port.runCommand(['eval', '-b', Buffer.from(DynamicOverlayDismissExpression(operation), 'utf8').toString('base64')], options);
+        const value = response.data?.result ?? response.data;
+        toggled = value?.toggled === true;
+      } catch { /* 关闭失败时继续使用通用取消事件，不覆盖字段本身的执行结果。 */ }
+      finally { try { await this.port.runCommand(cleanup, options); } catch { /* 下次 Inspect 会再次清理。 */ } }
+    }
+    if (!toggled) {
+      try { await this.port.runCommand(['press', 'Escape'], options); } catch { /* 部分组件不消费 Escape，继续发送固定的页面外点击事件。 */ }
+      try {
+        await this.port.runCommand(['eval', '-b', Buffer.from(DismissTransientOverlayExpression, 'utf8').toString('base64')], options);
+      } catch { /* 页面导航或卸载时无需继续清理旧弹层。 */ }
+    }
+    if (!options.signal?.aborted) {
+      // Phoenix 等组件使用退出动画；过早处理下一字段会让正在消失的弹层继续遮挡页面。
+      try { await this.port.delay(toggled ? OverlayTransitionDelayMs : 30, options.signal); } catch { /* 清理等待不覆盖原工具结果。 */ }
+    }
+  }
+
+  /** 优先使用原生可操作性检查；仅在固定页头/页尾遮挡时做两次有界滚动重试。 */
+  private async ClickDynamicRef(ref: string, options: { signal?: AbortSignal; deadline?: number }): Promise<void> {
+    try { await this.port.runCommand(['scrollintoview', ref], options); } catch { /* click 自身仍会执行完整可操作性检查。 */ }
+    try {
+      await this.port.runCommand(['click', ref], options);
+      return;
+    } catch (error) {
+      if (!(error instanceof AgentBrowserError) || !/covered by/i.test(error.message)) throw error;
+    }
+    await this.DismissTransientOverlay(options);
+    await this.port.runCommand(['scroll', 'down', '240'], options);
+    try {
+      await this.port.runCommand(['click', ref], options);
+      return;
+    } catch (error) {
+      if (!(error instanceof AgentBrowserError) || !/covered by/i.test(error.message)) throw error;
+    }
+    await this.port.runCommand(['scroll', 'up', '480'], options);
+    await this.port.runCommand(['click', ref], options);
+  }
+
+  /** 重新定位原字段并只返回布尔后置条件，所选资料值不会进入工具结果或 Trace。 */
+  private async VerifyDynamicSelection(
+    operation: FormFillOperation,
+    selectedLabels: string[],
+    options: { signal?: AbortSignal; deadline?: number },
+  ): Promise<boolean> {
+    const cleanup = ['eval', '-b', Buffer.from(FormSemanticCleanupExpression, 'utf8').toString('base64')];
+    await this.port.runCommand(cleanup, options);
+    try {
+      await this.port.runCommand(['eval', '-b', Buffer.from(FormSemanticEnrichmentExpression, 'utf8').toString('base64')], options);
+      const expression = DynamicSelectionVerificationExpression(operation, selectedLabels);
+      const response = await this.port.runCommand(['eval', '-b', Buffer.from(expression, 'utf8').toString('base64')], options);
+      const value = response.data?.result ?? response.data;
+      return value?.filled === true;
+    } finally {
+      try { await this.port.runCommand(cleanup, options); } catch { /* 后置条件结果优先，下次 Inspect 仍会先清理。 */ }
+    }
+  }
+
+  private async WaitForDynamicConfirmation(
+    options: { signal?: AbortSignal; deadline?: number },
+  ): Promise<{ ref: string; label: string } | undefined> {
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      const snapshot = await this.SnapshotDynamicOptions(options);
+      const confirmation = DynamicConfirmationMatch(snapshot.data ?? {});
+      if (confirmation) return confirmation;
+      if (attempt < 9) await this.port.delay(DynamicPollIntervalMs, options.signal);
+    }
+    return undefined;
+  }
+
+  private async WaitForDateRef(
+    matcher: (data: Record<string, any>) => { ref: string; label: string; role: string } | undefined,
+    options: { signal?: AbortSignal; deadline?: number },
+  ): Promise<{ ref: string; label: string; role: string } | undefined> {
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      const snapshot = await this.SnapshotDateControls(options);
+      const match = matcher(snapshot.data ?? {});
+      if (match) return match;
+      if (attempt < 9) await this.port.delay(DynamicPollIntervalMs, options.signal);
+    }
+    return undefined;
+  }
+
+  private async SnapshotDateControls(options: { signal?: AbortSignal; deadline?: number }): Promise<BrowserFormCommandEnvelope> {
+    await this.port.runCommand(['eval', '-b', Buffer.from(DateEditorCleanupExpression, 'utf8').toString('base64')], options);
+    await this.port.runCommand(['eval', '-b', Buffer.from(DateEditorEnrichmentExpression, 'utf8').toString('base64')], options);
+    return this.port.runCommand(['snapshot', '-i', '-c', '--urls'], options);
+  }
+
+  /** 等待日期弹层暴露可编辑输入框或年、月控件，避免在前端尚未完成渲染时读取空快照。 */
+  private async WaitForDatePickerSnapshot(
+    options: { signal?: AbortSignal; deadline?: number },
+  ): Promise<BrowserFormCommandEnvelope> {
+    let latest: BrowserFormCommandEnvelope = { success: true, data: {} };
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      latest = await this.SnapshotDateControls(options);
+      const refs = latest.data?.refs && typeof latest.data.refs === 'object'
+        ? latest.data.refs as Record<string, Record<string, unknown>>
+        : {};
+      const ready = Object.values(refs).some((metadata) => {
+        const label = String(metadata?.name ?? '').replace(/\s+/g, '').trim();
+        return label === '__avery_date_editor__'
+          || label.startsWith('__avery_date_year_')
+          || label.startsWith('__avery_date_month_')
+          || label.startsWith('__avery_date_day_');
+      });
+      if (ready) return latest;
+      if (attempt < 9) await this.port.delay(DynamicPollIntervalMs, options.signal);
+    }
+    return latest;
+  }
+
+  /** 日期组件提交可能晚于点击事件；在同一工具 deadline 内轮询原字段的最终显示值。 */
+  private async WaitForDateSelectionCommit(
+    operation: FormFillOperation,
+    selectedLabels: string[],
+    options: { signal?: AbortSignal; deadline?: number },
+  ): Promise<boolean> {
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      if (await this.VerifyDynamicSelection(operation, selectedLabels, options)) return true;
+      if (attempt < 9) await this.port.delay(DynamicPollIntervalMs, options.signal);
+    }
+    return false;
+  }
+
+  private async ExecuteDatePickerChoices(
+    operation: FormFillOperation,
+    initialData: Record<string, any>,
+    options: { signal?: AbortSignal; deadline?: number },
+  ): Promise<{ filled: boolean; reason?: string }> {
+    const desired = ParseDateTarget(operation.value);
+    if (!desired) return { filled: false, reason: 'date_value_unsupported' };
+    const marker = (prefix: string, target?: number) => (data: Record<string, any>) => DynamicDateRef(
+      data,
+      (label) => label === `${prefix}${target ?? ''}`,
+    );
+    const desiredYearOption = marker('__avery_date_year_option__:', desired.year);
+    let yearOption = desiredYearOption(initialData);
+    const monthYearHeader = DynamicDateRef(initialData, (label) => label.startsWith('__avery_date_month_year_header__:'));
+    const monthOnly = Boolean(monthYearHeader);
+    const yearHeader = yearOption ? undefined : monthYearHeader
+      ?? DynamicDateRef(initialData, (label) => label.startsWith('__avery_date_year_header__:'))
+      ?? await this.WaitForDateRef((data) => DynamicDateRef(data, (label) => label.startsWith('__avery_date_month_year_header__:')
+        || label.startsWith('__avery_date_year_header__:')), options);
+    const currentYear = yearHeader ? Number(yearHeader.label.split(':').pop()) : undefined;
+    if (!yearOption && currentYear !== desired.year) {
+      if (!yearHeader) return { filled: false, reason: 'date_year_control_not_found' };
+      await this.ClickDynamicRef(yearHeader.ref, options);
+      await this.port.delay(DynamicTransitionDelayMs, options.signal);
+      yearOption = await this.WaitForDateRef(desiredYearOption, options);
+      if (!yearOption) return { filled: false, reason: 'date_year_not_found' };
+      await this.ClickDynamicRef(yearOption.ref, options);
+      await this.port.delay(DynamicTransitionDelayMs, options.signal);
+    } else if (yearOption) {
+      await this.ClickDynamicRef(yearOption.ref, options);
+      await this.port.delay(DynamicTransitionDelayMs, options.signal);
+    }
+
+    const monthControl = await this.WaitForDateRef(
+      (data) => marker('__avery_date_month_option__:', desired.month)(data)
+        ?? DynamicDateRef(data, (label) => label.startsWith('__avery_date_month_header__:')),
+      options,
+    );
+    let monthOption = monthControl?.label === `__avery_date_month_option__:${desired.month}` ? monthControl : undefined;
+    if (!monthOption) {
+      const monthHeader = monthControl;
+      if (!monthHeader) return { filled: false, reason: 'date_month_control_not_found' };
+      await this.ClickDynamicRef(monthHeader.ref, options);
+      await this.port.delay(DynamicTransitionDelayMs, options.signal);
+      monthOption = await this.WaitForDateRef(
+        marker('__avery_date_month_option__:', desired.month),
+        options,
+      );
+    }
+    if (!monthOption) return { filled: false, reason: 'date_month_not_found' };
+    await this.ClickDynamicRef(monthOption.ref, options);
+    await this.port.delay(DynamicTransitionDelayMs, options.signal);
+
+    // 教育、工作和项目经历常使用纯年月面板；月份本身就是最终选择，不应继续等待不存在的日期网格。
+    if (monthOnly) return { filled: true };
+
+    // 北森的年月资料仍由完整日历承载；选择月份只切换视图，不会提交字段，因此在日面板存在时补选首日。
+    const targetDay = desired.day ?? 1;
+    const dayOption = await this.WaitForDateRef(
+      marker('__avery_date_day_option__:', targetDay),
+      options,
+    );
+    if (dayOption) {
+      await this.ClickDynamicRef(dayOption.ref, options);
+      await this.port.delay(DynamicTransitionDelayMs, options.signal);
+    } else if (desired.day !== undefined) {
+      return { filled: false, reason: 'date_day_not_found' };
+    }
+    const finalSnapshot = await this.SnapshotDateControls(options);
+    const confirmation = marker('__avery_date_confirmation__')(finalSnapshot.data ?? {});
+    if (confirmation) {
+      await this.ClickDynamicRef(confirmation.ref, options);
+      await this.port.delay(DynamicConfirmationDelayMs, options.signal);
+    }
+    return { filled: true };
+  }
+
+  /**
+   * 自定义下拉和级联菜单在 Host 内部有限收敛；每层候选项都必须来自新快照，
+   * 模型既不能提供 selector，也不会参与逐层 Click/Snapshot 编排。
+   */
+  async ExecuteCustomSelect(
+    operation: FormFillOperation,
+    options: { signal?: AbortSignal; deadline?: number },
+  ): Promise<{ filled: boolean; reason?: string }> {
+    const formSnapshot = await this.InspectForm(options, true);
+    const fields = FormFields(formSnapshot.data?.refs && typeof formSnapshot.data.refs === 'object' ? formSnapshot.data.refs : {}, this.port.pageRevision());
+    const matchingFields = MatchingDynamicFormFields(fields, operation);
+    const target = matchingFields[operation.occurrence] ?? matchingFields[0];
+    if (!target) return { filled: false, reason: 'dynamic_field_not_found' };
+    const selectedLabels: string[] = [];
+    const region = ['nativePlace', 'residence', 'hukou', 'targetProvince', 'targetCity'].includes(operation.key);
+    let committed = false;
+
+    try {
+      await this.ClickDynamicRef(target.ref, options);
+      const visitedActions = new Set<string>();
+      let selectedAny = false;
+      let selectionControlUsed = false;
+      let directSelectionCompleted = false;
+      let searchedDynamicList = false;
+      // 三层级联可能同时包含“展开文字”和“选择图标”，因此动作上限高于层级上限，但仍是固定小常数。
+      for (let action = 0; action < 7; action += 1) {
+        let option: ReturnType<typeof DynamicOptionMatch> = undefined;
+        let latestOptionSnapshot: BrowserFormCommandEnvelope = { success: true, data: {} };
+        for (let attempt = 0; attempt < 10 && !option; attempt += 1) {
+          latestOptionSnapshot = await this.SnapshotDynamicOptions(options);
+          option = DynamicOptionMatch(latestOptionSnapshot.data ?? {}, operation.key, operation.value, visitedActions);
+          if (!option && attempt < 9) await this.port.delay(DynamicPollIntervalMs, options.signal);
+        }
+        if (!option) {
+          if (operation.key === 'ethnicity' && !searchedDynamicList) {
+            const search = DynamicSearchMatch(latestOptionSnapshot.data ?? {});
+            if (search) {
+              await this.port.runCommand(['fill', search.ref, operation.value], options);
+              await this.port.delay(DynamicTransitionDelayMs, options.signal);
+              searchedDynamicList = true;
+              continue;
+            }
+          }
+          if (region && selectedAny) break;
+          return { filled: false, reason: selectedAny ? 'cascade_incomplete' : 'option_not_found' };
+        }
+        await this.port.runCommand(['click', option.ref], options);
+        selectedAny = true;
+        visitedActions.add(option.actionKey);
+        if (!selectedLabels.includes(option.label)) selectedLabels.push(option.label);
+        if (option.role === 'radio') { selectionControlUsed = true; break; }
+        if (option.complete) { directSelectionCompleted = true; break; }
+        await this.port.delay(DynamicTransitionDelayMs, options.signal);
+      }
+      if (!selectionControlUsed && !directSelectionCompleted && !(region && selectedAny)) {
+        return { filled: false, reason: 'cascade_incomplete' };
+      }
+      if (region) {
+        // 自动提交型地区控件不需要确认；仍显示旧值时，确认是不可省略的提交步骤。
+        committed = await this.VerifyDynamicSelection(operation, selectedLabels, options);
+        if (committed) return { filled: true };
+        const confirmation = await this.WaitForDynamicConfirmation(options);
+        if (!confirmation) return { filled: false, reason: 'confirmation_not_available' };
+        await this.port.runCommand(['click', confirmation.ref], options);
+        await this.port.delay(DynamicConfirmationDelayMs, options.signal);
+        committed = await this.VerifyDynamicSelection(operation, selectedLabels, options);
+        return committed ? { filled: true } : { filled: false, reason: 'confirmation_not_committed' };
+      }
+      if (selectionControlUsed) {
+        const confirmation = await this.WaitForDynamicConfirmation(options);
+        if (confirmation) await this.port.runCommand(['click', confirmation.ref], options);
+      }
+      committed = await this.VerifyDynamicSelection(operation, selectedLabels, options);
+      return committed ? { filled: true } : { filled: false, reason: 'selection_not_committed' };
+    } finally {
+      try { await this.port.runCommand(['eval', '-b', Buffer.from(DynamicOptionCleanupExpression, 'utf8').toString('base64')], options); } catch { /* 字段结果优先，下次候选快照仍会先清理。 */ }
+      try { await this.port.runCommand(['eval', '-b', Buffer.from(FormSemanticCleanupExpression, 'utf8').toString('base64')], options); } catch { /* 下次 Inspect 会再次清理。 */ }
+      // 地区确认成功后组件应自行关闭；再次切换触发器可能反而重开弹层。失败路径才执行恢复性收尾。
+      if (!committed || !region) await this.DismissTransientOverlay(options, operation);
+    }
+  }
+
+  /** 日期控件优先使用编辑器；纯点选面板则按年、月、日逐步推进，每一步都使用新快照。 */
+  async ExecuteCustomDate(
+    operation: FormFillOperation,
+    options: { signal?: AbortSignal; deadline?: number },
+  ): Promise<{ filled: boolean; reason?: string }> {
+    const formSnapshot = await this.InspectForm(options, true);
+    const fields = FormFields(formSnapshot.data?.refs && typeof formSnapshot.data.refs === 'object' ? formSnapshot.data.refs : {}, this.port.pageRevision());
+    const matchingFields = MatchingDynamicFormFields(fields, operation);
+    const target = matchingFields[operation.occurrence] ?? matchingFields[0];
+    if (!target) return { filled: false, reason: 'dynamic_field_not_found' };
+    let committed = false;
+
+    try {
+      await this.ClickDynamicRef(target.ref, options);
+      await this.port.delay(DynamicTransitionDelayMs, options.signal);
+      let editorSnapshot: BrowserFormCommandEnvelope;
+      const cleanupDateEditor = ['eval', '-b', Buffer.from(DateEditorCleanupExpression, 'utf8').toString('base64')];
+      try {
+        editorSnapshot = await this.WaitForDatePickerSnapshot(options);
+      } catch (error) {
+        try { await this.port.runCommand(cleanupDateEditor, options); } catch { /* 保留原始快照错误。 */ }
+        throw error;
+      }
+      const refs = editorSnapshot.data?.refs && typeof editorSnapshot.data.refs === 'object'
+        ? editorSnapshot.data.refs as Record<string, Record<string, unknown>>
+        : {};
+      const editorEntry = Object.entries(refs).find(([, metadata]) => metadata?.name === '__avery_date_editor__');
+      let choiceData = editorSnapshot.data ?? {};
+      if (editorEntry) {
+        const editorRef = `@${editorEntry[0].replace(/^@/, '')}`;
+        try {
+          await this.port.runCommand(['fill', editorRef, operation.value], options);
+          await this.port.runCommand(['press', 'Enter'], options);
+          await this.port.delay(DynamicTransitionDelayMs, options.signal);
+          committed = await this.WaitForDateSelectionCommit(operation, [operation.value], options);
+        } catch (error) {
+          if (options.signal?.aborted || (error instanceof AgentBrowserError && (error.statusUnknown
+            || ['CANCELLED', 'BROWSER_COMMAND_TIMEOUT'].includes(error.code)))) throw error;
+          // 部分日期面板暴露了不可实际操作的辅助输入框；明确失败后改走年份、月份点选状态机。
+        } finally {
+          try { await this.port.runCommand(cleanupDateEditor, options); } catch { /* 点选路径会重新获取页面快照。 */ }
+        }
+        if (committed) return { filled: true };
+        // Phoenix 的无效输入不会关闭日历。优先复用当前弹层，避免再次点击被弹层覆盖的原字段。
+        const existingPanel = await this.SnapshotDateControls(options);
+        const existingRefs = existingPanel.data?.refs && typeof existingPanel.data.refs === 'object'
+          ? existingPanel.data.refs as Record<string, Record<string, unknown>>
+          : {};
+        const panelStillOpen = Object.values(existingRefs).some((metadata) => {
+          const label = String(metadata?.name ?? '');
+          return label.startsWith('__avery_date_year_')
+            || label.startsWith('__avery_date_month_')
+            || label.startsWith('__avery_date_day_');
+        });
+        if (panelStillOpen) {
+          choiceData = existingPanel.data ?? {};
+        } else {
+          try { await this.port.runCommand(cleanupDateEditor, options); } catch { /* 重新 Inspect 前尽力清理临时标记。 */ }
+          const refreshedForm = await this.InspectForm(options, true);
+          const refreshedFields = FormFields(refreshedForm.data?.refs && typeof refreshedForm.data.refs === 'object' ? refreshedForm.data.refs : {}, this.port.pageRevision());
+          const refreshedMatches = MatchingDynamicFormFields(refreshedFields, operation);
+          const refreshedTarget = refreshedMatches[operation.occurrence] ?? refreshedMatches[0];
+          if (!refreshedTarget) return { filled: false, reason: 'dynamic_field_not_found' };
+          await this.ClickDynamicRef(refreshedTarget.ref, options);
+          await this.port.delay(DynamicTransitionDelayMs, options.signal);
+          choiceData = (await this.WaitForDatePickerSnapshot(options)).data ?? {};
+        }
+      }
+      if (!committed) {
+        const choiceResult = await this.ExecuteDatePickerChoices(operation, choiceData, options);
+        if (!choiceResult.filled) return choiceResult;
+        committed = await this.WaitForDateSelectionCommit(operation, [operation.value], options);
+        return committed ? { filled: true } : { filled: false, reason: 'selection_not_committed' };
+      }
+      return { filled: true };
+    } finally {
+      try { await this.port.runCommand(['eval', '-b', Buffer.from(DateEditorCleanupExpression, 'utf8').toString('base64')], options); } catch { /* 下次日期操作仍会先清理。 */ }
+      try { await this.port.runCommand(['eval', '-b', Buffer.from(FormSemanticCleanupExpression, 'utf8').toString('base64')], options); } catch { /* 下次 Inspect 会再次清理。 */ }
+      await this.DismissTransientOverlay(options, operation);
+    }
+  }
+
+}

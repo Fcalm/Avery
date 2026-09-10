@@ -19,12 +19,14 @@ describe('runtime reminder', () => {
       confirmationMode: 'allow_low_risk',
       finalTurn: false,
       loadedSkillIds: ['ResumeTailoring'],
+      boundResumeName: '后端简历',
     });
 
     expect(content).toContain('Today is August 22, 2026.');
     expect(content).toContain('Used turns: 20 of 30. Remaining turns: 10.');
     expect(content).toContain('Current confirmation mode: allow low-risk actions.');
     expect(content).toContain('Loaded skills: ResumeTailoring.');
+    expect(content).toContain('Bound resume: 后端简历.');
     expect(content).toMatch(/^<runtime-reminder>\n/);
     expect(content).toMatch(/The above is the current runtime status\. No response is needed; continue the task\.\n<\/runtime-reminder>$/);
     expect(content.match(/<runtime-reminder>/g)).toHaveLength(1);

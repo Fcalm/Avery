@@ -6,6 +6,7 @@ import { GetNow, WriteAudit, AssertRevision } from './helpers';
 function ToTask(row: any): any {
   return {
     id: row.id, title: row.title, message: row.message, scenarioId: row.scenario_id, ...(row.resume_id ? { resumeId: row.resume_id } : {}),
+    browserAuthorized: row.browser_authorized === 1,
     schedule: JSON.parse(row.schedule_json), state: row.state, consumedOccurrences: row.consumed_occurrences,
     totalOccurrences: row.total_occurrences, nextRunAt: row.next_run_at, revision: row.revision,
     createdAt: row.created_at, updatedAt: row.updated_at,
@@ -37,16 +38,17 @@ export class CronTaskRepository {
     return this.db.prepare('SELECT * FROM cron_runs WHERE cron_task_id = ? ORDER BY occurrence DESC').all(cronTaskId).map(ToRun);
   }
 
-  Create(raw: unknown, resourceContext: { resumeId?: string } = {}): any {
+  Create(raw: unknown, resourceContext: { resumeId?: string; browserAuthorized?: boolean } = {}): any {
     const input = CreateCronTaskSchema.parse(raw);
     ValidateCronScheduleTiming(input.schedule);
     const id = `cron-${randomUUID()}`;
     const now = GetNow();
     const total = CronTotalOccurrences(input.schedule);
     const nextRunAt = CronOccurrenceAt(input.schedule, 1);
-    this.db.prepare('INSERT INTO cron_tasks(id,title,message,scenario_id,resume_id,schedule_json,state,consumed_occurrences,total_occurrences,next_run_at,revision,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)')
-      .run(id, input.title, input.message, input.scenarioId, resourceContext.resumeId ?? null, JSON.stringify(input.schedule), 'active', 0, total, nextRunAt, 1, now, now);
-    WriteAudit(this.db, 'user', 'create', 'cron_task', id, { scenarioId: input.scenarioId });
+    const browserAuthorized = input.scenarioId === 'application' && resourceContext.browserAuthorized === true;
+    this.db.prepare('INSERT INTO cron_tasks(id,title,message,scenario_id,resume_id,browser_authorized,schedule_json,state,consumed_occurrences,total_occurrences,next_run_at,revision,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
+      .run(id, input.title, input.message, input.scenarioId, resourceContext.resumeId ?? null, browserAuthorized ? 1 : 0, JSON.stringify(input.schedule), 'active', 0, total, nextRunAt, 1, now, now);
+    WriteAudit(this.db, 'user', 'create', 'cron_task', id, { scenarioId: input.scenarioId, browserAuthorized });
     return this.Read(id);
   }
 
@@ -75,6 +77,16 @@ export class CronTaskRepository {
     this.db.prepare("UPDATE cron_tasks SET state='cancelled',next_run_at=NULL,cancelled_at=?,revision=revision+1,updated_at=? WHERE id=?").run(GetNow(), GetNow(), id);
     WriteAudit(this.db, 'user', 'cancel', 'cron_task', id, {});
     return { id, deleted: true };
+  }
+
+  /** 只允许撤销创建时的任务级授权；重新授权必须重新经过 CronTask 创建确认。 */
+  RevokeBrowserAuthorization(id: string): any {
+    const row = this.db.prepare('SELECT state,browser_authorized FROM cron_tasks WHERE id = ?').get(id);
+    if (!row || row.state === 'cancelled') throw new Error('CronTask was not found.');
+    if (row.browser_authorized !== 1) return this.Read(id);
+    this.db.prepare('UPDATE cron_tasks SET browser_authorized=0,revision=revision+1,updated_at=? WHERE id=?').run(GetNow(), id);
+    WriteAudit(this.db, 'user', 'revoke_browser_authorization', 'cron_task', id, {});
+    return this.Read(id);
   }
 
   EarliestNextRunAt(): number | null {

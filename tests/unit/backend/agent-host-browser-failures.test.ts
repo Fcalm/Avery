@@ -39,7 +39,7 @@ function Proposal(toolName: BrowserActionProposal['toolName'], canonicalArgument
   };
 }
 
-async function CreateHost(provider: ReturnType<typeof CreateProvider>, browser: BrowserAutomationPort & { Close(): Promise<void> }) {
+async function CreateHost(provider: ReturnType<typeof CreateProvider>, browser: BrowserAutomationPort & { Close(): Promise<void> }, storedSettings: Record<string, unknown> = {}) {
   const root = await mkdtemp(join(tmpdir(), 'avery-agent-host-browser-failure-'));
   temporaryRoots.push(root);
   const events: any[] = [];
@@ -48,13 +48,21 @@ async function CreateHost(provider: ReturnType<typeof CreateProvider>, browser: 
     GetLogs: vi.fn(async () => []), GetTraces: vi.fn(async () => []), GetTraceEvents: vi.fn(async () => []), DeleteTraces: vi.fn(async () => ({ deleted: 0 })),
     SetTraceRetention: vi.fn(async (value: number) => ({ traceRetention: value })), ClearObservability: vi.fn(async () => ({ cleared: true })),
   };
+  const business = {
+    GetStoredSettings: vi.fn(async () => storedSettings), GetProfiles: vi.fn(async () => ({ items: [] })), ResolveAttachmentUri: vi.fn(async () => null),
+    CreateCronTask: vi.fn(async (input: any, resources: any) => ({ id: 'cron-created', ...input, ...resources })),
+    RevokeCronTaskBrowserAuthorization: vi.fn(async (id: string) => ({ id, browserAuthorized: false })),
+    ReadCronTask: vi.fn(async (input: { cronTaskId?: string }) => input.cronTaskId
+      ? { task: { id: input.cronTaskId, title: '工作日投递', scenarioId: 'application', state: 'active', nextRunAt: Date.now() + 60_000, browserAuthorized: true } }
+      : { tasks: [{ id: 'cron-1', title: '工作日投递', scenarioId: 'application', state: 'active', nextRunAt: Date.now() + 60_000, browserAuthorized: true }] }),
+  };
   const host = new AgentHost({
     userDataPath: join(root, 'user-data'), workspacePath: root, Emit: (event) => events.push(event), browserRuntime: browser as any,
     observability, credentialPort: { Load: vi.fn(async () => null), Save: vi.fn() },
-    business: { GetStoredSettings: vi.fn(async () => ({})), GetProfiles: vi.fn(async () => ({ items: [] })), ResolveAttachmentUri: vi.fn(async () => null) },
+    business,
     createDefaultModules: (ports) => ({ ...CreateDefaultModules(ports), modelProvider: provider }),
   });
-  return { host, events };
+  return { host, events, business };
 }
 
 function Send(host: AgentHost, requestId: string, content: string) {
@@ -62,6 +70,64 @@ function Send(host: AgentHost, requestId: string, content: string) {
 }
 
 describe('AgentHost 浏览器失败与用户接管', () => {
+  it('按已保存设置同步浏览器引擎后再返回运行状态', async () => {
+    const provider = CreateProvider(() => ({ content: 'unused', toolCalls: [] }));
+    const browser = {
+      Prepare: vi.fn(), Execute: vi.fn(), SetEngine: vi.fn(),
+      GetStatus: vi.fn(async () => ({ engine: 'chrome', state: 'stopped' })),
+      ClearProfile: vi.fn(), ResetPageReferences: vi.fn(), Close: vi.fn(async () => undefined),
+    };
+    const { host } = await CreateHost(provider, browser as any, { browserEngine: 'chrome' });
+
+    await expect(host.GetBrowserRuntimeStatus(true)).resolves.toMatchObject({ engine: 'chrome' });
+    expect(browser.SetEngine).toHaveBeenCalledWith('chrome');
+    expect(browser.GetStatus).toHaveBeenCalledWith(true);
+    browser.SetEngine.mockClear();
+    (host as any).browserRunId = 'active-application-run';
+    await host.GetBrowserRuntimeStatus();
+    expect(browser.SetEngine).not.toHaveBeenCalled();
+    expect(browser.GetStatus).toHaveBeenLastCalledWith(false);
+    await expect(host.GetBrowserRuntimeStatus('true' as any)).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
+    (host as any).browserRunId = null;
+    await host.Close();
+  });
+
+  it('设置页只读取并撤销创建时持久化的任务级浏览器授权', async () => {
+    const provider = CreateProvider(() => ({ content: 'unused', toolCalls: [] }));
+    const browser = {
+      Prepare: vi.fn(), Execute: vi.fn(), SetEngine: vi.fn(),
+      GetStatus: vi.fn(), ClearProfile: vi.fn(), ResetPageReferences: vi.fn(), Close: vi.fn(async () => undefined),
+    };
+    const { host, business } = await CreateHost(provider, browser as any, { browserEngine: 'chrome' });
+
+    await expect(host.GetCronBrowserAccess()).resolves.toMatchObject({ tasks: [{ id: 'cron-1', title: '工作日投递', browserAuthorized: true }] });
+    await expect(host.RevokeCronBrowserAccess({ cronTaskId: 'cron-1' })).resolves.toMatchObject({ revoked: true });
+    expect(business.RevokeCronTaskBrowserAuthorization).toHaveBeenCalledWith('cron-1');
+
+    (host as any).browserRunId = 'active-application-run';
+    await expect(host.RevokeCronBrowserAccess({ cronTaskId: 'cron-1' })).rejects.toMatchObject({ code: 'AGENT_BUSY' });
+    (host as any).browserRunId = null;
+    await host.Close();
+  });
+
+  it('纯岗位搜索的投递 CronTask 无需绑定简历即可创建', async () => {
+    const provider = CreateProvider(() => ({ content: 'unused', toolCalls: [] }));
+    const browser = {
+      Prepare: vi.fn(), Execute: vi.fn(), GetStatus: vi.fn(), ClearProfile: vi.fn(), ResetPageReferences: vi.fn(), Close: vi.fn(async () => undefined),
+    };
+    const { host, business } = await CreateHost(provider, browser as any);
+    const input = {
+      title: '读取 BOSS 岗位', message: '在 BOSS 搜索 Agent 岗位并读取 JD', scenarioId: 'application',
+      schedule: { type: 'once', executeAt: '2030-01-01T09:00:00+08:00', timeZone: 'Asia/Shanghai' },
+    };
+
+    const proposal = (host as any).PrepareCronTask(input, { requestId: 'cron-without-resume' });
+    expect(proposal.summary).toContain('当前未绑定简历');
+    await expect(host.ConfirmCronTask(proposal.confirmationId, true)).resolves.toMatchObject({ created: true, task: { id: 'cron-created' } });
+    expect(business.CreateCronTask).toHaveBeenCalledWith(input, { browserAuthorized: true });
+    await host.Close();
+  });
+
   it('测评取消贯穿确认后的浏览器执行，迟到结果只能记为状态未知', async () => {
     const provider = CreateProvider(() => ({ content: 'unused', toolCalls: [] }));
     let release!: () => void;
@@ -81,6 +147,31 @@ describe('AgentHost 浏览器失败与用户接管', () => {
     await expect(pending).resolves.toMatchObject({ status: 'status_unknown', code: 'CANCELLED' });
     expect(browser.Execute).toHaveBeenCalledWith(expect.objectContaining({ signal: controller.signal }));
     expect([...((host as any).toolLedger.values())]).toContainEqual(expect.objectContaining({ status: 'status_unknown', errorCode: 'CANCELLED' }));
+    await host.Close();
+  });
+
+  it('确认后的 BrowserFillForm 使用完整 120 秒执行预算', async () => {
+    const provider = CreateProvider(() => ({ content: 'unused', toolCalls: [] }));
+    let receivedDeadline = 0;
+    const browser = {
+      Prepare: vi.fn(),
+      Execute: vi.fn(async ({ deadline }: { deadline?: number }) => {
+        receivedDeadline = deadline ?? 0;
+        return { status: 'succeeded' as const, data: {} };
+      }),
+      GetStatus: vi.fn(), ClearProfile: vi.fn(), ResetPageReferences: vi.fn(), Close: vi.fn(async () => undefined),
+    };
+    const { host } = await CreateHost(provider, browser as any);
+    const proposal = Proposal('BrowserFillForm', { planId: 'plan-1' });
+    (host as any).pendingBrowserActions.set('fill-form-confirmation', {
+      confirmationId: 'fill-form-confirmation', proposal, idempotencyKey: 'fill-form-idempotency',
+      requestId: 'fill-form-request', runId: 'fill-form-run', toolCallId: 'fill-form-tool', createdAt: Date.now(),
+    });
+    const startedAt = Date.now();
+
+    await expect(host.ConfirmBrowserAction('fill-form-confirmation', true)).resolves.toMatchObject({ status: 'succeeded' });
+    expect(receivedDeadline).toBeGreaterThanOrEqual(startedAt + 119_900);
+    expect(receivedDeadline).toBeLessThanOrEqual(Date.now() + 120_100);
     await host.Close();
   });
 

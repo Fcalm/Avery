@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { JobSeekingTypeValues } from './enums';
 
 /**
  * 写通道负载的形状校验 Schema（阶段 6 A2 收口）：
@@ -44,7 +45,7 @@ export const JobUpsertSchema = z.object({
   city: z.string().max(100).optional(),
   salary: z.string().max(100).optional(),
   experience: z.string().max(100).optional(),
-  employmentType: z.string().max(50).optional(),
+  jobSeekingType: z.enum(JobSeekingTypeValues).optional(),
   channel: z.string().max(100).optional(),
   favorite: z.boolean().optional(),
   matchScore: z.number().optional(),
@@ -77,6 +78,7 @@ export const SettingsSubmitSchema = z.object({
   compressionThreshold: z.number().int().min(1).max(100).optional(),
   onboardingCompleted: z.boolean().optional(),
   customContext: z.string().max(50000).optional(),
+  browserEngine: z.enum(['electron', 'chrome', 'edge']).optional(),
 }).passthrough();
 
 /** 档案单项：id 为结构必需。 */

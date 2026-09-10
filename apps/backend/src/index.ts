@@ -47,6 +47,7 @@ async function Bootstrap(): Promise<void> {
   const agentBrowserExecutablePath = String(app.agentBrowserExecutablePath ?? '');
   const browserCompanionExecutablePath = String(app.browserCompanionExecutablePath ?? '');
   const browserCompanionAppPath = typeof app.browserCompanionAppPath === 'string' && app.browserCompanionAppPath ? app.browserCompanionAppPath : undefined;
+  const externalBrowserPaths = app.externalBrowserPaths && typeof app.externalBrowserPaths === 'object' ? app.externalBrowserPaths : undefined;
   const smoke = Boolean(app.smoke);
 
   const desktop = CreateDesktopCapabilityClient(PostMessage);
@@ -77,6 +78,7 @@ async function Bootstrap(): Promise<void> {
     agentBrowserExecutablePath,
     browserCompanionExecutablePath,
     browserCompanionAppPath,
+    externalBrowserPaths,
     onCronScheduleChanged: () => cronRunner?.Sync(),
   });
 

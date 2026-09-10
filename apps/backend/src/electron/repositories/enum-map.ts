@@ -1,7 +1,10 @@
 import { ProfileCategoryValues } from '@avery/contracts';
 
-export const EmploymentTypeStorage: Record<string, string> = { intern: '实习', full_time: '正式工' };
-export const EmploymentTypeDisplay: Record<string, string> = { 实习: 'intern', 正式工: 'full_time' };
+/** 中英枚举映射：契约层使用稳定英文值，持久化层使用当前中文分类名称。 */
+
+export const JobSeekingTypeStorage: Record<string, string> = { intern: '实习', campus_recruitment: '校招', social_recruitment: '社招' };
+// 旧版本持久化的“正式工 / full_time”在读取时归并为社招，保证升级后历史岗位可继续编辑。
+export const JobSeekingTypeDisplay: Record<string, string> = { 实习: 'intern', 校招: 'campus_recruitment', 社招: 'social_recruitment', 正式工: 'social_recruitment', full_time: 'social_recruitment' };
 export const ChannelStorage: Record<string, string> = { boss_zhipin: 'BOSS直聘', company_website: '企业官网', other: '其他' };
 export const ChannelDisplay: Record<string, string> = { BOSS直聘: 'boss_zhipin', 企业官网: 'company_website', 其他: 'other' };
 export const ApplicationStatusStorage: Record<string, string> = { saved: '已收藏', applied: '已投递', written_test: '笔试中', interviewing: '面试中', ended: '已结束' };
@@ -28,13 +31,18 @@ export function ToDisplay(value: unknown, displayMap: Record<string, string>): u
 /** 岗位写入前映射为存储形状；不修改原始对象。 */
 export function JobToStorage(job: any): any {
   if (!job || typeof job !== 'object') return job;
-  return { ...job, employmentType: ToStorage(job.employmentType, EmploymentTypeStorage), channel: ToStorage(job.channel, ChannelStorage) };
+  const { employmentType: legacyEmploymentType, ...rest } = job;
+  const requestedType = job.jobSeekingType ?? legacyEmploymentType;
+  const jobSeekingType = requestedType === 'full_time' || requestedType === '正式工' ? 'social_recruitment' : requestedType;
+  return { ...rest, jobSeekingType: ToStorage(jobSeekingType, JobSeekingTypeStorage), channel: ToStorage(job.channel, ChannelStorage) };
 }
 
 /** 岗位读取后映射为契约英文形状；不修改原始对象。 */
 export function JobToDisplay(job: any): any {
   if (!job || typeof job !== 'object') return job;
-  return { ...job, employmentType: ToDisplay(job.employmentType, EmploymentTypeDisplay), channel: ToDisplay(job.channel, ChannelDisplay) };
+  const { employmentType: legacyEmploymentType, ...rest } = job;
+  const jobSeekingType = job.jobSeekingType ?? legacyEmploymentType;
+  return { ...rest, jobSeekingType: ToDisplay(jobSeekingType, JobSeekingTypeDisplay), channel: ToDisplay(job.channel, ChannelDisplay) };
 }
 
 /** 投递写入前映射为存储形状；不修改原始对象。 */

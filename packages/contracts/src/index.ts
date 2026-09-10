@@ -17,7 +17,7 @@ export type {
   ProfileItemDto, ResumeDto, ResumeRevisionDto, SettingsDto, WorkspaceStatusDto, WorkspaceViewModel,
 } from './dto';
 export {
-  ApplicationStatusValues, ChannelValues, EmploymentTypeValues, JobScoreValues, ProfileCategoryValues,
+  ApplicationStatusValues, ChannelValues, JobSeekingTypeValues, JobScoreValues, ProfileCategoryValues,
 } from './enums';
 export {
   CronTaskScenarioSchema, CronTaskStateSchema, CronRunStateSchema, CronDayOfWeekSchema,
@@ -25,7 +25,7 @@ export {
 } from './cron-task';
 export type { CronSchedule, CreateCronTaskInput, UpdateCronTaskInput, CronTaskState, CronRunState, CronTaskDto, CronRunDto } from './cron-task';
 export type {
-  ApplicationStatus, Channel, EmploymentType, JobScore, ProfileCategory,
+  ApplicationStatus, Channel, JobSeekingType, JobScore, ProfileCategory,
 } from './enums';
 export { BridgeNamespaces } from './bridge';
 export type { BridgeNamespaceName } from './bridge';

@@ -36,7 +36,8 @@ export function CreateToolContext(overrides: Partial<ToolContext> = {}): ToolCon
     projectRoot: null,
     attachments: [],
     profileSnapshot: [],
-    resumeSnapshot: null,
+    boundResume: null,
+    bindResume: vi.fn(),
     ports: {
       file: {
         ReadAuthorizedFile: vi.fn(),
@@ -46,7 +47,7 @@ export function CreateToolContext(overrides: Partial<ToolContext> = {}): ToolCon
         ResolveAttachmentUri: vi.fn(),
         CreateGlobMatcher: vi.fn(() => /.*/u),
       },
-      resumeRead: { ReadCurrent: vi.fn() },
+      resumeRead: { List: vi.fn(async () => []), ReadCurrent: vi.fn() },
       resumeWrite: {
         AcquireLock: vi.fn(),
         ReleaseLock: vi.fn(),
@@ -118,7 +119,7 @@ export function CreateKernelHarness(options: {
       Configure: vi.fn(), TestConnection: vi.fn(), GetBalance: vi.fn(), GetModels: vi.fn(), GetStatus: vi.fn(),
       ResolveRequestModel: vi.fn((model?: string) => model ?? 'test-model'),
       StreamCompletion: streamCompletion,
-      CreateSummary: options.createSummary ?? vi.fn(async (model, messages, onRequest) => {
+      CreateSummary: options.createSummary ?? vi.fn(async (_provider, model, messages, onRequest) => {
         onRequest?.({ kind: 'summary', model, messages: [{ role: 'system', content: 'summary prompt' }, ...messages], toolCount: 0 });
         return { content: 'summary' };
       }),
@@ -155,6 +156,7 @@ export function CreateKernelHarness(options: {
 
   const controller = new AbortController();
   const tools = options.tools ?? [];
+  let generatedId = 0;
   const input: KernelRunInput = {
     requestId: 'request-1',
     sessionId: 'session-1',
@@ -163,6 +165,7 @@ export function CreateKernelHarness(options: {
     requestHistory: options.history ?? [],
     userContent: 'test request',
     histories: new Map(),
+    persistHistory: vi.fn(),
     toolArray: tools,
     modules,
     toolContext: CreateToolContext(),
@@ -172,7 +175,7 @@ export function CreateKernelHarness(options: {
     maxTurns: 12,
     contextLimit: 1_000,
     thresholdPercent: 70,
-    createId: () => 'generated-id',
+    createId: () => `generated-id-${++generatedId}`,
     scenario: {
       id: 'default', name: '默认场景', enabled: true, status: 'active',
       toolNames: options.scenarioToolNames ?? tools.map((tool) => tool.definition.function.name),

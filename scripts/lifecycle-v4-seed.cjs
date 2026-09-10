@@ -18,7 +18,7 @@ async function Run() {
     await business.SaveProfiles([{ id: 'lifecycle-profile', category: 'project', title: '生命周期档案', content: '确定性测试内容', updatedAt: Date.now() }]);
     await business.UpsertResume({ id: 'lifecycle-resume', name: '生命周期简历', targetRoles: ['前端工程师'], summary: '第一版', content: '第一版正文' });
     await business.UpsertResume({ id: 'lifecycle-resume', name: '生命周期简历', targetRoles: ['前端工程师'], summary: '第二版', content: '第二版正文' });
-    await business.UpsertJob({ id: 'lifecycle-job', company: '验收公司', title: '前端工程师', city: '上海', experience: '3年', employmentType: 'full_time', channel: 'company_website', favorite: true, jd: '确定性 JD' });
+    await business.UpsertJob({ id: 'lifecycle-job', company: '验收公司', title: '前端工程师', city: '上海', experience: '3年', jobSeekingType: 'social_recruitment', channel: 'company_website', favorite: true, jd: '确定性 JD' });
     await business.UpsertApplication({ id: 'lifecycle-application', jobId: 'lifecycle-job', resumeId: 'lifecycle-resume', status: 'applied', note: '生命周期验收' });
     await business.ImportAttachment(fixturePath, 'text/plain');
     await business.CreateBackup();

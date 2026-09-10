@@ -163,37 +163,64 @@ function EstimateProviderTokens(value: unknown): number {
 
 /** 默认模型 Provider 模块：配置、连通性、请求级模型解析、流式补全、摘要与规模估算；API Key 经宿主端口存取。 */
 export function CreateProviderModule(ports: AgentDefaultPorts): ModelProviderModule {
-  let config: ProviderConfig = { provider: 'DeepSeek', baseUrl: DefaultBaseUrl, model: 'deepseek-v4-flash', thinkingEnabled: true, contextLimit: DefaultContextLimit, contextLimitMode: 'default', compressionThreshold: 80, apiKey: '' };
-  let configLoaded = false;
+  const defaultConfig: ProviderConfig = { provider: 'DeepSeek', baseUrl: DefaultBaseUrl, model: 'deepseek-v4-flash', thinkingEnabled: true, contextLimit: DefaultContextLimit, contextLimitMode: 'default', compressionThreshold: 80, apiKey: '' };
+  let config: ProviderConfig = defaultConfig;
+  const configs = new Map<SupportedProvider, ProviderConfig>([['DeepSeek', defaultConfig]]);
+  let configLoadPromise: Promise<void> | null = null;
   const providerFetch = globalThis.fetch;
 
-  /** 惰性加载宿主私有配置：首次任一业务入口需要配置时经端口读取，之后缓存于内存；无端口或未保存时保留默认值。 */
+  /** 惰性加载宿主私有配置；并发入口共享同一个 Promise，不能在凭据尚未读完时误用默认配置。 */
   async function EnsureConfig() {
-    if (configLoaded) return;
-    configLoaded = true;
-    const stored = (await ports.getConfig()) ?? null;
-    if (!stored) return;
-    const provider = NormalizeProvider(stored.provider);
-    const model = ResolveProviderModel(provider, stored.model || 'deepseek-v4-flash');
-    // DeepSeek 旧版 64K 是历史默认值而非用户选择；自定义 Provider 的旧值则由用户明确填写，必须保留。
-    const contextLimitMode: ContextLimitMode = stored.contextLimitMode === 'custom' || stored.contextLimitMode === 'default'
-      ? stored.contextLimitMode : provider === '自定义' ? 'custom' : 'default';
-    const modelMaximum = ResolveModelMaximum(provider, model);
-    let contextLimit: number;
-    try {
-      contextLimit = ResolveContextLimit({ mode: contextLimitMode, value: stored.contextLimit, modelMaximum });
-    } catch {
-      contextLimit = ResolveContextLimit({ mode: 'default', modelMaximum });
+    if (!configLoadPromise) {
+      configLoadPromise = (async () => {
+        const stored = (await ports.getConfig()) ?? null;
+        if (!stored) return;
+        const storedConfigs = stored.providerConfigs && typeof stored.providerConfigs === 'object'
+          ? Object.values(stored.providerConfigs)
+          : [stored];
+        for (const storedConfig of storedConfigs) {
+          if (!storedConfig || typeof storedConfig !== 'object') continue;
+          const provider = NormalizeProvider(storedConfig.provider);
+          const model = ResolveProviderModel(provider, storedConfig.model || 'deepseek-v4-flash');
+          // DeepSeek 旧版 64K 是历史默认值而非用户选择；自定义 Provider 的旧值则由用户明确填写，必须保留。
+          const contextLimitMode: ContextLimitMode = storedConfig.contextLimitMode === 'custom' || storedConfig.contextLimitMode === 'default'
+            ? storedConfig.contextLimitMode : provider === '自定义' ? 'custom' : 'default';
+          const modelMaximum = ResolveModelMaximum(provider, model);
+          let contextLimit: number;
+          try {
+            contextLimit = ResolveContextLimit({ mode: contextLimitMode, value: storedConfig.contextLimit, modelMaximum });
+          } catch {
+            contextLimit = ResolveContextLimit({ mode: 'default', modelMaximum });
+          }
+          configs.set(provider, {
+            provider,
+            baseUrl: provider === '自定义' ? (storedConfig.baseUrl || DefaultBaseUrl) : ResolveOfficialBaseUrl(provider),
+            model,
+            thinkingEnabled: provider === 'Z.AI' ? true : storedConfig.thinkingEnabled !== false,
+            contextLimit,
+            contextLimitMode,
+            compressionThreshold: storedConfig.compressionThreshold ?? 80,
+            apiKey: typeof storedConfig.apiKey === 'string' ? storedConfig.apiKey : '',
+          });
+        }
+        config = configs.get(NormalizeProvider(stored.provider)) ?? configs.get('DeepSeek') ?? defaultConfig;
+      })().catch((error) => {
+        // 临时存储错误允许后续入口重试，不能把失败状态永久缓存到模块生命周期。
+        configLoadPromise = null;
+        throw error;
+      });
     }
-    config = {
+    await configLoadPromise;
+  }
+
+  function ConfigFor(providerValue?: unknown): ProviderConfig {
+    const provider = providerValue === undefined ? NormalizeProvider(config.provider) : NormalizeProvider(providerValue);
+    return configs.get(provider) ?? {
+      ...defaultConfig,
       provider,
-      baseUrl: provider === '自定义' ? (stored.baseUrl || DefaultBaseUrl) : ResolveOfficialBaseUrl(provider),
-      model,
-      thinkingEnabled: provider === 'Z.AI' ? true : stored.thinkingEnabled !== false,
-      contextLimit,
-      contextLimitMode,
-      compressionThreshold: stored.compressionThreshold ?? 80,
-      apiKey: typeof stored.apiKey === 'string' ? stored.apiKey : '',
+      baseUrl: ResolveOfficialBaseUrl(provider, provider === '自定义' ? DefaultBaseUrl : undefined),
+      model: ResolveProviderModel(provider, provider === 'Z.AI' ? GlmFlashModel : provider === 'DeepSeek' ? 'deepseek-v4-flash' : 'custom-model'),
+      apiKey: '',
     };
   }
 
@@ -221,13 +248,14 @@ export function CreateProviderModule(ports: AgentDefaultPorts): ModelProviderMod
       if (apiKey && /\*/.test(apiKey)) throw new Error('Please enter the complete API Key before saving.');
       const model = ResolveProviderModel(provider, requestedModel);
       if (provider === 'DeepSeek' && model !== requestedModel) throw new Error('请选择 DeepSeek 当前支持的模型。');
+      const existing = configs.get(provider);
       const next = {
         provider,
         baseUrl,
         model,
         thinkingEnabled: provider === 'Z.AI' ? true : Boolean(cfg.thinkingEnabled),
-        // 同一供应商修改非密钥设置可复用已保存凭据；跨供应商必须由用户重新提供，避免误发旧 Key。
-        apiKey: apiKey || (provider === config.provider ? config.apiKey : ''),
+        // 每个供应商独立复用自己的已保存凭据，绝不把其它 Provider 的 Key 发送到当前端点。
+        apiKey: apiKey || existing?.apiKey || '',
       };
       if (!next.apiKey) throw new Error('API Key is required.');
       const contextLimitMode: ContextLimitMode = cfg.contextLimitMode === 'custom' ? 'custom' : 'default';
@@ -239,13 +267,17 @@ export function CreateProviderModule(ports: AgentDefaultPorts): ModelProviderMod
       const compressionThreshold = ParseCompressionThreshold(cfg.compressionThreshold);
       await ports.saveConfig({ ...next, contextLimit, contextLimitMode, compressionThreshold });
       config = { ...next, contextLimit, contextLimitMode, compressionThreshold };
+      configs.set(provider, config);
       return { configured: true, provider: next.provider, model: next.model };
     },
     /** 使用当前表单值测试兼容 OpenAI 的模型服务，不写入配置或暴露密钥。 */
     async TestConnection(input: unknown) {
+      await EnsureConfig();
       const cfg = (input ?? {}) as Record<string, unknown>;
       const provider = NormalizeProvider(cfg.provider);
-      const apiKey = RequireString(cfg.apiKey, 'apiKey', 500);
+      const enteredApiKey = typeof cfg.apiKey === 'string' ? cfg.apiKey.trim() : '';
+      const apiKey = enteredApiKey || configs.get(provider)?.apiKey || '';
+      if (!apiKey) throw new Error('API Key is required.');
       if (/\*/.test(apiKey)) throw new Error('Please enter the complete API Key before testing.');
       const baseUrl = ResolveOfficialBaseUrl(provider, cfg.baseUrl);
       const requestedModel = provider === 'Z.AI' ? GlmFlashModel : RequireString(cfg.model, 'model', 200);
@@ -270,26 +302,28 @@ export function CreateProviderModule(ports: AgentDefaultPorts): ModelProviderMod
       return { connected: true, provider, baseUrl };
     },
     /** 只返回脱敏状态，供渲染层决定是否展示配置引导；首次读取前先加载已保存配置。 */
-    async GetStatus() {
+    async GetStatus(providerValue?: string) {
       await EnsureConfig();
+      const selected = ConfigFor(providerValue);
       return {
-        configured: Boolean(config.apiKey),
-        provider: config.provider,
-        model: config.model,
-        baseUrl: config.baseUrl,
-        contextLimit: config.contextLimit,
-        contextLimitMode: config.contextLimitMode ?? 'default',
-        compressionThreshold: config.compressionThreshold,
+        configured: Boolean(selected.apiKey),
+        provider: selected.provider,
+        model: selected.model,
+        baseUrl: selected.baseUrl,
+        contextLimit: selected.contextLimit,
+        contextLimitMode: selected.contextLimitMode ?? 'default',
+        compressionThreshold: selected.compressionThreshold,
       };
     },
     /** 校验单轮模型切换，DeepSeek 仅允许预设，自定义 Provider 固定使用已保存模型。 */
-    ResolveRequestModel(requestedModel) {
-      if (config.provider === 'Z.AI') {
+    ResolveRequestModel(requestedModel, providerValue) {
+      const selected = ConfigFor(providerValue);
+      if (selected.provider === 'Z.AI') {
         if (requestedModel !== undefined && requestedModel !== GlmFlashModel) throw new Error('The requested model is not available for Z.AI.');
         return GlmFlashModel;
       }
-      if (config.provider !== 'DeepSeek') return config.model;
-      if (requestedModel === undefined) return config.model;
+      if (selected.provider !== 'DeepSeek') return selected.model;
+      if (requestedModel === undefined) return selected.model;
       const model = NormalizeDeepSeekModel(requestedModel);
       if (model !== requestedModel) throw new Error('The requested model is not available for DeepSeek.');
       return model;
@@ -297,10 +331,10 @@ export function CreateProviderModule(ports: AgentDefaultPorts): ModelProviderMod
     /** 读取 DeepSeek 账户余额。密钥只在主进程私有配置中使用，返回值不含密钥。 */
     async GetBalance() {
       await EnsureConfig();
-      if (!config.apiKey) throw new Error('请先保存 DeepSeek API Key。');
-      if (config.provider !== 'DeepSeek') throw new Error('余额查询仅支持 DeepSeek。');
+      const selected = ConfigFor('DeepSeek');
+      if (!selected.apiKey) throw new Error('请先保存 DeepSeek API Key。');
       const response = await providerFetch(`${DefaultBaseUrl}/user/balance`, {
-        method: 'GET', headers: { Authorization: `Bearer ${config.apiKey}` }, signal: AbortSignal.timeout(15000),
+        method: 'GET', headers: { Authorization: `Bearer ${selected.apiKey}` }, signal: AbortSignal.timeout(15000),
       });
       if (!response.ok) throw new Error(`余额查询失败（${response.status}）。`);
       const json = await response.json() as { is_available?: unknown; balance_infos?: Array<{ currency?: unknown; total_balance?: unknown }> };
@@ -311,13 +345,14 @@ export function CreateProviderModule(ports: AgentDefaultPorts): ModelProviderMod
       return { available: true, balances };
     },
     /** 从 DeepSeek 官方 /models 同步当前凭据可用的模型；网络失败由调用层保留本地 V4 兜底。 */
-    async GetModels() {
+    async GetModels(providerValue?: string) {
       await EnsureConfig();
-      if (config.provider === 'Z.AI') return { models: [GlmFlashModel] };
-      if (!config.apiKey) throw new Error('请先保存 DeepSeek API Key。');
-      if (config.provider !== 'DeepSeek') throw new Error('模型同步仅支持 DeepSeek。');
+      const selected = ConfigFor(providerValue);
+      if (selected.provider === 'Z.AI') return { models: [GlmFlashModel] };
+      if (selected.provider === '自定义') return { models: [selected.model] };
+      if (!selected.apiKey) throw new Error('请先保存 DeepSeek API Key。');
       const response = await providerFetch(`${DefaultBaseUrl}/models`, {
-        method: 'GET', headers: { Authorization: `Bearer ${config.apiKey}` }, signal: AbortSignal.timeout(15000),
+        method: 'GET', headers: { Authorization: `Bearer ${selected.apiKey}` }, signal: AbortSignal.timeout(15000),
       });
       if (!response.ok) throw new Error(`模型列表获取失败（${response.status}）。`);
       const json = await response.json() as { data?: Array<{ id?: unknown }> };
@@ -327,24 +362,40 @@ export function CreateProviderModule(ports: AgentDefaultPorts): ModelProviderMod
       const available = [...new Set(models)].sort((left, right) => left.localeCompare(right));
       return { models: available.length ? available : DefaultDeepSeekModels };
     },
+    async GetProviderCatalog() {
+      await EnsureConfig();
+      const providers = await Promise.all((['DeepSeek', 'Z.AI', '自定义'] as SupportedProvider[]).map(async (provider) => {
+        const selected = ConfigFor(provider);
+        const metadata = { baseUrl: selected.baseUrl, contextLimit: selected.contextLimit, contextLimitMode: selected.contextLimitMode ?? 'default' as const, compressionThreshold: selected.compressionThreshold, thinkingEnabled: selected.thinkingEnabled };
+        if (!selected.apiKey) return { provider, configured: false, model: selected.model, models: [], ...metadata };
+        let models: string[];
+        try { models = (await this.GetModels(provider)).models; }
+        catch { models = provider === 'DeepSeek' ? DefaultDeepSeekModels : [selected.model]; }
+        return { provider, configured: true, model: selected.model, models, ...metadata };
+      }));
+      return { providers };
+    },
     /** 调用兼容 OpenAI Chat Completions 的流式接口并转发思考与正文增量；畸形 SSE 直接失败，不静默忽略。 */
     async StreamCompletion(request) {
       await EnsureConfig();
+      const selected = ConfigFor(request.provider);
+      const requestModel = ResolveProviderModel(NormalizeProvider(selected.provider), request.model);
+      if (requestModel !== request.model) throw new Error(`The requested model is not available for ${selected.provider}.`);
       const systemContent = RequireString(request.instructions?.compiled, 'compiled instructions', 200000);
       const providerMessages = [{ role: 'system', content: systemContent }, ...request.history.map(ToProviderMessage)];
-      const thinking = config.provider === 'Z.AI'
+      const thinking = selected.provider === 'Z.AI'
         ? { thinking: { type: 'enabled', clear_thinking: false }, reasoning_effort: ResolveDeepSeekReasoningEffort(request.reasoningEffort), temperature: 1, top_p: 0.95, tool_stream: true }
-        : config.provider === 'DeepSeek'
-          ? config.thinkingEnabled
+        : selected.provider === 'DeepSeek'
+          ? selected.thinkingEnabled
             ? { thinking: { type: 'enabled' }, reasoning_effort: ResolveDeepSeekReasoningEffort(request.reasoningEffort) }
             : { thinking: { type: 'disabled' } }
           : {};
-      const body = SerializeCompletionBody({ model: request.model, stream: true, ...thinking, ...(config.provider === 'DeepSeek' ? { stream_options: { include_usage: true } } : {}), messages: providerMessages, tools: request.tools.map((tool) => tool.definition), tool_choice: 'auto' }, config.provider === 'DeepSeek');
-      request.onRequest?.({ kind: 'completion', model: request.model, messages: providerMessages, toolCount: request.tools.length });
-      const response = await providerFetch(`${config.baseUrl}/chat/completions`, {
+      const body = SerializeCompletionBody({ model: requestModel, stream: true, ...thinking, ...(selected.provider === 'DeepSeek' ? { stream_options: { include_usage: true } } : {}), messages: providerMessages, tools: request.tools.map((tool) => tool.definition), tool_choice: 'auto' }, selected.provider === 'DeepSeek');
+      request.onRequest?.({ kind: 'completion', model: requestModel, messages: providerMessages, toolCount: request.tools.length });
+      const response = await providerFetch(`${selected.baseUrl}/chat/completions`, {
         method: 'POST',
         signal: request.signal,
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${config.apiKey}` },
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${selected.apiKey}` },
         body,
       });
       if (!response.ok || !response.body) throw new Error(`Model request failed (${response.status}).`);
@@ -366,10 +417,10 @@ export function CreateProviderModule(ports: AgentDefaultPorts): ModelProviderMod
         const choices = Array.isArray(record.choices) ? record.choices as Array<Record<string, unknown>> : null;
         if (record.choices !== undefined && !Array.isArray(record.choices)) throw new Error('PROTOCOL_INVALID_SSE_SHAPE: Provider delta shape is invalid.');
         if (record.usage !== undefined && record.usage !== null) {
-          if (config.provider === 'DeepSeek' && usageChunkSeen) {
+          if (selected.provider === 'DeepSeek' && usageChunkSeen) {
             throw new Error('PROTOCOL_DUPLICATE_USAGE: DeepSeek sent more than one non-null usage chunk.');
           }
-          if (config.provider === 'DeepSeek' && !IsDeepSeekUsageChunk(choices)) {
+          if (selected.provider === 'DeepSeek' && !IsDeepSeekUsageChunk(choices)) {
             throw new Error('PROTOCOL_INVALID_USAGE_CHUNK: DeepSeek usage must be in an empty choices chunk or a terminal-only choice.');
           }
           usageChunkSeen = true;
@@ -411,17 +462,20 @@ export function CreateProviderModule(ports: AgentDefaultPorts): ModelProviderMod
       return { content, reasoningContent, toolCalls: completedCalls, ...(usage ? { usage } : {}) };
     },
     /** 通过不带工具的非流式模型调用生成可替换历史的应用摘要。 */
-    async CreateSummary(model, messages, onRequest) {
+    async CreateSummary(provider, model, messages, onRequest) {
       await EnsureConfig();
+      const selected = ConfigFor(provider);
+      const requestModel = ResolveProviderModel(NormalizeProvider(selected.provider), model);
+      if (requestModel !== model) throw new Error(`The requested model is not available for ${selected.provider}.`);
       const providerMessages = [{ role: 'system', content: SummaryPrompt }, ...messages.map(ToProviderMessage)];
-      const providerOptions = config.provider === 'Z.AI'
+      const providerOptions = selected.provider === 'Z.AI'
         ? { thinking: { type: 'enabled', clear_thinking: false }, reasoning_effort: 'high', temperature: 1, top_p: 0.95 }
         : {};
-      const body = JSON.stringify({ model, stream: false, messages: providerMessages, ...providerOptions });
-      onRequest?.({ kind: 'summary', model, messages: providerMessages, toolCount: 0 });
-      const response = await providerFetch(`${config.baseUrl}/chat/completions`, {
+      const body = JSON.stringify({ model: requestModel, stream: false, messages: providerMessages, ...providerOptions });
+      onRequest?.({ kind: 'summary', model: requestModel, messages: providerMessages, toolCount: 0 });
+      const response = await providerFetch(`${selected.baseUrl}/chat/completions`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${config.apiKey}` },
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${selected.apiKey}` },
         body,
       });
       if (!response.ok) throw new Error(`Summary request failed (${response.status}).`);
@@ -433,8 +487,8 @@ export function CreateProviderModule(ports: AgentDefaultPorts): ModelProviderMod
     /** 估算 Provider 请求输入规模；仅用于触发阈值与界面提示，不用于计费。 */
     EstimateTokens(value) { return EstimateProviderTokens(value); },
     /** 返回上下文长度上限与压缩阈值百分比。 */
-    GetRuntimeLimits() { return { contextLimit: config.contextLimit, threshold: config.compressionThreshold }; },
+    GetRuntimeLimits(providerValue) { const selected = ConfigFor(providerValue); return { contextLimit: selected.contextLimit, threshold: selected.compressionThreshold }; },
     /** 返回当前 BaseUrl，供连通性等只读展示（不含密钥）。 */
-    BaseUrl() { return config.baseUrl; },
+    BaseUrl(providerValue) { return ConfigFor(providerValue).baseUrl; },
   };
 }

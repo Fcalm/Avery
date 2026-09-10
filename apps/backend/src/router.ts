@@ -23,7 +23,7 @@ export const ReadOnlyChannels = new Set<string>([
   'workspace:get-profiles', 'workspace:get-resume-revisions',
   'workspace:recovery-status',
   'workspace:database-recovery-status',
-  'agent:status', 'agent:observability', 'agent:trace-events', 'agent:test-connection', 'agent:get-balance', 'agent:get-models', 'agent:get-session-assistant-state', 'agent:browser-runtime-status', 'cron:status',
+  'agent:status', 'agent:observability', 'agent:trace-events', 'agent:test-connection', 'agent:get-balance', 'agent:get-models', 'agent:get-provider-catalog', 'agent:get-session-assistant-state', 'agent:browser-runtime-status', 'agent:cron-browser-access', 'cron:status',
   'evaluation:projects-list', 'evaluation:project-read', 'evaluation:project-validate', 'evaluation:project-preview', 'evaluation:runs-list', 'evaluation:run-read', 'evaluation:case-read', 'evaluation:runs-compare',
 ]);
 
@@ -48,6 +48,7 @@ export const MethodRoutes: Record<string, MethodRoute> = {
   'agent:test-connection': { service: 'agent', method: 'TestConnection' },
   'agent:get-balance': { service: 'agent', method: 'GetBalance' },
   'agent:get-models': { service: 'agent', method: 'GetModels' },
+  'agent:get-provider-catalog': { service: 'agent', method: 'GetProviderCatalog' },
   'agent:send': { service: 'agent', method: 'Send' },
   'agent:cancel': { service: 'agent', method: 'Cancel' },
   'agent:update-confirmation-mode': { service: 'agent', method: 'UpdateConfirmationMode' },
@@ -56,6 +57,8 @@ export const MethodRoutes: Record<string, MethodRoute> = {
   'agent:confirm-cron-task': { service: 'agent', method: 'ConfirmCronTask' },
   'agent:confirm-browser-action': { service: 'agent', method: 'ConfirmBrowserAction' },
   'agent:browser-runtime-status': { service: 'agent', method: 'GetBrowserRuntimeStatus' },
+  'agent:cron-browser-access': { service: 'agent', method: 'GetCronBrowserAccess' },
+  'agent:cron-browser-revoke': { service: 'agent', method: 'RevokeCronBrowserAccess' },
   'agent:browser-clear-profile': { service: 'agent', method: 'ClearBrowserProfile' },
   'agent:acquire-resume-lock': { service: 'agent', method: 'AcquireResumeEditLock' },
   'agent:release-resume-lock': { service: 'agent', method: 'ReleaseResumeEditLock' },

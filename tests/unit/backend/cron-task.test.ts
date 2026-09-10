@@ -8,7 +8,7 @@ function CreateRepository() {
   db.exec(`
     CREATE TABLE audit_events(id TEXT PRIMARY KEY,actor_type TEXT,action TEXT,entity_type TEXT,entity_id TEXT,metadata_json TEXT,created_at INTEGER);
     CREATE TABLE conversations(id TEXT PRIMARY KEY);
-    CREATE TABLE cron_tasks(id TEXT PRIMARY KEY,title TEXT NOT NULL,message TEXT NOT NULL,scenario_id TEXT NOT NULL,resume_id TEXT,schedule_json TEXT NOT NULL,state TEXT NOT NULL,consumed_occurrences INTEGER NOT NULL,total_occurrences INTEGER NOT NULL,next_run_at INTEGER,revision INTEGER NOT NULL,created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL,cancelled_at INTEGER);
+    CREATE TABLE cron_tasks(id TEXT PRIMARY KEY,title TEXT NOT NULL,message TEXT NOT NULL,scenario_id TEXT NOT NULL,resume_id TEXT,browser_authorized INTEGER NOT NULL DEFAULT 0,schedule_json TEXT NOT NULL,state TEXT NOT NULL,consumed_occurrences INTEGER NOT NULL,total_occurrences INTEGER NOT NULL,next_run_at INTEGER,revision INTEGER NOT NULL,created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL,cancelled_at INTEGER);
     CREATE TABLE cron_runs(id TEXT PRIMARY KEY,cron_task_id TEXT NOT NULL REFERENCES cron_tasks(id),occurrence INTEGER NOT NULL,scheduled_at INTEGER NOT NULL,state TEXT NOT NULL,reason TEXT,conversation_id TEXT REFERENCES conversations(id),started_at INTEGER,completed_at INTEGER,created_at INTEGER NOT NULL,UNIQUE(cron_task_id,occurrence));
   `);
   return { db, repository: new CronTaskRepository(db) };
@@ -27,6 +27,32 @@ describe('CronTask 调度与领取', () => {
     const schedule = { type: 'weekly' as const, startAt: '2026-08-31T09:30:00+08:00', timeZone: 'Asia/Shanghai', daysOfWeek: ['monday', 'tuesday', 'wednesday', 'thursday', 'friday'] as const, intervalWeeks: 1, occurrences: 7 };
     const labels = [1, 2, 3, 4, 5, 6, 7].map((occurrence) => new Intl.DateTimeFormat('en-US', { timeZone: schedule.timeZone, weekday: 'short' }).format(CronOccurrenceAt(schedule, occurrence)!));
     expect(labels).toEqual(['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Mon', 'Tue']);
+  });
+
+  it('纯岗位搜索的投递任务允许不绑定简历', () => {
+    const { db, repository } = CreateRepository();
+    const task = repository.Create({
+      title: '读取岗位', message: '打开招聘网站搜索岗位并读取 JD', scenarioId: 'application',
+      schedule: { type: 'once', executeAt: '2030-01-01T09:00:00+08:00', timeZone: 'Asia/Shanghai' },
+    });
+
+    expect(task).toMatchObject({ scenarioId: 'application', browserAuthorized: false });
+    expect(task).not.toHaveProperty('resumeId');
+    db.close();
+  });
+
+  it('只接受 Host 在创建确认后授予的投递任务浏览器权限，并允许持久撤销', () => {
+    const { db, repository } = CreateRepository();
+    const input = {
+      title: '定时读取 BOSS', message: '搜索岗位', scenarioId: 'application',
+      schedule: { type: 'once', executeAt: '2030-01-01T09:00:00+08:00', timeZone: 'Asia/Shanghai' },
+    };
+    const task = repository.Create(input, { browserAuthorized: true });
+    expect(task).toMatchObject({ browserAuthorized: true, revision: 1 });
+    expect(repository.RevokeBrowserAuthorization(task.id)).toMatchObject({ browserAuthorized: false, revision: 2 });
+    const defaultTask = repository.Create({ ...input, title: '本地任务', scenarioId: 'default' }, { browserAuthorized: true });
+    expect(defaultTask.browserAuthorized).toBe(false);
+    db.close();
   });
 
   it('多个过期 occurrence 只 claim 最近一次，其余标记 missed 并全部消费', () => {

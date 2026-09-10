@@ -29,6 +29,91 @@ afterEach(() => {
 });
 
 describe('agent-modules-defaults', () => {
+  it('并发读取 Provider 状态时等待同一份凭据加载完成', async () => {
+    let releaseLoad!: () => void;
+    const loadGate = new Promise<void>((resolve) => { releaseLoad = resolve; });
+    const getConfig = vi.fn(async () => {
+      await loadGate;
+      return {
+        provider: 'Z.AI', model: 'glm-5.3-flash', baseUrl: 'https://open.bigmodel.cn/api/paas/v4', apiKey: 'zai-key', thinkingEnabled: true, contextLimit: 256000, contextLimitMode: 'default' as const, compressionThreshold: 80,
+      };
+    });
+    const { CreateProviderModule } = await import('../../../packages/agent-modules-defaults/src/provider');
+    const provider = CreateProviderModule(CreatePorts({ getConfig }));
+
+    const catalogPromise = provider.GetProviderCatalog();
+    const statusPromise = provider.GetStatus('Z.AI');
+    releaseLoad();
+
+    await expect(statusPromise).resolves.toMatchObject({ provider: 'Z.AI', configured: true, model: 'glm-5.3-flash' });
+    await expect(catalogPromise).resolves.toMatchObject({ providers: expect.arrayContaining([expect.objectContaining({ provider: 'Z.AI', configured: true })]) });
+    expect(getConfig).toHaveBeenCalledOnce();
+  });
+
+  it('分别保留多个 Provider 凭据，并允许留空 API Key 更新已有配置', async () => {
+    const saved: any[] = [];
+    const { CreateProviderModule } = await import('../../../packages/agent-modules-defaults/src/provider');
+    const provider = CreateProviderModule(CreatePorts({
+      getConfig: vi.fn(async () => ({
+        provider: 'Z.AI', model: 'glm-5.3-flash', baseUrl: 'https://open.bigmodel.cn/api/paas/v4', apiKey: 'zai-key',
+        thinkingEnabled: true, contextLimit: 256000, contextLimitMode: 'default', compressionThreshold: 80,
+        providerConfigs: {
+          'Z.AI': { provider: 'Z.AI', model: 'glm-5.3-flash', baseUrl: 'https://open.bigmodel.cn/api/paas/v4', apiKey: 'zai-key', thinkingEnabled: true, contextLimit: 256000, contextLimitMode: 'default', compressionThreshold: 80 },
+          '自定义': { provider: '自定义', model: 'custom-chat', baseUrl: 'https://custom.example/v1', apiKey: 'custom-key', thinkingEnabled: false, contextLimit: 128000, contextLimitMode: 'custom', compressionThreshold: 70 },
+        },
+      })),
+      saveConfig: vi.fn(async (value) => { saved.push(value); }),
+    }));
+
+    const catalog = await provider.GetProviderCatalog();
+    expect(catalog.providers.filter((item) => item.configured).map((item) => item.provider)).toEqual(['Z.AI', '自定义']);
+    await provider.Configure({ provider: 'Z.AI', model: 'glm-5.3-flash', apiKey: '', contextLimitMode: 'default', compressionThreshold: 80 });
+    expect(saved.at(-1)).toMatchObject({ provider: 'Z.AI', apiKey: 'zai-key', model: 'glm-5.3-flash' });
+  });
+
+  it('并发请求按 Run 指定的 Provider 选择端点和凭据，不依赖全局切换', async () => {
+    const requests: Array<{ url: string; authorization: string; model: string }> = [];
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+      requests.push({ url, authorization: String((init?.headers as Record<string, string>)?.Authorization ?? ''), model: JSON.parse(String(init?.body)).model });
+      return SseResponse([{ choices: [{ delta: { content: 'ok' } }] }, '[DONE]']);
+    }));
+    vi.resetModules();
+    const { CreateProviderModule } = await import('../../../packages/agent-modules-defaults/src/provider');
+    const provider = CreateProviderModule(CreatePorts({ getConfig: vi.fn(async () => ({
+      provider: 'DeepSeek', model: 'deepseek-v4-flash', baseUrl: 'https://api.deepseek.com', apiKey: 'deepseek-key', thinkingEnabled: true, contextLimit: 256000, contextLimitMode: 'default', compressionThreshold: 80,
+      providerConfigs: {
+        DeepSeek: { provider: 'DeepSeek', model: 'deepseek-v4-flash', baseUrl: 'https://api.deepseek.com', apiKey: 'deepseek-key', thinkingEnabled: true, contextLimit: 256000, contextLimitMode: 'default', compressionThreshold: 80 },
+        'Z.AI': { provider: 'Z.AI', model: 'glm-5.3-flash', baseUrl: 'https://open.bigmodel.cn/api/paas/v4', apiKey: 'zai-key', thinkingEnabled: true, contextLimit: 256000, contextLimitMode: 'default', compressionThreshold: 80 },
+      },
+    })) }));
+    const common = { history: [], tools: [], signal: new AbortController().signal, instructions: BuildDefaultCompiledInstructions(), reasoningEffort: 'medium' as const, onDelta: vi.fn() };
+
+    await Promise.all([
+      provider.StreamCompletion({ ...common, requestId: 'deepseek-run', provider: 'DeepSeek', model: 'deepseek-v4-flash' }),
+      provider.StreamCompletion({ ...common, requestId: 'zai-run', provider: 'Z.AI', model: 'glm-5.3-flash' }),
+    ]);
+    expect(requests).toEqual(expect.arrayContaining([
+      { url: 'https://api.deepseek.com/chat/completions', authorization: 'Bearer deepseek-key', model: 'deepseek-v4-flash' },
+      { url: 'https://open.bigmodel.cn/api/paas/v4/chat/completions', authorization: 'Bearer zai-key', model: 'glm-5.3-flash' },
+    ]));
+  });
+
+  it('请求的 Provider 与模型不匹配时在网络调用前拒绝', async () => {
+    const providerFetch = vi.fn();
+    vi.stubGlobal('fetch', providerFetch);
+    vi.resetModules();
+    const { CreateProviderModule } = await import('../../../packages/agent-modules-defaults/src/provider');
+    const provider = CreateProviderModule(CreatePorts({ getConfig: vi.fn(async () => ({
+      provider: 'Z.AI', model: 'glm-5.3-flash', baseUrl: 'https://open.bigmodel.cn/api/paas/v4', apiKey: 'zai-key', thinkingEnabled: true, contextLimit: 256000, contextLimitMode: 'default', compressionThreshold: 80,
+    })) }));
+
+    await expect(provider.StreamCompletion({
+      requestId: 'mismatched-run', provider: 'Z.AI', model: 'deepseek-v4-flash', reasoningEffort: 'medium', history: [], tools: [],
+      signal: new AbortController().signal, instructions: BuildDefaultCompiledInstructions(), onDelta: vi.fn(),
+    })).rejects.toThrow('requested model is not available for Z.AI');
+    expect(providerFetch).not.toHaveBeenCalled();
+  });
+
   it('上下文自动限制默认 256K，并在模型能力更小时取模型上限', async () => {
     const { DefaultContextLimit, ResolveContextLimit, ResolveDeepSeekReasoningEffort } = await import('../../../packages/agent-modules-defaults/src/provider');
 
@@ -153,9 +238,9 @@ describe('agent-modules-defaults', () => {
     expect(ApplicationScenarioPlaceholder.enabled).toBe(true);
     const applicationNames = CreateToolsModule(CreatePorts()).GetToolDefinitions('application').map((tool) => tool.definition.function.name);
     expect(new Set(applicationNames)).toEqual(new Set(ApplicationScenario.toolNames));
-    expect(applicationNames).toHaveLength(30);
+    expect(applicationNames).toHaveLength(33);
     expect(applicationNames).toContain('DeleteTodo');
-    expect(applicationNames).toEqual(expect.arrayContaining(['CreateCronTask', 'ReadCronTask', 'UpdateCronTask', 'DeleteCronTask', 'ReadApplicationStatus', 'UpdateApplicationStatus']));
+    expect(applicationNames).toEqual(expect.arrayContaining(['CreateCronTask', 'ReadCronTask', 'UpdateCronTask', 'DeleteCronTask', 'ReadApplicationStatus', 'SaveJob', 'UpdateApplicationStatus']));
     expect(applicationNames).not.toEqual(expect.arrayContaining(['CreateResume', 'UpdateResume', 'UpdateProfile', 'SearchJobs']));
     const instructions = BuildApplicationCompiledInstructions('application-tools');
     expect(instructions.compiled).toContain('BrowserSelect');
@@ -164,12 +249,30 @@ describe('agent-modules-defaults', () => {
     expect(instructions.compiled).toContain('exact attachment path shown in runtime-context');
     expect(instructions.compiled).toContain('last and only browser action');
     expect(instructions.compiled).toContain('ReadApplicationStatus');
+    expect(instructions.compiled).toContain('they do not require a bound resume');
+    const defaultInstructions = BuildDefaultCompiledInstructions('default-tools');
+    expect(defaultInstructions.compiled).toContain('searching jobs, reading a rendered job description, or viewing BOSS直聘');
+    expect(defaultInstructions.compiled).toContain('set scenarioId to application');
     const applicationDefinitions = CreateToolsModule(CreatePorts()).GetToolDefinitions('application');
+    const createCronTask = applicationDefinitions.find((tool) => tool.definition.function.name === 'CreateCronTask');
+    expect(createCronTask?.definition.function.description).toContain('scenarioId=application');
+    expect((createCronTask?.definition.function.parameters.properties?.scenarioId as { description?: string })?.description).toContain('job search');
+    expect(applicationDefinitions.find((tool) => tool.definition.function.name === 'SaveJob')?.definition.function.description).toContain('does not require a bound resume');
+    expect(tools.find((tool) => tool.definition.function.name === 'UpdateResume')?.requiredResources).toEqual(['bound_resume']);
+    expect(applicationDefinitions.find((tool) => tool.definition.function.name === 'UpdateApplicationStatus')?.requiredResources).toEqual(['bound_resume']);
+    expect((applicationDefinitions.find((tool) => tool.definition.function.name === 'UpdateApplicationStatus')?.definition.function.parameters.properties?.status as { enum?: string[] })?.enum).not.toContain('saved');
     expect(applicationDefinitions.find((tool) => tool.definition.function.name === 'BrowserWait')?.definition.function.description).toContain('domcontentloaded');
     expect(applicationDefinitions.find((tool) => tool.definition.function.name === 'BrowserUploadFile')?.definition.function.description).toContain('attachment path exposed in runtime-context');
+    expect(applicationDefinitions.find((tool) => tool.definition.function.name === 'BrowserScreenshot')?.definition.function.description).toContain('vision');
+    expect(applicationDefinitions.find((tool) => tool.definition.function.name === 'BrowserInspectForm')).toBeUndefined();
+    expect(applicationDefinitions.find((tool) => tool.definition.function.name === 'BrowserValidateForm')?.sideEffect).toBe('none');
     const fillForm = applicationDefinitions.find((tool) => tool.definition.function.name === 'BrowserFillForm');
-    expect(fillForm?.definition.function.description).toContain('1 to 30 ordinary input fields');
-    expect((fillForm?.definition.function.parameters.properties?.fields as { maxItems?: number })?.maxItems).toBe(30);
+    expect(fillForm?.definition.function.description).toContain('selected profile records');
+    expect(fillForm?.timeoutMs).toBe(120_000);
+    expect((fillForm?.definition.function.parameters.properties?.profileIds as { maxItems?: number })?.maxItems).toBe(20);
+    expect((fillForm?.definition.function.parameters.properties?.resolutions as { maxItems?: number })?.maxItems).toBe(20);
+    expect(fillForm?.definition.function.parameters.properties).not.toHaveProperty('pageRevision');
+    expect(fillForm?.definition.function.parameters.properties).not.toHaveProperty('mappings');
     expect(names).not.toContain('BrowserFillForm');
   });
 
@@ -187,14 +290,15 @@ describe('agent-modules-defaults', () => {
     expect(JSON.parse(result.content)).toMatchObject({ ok: false, code: 'TOOL_NOT_ALLOWED' });
   });
 
-  it('BrowserFillForm 只在投递场景接受非空字段并复用浏览器执行端口', async () => {
+  it('BrowserFillForm 只在投递场景接受已选择的档案来源且不把正文放入模型参数', async () => {
     const prepare = vi.fn(async ({ toolName, arguments: args }: any) => ({
-      proposalHash: 'fill-form-hash', toolName, canonicalArguments: args, summary: '填写 2 个输入框', risk: 'medium' as const,
+      proposalHash: `fill-form-hash-${String(args.continuationId ?? 'initial')}`, toolName, canonicalArguments: args, summary: '填写 2 个输入框', risk: 'medium' as const,
       forceConfirmation: false, pageRevision: 3, resourceIds: ['browser:avery-default'],
     }));
     const execute = vi.fn(async () => ({ status: 'succeeded' as const, data: { filledCount: 2, pageRevision: 3 } }));
     const applicationContext = CreateToolContext({
       scenarioId: 'application', confirmationMode: 'fully_trusted',
+      profileSnapshot: [{ id: 'profile-1', category: 'application', title: '社招档案', content: '姓名：张三', updatedAt: '2026-09-05' }],
       ports: { ...CreateToolContext().ports, browser: { Prepare: prepare, Execute: execute } },
     });
     const defaultContext = CreateToolContext({
@@ -204,18 +308,43 @@ describe('agent-modules-defaults', () => {
     const module = CreateToolsModule(CreatePorts());
     const call = {
       id: 'fill-form-1', type: 'function' as const,
-      function: { name: 'BrowserFillForm', arguments: JSON.stringify({ pageRevision: 3, fields: [{ ref: '@e1', text: '张三' }, { ref: '@e2', text: 'x@example.com' }] }) },
+      function: { name: 'BrowserFillForm', arguments: JSON.stringify({ profileIds: ['profile-1'] }) },
     };
 
     const denied = await module.ExecuteToolCall(call, defaultContext);
-    const empty = await module.ExecuteToolCall({ ...call, id: 'fill-form-empty', function: { ...call.function, arguments: JSON.stringify({ pageRevision: 3, fields: [] }) } }, applicationContext);
+    const empty = await module.ExecuteToolCall({ ...call, id: 'fill-form-empty', function: { ...call.function, arguments: '{}' } }, applicationContext);
+    const unboundResume = await module.ExecuteToolCall({ ...call, id: 'fill-form-resume', function: { ...call.function, arguments: JSON.stringify({ useBoundResume: true }) } }, applicationContext);
     const succeeded = await module.ExecuteToolCall(call, applicationContext);
+    const continued = await module.ExecuteToolCall({
+      ...call,
+      id: 'fill-form-continuation',
+      function: {
+        ...call.function,
+        arguments: JSON.stringify({
+          continuationId: 'form-123e4567-e89b-12d3-a456-426614174000',
+          resolutions: [{ fieldId: 'f1', candidateId: 'c2' }],
+        }),
+      },
+    }, applicationContext);
 
     expect(JSON.parse(denied.content)).toMatchObject({ ok: false, code: 'TOOL_NOT_ALLOWED' });
     expect(JSON.parse(empty.content)).toMatchObject({ ok: false, code: 'INVALID_TOOL_ARGUMENTS' });
-    expect(prepare).toHaveBeenCalledOnce();
-    expect(execute).toHaveBeenCalledOnce();
+    expect(JSON.parse(unboundResume.content)).toMatchObject({ ok: false, code: 'RESUME_NOT_BOUND' });
+    expect(prepare).toHaveBeenCalledTimes(2);
+    expect(prepare).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      toolName: 'BrowserFillForm',
+      arguments: expect.objectContaining({ profileIds: ['profile-1'], __formSources: { profiles: [expect.objectContaining({ id: 'profile-1' })] } }),
+    }));
+    expect(prepare).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      toolName: 'BrowserFillForm',
+      arguments: {
+        continuationId: 'form-123e4567-e89b-12d3-a456-426614174000',
+        resolutions: [{ fieldId: 'f1', candidateId: 'c2' }],
+      },
+    }));
+    expect(execute).toHaveBeenCalledTimes(2);
     expect(JSON.parse(succeeded.content)).toMatchObject({ ok: true, data: { filledCount: 2, pageRevision: 3 } });
+    expect(JSON.parse(continued.content)).toMatchObject({ ok: true });
   });
 
   it('定时投递缺少授权附件时转为人工接管，不尝试绕过上传授权', async () => {
@@ -240,7 +369,7 @@ describe('agent-modules-defaults', () => {
     const read = vi.fn(async () => ({ jobs: [], applications: [], truncated: false }));
     const context = CreateToolContext({
       scenarioId: 'application',
-      ports: { ...CreateToolContext().ports, applicationTracking: { Read: read, Update: vi.fn() } },
+      ports: { ...CreateToolContext().ports, applicationTracking: { Read: read, SaveJob: vi.fn(), Update: vi.fn() } },
     });
 
     const result = await CreateToolsModule(CreatePorts()).ExecuteToolCall({
@@ -250,6 +379,106 @@ describe('agent-modules-defaults', () => {
 
     expect(read).toHaveBeenCalledWith({ company: '示例科技', title: 'Agent 工程师', url: 'https://jobs.example.com/42' });
     expect(JSON.parse(result.content)).toMatchObject({ ok: true, truncated: false });
+  });
+
+  it('ReadResume 先返回无正文索引，再按 ID 读取并绑定简历', async () => {
+    const resume = { id: 'resume-1', name: '后端简历', content: '私有简历正文', updatedAt: '2026-09-05', revision: 3, targetRoles: ['后端工程师'], summary: '后端方向' };
+    const list = vi.fn(async () => [{ id: resume.id, name: resume.name, updatedAt: resume.updatedAt, revision: resume.revision, targetRoles: resume.targetRoles }]);
+    const readCurrent = vi.fn(async (resumeId: string) => resumeId === resume.id ? resume : null);
+    const bindResume = vi.fn();
+    const context = CreateToolContext({
+      ports: { ...CreateToolContext().ports, resumeRead: { List: list, ReadCurrent: readCurrent } },
+      bindResume,
+    });
+    const module = CreateToolsModule(CreatePorts());
+
+    const indexResult = await module.ExecuteToolCall({ id: 'resume-index', type: 'function', function: { name: 'ReadResume', arguments: '{}' } }, context);
+    const indexPayload = JSON.parse(indexResult.content);
+    expect(indexPayload).toMatchObject({ ok: true, mode: 'index', resumes: [{ id: 'resume-1', name: '后端简历', revision: 3 }] });
+    expect(indexResult.content).not.toContain('私有简历正文');
+    expect(bindResume).not.toHaveBeenCalled();
+
+    const resumeResult = await module.ExecuteToolCall({ id: 'resume-read', type: 'function', function: { name: 'ReadResume', arguments: '{"resumeId":"resume-1"}' } }, context);
+    expect(JSON.parse(resumeResult.content)).toMatchObject({ ok: true, mode: 'resume', bound: true, resume: { id: 'resume-1', content: '私有简历正文', revision: 3 } });
+    expect(bindResume).toHaveBeenCalledWith(resume);
+  });
+
+  it('SaveJob 无需绑定简历且只返回岗位资源回执', async () => {
+    const saveJob = vi.fn(async () => ({ jobId: 'job-42', jobRevision: 1 }));
+    const context = CreateToolContext({
+      scenarioId: 'application', boundResume: null,
+      ports: { ...CreateToolContext().ports, applicationTracking: { Read: vi.fn(), SaveJob: saveJob, Update: vi.fn() } },
+    });
+
+    const result = await CreateToolsModule(CreatePorts()).ExecuteToolCall({
+      id: 'save-job-1', type: 'function',
+      function: { name: 'SaveJob', arguments: JSON.stringify({ jobId: 'job-42', company: '示例科技', title: 'Agent 工程师', url: 'https://jobs.example.com/42' }) },
+    }, context);
+
+    expect(saveJob).toHaveBeenCalledWith({ jobId: 'job-42', company: '示例科技', title: 'Agent 工程师', url: 'https://jobs.example.com/42' });
+    expect(JSON.parse(result.content)).toMatchObject({ ok: true, result: { jobId: 'job-42', jobRevision: 1 } });
+    expect(result.receipt?.resourceIds).toEqual(['jobs:job-42']);
+  });
+
+  it('UpdateApplicationStatus 仍要求绑定实际使用的简历', async () => {
+    const update = vi.fn();
+    const context = CreateToolContext({
+      scenarioId: 'application', boundResume: null,
+      ports: { ...CreateToolContext().ports, applicationTracking: { Read: vi.fn(), SaveJob: vi.fn(), Update: update } },
+    });
+
+    const result = await CreateToolsModule(CreatePorts()).ExecuteToolCall({
+      id: 'update-application-1', type: 'function',
+      function: { name: 'UpdateApplicationStatus', arguments: JSON.stringify({ applicationId: 'application-42', jobId: 'job-42', company: '示例科技', title: 'Agent 工程师', url: 'https://jobs.example.com/42', status: 'applied' }) },
+    }, context);
+
+    expect(update).not.toHaveBeenCalled();
+    expect(JSON.parse(result.content)).toMatchObject({ ok: false, code: 'RESUME_NOT_BOUND' });
+  });
+
+  it('UpdateApplicationStatus 通过统一门禁校验 revision 并使用绑定简历 ID', async () => {
+    const resume = { id: 'resume-1', name: '投递简历', content: '正文', updatedAt: '', revision: 4 };
+    const update = vi.fn(async (input) => input);
+    const context = CreateToolContext({
+      scenarioId: 'application', boundResume: resume,
+      ports: {
+        ...CreateToolContext().ports,
+        resumeRead: { List: vi.fn(async () => []), ReadCurrent: vi.fn(async () => resume) },
+        applicationTracking: { Read: vi.fn(), SaveJob: vi.fn(), Update: update },
+      },
+    });
+
+    const result = await CreateToolsModule(CreatePorts()).ExecuteToolCall({
+      id: 'update-application-bound', type: 'function',
+      function: { name: 'UpdateApplicationStatus', arguments: JSON.stringify({ applicationId: 'application-42', jobId: 'job-42', company: '示例科技', title: 'Agent 工程师', url: 'https://jobs.example.com/42', status: 'applied' }) },
+    }, context);
+
+    expect(JSON.parse(result.content)).toMatchObject({ ok: true });
+    expect(update).toHaveBeenCalledWith(expect.objectContaining({ resumeId: 'resume-1', status: 'applied' }));
+  });
+
+  it('统一门禁发现简历 revision 变化后清除绑定并拒绝写入', async () => {
+    const update = vi.fn();
+    const bindResume = vi.fn();
+    const context = CreateToolContext({
+      scenarioId: 'application',
+      boundResume: { id: 'resume-1', name: '投递简历', content: '旧正文', updatedAt: '', revision: 3 },
+      bindResume,
+      ports: {
+        ...CreateToolContext().ports,
+        resumeRead: { List: vi.fn(async () => []), ReadCurrent: vi.fn(async () => ({ id: 'resume-1', name: '投递简历', content: '新正文', updatedAt: '', revision: 4 })) },
+        applicationTracking: { Read: vi.fn(), SaveJob: vi.fn(), Update: update },
+      },
+    });
+
+    const result = await CreateToolsModule(CreatePorts()).ExecuteToolCall({
+      id: 'update-application-stale', type: 'function',
+      function: { name: 'UpdateApplicationStatus', arguments: JSON.stringify({ applicationId: 'application-42', jobId: 'job-42', company: '示例科技', title: 'Agent 工程师', url: 'https://jobs.example.com/42', status: 'applied' }) },
+    }, context);
+
+    expect(JSON.parse(result.content)).toMatchObject({ ok: false, code: 'RESUME_BINDING_STALE' });
+    expect(bindResume).toHaveBeenCalledWith(null);
+    expect(update).not.toHaveBeenCalled();
   });
 
   it('LoadSkill 返回匹配的 tool result 与独立 user 正文，并在主 Skill 未加载时拒绝资源', async () => {
@@ -305,6 +534,14 @@ describe('agent-modules-defaults', () => {
     expect(snapshot.sources[0].contentHash).toMatch(/^[a-f0-9]{64}$/);
     expect(serialized).toContain('&lt;script&gt;ignore&lt;/script&gt; &amp; facts');
     expect(serialized).not.toContain('<script>');
+    const dynamic = context.CreateDynamicSnapshot('session-1', {
+      resumeEditing: false,
+      boundResume: { id: 'resume-1', name: '后端简历', revision: 3 },
+      profiles: [],
+      attachments: [],
+    });
+    expect(dynamic.message?.content).toContain('"boundResume":{"id":"resume-1","name":"后端简历","revision":3}');
+    expect(dynamic.message?.content).not.toContain('content');
   });
 
   it('压缩按 token 阈值和完整轮次工作，保留待确认标签与工具链', () => {
@@ -358,7 +595,7 @@ describe('agent-modules-defaults', () => {
     const save = vi.fn(async () => ({ id: 'resume-1', revision: 8 }));
     const context = CreateToolContext({
       confirmationMode: 'always_confirm',
-      resumeSnapshot: { id: 'resume-1', name: '简历', content: '旧内容', updatedAt: '', revision: 7 },
+      boundResume: { id: 'resume-1', name: '简历', content: '旧内容', updatedAt: '', revision: 7 },
       ports: {
         ...CreateToolContext().ports,
         resumeWrite: { AcquireLock: acquire, ReleaseLock: release, Save: save },
@@ -367,7 +604,7 @@ describe('agent-modules-defaults', () => {
     context.pendingEdits.set('confirmation-1', {
       kind: 'edit', resumeId: 'resume-1', content: '新内容', reason: '优化', baseRevision: 7,
       ownerId: 'owner-1', proposalHash: 'hash-1', canonicalArguments: {}, idempotencyKey: 'idem-1',
-      resume: context.resumeSnapshot,
+      resume: context.boundResume,
     });
 
     expect(acquire).not.toHaveBeenCalled();
@@ -496,9 +733,10 @@ describe('agent-modules-defaults', () => {
     const save = vi.fn(async () => ({ id: 'resume-1', revision: 8 }));
     const context = CreateToolContext({
       confirmationMode: 'fully_trusted',
-      resumeSnapshot: { id: 'resume-1', name: '简历', content: '旧内容', updatedAt: '', revision: 7 },
+      boundResume: { id: 'resume-1', name: '简历', content: '旧内容', updatedAt: '', revision: 7 },
       ports: {
         ...CreateToolContext().ports,
+        resumeRead: { List: vi.fn(async () => []), ReadCurrent: vi.fn(async () => ({ id: 'resume-1', name: '简历', content: '旧内容', updatedAt: '', revision: 7 })) },
         resumeWrite: {
           AcquireLock: vi.fn(async () => ({ acquired: true as const, lock: { resumeId: 'resume-1', owner: 'agent' as const, ownerId: 'owner-1', acquiredAt: 1, leaseExpiresAt: 2 } })),
           ReleaseLock: vi.fn(async () => undefined),
@@ -792,9 +1030,10 @@ describe('agent-modules-defaults', () => {
     vi.useFakeTimers();
     const baseContext = CreateToolContext();
     const context = CreateToolContext({
-      resumeSnapshot: { id: 'resume-1', name: '简历', content: '旧内容', updatedAt: '', revision: 7 },
+      boundResume: { id: 'resume-1', name: '简历', content: '旧内容', updatedAt: '', revision: 7 },
       ports: {
         ...baseContext.ports,
+        resumeRead: { List: vi.fn(async () => []), ReadCurrent: vi.fn(async () => ({ id: 'resume-1', name: '简历', content: '旧内容', updatedAt: '', revision: 7 })) },
         resumeWrite: {
           AcquireLock: vi.fn(async () => ({ acquired: true as const, lock: { resumeId: 'resume-1', owner: 'agent' as const, ownerId: 'owner-1', acquiredAt: 1, leaseExpiresAt: 2 } })),
           ReleaseLock: vi.fn(async () => undefined),

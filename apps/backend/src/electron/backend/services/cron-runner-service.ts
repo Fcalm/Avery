@@ -86,6 +86,8 @@ export class CronRunnerService {
       await this.input.business.AttachCronRunConversation(claim.run.id, conversationId);
       const result = await this.input.agent.SendScheduled({
         requestId, sessionId: conversationId, content: claim.task.message, scenarioId: claim.task.scenarioId,
+        cronTaskId: claim.task.id,
+        browserAuthorized: claim.task.browserAuthorized === true,
         ...(claim.task.resumeId ? { resumeId: claim.task.resumeId } : {}),
       });
       const needsAttention = result.needsAttention === true || ['waiting_user_input', 'waiting_confirmation'].includes(result.terminal);

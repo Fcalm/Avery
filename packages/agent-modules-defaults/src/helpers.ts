@@ -24,6 +24,8 @@ export function CreateToolResult(
 /** 待确认简历补丁：创建或编辑内容；确认时经写端口整份落库并释放锁；resume 携带编辑前的完整快照。 */
 export interface PendingResumeEdit {
   kind: 'create' | 'edit';
+  /** 发起提案的会话；确认后只更新该会话的绑定 revision。 */
+  sessionId?: string;
   resumeId: string;
   name?: string;
   content: string;

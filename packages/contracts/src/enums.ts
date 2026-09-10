@@ -1,8 +1,8 @@
 /** 跨进程稳定英文枚举：中文文案只在前端 label map 中转换，枚举值不进入持久化对比。 */
 
-/** 用工类型：实习 / 正式工。 */
-export const EmploymentTypeValues = ['intern', 'full_time'] as const;
-export type EmploymentType = (typeof EmploymentTypeValues)[number];
+/** 求职类型：实习 / 校招 / 社招。 */
+export const JobSeekingTypeValues = ['intern', 'campus_recruitment', 'social_recruitment'] as const;
+export type JobSeekingType = (typeof JobSeekingTypeValues)[number];
 
 /** 岗位渠道：BOSS 直聘 / 企业官网 / 其他。 */
 export const ChannelValues = ['boss_zhipin', 'company_website', 'other'] as const;

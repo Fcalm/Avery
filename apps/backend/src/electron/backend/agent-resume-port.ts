@@ -15,6 +15,18 @@ export class AgentResumePort {
     this.business = business;
   }
 
+  /** 返回不含正文的简历库索引，供 Agent 渐进选择。 */
+  async List(): Promise<Array<{ id: string; name: string; updatedAt: string; revision?: number; targetRoles?: string[] }>> {
+    const viewModel = await this.business.LoadViewModel();
+    return viewModel.resumes.map((resume: ResumeSnapshot) => ({
+      id: resume.id,
+      name: resume.name,
+      updatedAt: resume.updatedAt,
+      ...(resume.revision !== undefined ? { revision: resume.revision } : {}),
+      ...(resume.targetRoles ? { targetRoles: [...resume.targetRoles] } : {}),
+    }));
+  }
+
   /** 读取当前简历只读快照（含 revision），供会话级缓存与工具校验。 */
   async ReadCurrent(resumeId: string): Promise<ResumeSnapshot | null> {
     const viewModel = await this.business.LoadViewModel();

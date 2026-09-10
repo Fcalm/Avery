@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { CronRunnerService } from '../../../apps/backend/src/electron/backend/services/cron-runner-service';
 
 function CreateHarness(result: Record<string, unknown> = { accepted: true, content: '后台完成', thinkingContent: '', terminal: 'completed', needsAttention: false }) {
-  const claim = { task: { id: 'cron-1', title: '工作日投递', message: '执行投递', scenarioId: 'application', resumeId: 'resume-1', schedule: { timeZone: 'Asia/Shanghai' } }, run: { id: 'run-1', scheduledAt: Date.parse('2026-08-29T09:00:00+08:00') } };
+  const claim = { task: { id: 'cron-1', title: '工作日投递', message: '执行投递', scenarioId: 'application', resumeId: 'resume-1', browserAuthorized: true, schedule: { timeZone: 'Asia/Shanghai' } }, run: { id: 'run-1', scheduledAt: Date.parse('2026-08-29T09:00:00+08:00') } };
   const business = {
     RecoverInterruptedCronRuns: vi.fn(async () => ({ recovered: 0 })), GetEarliestCronRunAt: vi.fn(async () => ({ nextRunAt: null })), ClaimDueCronTasks: vi.fn(async () => [claim]),
     CreateConversation: vi.fn(async () => ({})), AppendConversationMessages: vi.fn(async () => ({})), AttachCronRunConversation: vi.fn(async () => ({})),
@@ -20,7 +20,7 @@ describe('Cron Runner 后台会话', () => {
     expect(summary).toMatchObject({ claimed: 1, completed: 1, failed: 0 });
     expect(harness.business.CreateConversation).toHaveBeenCalledOnce();
     expect(harness.business.AppendConversationMessages.mock.calls[0][1]).toEqual(expect.arrayContaining([expect.objectContaining({ role: 'user', content: '执行投递' }), expect.objectContaining({ role: 'assistant' })]));
-    expect(harness.agent.SendScheduled).toHaveBeenCalledWith(expect.objectContaining({ scenarioId: 'application', resumeId: 'resume-1' }));
+    expect(harness.agent.SendScheduled).toHaveBeenCalledWith(expect.objectContaining({ scenarioId: 'application', resumeId: 'resume-1', cronTaskId: 'cron-1', browserAuthorized: true }));
     expect(harness.business.CompleteConversationMessage).toHaveBeenCalledWith(expect.any(String), expect.any(String), '后台完成', undefined);
     expect(harness.business.FinishCronRun).toHaveBeenCalledWith('run-1', 'completed', undefined);
   });

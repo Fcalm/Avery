@@ -11,19 +11,20 @@ export type ConfirmationMode = 'always_confirm' | 'allow_low_risk' | 'fully_trus
 /** 会话级思考强度；Provider 会按模型官方规则映射实际 effort。 */
 export type ReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 
-/** Agent 请求的显式窄字段：确认模式、附件、项目 ID 与简历 ID；业务只读快照（简历/档案）由后端按 ID 读取，不再整包透传前端组合态。 */
+/** Agent 请求的显式窄字段：确认模式、附件与项目 ID；简历只能由模型通过 ReadResume 渐进读取和绑定。 */
 export interface AgentSendRequest {
   requestId: string;
   sessionId: string;
   content: string;
   model?: string;
+  /** 请求级 Provider；与 model 一起按会话持久化并在 Run 创建时冻结。 */
+  provider?: 'DeepSeek' | 'Z.AI' | '自定义';
   /** 请求级思考强度；缺省恢复会话值，旧会话默认 medium。 */
   reasoningEffort?: ReasoningEffort;
   /** 请求级确认模式；缺省由后端场景默认。 */
   confirmationMode?: ConfirmationMode;
   attachments?: Array<{ name: string; path: string }>;
   projectId?: string;
-  resumeId?: string;
   /** 会话首次发送时冻结场景；后续不得在同一会话切换。 */
   scenarioId?: 'default' | 'application';
 }
@@ -47,6 +48,11 @@ export interface AgentBrowserRuntimeStatus {
   state: 'not_installed' | 'stopped' | 'ready' | 'unhealthy';
   message?: string;
   currentUrl?: string;
+  engine: 'electron' | 'chrome' | 'edge';
+}
+
+export interface CronBrowserAccessStatus {
+  tasks: Array<{ id: string; title: string; nextRunAt: number | null; browserAuthorized: boolean }>;
 }
 
 /** Agent 流式事件：preload 单通道 `agent:stream` 的全部事件类型。 */
@@ -108,6 +114,7 @@ export interface AgentSessionAssistantState {
   scenarioId: 'default' | 'application';
   /** 经当前 Provider 校验后的会话模型；失效值已回退。 */
   model: string;
+  provider: 'DeepSeek' | 'Z.AI' | '自定义';
   /** 会话级确认策略；不扩展场景、工具或资源授权边界。 */
   confirmationMode: ConfirmationMode;
   /** 会话级思考强度；切换会话或重启应用后从 Backend 快照恢复。 */
@@ -140,6 +147,8 @@ export interface DesktopAgentBridge {
   GetBalance: () => Promise<{ available: boolean; balances: Array<{ currency: string; totalBalance: string }> }>;
   /** 读取当前凭据可访问的 DeepSeek 模型列表，凭据不会离开主进程。 */
   GetModels: () => Promise<{ models: string[] }>;
+  /** 返回所有已配置 Provider 及其可选模型，不暴露 API Key。 */
+  GetProviderCatalog: () => Promise<{ providers: Array<{ provider: 'DeepSeek' | 'Z.AI' | '自定义'; configured: boolean; model: string; models: string[]; baseUrl: string; contextLimit: number; contextLimitMode: 'default' | 'custom'; compressionThreshold: number; thinkingEnabled: boolean }> }>;
   Send: (request: AgentSendRequest) => Promise<{ accepted: boolean }>;
   Cancel: (requestId: string) => Promise<{ cancelled: boolean }>;
   UpdateConfirmationMode: (requestId: string, confirmationMode: ConfirmationMode) => Promise<{ updated: boolean; confirmationMode?: ConfirmationMode; reason?: string }>;
@@ -147,7 +156,9 @@ export interface DesktopAgentBridge {
   ConfirmResumeEdit: (confirmationId: string, accepted: boolean) => Promise<{ applied: boolean }>;
   ConfirmCronTask: (confirmationId: string, accepted: boolean) => Promise<{ created: boolean; task?: unknown }>;
   ConfirmBrowserAction: (confirmationId: string, accepted: boolean) => Promise<BrowserActionState>;
-  GetBrowserRuntimeStatus: () => Promise<AgentBrowserRuntimeStatus>;
+  GetBrowserRuntimeStatus: (probeConnection?: boolean) => Promise<AgentBrowserRuntimeStatus>;
+  GetCronBrowserAccess: () => Promise<CronBrowserAccessStatus>;
+  RevokeCronBrowserAccess: (input: { cronTaskId: string }) => Promise<{ revoked: boolean; task?: unknown }>;
   ClearBrowserProfile: () => Promise<{ cleared: boolean }>;
   /** 用户开始编辑简历前获取互斥锁；Agent 占用时返回未获取及原因。 */
   AcquireResumeEditLock: (resumeId: string) => Promise<{ acquired: boolean; reason?: string }>;
@@ -222,8 +233,8 @@ export interface WorkspaceBridge {
 /** Bridge 方法清单：preload 暴露的方法名唯一来源，供一致性冒烟校验与契约生成使用。 */
 export const BridgeNamespaces = {
   agent: [
-    'Configure', 'TestConnection', 'GetBalance', 'GetModels', 'Send', 'Cancel', 'UpdateConfirmationMode', 'UpdateReasoningEffort', 'ConfirmResumeEdit', 'ConfirmCronTask',
-    'ConfirmBrowserAction', 'GetBrowserRuntimeStatus', 'ClearBrowserProfile',
+    'Configure', 'TestConnection', 'GetBalance', 'GetModels', 'GetProviderCatalog', 'Send', 'Cancel', 'UpdateConfirmationMode', 'UpdateReasoningEffort', 'ConfirmResumeEdit', 'ConfirmCronTask',
+    'ConfirmBrowserAction', 'GetBrowserRuntimeStatus', 'GetCronBrowserAccess', 'RevokeCronBrowserAccess', 'ClearBrowserProfile',
     'AcquireResumeEditLock', 'ReleaseResumeEditLock', 'GetStatus',
     'GetObservability', 'GetTraceEvents', 'DeleteTraces', 'SetTraceRetention', 'ClearObservability',
     'ReloadSession', 'SelectProjectDirectory', 'GetSessionAssistantState', 'BindProjectEnvironment',

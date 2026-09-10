@@ -419,7 +419,8 @@ export interface AttachmentDescriptor {
 /** 归一化后的受限业务上下文；确认模式只通过 Runtime Reminder 传递。 */
 export interface RuntimeContext {
   resumeEditing: boolean;
-  resume: ResumeSnapshot | null;
+  /** 只显示会话绑定元数据，绝不把简历正文自动注入 user 消息。 */
+  boundResume: Pick<ResumeSnapshot, 'id' | 'name' | 'revision'> | null;
   profiles: ProfileSnapshotItem[];
   attachments: AttachmentDescriptor[];
   projectId?: string;

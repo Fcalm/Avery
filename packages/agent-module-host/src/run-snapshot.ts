@@ -4,6 +4,8 @@ import type { CompiledInstructions, RegisteredAgentTool, ScenarioSnapshot } from
 export interface RunDataScopeSnapshot {
   projectId?: string;
   projectRoot?: string;
+  /** 交互 Run 通过 ReadResume 渐进访问简历库；正文不进入 Run 快照。 */
+  resumeLibrary?: boolean;
   resumeId?: string;
   attachmentPaths: string[];
 }
@@ -13,6 +15,7 @@ export interface RunProviderSnapshot {
   moduleName: string;
   moduleVersion: string;
   model: string;
+  provider: string;
   capabilities: string[];
   contextLimit: number;
   compressionThreshold: number;
@@ -56,6 +59,7 @@ export function CreateRunSnapshot(input: CreateRunSnapshotInput): ImmutableRunSn
     definition: JSON.parse(JSON.stringify(tool.definition)) as RegisteredAgentTool['definition'],
     ...(tool.limits ? { limits: { ...tool.limits } } : {}),
     ...(tool.allowedScenarios ? { allowedScenarios: [...tool.allowedScenarios] } : {}),
+    ...(tool.requiredResources ? { requiredResources: [...tool.requiredResources] } : {}),
   }));
   const scenario = {
     ...input.scenario,

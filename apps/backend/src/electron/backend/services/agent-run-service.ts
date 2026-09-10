@@ -20,6 +20,9 @@ export class AgentRunService {
   /** 查询已保存 DeepSeek 凭据可访问的模型列表。 */
   GetModels(): any { return this.agent.GetModels(); }
 
+  /** 返回所有已配置 Provider 的脱敏模型目录。 */
+  GetProviderCatalog(): any { return this.agent.GetProviderCatalog(); }
+
   /** 提交一轮受限的流式对话回合。 */
   Send(request: any): any { return this.agent.Send(request); }
 
@@ -41,8 +44,12 @@ export class AgentRunService {
   /** 应用或拒绝冻结的浏览器动作提案。 */
   ConfirmBrowserAction(confirmationId: string, accepted: boolean): any { return this.agent.ConfirmBrowserAction(confirmationId, accepted); }
 
-  /** 返回不含本地路径的浏览器运行时状态。 */
-  GetBrowserRuntimeStatus(): any { return this.agent.GetBrowserRuntimeStatus(); }
+  /** 返回不含本地路径的浏览器状态；用户显式检测时可发起一次只读连接握手。 */
+  GetBrowserRuntimeStatus(probeConnection?: boolean): any { return this.agent.GetBrowserRuntimeStatus(probeConnection); }
+
+  GetCronBrowserAccess(): any { return this.agent.GetCronBrowserAccess(); }
+
+  RevokeCronBrowserAccess(input: unknown): any { return this.agent.RevokeCronBrowserAccess(input); }
 
   /** 清除 Avery 独立浏览器登录身份。 */
   ClearBrowserProfile(): any { return this.agent.ClearBrowserProfile(); }
