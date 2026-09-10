@@ -1,6 +1,6 @@
 ---
 name: job-application
-description: Complete a controlled job application with authorized profile data and files. Use when the user asks to fill, message, upload, or submit through a recruitment website.
+description: Complete an authorized application only through a company-specific career site or ATS flow. Use for employer application forms, uploads, and submission; do not use for third-party recruiting platforms such as BOSS Zhipin, Liepin, Zhaopin, 51job, or LinkedIn.
 metadata:
   avery:
     scenarios:
@@ -9,13 +9,17 @@ metadata:
 
 # Job application
 
-用于在招聘官网或第三方平台执行受控投递。
+Use this skill only for a named employer's own career site or its dedicated ATS application flow. A vendor-hosted ATS page reached from the employer's recruitment flow remains in scope even when its domain is not owned by the employer.
 
-1. 投递前读取岗位要求和用户授权的简历、档案与附件，确认目标岗位和材料对应关系。
-2. 使用原子浏览器工具观察并填写真实页面；导航、点击、切换页面后重新获取快照。
-3. 登录、验证码、无法判断的授权和需要用户本人完成的验证必须交给用户接管。
-4. 只上传 Host 已授权的文件标识，不请求、不猜测本地物理路径。
-5. 发送消息、同意协议、上传敏感材料和最终提交必须服从当前确认权限与工具结果。
-6. `STATUS_UNKNOWN` 后停止，不重复提交；只有带有效回执的成功工具结果才能证明动作已完成。
+Do not use this skill on multi-employer recruiting marketplaces or social recruiting platforms, including BOSS Zhipin, Liepin, Zhaopin, 51job, and LinkedIn. For BOSS Zhipin applications, use `boss-deliver-workflow` instead.
 
-进入最终提交前，按需加载 `references/submission-checklist.md`。
+Load `company-career-form` first for a structured career-site or ATS form and follow its profile-driven batch workflow.
+
+1. Read the job requirements and the authorized resume, profile, and attachments before applying. Confirm that the target role and selected materials correspond.
+2. Observe and fill the real company application page with browser tools. Refresh the page snapshot after navigation, clicks, or page transitions.
+3. Hand login, CAPTCHA, unresolved authorization, and identity verification back to the user.
+4. Upload only Host-authorized file identifiers. Never request or infer a physical file path.
+5. Agreement acceptance, sensitive-file uploads, and final submission must follow the current confirmation policy and tool results.
+6. Stop after `STATUS_UNKNOWN` and do not resubmit. Only a successful tool receipt proves completion.
+
+Before final submission, load `references/submission-checklist.md` when a checklist is needed.

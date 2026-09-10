@@ -1,8 +1,9 @@
-# 投递前检查清单
+# Company application submission checklist
 
-- 当前页面的公司、岗位和来源是否与用户选择一致。
-- 姓名、联系方式、所在地、工作经历和教育信息是否来自用户已授权资料。
-- 下拉菜单、多级所在地和必填复选框是否已根据页面实际选项填写。
-- 上传文件是否为该岗位选定的授权简历或附件。
-- 是否已向用户说明即将执行的发送、协议同意或最终提交动作。
-- 提交后是否获得明确成功状态或工具回执；未知状态不得重试。
+- Confirm that the current page is a company-specific career site or dedicated ATS flow, not a third-party recruiting platform.
+- Confirm that the company, role, and source match the user's selection.
+- Confirm that name, contact details, location, work history, and education come from authorized user data.
+- Confirm that dropdowns, cascading location fields, and required checkboxes reflect the actual page options.
+- Confirm that every upload is the authorized resume or attachment selected for this role.
+- Tell the user before agreement acceptance, sensitive-file upload, or final submission when the current confirmation policy requires it.
+- Require an explicit success state or valid tool receipt after submission. Do not retry an unknown outcome.
