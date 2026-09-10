@@ -10,7 +10,7 @@
       { id: 'visual-assistant', role: 'assistant', content: '可以。建议把“负责页面开发”改写为包含指标、方法和业务结果的成果描述。', createdAt: now },
     ] }] : [],
     resumes: populated ? [{ id: 'visual-resume', name: '前端工程师简历', targetRoles: ['前端开发工程师'], summary: '三年前端经验，关注性能与工程效率。', content: '项目经历\n将首屏耗时降低 38%，构建时间降低 45%。', updatedAt: now, revision: 2 }] : [],
-    jobs: populated ? [{ id: 'visual-job', company: '示例科技', title: '前端开发工程师', city: '上海', salary: '25–35K', experience: '3–5 年', employmentType: 'full_time', channel: 'manual', favorite: true, matchScore: 86, url: 'https://example.invalid/job', jd: '负责 React 应用性能优化与工程化建设。', revision: 1 }] : [],
+    jobs: populated ? [{ id: 'visual-job', company: '示例科技', title: '前端开发工程师', city: '上海', salary: '25–35K', experience: '3–5 年', jobSeekingType: 'social_recruitment', channel: 'manual', favorite: true, matchScore: 86, url: 'https://example.invalid/job', jd: '负责 React 应用性能优化与工程化建设。', revision: 1 }] : [],
     applications: populated ? [{ id: 'visual-application', jobId: 'visual-job', resumeId: 'visual-resume', status: 'applied', appliedAt: '2026-08-10', nextStepAt: '2026-08-15', note: '等待一面安排', revision: 1 }] : [],
   };
   const profiles = populated ? [{ id: 'visual-profile', category: 'project', title: '核心项目成果', content: '通过拆包、缓存和按需加载，将首屏耗时降低 38%。', updatedAt: now }] : [];

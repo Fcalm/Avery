@@ -14,6 +14,7 @@ const CommonSectionTitles = new Set([
 ]);
 const EducationSectionTitles = new Set(['教育背景', '教育经历']);
 const ProjectSectionTitles = new Set(['项目经历', '项目经验']);
+const ExperienceSectionTitles = new Set(['工作经历', '实习经历', '项目经历', '项目经验', '校园经历']);
 
 function EscapeHtml(value: string) {
   return value.replace(/[&<>"']/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[character] as string));
@@ -45,6 +46,11 @@ function ToInlineHtml(value: string) {
   html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
   html = html.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noreferrer">$1</a>');
   return html;
+}
+
+/** 姓名只有被内容明确标记为加粗时才使用强调字号，避免普通个人信息行喧宾夺主。 */
+function HasBoldMarkdown(value: string) {
+  return /\*\*[^*]+\*\*/.test(value);
 }
 
 function ToSectionTitle(value: string) {
@@ -102,7 +108,7 @@ export function CreateResumeDocumentMarkup(resume: ResumeDocumentInput) {
     if (!line) { FlushList(); continue; }
     if (IsSubheading(line)) {
       FlushList();
-      const className = ProjectSectionTitles.has(currentTitle) ? ' class="resume-project-title"' : '';
+      const className = ExperienceSectionTitles.has(currentTitle) ? ` class="resume-entry-title${ProjectSectionTitles.has(currentTitle) ? ' resume-project-title' : ''}"` : '';
       currentBlocks.push(`<h3${className}>${ToInlineHtml(ToSectionTitle(line))}</h3>`);
       continue;
     }
@@ -114,8 +120,9 @@ export function CreateResumeDocumentMarkup(resume: ResumeDocumentInput) {
     const listItem = line.match(/^(?:[-*•]|\d+[.)、])\s+(.+)$/);
     if (listItem) { listItems.push(listItem[1]); continue; }
     FlushList();
-    if (ProjectSectionTitles.has(currentTitle) && !currentBlocks.length) {
-      currentBlocks.push(`<h3 class="resume-project-title">${ToInlineHtml(line)}</h3>`);
+    if (ExperienceSectionTitles.has(currentTitle) && !currentBlocks.length) {
+      const className = `resume-entry-title${ProjectSectionTitles.has(currentTitle) ? ' resume-project-title' : ''}`;
+      currentBlocks.push(`<h3 class="${className}">${ToInlineHtml(line)}</h3>`);
       continue;
     }
     if (ProjectSectionTitles.has(currentTitle)) {
@@ -131,5 +138,6 @@ export function CreateResumeDocumentMarkup(resume: ResumeDocumentInput) {
   const title = headerParts.shift() || resume.name.trim() || '未命名简历';
   const contact = headerParts.map(ToInlineHtml).join('<span class="resume-header-separator">|</span>');
   const education = headerLines.filter(Boolean).map(ToInlineHtml).join(' ');
-  return `<article class="resume-document"><header class="resume-document-header"><div class="resume-document-identity"><h1>${ToInlineHtml(title)}</h1>${contact ? `<span class="resume-document-contact">${contact}</span>` : ''}</div>${education ? `<p class="resume-document-education">${education}</p>` : ''}</header><div class="resume-document-body">${sections.join('') || '<section class="resume-document-section"><p>暂未填写简历内容。</p></section>'}</div></article>`;
+  const nameClass = HasBoldMarkdown(title) ? ' class="is-emphasized"' : '';
+  return `<article class="resume-document"><header class="resume-document-header"><div class="resume-document-identity"><h1${nameClass}>${ToInlineHtml(title)}</h1>${contact ? `<span class="resume-document-contact">${contact}</span>` : ''}</div>${education ? `<p class="resume-document-education">${education}</p>` : ''}</header><div class="resume-document-body">${sections.join('') || '<section class="resume-document-section"><p>暂未填写简历内容。</p></section>'}</div></article>`;
 }

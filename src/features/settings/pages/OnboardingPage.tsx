@@ -95,7 +95,7 @@ function OnboardingPage({ onComplete }: { onComplete: () => void }) {
     if (!connectionPassed || !apiConfigurationSaved) { ShowNotice('请先返回 API 配置步骤并完成连接测试'); return; }
     try {
       const preferenceContent = `求职类型：${jobType}\n工作经验：${experience}\n最高学历：${education}\n期望行业：${industry}\n目标岗位：${roles.join('、')}\n求职城市：${city || '不限'}`;
-      const preference: ProfileItem = { id: 'profile-job-preference', category: 'other', title: '求职偏好', content: preferenceContent, updatedAt: Date.now() };
+      const preference: ProfileItem = { id: 'profile-job-preference', category: 'job_intention', title: '求职意向', content: preferenceContent, updatedAt: Date.now() };
       const next = profiles.some((item) => item.id === preference.id) ? profiles.map((item) => (item.id === preference.id ? preference : item)) : [preference, ...profiles];
       await saveProfiles.mutateAsync({ items: next });
       const completedSettings = { ...settings, nickname: nickname.trim(), provider, apiKey: '', baseUrl, model, contextLength, contextLimitMode, thinkingEnabled: provider === 'Z.AI' || settings.thinkingEnabled, onboardingDraft: undefined, onboardingCompleted: true };

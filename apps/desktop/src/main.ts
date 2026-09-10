@@ -27,6 +27,39 @@ function resolveAgentBrowserExecutablePath(): string {
   return candidates.find((candidate) => existsSync(candidate)) ?? candidates[0];
 }
 
+/** 只从各平台的标准安装位置发现真实浏览器，不执行注册表或 Shell 查询。 */
+function resolveExternalBrowserPaths(): Partial<Record<'chrome' | 'edge', string>> {
+  const localAppData = process.env.LOCALAPPDATA;
+  const programFiles = process.env.PROGRAMFILES;
+  const programFilesX86 = process.env['PROGRAMFILES(X86)'];
+  const candidates: Record<'chrome' | 'edge', string[]> = process.platform === 'win32'
+    ? {
+      chrome: [
+        ...(localAppData ? [join(localAppData, 'Google', 'Chrome', 'Application', 'chrome.exe')] : []),
+        ...(programFiles ? [join(programFiles, 'Google', 'Chrome', 'Application', 'chrome.exe')] : []),
+        ...(programFilesX86 ? [join(programFilesX86, 'Google', 'Chrome', 'Application', 'chrome.exe')] : []),
+      ],
+      edge: [
+        ...(programFiles ? [join(programFiles, 'Microsoft', 'Edge', 'Application', 'msedge.exe')] : []),
+        ...(programFilesX86 ? [join(programFilesX86, 'Microsoft', 'Edge', 'Application', 'msedge.exe')] : []),
+        ...(localAppData ? [join(localAppData, 'Microsoft', 'Edge', 'Application', 'msedge.exe')] : []),
+      ],
+    }
+    : process.platform === 'darwin'
+      ? {
+        chrome: ['/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'],
+        edge: ['/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge'],
+      }
+      : {
+        chrome: ['/usr/bin/google-chrome', '/usr/bin/google-chrome-stable', '/usr/bin/chromium', '/usr/bin/chromium-browser'],
+        edge: ['/usr/bin/microsoft-edge', '/usr/bin/microsoft-edge-stable'],
+      };
+  return Object.fromEntries(Object.entries(candidates).flatMap(([engine, paths]) => {
+    const match = paths.find((candidate) => candidate && existsSync(candidate));
+    return match ? [[engine, match]] : [];
+  }));
+}
+
 function writeSmokeStage(stage: string, extra: Record<string, unknown> = {}): void {
   const output = process.env.AVERY_SMOKE_RESULT_PATH;
   if (process.env.AVERY_DESKTOP_SMOKE === '1' && output) writeFileSync(output, JSON.stringify({ stage, electron: process.versions.electron, ...extra }), 'utf8');
@@ -43,12 +76,12 @@ function configureSecurityPolicies(): void {
 
 /** 创建唯一主窗口，明确维持 Renderer 与 Node/Electron 能力隔离。 */
 function createWindow(): BrowserWindow {
-  // Acrylic 负责模糊桌面，Renderer 只提供半透明浅绿染色层。
+  // Acrylic 负责模糊桌面；显式启用原生圆角，让 DWM 同时裁剪系统材质与 Renderer 根层。
   const useWindowsTransparency = process.platform === 'win32';
   const window = new BrowserWindow({
     width: 1440, height: 960, minWidth: 1024, minHeight: 680, frame: false, autoHideMenuBar: true,
     backgroundColor: useWindowsTransparency ? '#00000000' : '#F6F1E6',
-    ...(useWindowsTransparency ? { transparent: true, backgroundMaterial: 'acrylic' as const } : {}),
+    ...(useWindowsTransparency ? { transparent: true, backgroundMaterial: 'acrylic' as const, roundedCorners: true } : {}),
     webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true, preload: join(__dirname, '..', '..', '..', 'electron', 'preload.cjs') },
   });
   mainWindow = window;
@@ -113,7 +146,7 @@ async function runLifecycleScenario(mode: string, userDataPath: string, workspac
     await callBackend('workspace:profiles-save', [{ id: 'lifecycle-profile', category: 'project', title: '生命周期档案', content: '确定性测试内容', updatedAt: Date.now() }]);
     await callBackend('workspace:resumes-upsert', { id: 'lifecycle-resume', name: '生命周期简历', targetRoles: ['前端工程师'], summary: '第一版', content: '第一版正文' });
     await callBackend('workspace:resumes-upsert', { id: 'lifecycle-resume', name: '生命周期简历', targetRoles: ['前端工程师'], summary: '第二版', content: '第二版正文' });
-    await callBackend('workspace:jobs-upsert', { id: 'lifecycle-job', company: '验收公司', title: '前端工程师', city: '上海', experience: '3年', employmentType: 'full_time', channel: 'company_website', favorite: true, jd: '确定性 JD' });
+    await callBackend('workspace:jobs-upsert', { id: 'lifecycle-job', company: '验收公司', title: '前端工程师', city: '上海', experience: '3年', jobSeekingType: 'social_recruitment', channel: 'company_website', favorite: true, jd: '确定性 JD' });
     await callBackend('workspace:applications-upsert', { id: 'lifecycle-application', jobId: 'lifecycle-job', resumeId: 'lifecycle-resume', status: 'applied', note: '生命周期验收' });
     await callBackend('workspace:import-attachment', fixturePath, 'text/plain');
     await callBackend('workspace:create-backup');
@@ -245,6 +278,7 @@ if (IsBrowserCompanionProcess()) {
         agentBrowserExecutablePath: resolveAgentBrowserExecutablePath(),
         browserCompanionExecutablePath: process.execPath,
         browserCompanionAppPath: process.defaultApp ? app.getAppPath() : undefined,
+        externalBrowserPaths: resolveExternalBrowserPaths(),
       },
       desktopCapabilities: adapters,
     });

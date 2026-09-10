@@ -6,7 +6,7 @@ import { promisify } from 'node:util';
 import { ExportResume } from './resume-export';
 
 type WindowGetter = () => BrowserWindow | undefined;
-type CredentialConfig = { provider: unknown; baseUrl: unknown; model: unknown; thinkingEnabled: unknown; contextLimit: unknown; contextLimitMode?: unknown; compressionThreshold: unknown; apiKey: string };
+type CredentialConfig = { provider: 'DeepSeek' | 'Z.AI' | '自定义'; baseUrl: unknown; model: unknown; thinkingEnabled: unknown; contextLimit: unknown; contextLimitMode?: unknown; compressionThreshold: unknown; apiKey: string };
 const ExecFile = promisify(execFile);
 export const CronTaskSchedulerName = 'Avery Cron Runner';
 const LegacyCronTaskSchedulerName = `${['Offer', 'Get'].join('')} Cron Runner`;
@@ -50,6 +50,22 @@ async function selectDirectory(getWindow: WindowGetter, properties: Array<'openD
 /** 仅在 Main 进程接触原生目录、文件系统与 safeStorage。 */
 export function CreateDesktopAdapters({ getWindow, userDataPath, executablePath = process.execPath, enableSystemCron = false }: { getWindow: WindowGetter; userDataPath: string; executablePath?: string; enableSystemCron?: boolean }) {
   const configPath = join(userDataPath, 'agent-config.json');
+  const decryptCredential = (value: unknown): string => {
+    if (typeof value !== 'string' || !value || !safeStorage.isEncryptionAvailable()) return '';
+    try { return safeStorage.decryptString(Buffer.from(value, 'base64')); }
+    catch { return ''; }
+  };
+  const readCredentialDocument = async (): Promise<Record<string, any>> => {
+    try {
+      const stored = JSON.parse(await readFile(configPath, 'utf8')) as Record<string, any>;
+      if (stored?.schemaVersion === 2 && stored.providerConfigs && typeof stored.providerConfigs === 'object') return stored;
+      // 旧版单 Provider 文件在首次读取/保存时映射为 v2 内存结构，不丢失原加密 Key。
+      if (stored?.provider) {
+        return { schemaVersion: 2, activeProvider: stored.provider, providerConfigs: { [stored.provider]: stored } };
+      }
+    } catch { /* 未配置或旧文件损坏时返回空注册表。 */ }
+    return { schemaVersion: 2, activeProvider: 'DeepSeek', providerConfigs: {} };
+  };
   return {
     SelectProjectDirectory: async () => { const selected = await selectDirectory(getWindow, ['openDirectory']); return selected ? { path: selected, name: basename(selected) } : null; },
     SelectModuleDirectory: async () => { const selected = await selectDirectory(getWindow, ['openDirectory']); return selected ? { path: selected, name: basename(selected) } : null; },
@@ -60,15 +76,32 @@ export function CreateDesktopAdapters({ getWindow, userDataPath, executablePath 
     },
     CredentialLoad: async () => {
       try {
-        const stored = JSON.parse(await readFile(configPath, 'utf8')) as Record<string, unknown>;
-        const encrypted = typeof stored.encryptedApiKey === 'string' ? stored.encryptedApiKey : '';
-        return { ...stored, apiKey: encrypted && safeStorage.isEncryptionAvailable() ? safeStorage.decryptString(Buffer.from(encrypted, 'base64')) : '' };
+        const stored = await readCredentialDocument();
+        const providerConfigs = Object.fromEntries(Object.entries(stored.providerConfigs ?? {}).map(([provider, value]) => {
+          const config = value && typeof value === 'object' ? value as Record<string, unknown> : {};
+          return [provider, { ...config, provider, apiKey: decryptCredential(config.encryptedApiKey), encryptedApiKey: undefined }];
+        }));
+        const activeProvider = typeof stored.activeProvider === 'string' ? stored.activeProvider : 'DeepSeek';
+        const active = providerConfigs[activeProvider];
+        return active ? { ...active, provider: activeProvider, providerConfigs } : { provider: activeProvider, providerConfigs };
       } catch { return null; }
     },
     CredentialSave: async (config: CredentialConfig) => {
       if (!safeStorage.isEncryptionAvailable()) throw new Error('Secure storage is unavailable on this device.');
       await mkdir(dirname(configPath), { recursive: true });
-      await writeFile(configPath, JSON.stringify({ provider: config.provider, baseUrl: config.baseUrl, model: config.model, thinkingEnabled: config.thinkingEnabled, contextLimit: config.contextLimit, contextLimitMode: config.contextLimitMode, compressionThreshold: config.compressionThreshold, encryptedApiKey: safeStorage.encryptString(config.apiKey).toString('base64') }, null, 2), 'utf8');
+      const stored = await readCredentialDocument();
+      const providerConfigs = { ...(stored.providerConfigs ?? {}) };
+      providerConfigs[config.provider] = {
+        provider: config.provider,
+        baseUrl: config.baseUrl,
+        model: config.model,
+        thinkingEnabled: config.thinkingEnabled,
+        contextLimit: config.contextLimit,
+        contextLimitMode: config.contextLimitMode,
+        compressionThreshold: config.compressionThreshold,
+        encryptedApiKey: safeStorage.encryptString(config.apiKey).toString('base64'),
+      };
+      await writeFile(configPath, JSON.stringify({ schemaVersion: 2, activeProvider: config.provider, providerConfigs }, null, 2), 'utf8');
     },
     SyncCronWake: (nextRunAt: number | null) => enableSystemCron ? SyncWindowsCronWake(nextRunAt, executablePath) : { registered: false, nextRunAt, supported: false },
   };

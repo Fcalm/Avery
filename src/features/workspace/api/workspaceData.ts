@@ -25,6 +25,7 @@ export const DefaultSettings: SettingsDraft = {
   apiKey: '',
   onboardingCompleted: false,
   customContext: '',
+  browserEngine: 'edge',
 };
 
 /** 生成带业务前缀的本地实体 ID；仅用于乐观创建后由后端确认，不用于跨进程安全边界。 */

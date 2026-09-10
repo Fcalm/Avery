@@ -1,7 +1,7 @@
-import type { ApplicationStatus, Channel, EmploymentType, JobScore, ProfileCategory } from '@avery/contracts';
+import type { ApplicationStatus, Channel, JobSeekingType, JobScore, ProfileCategory } from '@avery/contracts';
 
 /** 英文枚举 → 中文文案映射；枚举值在前端转换展示，持久化用稳定英文值。 */
-export const EmploymentTypeLabel: Record<EmploymentType, string> = { intern: '实习', full_time: '正式工' };
+export const JobSeekingTypeLabel: Record<JobSeekingType, string> = { intern: '实习', campus_recruitment: '校招', social_recruitment: '社招' };
 export const ChannelLabel: Record<Channel, string> = { boss_zhipin: 'BOSS直聘', company_website: '企业官网', other: '其他' };
 export const ApplicationStatusLabel: Record<ApplicationStatus, string> = { saved: '已收藏', applied: '已投递', written_test: '笔试中', interviewing: '面试中', ended: '已结束' };
 export const ProfileCategoryLabel: Record<ProfileCategory, string> = { application: '个人信息', project: '项目经历', work: '工作经历', education: '教育经历', job_intention: '求职意向', skill_certificate: '技能/证书', other: '其他资料' };

@@ -11,7 +11,7 @@ const EmptyObservability: AgentObservability = { configured: false, model: '—'
 /** 开发者工具仅保留本地运行日志；会话轨迹统一在求职助手中查看。 */
 function DeveloperPage() {
   const [observability, setObservability] = useState<AgentObservability>(EmptyObservability);
-  const { developerView } = useUiStore();
+  const { developerView, setDeveloperView } = useUiStore();
 
   async function RefreshObservability() {
     setObservability((await GetAgentObservability()) ?? EmptyObservability);
@@ -20,6 +20,17 @@ function DeveloperPage() {
   useEffect(() => { void RefreshObservability(); }, []);
 
   return <div className="standard-page developer-page">
+    <section className="developer-reference-overview">
+      <header className="developer-reference-heading"><div><h1>开发者工具</h1><p>查看 Avery 的本地运行记录，并管理 Agent 测评。</p></div><div className="developer-reference-stats" aria-label="开发者工具数据概览"><span><b>{observability.historySessions}</b><small>历史会话</small></span><span><b>{observability.taskCount}</b><small>任务总数</small></span><span><b>{observability.contextUsage.inputTokens}</b><small>上下文输入</small></span></div></header>
+    </section>
+    <div className="developer-page-view-switcher" role="tablist" aria-label="开发者工具次级页面">
+      <button type="button" role="tab" aria-selected={developerView === 'logs'} className={developerView === 'logs' ? 'selected' : ''} onClick={() => setDeveloperView('logs')}>
+        <Icon name="logs" size={16} />运行日志
+      </button>
+      <button type="button" role="tab" aria-selected={developerView === 'evaluation'} className={developerView === 'evaluation' ? 'selected' : ''} onClick={() => setDeveloperView('evaluation')}>
+        <Icon name="trace" size={16} />Agent 测评
+      </button>
+    </div>
     {developerView === 'logs' ? <section className="developer-console" aria-label="本地运行记录">
       <header className="developer-console-header">
         <div className="developer-console-title"><Icon name="logs" size={16} /><span>运行日志</span></div>

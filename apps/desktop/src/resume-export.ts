@@ -17,23 +17,24 @@ export function CreateResumeHtml(resume: ResumeExportInput): string {
     * { box-sizing: border-box; }
     body { margin: 0; color: #172038; background: #fff; font: 10.5pt/1.65 "Noto Serif CJK SC", "Songti SC", "SimSun", serif; }
     .resume-document { overflow-wrap: anywhere; }
-    .resume-document-header { margin-bottom: 18pt; text-align: center; }
-    .resume-document-identity { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: center; }
-    .resume-document-header h1 { margin: 0; color: #172038; font-size: 15pt; font-weight: 700; line-height: 1.3; }
-    .resume-document-contact, .resume-document-education { color: #172038; font-size: 10.5pt; line-height: 1.6; }
+    .resume-document-header { margin-bottom: 18pt; overflow: hidden; text-align: center; }
+    .resume-document-identity { display: flex; flex-wrap: nowrap; align-items: baseline; justify-content: center; white-space: nowrap; }
+    .resume-document-header h1 { margin: 0; color: #172038; font-size: 10.5pt; font-weight: 400; line-height: 1.6; }
+    .resume-document-header h1.is-emphasized { font-size: 13pt; font-weight: 700; line-height: 1.35; }
+    .resume-document-contact, .resume-document-education { color: #172038; font-size: 10.5pt; line-height: 1.6; white-space: nowrap; }
     .resume-document-contact { margin-left: 8pt; }
     .resume-header-separator { display: inline-block; margin: 0 6pt; color: #64748b; font-weight: 400; }
     .resume-document-education { margin: 4pt 0 0; }
     .resume-document-section { break-inside: avoid; margin: 0 0 14pt; }
     .resume-document-section h2 { margin: 0 0 8pt; border-bottom: 1.5pt solid #244c9a; padding: 0 0 3pt; color: #244c9a; font-size: 15pt; font-weight: 500; line-height: 1.35; }
     .resume-document-section h3 { margin: 0 0 5pt; color: #172038; font-size: 11.5pt; line-height: 1.45; }
-    .resume-document-section .resume-project-title { margin: 0 0 7pt; padding: 6pt 8pt; color: #172038; background: #f1f1f1; font-size: 12pt; font-weight: 700; }
+    .resume-document-section .resume-entry-title { margin: 0 0 7pt; padding: 6pt 8pt; color: #172038; background: #f1f1f1; font-size: 12pt; font-weight: 700; }
     .resume-document-section .resume-project-link { display: inline-block; margin: 0 0 8pt; color: #2455a6; font-size: 11pt; font-weight: 700; text-decoration: underline; }
     .resume-document-section p { margin: 0 0 5pt; text-align: justify; }
     .resume-document-section ul { margin: 0 0 5pt; padding-left: 17pt; }
     .resume-document-section li { margin: 0 0 3pt; padding-left: 1pt; }
     .resume-document-section strong { font-weight: 700; }
-    .resume-document-section a { color: #244c9a; text-decoration: underline; }
+    .resume-document a { color: #244c9a; text-decoration: underline; text-underline-offset: 1pt; }
   </style></head><body>${CreateResumeDocumentMarkup(resume)}</body></html>`;
 }
 export async function CreateDocxBuffer(resume: ResumeExportInput): Promise<Buffer> {

@@ -13,7 +13,7 @@ import { useResumes, useUpsertResume } from '../../../features/resume/api/resume
 import { useProfiles } from '../../../features/profile/api/profileQueries';
 import { useSettings } from '../../../features/settings/api/settingsQueries';
 import {
-  AcquireResumeEditLock, BindProjectEnvironment, CancelAgentRequest, ConfirmBrowserAction, ConfirmCronTask, ConfirmResumeEdit, GetAgentObservability, GetAgentTraceEvents, GetDeepSeekModels, GetSessionAssistantState, ImportAttachmentFile,
+  AcquireResumeEditLock, BindProjectEnvironment, CancelAgentRequest, ConfirmBrowserAction, ConfirmCronTask, ConfirmResumeEdit, GetAgentObservability, GetAgentTraceEvents, GetProviderCatalog, GetSessionAssistantState, ImportAttachmentFile,
   ReleaseResumeEditLock, ReloadAgentSession, SelectAgentProjectDirectory, SendAgentRequest, SubscribeAgentStream, UpdateAgentConfirmationMode, UpdateAgentReasoningEffort,
 } from '../../../features/assistant/api/agentQueries';
 import { Button, Modal, Select } from '../../../shared/components/UI';
@@ -24,6 +24,7 @@ import { ASSISTANT_MAIN_MIN_WIDTH } from '../../../shared/layoutConstants';
 import { CreateSessionUsagePresentation } from '../usagePresentation';
 import { TraceViewer } from '../../developer/components/TraceViewer';
 import type { ChatMessage, PageId } from '../../../types/domain';
+import { UserContinuationQueue } from '../userContinuationQueue';
 
 const ScenarioOptions: Array<{ id: 'default' | 'application'; label: string; icon: IconName; description: string }> = [
   { id: 'default', label: '默认场景', icon: 'assistant', description: '读写简历与档案，不执行岗位投递' },
@@ -34,10 +35,10 @@ const FallbackReasoningEfforts: ReasoningEffort[] = ['low', 'medium', 'high', 'x
 const ReasoningEffortLabels: Record<ReasoningEffort, string> = {
   low: '低', medium: '中', high: '高', xhigh: '超高', max: '最高',
 };
-const ConfirmationOptions: Array<{ id: ConfirmationMode; label: string; description: string }> = [
-  { id: 'always_confirm', label: '始终确认', description: '执行任何外部修改前都征求同意' },
-  { id: 'allow_low_risk', label: '允许低风险', description: '低风险操作自动执行，其他操作仍确认' },
-  { id: 'fully_trusted', label: '完全信任', description: '在当前工具与数据授权范围内自动执行' },
+const ConfirmationOptions: Array<{ id: ConfirmationMode; label: string; description: string; icon: IconName }> = [
+  { id: 'always_confirm', label: '始终确认', description: '执行任何外部修改前都征求同意', icon: 'user-check' },
+  { id: 'allow_low_risk', label: '允许低风险', description: '低风险操作自动执行，其他操作仍确认', icon: 'user-check' },
+  { id: 'fully_trusted', label: '完全信任', description: '在当前工具与数据授权范围内自动执行', icon: 'user-x' },
 ];
 
 function TruncateResumeTitle(title: string) {
@@ -84,6 +85,8 @@ function GetDefaultReasoningEffort(options: ReasoningEffort[]) {
 
 interface ComposerAttachment { name: string; path: string; }
 interface AgentTodo { id: string; title: string; description: string; status: string; }
+type SupportedProvider = 'DeepSeek' | 'Z.AI' | '自定义';
+type ProviderCatalogEntry = { provider: SupportedProvider; configured: boolean; model: string; models: string[] };
 
 function GetTodoPresentation(status: string) {
   if (status === 'cancelled' || status === 'deleted') return { className: 'is-deleted', symbol: '×', label: '已删除' };
@@ -98,6 +101,7 @@ function GetTodoPresentation(status: string) {
  */
 interface StoredConversationComposerState {
   confirmationMode: ConfirmationMode;
+  provider: SupportedProvider;
   model: string;
   reasoningEffort: ReasoningEffort;
 }
@@ -117,6 +121,9 @@ function ReadConversationComposerStates(): Record<string, StoredConversationComp
       if (!['always_confirm', 'allow_low_risk', 'fully_trusted'].includes(candidate.confirmationMode ?? '') || typeof candidate.model !== 'string' || !candidate.model.trim()) continue;
       states[conversationId] = {
         confirmationMode: candidate.confirmationMode as ConfirmationMode,
+        provider: candidate.provider === 'Z.AI' || candidate.provider === '自定义' || candidate.provider === 'DeepSeek'
+          ? candidate.provider
+          : candidate.model === 'glm-5.3-flash' ? 'Z.AI' : candidate.model.startsWith('deepseek-') ? 'DeepSeek' : '自定义',
         model: candidate.model,
         // 兼容已有的会话缓存：旧缓存未保存档位时使用中档。
         reasoningEffort: IsReasoningEffort(candidate.reasoningEffort) ? candidate.reasoningEffort : 'medium',
@@ -159,9 +166,12 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
   const [showReasoningEffort, setShowReasoningEffort] = useState(false);
   const [showScenario, setShowScenario] = useState(false);
   const [scenarioId, setScenarioId] = useState<'default' | 'application'>('default');
+  const [provider, setProvider] = useState<SupportedProvider>(settings.provider);
   const [model, setModel] = useState(ResolveProviderModel(settings.provider, settings.model));
   const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>('medium');
-  const [deepSeekModels, setDeepSeekModels] = useState<string[]>(FallbackDeepSeekModels);
+  const [providerCatalog, setProviderCatalog] = useState<ProviderCatalogEntry[]>([
+    { provider: settings.provider, configured: true, model: settings.model, models: settings.provider === 'DeepSeek' ? FallbackDeepSeekModels : [ResolveProviderModel(settings.provider, settings.model)] },
+  ]);
   const [isTaskActive, setIsTaskActive] = useState(false);
   const [panelWidth, setPanelWidth] = useState(430);
   const [isComposerCompact, setIsComposerCompact] = useState(false);
@@ -187,7 +197,17 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
   const resumeSideRef = useRef<HTMLElement>(null);
   const panelWidthRef = useRef(430);
   const activeRequestRef = useRef<string | null>(null);
+  // 流式终态会早于 agent:send IPC 返回；IPC 未收尾前后端仍可能持有浏览器 Run 锁。
+  const transportRequestRef = useRef<string | null>(null);
   const activePlaceholderRef = useRef<{ conversationId: string; requestId: string; content: string; thinkingContent: string } | null>(null);
+  const handleSendRef = useRef<(content: string) => void>(() => undefined);
+  const continuationQueueRef = useRef<UserContinuationQueue | null>(null);
+  if (!continuationQueueRef.current) {
+    continuationQueueRef.current = new UserContinuationQueue(
+      () => activeRequestRef.current !== null || transportRequestRef.current !== null,
+      (content) => handleSendRef.current(content),
+    );
+  }
   const resumesRef = useRef(resumes);
   // 用户编辑锁：记录持有锁的简历，保存/取消/卸载时释放。
   const editLockRef = useRef<string | null>(null);
@@ -228,6 +248,7 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
     const states = ReadConversationComposerStates();
     const existing: StoredConversationComposerState = states[conversationId] ?? {
       confirmationMode: 'always_confirm' as ConfirmationMode,
+      provider: settings.provider,
       model: ResolveProviderModel(settings.provider, settings.model),
       reasoningEffort: 'medium',
     };
@@ -391,9 +412,10 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
       const localComposerState = ReadConversationComposerStates()[sessionId];
       if (!localComposerState) {
         setPermission(next.confirmationMode);
-        setModel(ResolveProviderModel(settings.provider, next.model));
+        setProvider(next.provider);
+        setModel(ResolveProviderModel(next.provider, next.model));
         setReasoningEffort(next.reasoningEffort);
-        PersistConversationComposerState(sessionId, { confirmationMode: next.confirmationMode, model: next.model, reasoningEffort: next.reasoningEffort });
+        PersistConversationComposerState(sessionId, { confirmationMode: next.confirmationMode, provider: next.provider, model: next.model, reasoningEffort: next.reasoningEffort });
       }
     } catch {
       if (version === sessionLoadVersionRef.current && activeConversationRef.current === sessionId) {
@@ -410,24 +432,30 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
     const defaultModel = ResolveProviderModel(settings.provider, settings.model);
     if (!activeConversationId) {
       setPermission('always_confirm');
+      setProvider(settings.provider);
       setModel(defaultModel);
       setReasoningEffort('medium');
       return;
     }
     const stored = ReadConversationComposerStates()[activeConversationId];
     setPermission(stored?.confirmationMode ?? 'always_confirm');
-    const restoredModel = ResolveProviderModel(settings.provider, stored?.model ?? defaultModel);
+    const restoredProvider = stored?.provider ?? settings.provider;
+    const restoredModel = ResolveProviderModel(restoredProvider, stored?.model ?? defaultModel);
+    setProvider(restoredProvider);
     setModel(restoredModel);
-    if (stored && restoredModel !== stored.model) PersistConversationComposerState(activeConversationId, { model: restoredModel });
+    if (stored && restoredModel !== stored.model) PersistConversationComposerState(activeConversationId, { provider: restoredProvider, model: restoredModel });
     setReasoningEffort(stored?.reasoningEffort ?? 'medium');
   }, [activeConversationId, PersistConversationComposerState, settings.model, settings.provider]);
   useEffect(() => {
-    if (settings.provider !== 'DeepSeek') return;
-    void GetDeepSeekModels().then((result) => { if (result.models.length) setDeepSeekModels(result.models); }).catch(() => undefined);
-  }, [settings.provider]);
+    void GetProviderCatalog().then((result) => {
+      const configured = result.providers.filter((item) => item.configured && item.models.length) as ProviderCatalogEntry[];
+      if (configured.length) setProviderCatalog(configured);
+    }).catch(() => undefined);
+  }, [settings.provider, settings.model]);
 
   // 卸载时释放仍持有的用户编辑锁，避免锁在租约期内阻塞 Agent 编辑。
   useEffect(() => () => { if (editLockRef.current) void ReleaseResumeEditLock(editLockRef.current); }, []);
+  useEffect(() => () => continuationQueueRef.current?.Clear(), []);
 
   useEffect(() => SubscribeAgentStream((event: AgentStreamEvent) => {
     const updatedContent = event.content;
@@ -498,6 +526,7 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
       if (placeholder) completeMessageRef.current.mutate({ conversationId: placeholder.conversationId, messageId: `reply-${placeholder.requestId}`, content: placeholder.content, thinkingContent: placeholder.thinkingContent });
       activePlaceholderRef.current = null;
       activeRequestRef.current = null;
+      continuationQueueRef.current?.Release();
       if (event.type === 'paused') ShowNotice('Agent 运行已暂停');
       if (waitingSessionId) void RefreshSessionAssistantState(waitingSessionId);
       return;
@@ -544,6 +573,7 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
       ShowNotice(event.message ?? 'Agent 请求失败');
     }
     activeRequestRef.current = null;
+    continuationQueueRef.current?.Release();
     if (completedSessionId) void RefreshSessionAssistantState(completedSessionId);
   }), [ShowNotice, currentResumeId, RefreshSessionAssistantState]);
 
@@ -573,9 +603,10 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
     patchConversations((current) => current.some((item) => item.id === targetId) ? current.map((item) => item.id === targetId ? { ...item, updatedAt: Date.now(), messages: [...item.messages, message, placeholder] } : item) : [{ id: targetId, title: text.slice(0, 18) || '新的求职会话', updatedAt: Date.now(), messages: [message, placeholder] }, ...current]);
     appendMessages.mutate({ conversationId: targetId, messages: [message, placeholder] });
     // 新会话在首条请求前写入当前选择，后续切回该会话不再丢失模型和确认权限。
-    PersistConversationComposerState(targetId, { confirmationMode: permission, model, reasoningEffort });
+    PersistConversationComposerState(targetId, { confirmationMode: permission, provider, model, reasoningEffort });
     setActiveConversationId(targetId);
     activeRequestRef.current = requestId;
+    transportRequestRef.current = requestId;
     try {
       let boundProject = projectEnvironment;
       if (projectEnvironment?.projectId) {
@@ -585,14 +616,25 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
       }
       activePlaceholderRef.current = { conversationId: targetId, requestId, content: '', thinkingContent: '' };
       setComposer(''); setAttachments([]); setAgentTodos([]); setIsTaskActive(false);
-      await SendAgentRequest({ requestId, sessionId: targetId, content: message.content, model, reasoningEffort, confirmationMode: permission, attachments, projectId: boundProject?.projectId ?? undefined, resumeId: currentResumeId ?? undefined, scenarioId });
+      await SendAgentRequest({ requestId, sessionId: targetId, content: message.content, provider, model, reasoningEffort, confirmationMode: permission, attachments, projectId: boundProject?.projectId ?? undefined, scenarioId });
     } catch (error) {
       removeMessage.mutate({ conversationId: targetId, messageId: `reply-${requestId}` });
       activePlaceholderRef.current = null;
       activeRequestRef.current = null;
       setIsTaskActive(false);
       ShowNotice(error instanceof Error ? error.message : '无法发起 Agent 请求');
+    } finally {
+      if (transportRequestRef.current === requestId) transportRequestRef.current = null;
+      // 流式终态正常会先清空 activeRequest；此处同时兜底事件丢失，避免回答永久滞留。
+      if (activeRequestRef.current === requestId) activeRequestRef.current = null;
+      continuationQueueRef.current?.Release();
     }
+  }
+  handleSendRef.current = (content) => { void HandleSend(content); };
+
+  /** 确认和问答结果必须作为真实 user 消息发送；旧 Run 未收尾时先排队，不能被忙碌检查丢弃。 */
+  function ContinueWithUserMessage(content: string) {
+    continuationQueueRef.current?.Submit(content);
   }
 
   function HandleStop() { if (activeRequestRef.current) void CancelAgentRequest(activeRequestRef.current); }
@@ -611,13 +653,14 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
     }
   }
 
-  function HandleSelectModel(nextModel: string) {
+  function HandleSelectModel(nextProvider: SupportedProvider, nextModel: string) {
     const nextEffortOptions = GetReasoningEffortOptions(nextModel);
     const nextReasoningEffort = nextEffortOptions.includes(reasoningEffort) ? reasoningEffort : GetDefaultReasoningEffort(nextEffortOptions);
+    setProvider(nextProvider);
     setModel(nextModel);
     setReasoningEffort(nextReasoningEffort);
     setShowModel(false);
-    PersistConversationComposerState(activeConversationId, { model: nextModel, reasoningEffort: nextReasoningEffort });
+    PersistConversationComposerState(activeConversationId, { provider: nextProvider, model: nextModel, reasoningEffort: nextReasoningEffort });
   }
 
   function HandleSelectReasoningEffort(nextEffort: ReasoningEffort) {
@@ -703,6 +746,14 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
       // 保存失败提示已由 mutation onConflict/onFailure 处理；此处保持编辑态与锁。
     }
   }
+  /** 取消编辑必须恢复最后一次已保存内容，并立即释放用户编辑锁供 Agent 继续更新简历。 */
+  function HandleCancelEditing() {
+    setResumeText(savedText);
+    setHistory([]);
+    setEditing(false);
+    if (editLockRef.current) { void ReleaseResumeEditLock(editLockRef.current); editLockRef.current = null; }
+    ShowNotice('已取消编辑，未保存修改已放弃');
+  }
   /** 切换当前简历：释放仍持有的编辑锁并重置编辑态，加载用户在菜单中选定的简历。 */
   function HandleSelectResume(resumeId: string) {
     setShowResumeMenu(false);
@@ -734,7 +785,7 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
       const result = await ConfirmResumeEdit(pendingEdit.confirmationId, accepted);
       ShowNotice(result.applied ? '已确认并保存 Agent 修改' : '已拒绝 Agent 修改');
       setPendingEdit(null);
-      void HandleSend(result.applied
+      ContinueWithUserMessage(result.applied
         ? '我已确认并保存上述简历修改，请继续任务。'
         : '我拒绝了上述简历修改，请根据我的决定调整方案并继续任务。');
     } catch (error) { ShowNotice(error instanceof Error ? error.message : '无法处理简历确认'); }
@@ -746,7 +797,7 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
       const result = await ConfirmCronTask(pendingCronTask.confirmationId, accepted);
       ShowNotice(result.created ? '定时任务已保存并注册后台唤醒' : '已取消创建定时任务');
       setPendingCronTask(null);
-      void HandleSend(result.created
+      ContinueWithUserMessage(result.created
         ? '我已确认创建上述定时任务，任务已经保存，请继续。'
         : '我拒绝创建上述定时任务，请根据我的决定调整方案并继续。');
     } catch (error) { ShowNotice(error instanceof Error ? error.message : '无法处理定时任务确认'); }
@@ -760,16 +811,16 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
       setPendingBrowserAction(null);
       if (result.status === 'succeeded') {
         ShowNotice('浏览器动作已执行，Agent 将自动继续');
-        void HandleSend('我已确认上述浏览器操作，操作已执行成功。请重新读取当前页面状态并继续任务。');
+        ContinueWithUserMessage('我已确认上述浏览器操作，操作已执行成功。请重新读取当前页面状态并继续任务。');
       } else if (result.status === 'status_unknown') {
         ShowNotice('动作结果未知，Agent 将重新核对页面');
-        void HandleSend('我已确认上述浏览器操作，但执行结果未知。请重新读取当前页面状态，不要重复执行该操作。');
+        ContinueWithUserMessage('我已确认上述浏览器操作，但执行结果未知。请重新读取当前页面状态，不要重复执行该操作。');
       } else if (result.status === 'failed') {
         ShowNotice('浏览器动作执行失败，Agent 将根据结果继续');
-        void HandleSend(`我已确认上述浏览器操作，但执行失败${result.message ? `：${result.message}` : ''}。请根据结果调整方案并继续任务。`);
+        ContinueWithUserMessage(`我已确认上述浏览器操作，但执行失败${result.message ? `：${result.message}` : ''}。请根据结果调整方案并继续任务。`);
       } else {
         ShowNotice('已拒绝浏览器动作，Agent 将自动继续');
-        void HandleSend('我拒绝执行上述浏览器操作，请根据我的决定调整方案并继续任务。');
+        ContinueWithUserMessage('我拒绝执行上述浏览器操作，请根据我的决定调整方案并继续任务。');
       }
     } catch (error) { ShowNotice(error instanceof Error ? error.message : '无法处理浏览器确认'); }
   }
@@ -780,7 +831,7 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
     if (incomplete) { ShowNotice('请选择或填写每一道问题的答案'); return; }
     const answer = pendingQuestions.map((question) => `【${question.question}】${questionAnswers[question.id] === '其他' ? otherAnswers[question.id].trim() : questionAnswers[question.id]}`).join('\n');
     setPendingQuestions(null);
-    void HandleSend(answer);
+    ContinueWithUserMessage(answer);
   }
 
   function CancelPendingQuestions() {
@@ -815,7 +866,7 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
               <button type="button" aria-label="上传文件" title="上传文件" onClick={() => inputRef.current?.click()}><Icon name="plus" size={18} /></button>
               <div className="menu-wrap">
                 <button className="permission-button" type="button" aria-label={`权限：${ConfirmationOptions.find((item) => item.id === permission)?.label}`} aria-expanded={showPermission} onClick={() => setShowPermission((value) => !value)}><Icon name={permission === 'fully_trusted' ? 'user-x' : 'user-check'} size={15} /><span className="permission-label">{ConfirmationOptions.find((item) => item.id === permission)?.label}</span><span className="chevron-indicator" aria-hidden="true" /></button>
-                {showPermission && <div className="popup-menu">{ConfirmationOptions.map((item) => <button key={item.id} onClick={() => { if (item.id === 'fully_trusted') { setShowPermission(false); setShowFullyTrustedWarning(true); } else void ApplyConfirmationMode(item.id); }}><b>{item.label}</b><small>{item.description}</small></button>)}</div>}
+                {showPermission && <div className="popup-menu permission-menu" role="menu" aria-label="选择确认权限">{ConfirmationOptions.map((item) => <button key={item.id} type="button" role="menuitemradio" aria-checked={item.id === permission} className={item.id === permission ? 'selected' : ''} onClick={() => { if (item.id === 'fully_trusted') { setShowPermission(false); setShowFullyTrustedWarning(true); } else void ApplyConfirmationMode(item.id); }}><span className="permission-menu-option-title"><Icon name={item.icon} size={15} /><b>{item.label}</b></span><small>{item.description}</small></button>)}</div>}
               </div>
             </div>
             <div>
@@ -826,8 +877,8 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
                 </svg>
               </div>
               <div className="menu-wrap">
-                <button className={`model-button ${settings.provider === 'DeepSeek' ? 'is-deepseek' : ''}`} type="button" aria-label={`模型：${model}`} aria-expanded={showModel} onClick={() => setShowModel((value) => !value)}>{settings.provider === 'DeepSeek' && <Icon name="deepseek" size={15} />}<span className="model-label">{model}</span><span className="chevron-indicator" aria-hidden="true" /></button>
-                {showModel && <div className="popup-menu right">{settings.provider === 'DeepSeek' ? deepSeekModels.map((availableModel) => <button key={availableModel} onClick={() => HandleSelectModel(availableModel)}>{availableModel}</button>) : <button onClick={() => HandleSelectModel(settings.model ?? '')}>{settings.model}</button>}</div>}
+                <button className={`model-button ${provider === 'DeepSeek' ? 'is-deepseek' : ''}`} type="button" aria-label={`模型：${provider} ${model}`} aria-expanded={showModel} onClick={() => setShowModel((value) => !value)}>{provider === 'DeepSeek' && <Icon name="deepseek" size={15} />}<span className="model-label">{provider} · {model}</span><span className="chevron-indicator" aria-hidden="true" /></button>
+                {showModel && <div className="popup-menu right" role="menu" aria-label="切换 Provider 和模型">{providerCatalog.flatMap((entry) => entry.models.map((availableModel) => <button key={`${entry.provider}:${availableModel}`} className={entry.provider === provider && availableModel === model ? 'selected' : ''} onClick={() => HandleSelectModel(entry.provider, availableModel)}><b>{entry.provider}</b><small>{availableModel}</small></button>))}</div>}
               </div>
               <div className="menu-wrap reasoning-effort-wrap">
                 <button className="reasoning-effort-button" type="button" aria-label={`思考模式：${ReasoningEffortLabels[reasoningEffort]}`} aria-expanded={showReasoningEffort} title="思考强度按会话保存，并在下一轮模型请求生效" onClick={() => setShowReasoningEffort((value) => !value)}><span>{ReasoningEffortLabels[reasoningEffort]}</span><span className="chevron-indicator" aria-hidden="true" /></button>
@@ -846,7 +897,7 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
       </div>
       {isEmptyConversation && <QuickStart scenarioId={scenarioId} onUse={setComposer} />}
     </section>}
-    <section ref={resumeSideRef} className={`resume-side ${resumePanelOpen ? 'open' : ''}`} aria-hidden={!resumePanelOpen} style={{ '--panel-width': `${panelWidth}px` } as CSSProperties}>{resumePanelOpen && <button className="resume-side-backdrop" aria-label="关闭简历栏" onClick={() => setResumePanelOpen(false)} />}<div className="resize-bar" onMouseDown={HandleResize} /><aside><div className="resume-paper">{editing ? <textarea value={resumeText} onChange={(event) => HandleEditChange(event.target.value)} /> : <ResumePreview name={resume?.name ?? '未命名简历'} content={resumeText} />}</div><div className="resume-bottom-bar"><div className="resume-switcher"><button className="resume-switcher-trigger" type="button" disabled={!resumes.length} aria-haspopup="menu" aria-expanded={showResumeMenu} title={resume?.name ?? '选择简历'} onClick={() => setShowResumeMenu((value) => !value)}><span>{TruncateResumeTitle(resume?.name ?? '选择简历')}</span><Icon name={showResumeMenu ? 'chevron-up' : 'chevron-down'} size={15} /></button>{showResumeMenu && <div className="resume-switcher-menu" role="menu" aria-label="切换简历">{resumes.map((item) => <button key={item.id} type="button" role="menuitem" className={item.id === currentResumeId ? 'selected' : ''} title={item.name} onClick={() => HandleSelectResume(item.id)}>{TruncateResumeTitle(item.name)}</button>)}</div>}</div><div className="resume-action-row"><Button onClick={HandleStartEditing}>编辑</Button><Button disabled={!history.length} onClick={() => { const last = history.at(-1); if (last) { setResumeText(last); setHistory((current) => current.slice(0, -1)); } }}>撤销</Button><Button variant="primary" onClick={() => void HandleSaveResume()}>保存</Button></div></div></aside></section>
+    <section ref={resumeSideRef} className={`resume-side ${resumePanelOpen ? 'open' : ''}`} aria-hidden={!resumePanelOpen} style={{ '--panel-width': `${panelWidth}px` } as CSSProperties}>{resumePanelOpen && <button className="resume-side-backdrop" aria-label="关闭简历栏" onClick={() => setResumePanelOpen(false)} />}<div className="resize-bar" onMouseDown={HandleResize} /><aside><div className="resume-paper">{editing ? <textarea value={resumeText} onChange={(event) => HandleEditChange(event.target.value)} /> : <ResumePreview name={resume?.name ?? '未命名简历'} content={resumeText} />}</div><div className="resume-bottom-bar"><div className="resume-switcher"><button className="resume-switcher-trigger" type="button" disabled={!resumes.length} aria-haspopup="menu" aria-expanded={showResumeMenu} title={resume?.name ?? '选择简历'} onClick={() => setShowResumeMenu((value) => !value)}><span>{TruncateResumeTitle(resume?.name ?? '选择简历')}</span><Icon name={showResumeMenu ? 'chevron-up' : 'chevron-down'} size={15} /></button>{showResumeMenu && <div className="resume-switcher-menu" role="menu" aria-label="切换简历">{resumes.map((item) => <button key={item.id} type="button" role="menuitem" className={item.id === currentResumeId ? 'selected' : ''} title={item.name} onClick={() => HandleSelectResume(item.id)}>{TruncateResumeTitle(item.name)}</button>)}</div>}</div><div className="resume-action-row"><Button onClick={editing ? HandleCancelEditing : () => void HandleStartEditing()}>{editing ? '取消' : '编辑'}</Button><Button disabled={!editing || !history.length} onClick={() => { const last = history.at(-1); if (last) { setResumeText(last); setHistory((current) => current.slice(0, -1)); } }}>撤销</Button><Button variant="primary" disabled={!editing} onClick={() => void HandleSaveResume()}>保存</Button></div></div></aside></section>
     <Modal open={showFullyTrustedWarning} title="开启完全信任模式" onClose={() => setShowFullyTrustedWarning(false)}><p className="modal-copy">开启后，Agent 可在当前场景的工具白名单与数据授权范围内自动执行操作，不再逐项请求确认。此设置不会授予新的工具、文件或账号权限。</p><div className="modal-actions"><Button onClick={() => setShowFullyTrustedWarning(false)}>取消</Button><Button variant="primary" onClick={() => { setShowFullyTrustedWarning(false); void ApplyConfirmationMode('fully_trusted'); }}>我了解风险，继续</Button></div></Modal>
   </div>;
 }

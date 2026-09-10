@@ -31,7 +31,12 @@ export async function GetDeepSeekModels() {
   return Unwrap(await platformClient.agent.GetModels());
 }
 
-/** 提交一轮真实 Agent 请求；业务只读快照由后端按 resumeId/projectId 读取，不再整包透传。 */
+/** 获取所有已配置 Provider 的可选模型，凭据不会离开主进程。 */
+export async function GetProviderCatalog() {
+  return Unwrap(await platformClient.agent.GetProviderCatalog());
+}
+
+/** 提交一轮真实 Agent 请求；简历由 ReadResume 渐进加载，用户消息不再自动携带当前简历正文。 */
 export async function SendAgentRequest(request: AgentSendRequest) {
   return Unwrap(await platformClient.agent.Send(request));
 }
@@ -79,9 +84,17 @@ export async function ConfirmBrowserAction(confirmationId: string, accepted: boo
   return Unwrap(await platformClient.agent.ConfirmBrowserAction(confirmationId, accepted));
 }
 
-/** 读取不包含本地路径的 agent-browser Runtime 状态。 */
-export async function GetBrowserRuntimeStatus() {
-  return Unwrap(await platformClient.agent.GetBrowserRuntimeStatus());
+/** 读取不包含本地路径的 agent-browser Runtime 状态；显式检测可要求后端验证真实连接。 */
+export async function GetBrowserRuntimeStatus(probeConnection = false) {
+  return Unwrap(await platformClient.agent.GetBrowserRuntimeStatus(probeConnection));
+}
+
+export async function GetCronBrowserAccess() {
+  return Unwrap(await platformClient.agent.GetCronBrowserAccess());
+}
+
+export async function RevokeCronBrowserAccess(cronTaskId: string) {
+  return Unwrap(await platformClient.agent.RevokeCronBrowserAccess({ cronTaskId }));
 }
 
 /** 清除 Avery 独立浏览器身份；UI 必须先完成破坏性确认。 */

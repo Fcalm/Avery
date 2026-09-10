@@ -24,7 +24,19 @@ interface TimelineEvent extends AgentTraceEvent {
   tone: 'is-neutral' | 'is-accent' | 'is-success' | 'is-warning' | 'is-danger';
 }
 
+interface ApiRequestEvent extends AgentTraceEvent {
+  id: string;
+  requestId: string;
+  runIndex: number;
+  apiRequestIndex: number;
+  requestKind: 'completion' | 'summary';
+  model: string;
+  messageCount: number;
+  toolCount: number;
+}
+
 type EventFilter = 'all' | TimelineEvent['title'] | 'Success' | 'Failed';
+type TraceView = 'messages' | 'requests';
 
 const StateLabels: Record<string, string> = { completed: '已完成', running: '进行中', failed: '失败', cancelled: '已取消', circuit_open: '已暂停', interrupted: '已中断' };
 
@@ -70,6 +82,20 @@ function FormatPayload(payload: unknown, depth = 0): string {
   return String(payload);
 }
 
+/** 将详情载荷拆为字段卡片，避免不同语义的数据混在同一个 JSON 文本区。 */
+function PayloadSections(payload: unknown) {
+  const HasContent = (value: unknown): boolean => {
+    if (value === null || value === undefined) return false;
+    if (typeof value === 'string') return value.trim().length > 0;
+    if (Array.isArray(value)) return value.length > 0;
+    if (typeof value === 'object') return Object.keys(value as Record<string, unknown>).length > 0;
+    return true;
+  };
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return HasContent(payload) ? [{ key: 'content', value: payload }] : [];
+  const entries = Object.entries(payload as Record<string, unknown>);
+  return entries.filter(([, value]) => HasContent(value)).map(([key, value]) => ({ key, value }));
+}
+
 function EstimateTokenCount(payload: unknown) {
   const content = PayloadText(payload);
   if (!content) return 0;
@@ -104,58 +130,80 @@ function MessageFingerprint(message: Record<string, unknown>) {
   return JSON.stringify(message);
 }
 
+function NextMessageOccurrenceKey(message: Record<string, unknown>, counts: Map<string, number>) {
+  const fingerprint = MessageFingerprint(message);
+  const occurrence = (counts.get(fingerprint) ?? 0) + 1;
+  counts.set(fingerprint, occurrence);
+  return `${fingerprint}\u0000${occurrence}`;
+}
+
 /**
  * Provider 请求会重复携带完整历史，append 事件又会在下一请求中成为 input；直接平铺会把同一消息展示两次。
- * API input 是实际发送事实，优先作为权威来源；相邻同类请求只展示新增后缀，未进入后续请求的终态 output 才保留。
+ * API input 是实际发送事实，优先作为权威来源。消息用“内容指纹 + 请求内出现序号”标识，避免动态提醒改变中间前缀后
+ * 把其后的完整历史误判为新消息；相同正文确实在同一请求出现多次时仍能分别保留。
  */
 function SelectCanonicalMessageOrdinals(events: AgentTraceEvent[]) {
   const visibleInputOrdinals = new Set<number>();
-  const laterInputOrdinalsByFingerprint = new Map<string, number[]>();
-  let previousKind = '';
-  let previousInputFingerprints: string[] = [];
-  const requestInputs = new Map<number, Array<{ event: AgentTraceEvent; message: Record<string, unknown>; kind: string }>>();
+  const inputOrdinalsByOccurrence = new Map<string, number[]>();
+  const occurrenceByOrdinal = new Map<number, string>();
+  const requestMessages = new Map<number, Array<{ event: AgentTraceEvent; message: Record<string, unknown>; direction: string }>>();
   for (const event of events) {
     if (event.eventType !== 'message') continue;
     const payload = EventPayload(event);
-    if (payload.direction !== 'input') continue;
     const message = payload.message && typeof payload.message === 'object' ? payload.message as Record<string, unknown> : {};
     const apiRequestIndex = Math.max(1, Number(payload.apiRequestIndex) || 1);
-    const items = requestInputs.get(apiRequestIndex) ?? [];
-    items.push({ event, message, kind: String(payload.kind ?? 'completion') });
-    requestInputs.set(apiRequestIndex, items);
-    const fingerprint = MessageFingerprint(message);
-    laterInputOrdinalsByFingerprint.set(fingerprint, [...(laterInputOrdinalsByFingerprint.get(fingerprint) ?? []), event.ordinal]);
+    const items = requestMessages.get(apiRequestIndex) ?? [];
+    items.push({ event, message, direction: String(payload.direction ?? 'append') });
+    requestMessages.set(apiRequestIndex, items);
   }
-  for (const [, items] of [...requestInputs].sort(([left], [right]) => left - right)) {
-    const kind = items[0]?.kind ?? 'completion';
-    const fingerprints = items.map((item) => MessageFingerprint(item.message));
-    let commonPrefixLength = 0;
-    if (kind === previousKind) {
-      while (commonPrefixLength < fingerprints.length
-        && commonPrefixLength < previousInputFingerprints.length
-        && fingerprints[commonPrefixLength] === previousInputFingerprints[commonPrefixLength]) commonPrefixLength += 1;
+
+  const seenInputOccurrences = new Set<string>();
+  for (const [, items] of [...requestMessages].sort(([left], [right]) => left - right)) {
+    const counts = new Map<string, number>();
+    for (const item of items.filter(({ direction }) => direction === 'input').sort((left, right) => left.event.ordinal - right.event.ordinal)) {
+      const occurrence = NextMessageOccurrenceKey(item.message, counts);
+      occurrenceByOrdinal.set(item.event.ordinal, occurrence);
+      inputOrdinalsByOccurrence.set(occurrence, [...(inputOrdinalsByOccurrence.get(occurrence) ?? []), item.event.ordinal]);
+      if (!seenInputOccurrences.has(occurrence)) {
+        visibleInputOrdinals.add(item.event.ordinal);
+        seenInputOccurrences.add(occurrence);
+      }
     }
-    items.slice(commonPrefixLength).forEach(({ event }) => visibleInputOrdinals.add(event.ordinal));
-    previousKind = kind;
-    previousInputFingerprints = fingerprints;
+    // output/append 会成为下一次请求的 input；从本次 input 的相同消息计数继续编号，才能匹配其逻辑位置。
+    for (const item of items.filter(({ direction }) => direction !== 'input').sort((left, right) => left.event.ordinal - right.event.ordinal)) {
+      occurrenceByOrdinal.set(item.event.ordinal, NextMessageOccurrenceKey(item.message, counts));
+    }
   }
-  return { visibleInputOrdinals, laterInputOrdinalsByFingerprint };
+  return { visibleInputOrdinals, inputOrdinalsByOccurrence, occurrenceByOrdinal };
 }
 
-/** 新 Trace 以去重后的 Provider input 为权威；旧 Trace 保持兼容，但不再合并工具调用与结果。 */
+/** 新 Trace 直接消费 append-only 消息；旧 Trace 才使用内容指纹兼容历史数据。 */
 export function BuildTimeline(requestId: string, runIndex: number, events: AgentTraceEvent[]) {
   const timeline: TimelineEvent[] = [];
+  const hasAppendOnlyMessages = events.some((event) => event.eventType === 'message_appended');
   const hasMessageEvents = events.some((event) => event.eventType === 'message');
-  const { visibleInputOrdinals, laterInputOrdinalsByFingerprint } = SelectCanonicalMessageOrdinals(events);
+  const { visibleInputOrdinals, inputOrdinalsByOccurrence, occurrenceByOrdinal } = hasAppendOnlyMessages
+    ? { visibleInputOrdinals: new Set<number>(), inputOrdinalsByOccurrence: new Map<string, number[]>(), occurrenceByOrdinal: new Map<number, string>() }
+    : SelectCanonicalMessageOrdinals(events);
   for (let index = 0; index < events.length; index += 1) {
     const event = events[index];
     const payload = EventPayload(event);
     const tokenCount = event.tokenCount || EstimateTokenCount(event.payload);
-    if (event.eventType === 'message') {
+    if (event.eventType === 'message_appended') {
+      const message = payload.message && typeof payload.message === 'object' ? payload.message as Record<string, unknown> : {};
+      const title = MessageTitle(message.role);
+      const apiRequestIndex = Math.max(1, Number(payload.apiRequestIndex) || 1);
+      let tone: TimelineEvent['tone'] = title === 'Assistant' ? 'is-accent' : 'is-neutral';
+      if (title === 'Tool') {
+        try { tone = JSON.parse(String(message.content ?? '{}')).ok === true ? 'is-success' : 'is-danger'; } catch { tone = 'is-warning'; }
+      }
+      timeline.push({ ...event, id: `${requestId}-${event.ordinal}`, requestId, runIndex, apiRequestIndex, requestKind: 'completion', title, detail: MessageDetail(payload, message), tone, tokenCount, payload: message });
+    } else if (!hasAppendOnlyMessages && event.eventType === 'message') {
       const message = payload.message && typeof payload.message === 'object' ? payload.message as Record<string, unknown> : {};
       if (payload.direction === 'input' && !visibleInputOrdinals.has(event.ordinal)) continue;
       if (payload.direction !== 'input') {
-        const laterInputs = laterInputOrdinalsByFingerprint.get(MessageFingerprint(message)) ?? [];
+        const occurrence = occurrenceByOrdinal.get(event.ordinal) ?? '';
+        const laterInputs = inputOrdinalsByOccurrence.get(occurrence) ?? [];
         if (laterInputs.some((ordinal) => ordinal > event.ordinal)) continue;
       }
       const title = MessageTitle(message.role);
@@ -166,21 +214,39 @@ export function BuildTimeline(requestId: string, runIndex: number, events: Agent
         try { tone = JSON.parse(String(message.content ?? '{}')).ok === true ? 'is-success' : 'is-danger'; } catch { tone = 'is-warning'; }
       }
       timeline.push({ ...event, id: `${requestId}-${event.ordinal}`, requestId, runIndex, apiRequestIndex, requestKind, title, detail: MessageDetail(payload, message), tone, tokenCount, payload: message });
-    } else if (!hasMessageEvents && event.eventType === 'system_prompt') {
+    } else if (!hasAppendOnlyMessages && !hasMessageEvents && event.eventType === 'system_prompt') {
       timeline.push({ ...event, id: `${requestId}-${event.ordinal}`, requestId, runIndex, apiRequestIndex: 1, requestKind: 'legacy', title: 'System', detail: 'System prompt', tone: 'is-neutral', tokenCount });
-    } else if (event.eventType === 'user_message') {
+    } else if (!hasAppendOnlyMessages && event.eventType === 'user_message') {
       if (!hasMessageEvents) timeline.push({ ...event, id: `${requestId}-${event.ordinal}`, requestId, runIndex, apiRequestIndex: 1, requestKind: 'legacy', title: 'User', detail: 'User message', tone: 'is-neutral', tokenCount });
-    } else if (!hasMessageEvents && event.eventType === 'tool_call') {
+    } else if (!hasAppendOnlyMessages && !hasMessageEvents && event.eventType === 'tool_call') {
       timeline.push({ ...event, id: `${requestId}-${event.ordinal}`, requestId, runIndex, apiRequestIndex: 1, requestKind: 'legacy', title: 'Tool', detail: `${String(payload.name ?? 'Tool')} · Call`, tone: 'is-warning', tokenCount });
-    } else if (!hasMessageEvents && event.eventType === 'tool_result') {
+    } else if (!hasAppendOnlyMessages && !hasMessageEvents && event.eventType === 'tool_result') {
       timeline.push({ ...event, id: `${requestId}-${event.ordinal}`, requestId, runIndex, apiRequestIndex: 1, requestKind: 'legacy', title: 'Tool', detail: `${String(payload.name ?? 'Tool')} · Result`, tone: payload.ok === true ? 'is-success' : 'is-danger', tokenCount });
-    } else if (!hasMessageEvents && event.eventType === 'assistant_message') {
+    } else if (!hasAppendOnlyMessages && !hasMessageEvents && event.eventType === 'assistant_message') {
       timeline.push({ ...event, id: `${requestId}-${event.ordinal}`, requestId, runIndex, apiRequestIndex: 1, requestKind: 'legacy', title: 'Assistant', detail: 'Assistant message', tone: 'is-accent', tokenCount });
-    } else if (!hasMessageEvents && event.eventType === 'error') {
+    } else if (!hasAppendOnlyMessages && !hasMessageEvents && event.eventType === 'error') {
       timeline.push({ ...event, id: `${requestId}-${event.ordinal}`, requestId, runIndex, apiRequestIndex: 1, requestKind: 'legacy', title: 'Assistant', detail: 'Request failed', tone: 'is-danger', tokenCount });
     }
   }
   return timeline;
+}
+
+/** API 请求保留 Provider 最终序列化后的完整输入，但不会展开成消息时间线事件。 */
+export function BuildApiRequests(requestId: string, runIndex: number, events: AgentTraceEvent[]): ApiRequestEvent[] {
+  return events.filter((event) => event.eventType === 'provider_request').map((event) => {
+    const payload = EventPayload(event);
+    return {
+      ...event,
+      id: `${requestId}-request-${event.ordinal}`,
+      requestId,
+      runIndex,
+      apiRequestIndex: Math.max(1, Number(payload.apiRequestIndex) || 1),
+      requestKind: payload.kind === 'summary' ? 'summary' : 'completion',
+      model: String(payload.model ?? '—'),
+      messageCount: Math.max(0, Number(payload.messageCount) || 0),
+      toolCount: Math.max(0, Number(payload.toolCount) || 0),
+    };
+  });
 }
 
 function EventRow({ event, expanded, onToggle }: { event: TimelineEvent; expanded: boolean; onToggle: () => void }) {
@@ -195,11 +261,34 @@ function EventRow({ event, expanded, onToggle }: { event: TimelineEvent; expande
 }
 
 function EventThumbnail({ event, selected, onSelect }: { event: TimelineEvent; selected: boolean; onSelect: () => void }) {
+  const outcome = event.tone === 'is-success' ? 'Success' : event.tone === 'is-danger' ? 'Failed' : '—';
   return <button className={`trace-event-thumbnail ${selected ? 'selected' : ''}`} type="button" aria-current={selected ? 'true' : undefined} onClick={onSelect}>
     <b className={`trace-event-role trace-event-role-${event.title.toLowerCase()}`}>{event.title}</b>
-    <small>{event.detail}</small>
+    <small className={`trace-event-outcome ${event.tone}`}>{outcome}</small>
     <time>{FormatTime(event.createdAt)}</time>
   </button>;
+}
+
+function DetailSections({ payload }: { payload: unknown }) {
+  const [collapsedSections, setCollapsedSections] = useState<Set<string>>(new Set());
+  const sections = useMemo(() => PayloadSections(payload), [payload]);
+
+  useEffect(() => {
+    // 选择另一条事件时恢复默认展开，避免旧事件的阅读状态泄漏。
+    setCollapsedSections(new Set());
+  }, [payload]);
+
+  function ToggleSection(key: string) {
+    setCollapsedSections((current) => { const next = new Set(current); next.has(key) ? next.delete(key) : next.add(key); return next; });
+  }
+
+  return <div className="trace-event-detail-sections">{sections.map(({ key, value }) => {
+    const expanded = !collapsedSections.has(key);
+    return <section className="trace-event-detail-section" key={key}>
+      <button className="trace-event-detail-section-summary" type="button" aria-expanded={expanded} onClick={() => ToggleSection(key)}><b>{key}</b><Icon name={expanded ? 'chevron-up' : 'chevron-down'} size={14} /></button>
+      {expanded && <pre>{FormatPayload(value)}</pre>}
+    </section>;
+  })}</div>;
 }
 
 function EventDetail({ event }: { event: TimelineEvent }) {
@@ -209,8 +298,60 @@ function EventDetail({ event }: { event: TimelineEvent }) {
       <span className="trace-event-tokens">{event.tokenCount.toLocaleString()} tokens</span>
       <time>{FormatTime(event.createdAt)}</time>
     </header>
-    <pre>{FormatPayload(event.payload)}</pre>
+    <DetailSections payload={event.payload} />
   </article>;
+}
+
+function ApiRequestRow({ request, expanded, onToggle }: { request: ApiRequestEvent; expanded: boolean; onToggle: () => void }) {
+  return <article className={`trace-event ${expanded ? 'open' : ''}`}>
+    <button className="trace-event-summary" type="button" aria-expanded={expanded} onClick={onToggle}>
+      <span className="trace-event-copy"><b>API REQUEST-{request.apiRequestIndex}</b><small>{request.requestKind} · {request.model}</small></span>
+      <span className="trace-event-tokens">{request.messageCount} messages · {request.toolCount} tools</span>
+      <time>{FormatTime(request.createdAt)}</time>
+    </button>
+    {expanded && <pre>{FormatPayload(request.payload)}</pre>}
+  </article>;
+}
+
+function ApiRequestThumbnail({ request, selected, onSelect }: { request: ApiRequestEvent; selected: boolean; onSelect: () => void }) {
+  return <button className={`trace-event-thumbnail ${selected ? 'selected' : ''}`} type="button" aria-current={selected ? 'true' : undefined} onClick={onSelect}>
+    <b>API REQUEST-{request.apiRequestIndex}</b>
+    <small>{request.requestKind} · {request.messageCount} messages</small>
+    <time>{FormatTime(request.createdAt)}</time>
+  </button>;
+}
+
+function ApiRequestDetail({ request }: { request: ApiRequestEvent }) {
+  return <article className="trace-event-detail-card">
+    <header>
+      <span className="trace-event-copy"><b>API REQUEST-{request.apiRequestIndex}</b><small>{request.requestKind} · {request.model}</small></span>
+      <span className="trace-event-tokens">{request.messageCount} messages · {request.toolCount} tools</span>
+      <time>{FormatTime(request.createdAt)}</time>
+    </header>
+    <DetailSections payload={request.payload} />
+  </article>;
+}
+
+interface TraceTurn<Item extends { runIndex: number; createdAt: number | string }> {
+  runIndex: number;
+  createdAt: number | string;
+  items: Item[];
+}
+
+function GroupByTurn<Item extends { runIndex: number; createdAt: number | string }>(items: Item[]): TraceTurn<Item>[] {
+  const groups = new Map<number, TraceTurn<Item>>();
+  for (const item of items) {
+    const group = groups.get(item.runIndex);
+    if (group) group.items.push(item);
+    else groups.set(item.runIndex, { runIndex: item.runIndex, createdAt: item.createdAt, items: [item] });
+  }
+  return [...groups.values()];
+}
+
+function TurnIndex({ runIndex, count, createdAt, expanded, onToggle }: { runIndex: number; count: number; createdAt: number | string; expanded: boolean; onToggle: () => void }) {
+  return <button className="trace-turn-index" type="button" aria-expanded={expanded} onClick={onToggle}>
+    <b>TURN-{runIndex}</b><small>{count} 条事件</small><time>{FormatTime(createdAt)}</time><Icon name={expanded ? 'chevron-up' : 'chevron-down'} size={14} />
+  </button>;
 }
 
 /** 按会话聚合 Trace；每次模型请求在右侧时间线中以 Request-n 分隔。 */
@@ -221,7 +362,10 @@ function TraceViewer({ traces, conversations, onSelectTrace, onDeleteTraces, foc
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [eventsByRequest, setEventsByRequest] = useState<Record<string, AgentTraceEvent[]>>({});
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [collapsedTurns, setCollapsedTurns] = useState<Set<string>>(new Set());
   const [selectedEventId, setSelectedEventId] = useState<string | null>(null);
+  const [selectedApiRequestId, setSelectedApiRequestId] = useState<string | null>(null);
+  const [traceView, setTraceView] = useState<TraceView>('messages');
   const [query, setQuery] = useState('');
   const [eventFilter, setEventFilter] = useState<EventFilter>('all');
 
@@ -258,6 +402,7 @@ function TraceViewer({ traces, conversations, onSelectTrace, onDeleteTraces, foc
   }, [selectedConversation?.id]);
 
   const timeline = useMemo(() => selectedConversation?.traces.flatMap((trace, index) => BuildTimeline(trace.requestId, index + 1, eventsByRequest[trace.requestId] ?? [])) ?? [], [eventsByRequest, selectedConversation]);
+  const apiRequests = useMemo(() => selectedConversation?.traces.flatMap((trace, index) => BuildApiRequests(trace.requestId, index + 1, eventsByRequest[trace.requestId] ?? [])) ?? [], [eventsByRequest, selectedConversation]);
   const visibleTimeline = useMemo(() => {
     const needle = query.toLowerCase();
     const MatchesFilter = (event: TimelineEvent) => eventFilter === 'all'
@@ -266,16 +411,38 @@ function TraceViewer({ traces, conversations, onSelectTrace, onDeleteTraces, foc
       || (eventFilter === 'Failed' && event.tone === 'is-danger');
     return timeline.filter((event) => MatchesFilter(event) && (!needle || `${event.title} ${event.detail} ${PayloadText(event.payload)}`.toLowerCase().includes(needle)));
   }, [eventFilter, query, timeline]);
+  const visibleTimelineTurns = useMemo(() => GroupByTurn(visibleTimeline), [visibleTimeline]);
 
   const selectedEvent = isCurrentConversationMode ? visibleTimeline.find((event) => event.id === selectedEventId) ?? null : null;
+  const visibleApiRequests = useMemo(() => {
+    const needle = query.toLowerCase();
+    return apiRequests.filter((request) => !needle || `API REQUEST-${request.apiRequestIndex} ${request.model} ${PayloadText(request.payload)}`.toLowerCase().includes(needle));
+  }, [apiRequests, query]);
+  const visibleApiRequestTurns = useMemo(() => GroupByTurn(visibleApiRequests), [visibleApiRequests]);
+  const selectedApiRequest = isCurrentConversationMode ? visibleApiRequests.find((request) => request.id === selectedApiRequestId) ?? null : null;
 
   useEffect(() => {
     if (!isCurrentConversationMode) return;
     setSelectedEventId((current) => visibleTimeline.some((event) => event.id === current) ? current : visibleTimeline[0]?.id ?? null);
   }, [isCurrentConversationMode, visibleTimeline]);
 
+  useEffect(() => {
+    if (!isCurrentConversationMode) return;
+    setSelectedApiRequestId((current) => visibleApiRequests.some((request) => request.id === current) ? current : visibleApiRequests[0]?.id ?? null);
+  }, [isCurrentConversationMode, visibleApiRequests]);
+
+  useEffect(() => {
+    // 切换会话后默认展开全部 Turn，避免把上一个会话的折叠状态带入当前会话。
+    setCollapsedTurns(new Set());
+  }, [selectedConversationId]);
+
   function ToggleEvent(id: string) {
     setExpanded((current) => { const next = new Set(current); next.has(id) ? next.delete(id) : next.add(id); return next; });
+  }
+
+  function ToggleTurn(view: TraceView, runIndex: number) {
+    const key = `${view}-${runIndex}`;
+    setCollapsedTurns((current) => { const next = new Set(current); next.has(key) ? next.delete(key) : next.add(key); return next; });
   }
 
   async function ConfirmDeleteTraces() {
@@ -303,21 +470,25 @@ function TraceViewer({ traces, conversations, onSelectTrace, onDeleteTraces, foc
         })}</div>
       </aside>}
       {isCurrentConversationMode && <aside className="trace-event-list-aside" aria-label="当前对话轨迹事件">
-        <div className="trace-list-heading"><b>当前轨迹</b><small>{visibleTimeline.length} 条</small></div>
-        {visibleTimeline.length ? <div className="trace-request-list">{visibleTimeline.map((event) => <EventThumbnail key={event.id} event={event} selected={selectedEvent?.id === event.id} onSelect={() => setSelectedEventId(event.id)} />)}</div> : <p className="empty-copy">没有符合筛选条件的轨迹事件。</p>}
+        <div className="trace-list-heading"><b>{traceView === 'messages' ? '消息轨迹' : 'API 请求'}</b><small>{traceView === 'messages' ? visibleTimeline.length : visibleApiRequests.length} 条</small></div>
+        {traceView === 'messages'
+          ? visibleTimelineTurns.length ? <div className="trace-turn-list">{visibleTimelineTurns.map((turn) => { const key = `messages-${turn.runIndex}`; const isExpanded = !collapsedTurns.has(key); return <section className="trace-turn" key={key}><TurnIndex runIndex={turn.runIndex} count={turn.items.length} createdAt={turn.createdAt} expanded={isExpanded} onToggle={() => ToggleTurn('messages', turn.runIndex)} />{isExpanded && <div className="trace-turn-events">{turn.items.map((event) => <EventThumbnail key={event.id} event={event} selected={selectedEvent?.id === event.id} onSelect={() => setSelectedEventId(event.id)} />)}</div>}</section>; })}</div> : <p className="empty-copy">没有符合筛选条件的消息事件。</p>
+          : visibleApiRequestTurns.length ? <div className="trace-turn-list">{visibleApiRequestTurns.map((turn) => { const key = `requests-${turn.runIndex}`; const isExpanded = !collapsedTurns.has(key); return <section className="trace-turn" key={key}><TurnIndex runIndex={turn.runIndex} count={turn.items.length} createdAt={turn.createdAt} expanded={isExpanded} onToggle={() => ToggleTurn('requests', turn.runIndex)} />{isExpanded && <div className="trace-turn-events">{turn.items.map((request) => <ApiRequestThumbnail key={request.id} request={request} selected={selectedApiRequest?.id === request.id} onSelect={() => setSelectedApiRequestId(request.id)} />)}</div>}</section>; })}</div> : <p className="empty-copy">没有符合筛选条件的 API 请求。</p>}
       </aside>}
       <main>
         {selectedConversation ? <>
           <div className="trace-detail-header">
             <div className="trace-detail-metadata">
-              <span><b>{FormatDateTime(selectedEvent?.createdAt ?? selectedConversation.traces[0].createdAt)}</b></span>
-              <span><b>{selectedEvent ? selectedConversation.traces[selectedEvent.runIndex - 1]?.model : selectedConversation.traces.at(-1)?.model}</b></span>
-              <span><b>{selectedEvent ? `API REQUEST-${selectedEvent.apiRequestIndex}` : `${selectedConversation.traces.length} runs`}</b></span>
+              <span><b>{FormatDateTime((traceView === 'messages' ? selectedEvent?.createdAt : selectedApiRequest?.createdAt) ?? selectedConversation.traces[0].createdAt)}</b></span>
+              <span><b>{traceView === 'messages' && selectedEvent ? selectedConversation.traces[selectedEvent.runIndex - 1]?.model : selectedApiRequest?.model ?? selectedConversation.traces.at(-1)?.model}</b></span>
+              <span><b>{traceView === 'messages' && selectedEvent ? `API REQUEST-${selectedEvent.apiRequestIndex}` : traceView === 'requests' && selectedApiRequest ? `API REQUEST-${selectedApiRequest.apiRequestIndex}` : `${selectedConversation.traces.length} runs`}</b></span>
               <span className="trace-scene"><b>求职助手</b></span>{onDeleteTraces && <button className="trace-detail-delete" type="button" aria-label={`删除${selectedConversation.title}的 Trace`} title="删除此对话的 Trace" onClick={() => { setDeleteError(null); setDeleteTarget(selectedConversation); }}><Icon name="delete" size={14} /></button>}
             </div>
-            <div className="trace-detail-controls"><div className="trace-search"><Icon name="search" size={14} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索事件内容" aria-label="搜索事件内容" /></div><Select className="trace-event-filter" value={eventFilter} onChange={(value) => setEventFilter(value as EventFilter)} ariaLabel="筛选事件" options={[{ value: 'all', label: '全部事件' }, { value: 'System', label: 'System' }, { value: 'User', label: 'User' }, { value: 'Tool', label: 'Tool' }, { value: 'Assistant', label: 'Assistant' }, { value: 'Success', label: 'Success' }, { value: 'Failed', label: 'Failed' }]} /></div>
+            <div className="trace-detail-controls"><Select value={traceView} onChange={(value) => setTraceView(value as TraceView)} ariaLabel="轨迹视图" options={[{ value: 'messages', label: '消息轨迹' }, { value: 'requests', label: 'API 请求' }]} /><div className="trace-search"><Icon name="search" size={14} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={traceView === 'messages' ? '搜索消息内容' : '搜索请求内容'} aria-label={traceView === 'messages' ? '搜索消息内容' : '搜索请求内容'} /></div>{traceView === 'messages' && <Select className="trace-event-filter" value={eventFilter} onChange={(value) => setEventFilter(value as EventFilter)} ariaLabel="筛选事件" options={[{ value: 'all', label: '全部事件' }, { value: 'System', label: 'System' }, { value: 'User', label: 'User' }, { value: 'Tool', label: 'Tool' }, { value: 'Assistant', label: 'Assistant' }, { value: 'Success', label: 'Success' }, { value: 'Failed', label: 'Failed' }]} />}</div>
           </div>
-          {isCurrentConversationMode ? selectedEvent ? <EventDetail event={selectedEvent} /> : <p className="empty-copy">此对话暂时没有可显示的 System、User、Tool 或 Assistant 事件。</p> : visibleTimeline.length ? <div className="trace-event-list">{visibleTimeline.map((event, index) => { const previous = visibleTimeline[index - 1]; const startsRequest = index === 0 || previous.requestId !== event.requestId || previous.apiRequestIndex !== event.apiRequestIndex; return <div key={event.id} className="trace-request-group">{startsRequest && <div className="trace-request-divider"><span>API REQUEST-{event.apiRequestIndex}</span><code>{event.requestKind}</code><small>{FormatTime(event.createdAt)}</small></div>}<EventRow event={event} expanded={expanded.has(event.id)} onToggle={() => ToggleEvent(event.id)} /></div>; })}</div> : <p className="empty-copy">此对话暂时没有可显示的 System、User、Tool 或 Assistant 事件。</p>}
+          {traceView === 'messages'
+            ? isCurrentConversationMode ? selectedEvent ? <EventDetail event={selectedEvent} /> : <p className="empty-copy">此对话暂时没有可显示的 System、User、Tool 或 Assistant 事件。</p> : visibleTimeline.length ? <div className="trace-event-list">{visibleTimeline.map((event, index) => { const previous = visibleTimeline[index - 1]; const startsRequest = index === 0 || previous.requestId !== event.requestId || previous.apiRequestIndex !== event.apiRequestIndex; return <div key={event.id} className="trace-request-group">{startsRequest && <div className="trace-request-divider"><span>API REQUEST-{event.apiRequestIndex}</span><code>{event.requestKind}</code><small>{FormatTime(event.createdAt)}</small></div>}<EventRow event={event} expanded={expanded.has(event.id)} onToggle={() => ToggleEvent(event.id)} /></div>; })}</div> : <p className="empty-copy">此对话暂时没有可显示的 System、User、Tool 或 Assistant 事件。</p>
+            : isCurrentConversationMode ? selectedApiRequest ? <ApiRequestDetail request={selectedApiRequest} /> : <p className="empty-copy">此对话暂时没有 API 请求。</p> : visibleApiRequests.length ? <div className="trace-event-list">{visibleApiRequests.map((request) => <ApiRequestRow key={request.id} request={request} expanded={expanded.has(request.id)} onToggle={() => ToggleEvent(request.id)} />)}</div> : <p className="empty-copy">此对话暂时没有 API 请求。</p>}
         </> : <p className="empty-copy">发送一条消息后，这里会按对话归纳 Trace 记录。</p>}
       </main>
     </div>
