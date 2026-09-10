@@ -102,6 +102,7 @@ Policy 规则使用代码和数据表实现，不从 Prompt 或模型文本解�
 - 0.3.0 只有版本化场景快照明确启用、URL 来自当前用户消息且网络策略通过时才允许 `ReadUrl`；`SearchJobs` 继续拒绝。
 - 未来 `SearchJobs` 必须经过新的产品裁决与网络安全门禁；后台、周期、无界发现永久拒绝。
 - 投递场景使用独立冻结白名单：可以创建 Run，但不能复用默认场景的简历/档案写权限；浏览器外部动作仍受 proposal、确认与 receipt 约束。
+- `ReadResume({})` 只读取无正文索引；`ReadResume({resumeId})` 成功后才建立会话级 `bound_resume`。声明该资源的工具由统一入口校验存在性和 revision，禁止各工具自行复制门禁。
 - 用户正在编辑简历或 revision 冲突时，不允许 Agent 静默覆盖。
 - 确认只对 `proposalHash` 对应的参数生效一次。
 

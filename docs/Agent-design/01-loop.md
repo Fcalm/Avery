@@ -132,6 +132,8 @@ interface RunLease {
 
 `CreateCronTask` 的确认是针对整个 occurrence 周期的一次性授权，不属于某次浏览器动作确认。系统调度器只唤醒应用；Backend 从数据库原子 claim 到期 occurrence，创建独立 Session，把保存的消息作为真实 `user` 消息，再通过内部 `SendScheduled` 入口执行。该入口固定 `fully_trusted + unattended`，移除四个 CronTask 工具，并自行持久化 assistant 输出，不能依赖 Renderer 消费流事件。
 
+投递 CronTask 的周期确认同时写入绑定该 `cronTaskId` 的持久个人浏览器授权；该授权不等于浏览器在线或 BOSS 已登录。Cron Runner 只从数据库读取授权并通过内部 `SendScheduled` 传入，Renderer 不能伪造；执行时连接失败、登录失效或需要人工批准仍进入 `needsAttention`。旧任务和已撤销任务不得自动补授权。
+
 多个逾期 occurrence 只 claim 最近一次，更早项写为 `missed(superseded_by_latest)`；同任务前次仍运行时写为 `missed(previous_run_active)`。登录、验证码、短信或必要信息缺失写为 `needsAttention`，不弹阻塞确认框。completed、failed、missed、needsAttention 都消费次数，单次失败不取消后续计划。
 
 ## 5. 主循环伪代码
@@ -244,7 +246,7 @@ interface PendingConfirmation {
 5. 用户接受时核对 `proposalHash`，重新读取资源并获取锁。
 6. revision 一致才使用业务幂等键提交；不一致则进入 `paused`，展示新旧差异。
 7. 成功后写 Tool Receipt；拒绝或过期后提案失效，不能复用。
-8. 复用 `AskUserQuestion` 的恢复路径，把用户决定和实际执行结果整理为普通文本，以 `user` 角色保存并启动延续 Run；不使用额外标签或隐藏消息格式。
+8. 复用 `AskUserQuestion` 的恢复路径，把用户决定和实际执行结果整理为普通文本，以 `user` 角色保存并启动延续 Run；不使用额外标签或隐藏消息格式。确认卡可能早于旧 Run 的等待终态显示，前端必须暂存这条延续消息，并在旧 Run 释放后立即发送，不能因 active 检查静默丢弃或等到 CronTask 执行。
 
 接受确认后不再让模型重新生成工具参数。Harness 直接把冻结提案交给 Tool Scheduler；执行结束后再以普通 `user` 消息向模型说明确认决定和执行结果。该消息与 `AskUserQuestion` 的答案一样进入会话历史和新 Trace，使模型能够继续任务，同时保证用户看到的 diff 与真正执行的参数完全一致。
 
@@ -256,6 +258,7 @@ interface PendingConfirmation {
 - 只读、无依赖、资源键不冲突的工具可以并行；写操作、用户交互和状态快照刷新是屏障。
 - 某个工具要求等待时，屏障后的工具全部标记 `SKIPPED_AFTER_WAIT`，不得继续产生副作用。
 - 用户取消立即触发共享 `AbortSignal`，取消未启动节点；已启动写操作必须通过幂等账本查询最终状态。
+- 真实用户输入一旦进入 Transcript，及已完成的 assistant/tool 结果一旦提交，必须立即建立历史持久化屏障；取消只能阻止尚未提交的结果，不能丢弃已接受输入或令下一次 Run 重新追加 system prompt。
 - Run 进入 `cancelled` 后，所有 Provider/Tool 回调还必须校验 execution token 和 `stateRevision`；迟到增量只能记脱敏诊断，不能再发送 UI 事件或写入其他会话。
 - Provider 已产生部分文本后失败，不透明重试并拼接第二份输出；应保留诊断并允许用户显式重试。
 - 停止生成不等于回滚已完成副作用。UI 必须分别展示“生成已停止”和“已完成的动作”。
@@ -308,6 +311,7 @@ interface PendingConfirmation {
 - 工具调用与结果组不会在历史裁剪时拆开。
 - 取消、确认和 Provider 完成并发发生时，只有一次 CAS 成功。
 - 取消完成后迟到 Provider/Tool 事件不会进入 UI、Transcript 或其他 Run。
+- 模型请求中取消后，以同一 Session 启动下一 Run，必须恢复已接受用户输入且不得重复追加 system prompt。
 - 应用在每个 checkpoint 后崩溃，重启均不会重复写入或丢失确认卡。
 - 达到预算时保存可恢复状态，不产生无限循环。
 - runtime reminder 始终以 user 角色追加，权限变化会在下一模型轮次反映，旧 reminder 保持不变。

@@ -129,9 +129,9 @@ interface AgentToolDefinition<TInput, TOutput> {
     'Read', 'Glob', 'Grep', 'ReadProfile', 'ReadResume',
     'CreateTodo', 'UpdateTodo', 'DeleteTodo', 'ReadTodo', 'AskUserQuestion', 'LoadSkill',
     'CreateCronTask', 'ReadCronTask', 'UpdateCronTask', 'DeleteCronTask',
-    'ReadApplicationStatus', 'UpdateApplicationStatus',
-    'BrowserNavigate', 'BrowserSnapshot', 'BrowserReadPage', 'BrowserClick',
-    'BrowserFill', 'BrowserSelect', 'BrowserSetChecked', 'BrowserPressKey',
+    'ReadApplicationStatus', 'SaveJob', 'UpdateApplicationStatus',
+    'BrowserNavigate', 'BrowserSnapshot', 'BrowserScreenshot', 'BrowserReadPage', 'BrowserClick',
+    'BrowserFill', 'BrowserFillForm', 'BrowserValidateForm', 'BrowserSelect', 'BrowserSetChecked', 'BrowserPressKey',
     'BrowserUploadFile', 'BrowserWait', 'BrowserSwitchTab', 'BrowserGoBack'
   ]
 }
@@ -139,16 +139,29 @@ interface AgentToolDefinition<TInput, TOutput> {
 
 场景在会话首次发送时冻结；切换场景必须新建会话。浏览器工具名称与执行边界见 5.4 节和 `07-browser-tools-development-plan.md`，确认权限只改变普通动作的确认频率，不扩大工具、文件或网络权限。
 
-投递防重由 Agent 负责：执行前必须调用 `ReadApplicationStatus` 检查持久化记录，只有浏览器返回有效成功回执后才能调用 `UpdateApplicationStatus(status='applied')`。Harness 不猜测公司、岗位和 URL 指纹，也不把“点击过提交按钮”当成已投递事实。
+投递防重由 Agent 负责：保存或投递前必须调用 `ReadApplicationStatus` 检查持久化记录。`SaveJob` 只保存已经观察到的岗位，不负责搜索、不创建投递记录，也不要求绑定简历；只有浏览器返回有效成功回执后才能调用 `UpdateApplicationStatus(status='applied')`，该投递记录必须绑定实际使用的简历。Harness 不猜测公司、岗位和 URL 指纹，也不把“点击过提交按钮”当成已投递事实。
 `ReadApplicationStatus` 支持按公司、岗位名和 URL 定向检索；无条件读取或匹配过多时每类最多返回 200 条并显式标记 `truncated`，既避免漏查旧投递，也防止工具结果无界增长。
+
+简历绑定按真实数据依赖判断，不作为投递场景的统一门槛：
+
+| 分类 | 工具/操作 | 规则 |
+| --- | --- | --- |
+| 强制绑定 | `UpdateResume`、`UpdateApplicationStatus` | 两者声明 `requiredResources: ['bound_resume']`，由 Harness 统一门禁；前者还必须匹配绑定 ID，后者自动写入绑定 ID |
+| 渐进读取并绑定 | `ReadResume` | 无参数只返回无正文索引；传入索引中的 `resumeId` 才返回正文并建立会话绑定 |
+| 不绑定 | `CreateResume`、`ReadApplicationStatus`、`SaveJob`、浏览器搜索/读取/普通交互、Todo、Skill、Profile、CronTask 管理 | 这些动作本身不以简历作为数据归属 |
+| 独立文件授权 | `BrowserUploadFile` | 需要 Run 中明确授权的 `fileId`；绑定简历不会自动授权某个 PDF/图片文件 |
+
+`CreateCronTask` 本身不强制绑定简历；只有定时任务实际执行到读取简历或写入投递记录时才检查冻结的简历授权。这样工作日定时搜索和保存岗位可以独立运行，而实际投递仍保留可追踪的简历关联。
 
 ### 4.4 CronTask 定时任务
 
 四个 CronTask 工具同时存在于默认和投递场景。`CreateCronTask` 只冻结提案并展示一次周期级无人值守确认；确认前不写数据库、不注册系统任务。确认后每次 occurrence 创建独立会话，以真实 `user` 消息执行，并使用 `fully_trusted + unattended`，但仍受冻结场景、Schema、资源授权、网络边界与 Tool Ledger 约束。
 
+投递 CronTask 的创建确认同时授予该任务个人浏览器权限，并以 `browserAuthorized` 持久绑定到真实 `cronTaskId`；不再要求用户到设置页配置限时租约。单次任务完成、周期任务结束、任务删除或用户手动撤销后不再使用该授权。授权只表示 Harness 允许该任务操作个人浏览器，不代表 Chrome/Edge 当前在线或 BOSS 已登录；后台 Run 会尝试建立受限连接，浏览器不可连接、未登录或需要人工批准时暂停并保留待接管会话。旧版本已创建但未经新版确认的任务默认不获得授权。
+
 支持 `once`、`daily` 和带 `daysOfWeek` 的 `weekly` 调度；重复时间按 IANA 时区的本地日历计算。关机或休眠导致多次逾期时只补最近一次，其余写为 `missed`。系统只维护一个 `Avery Cron Runner` 唤醒任务，业务数据库保存全部计划与运行历史。无人值守 Run 不暴露四个 CronTask 工具，防止递归调度。
 创建确认会明示系统可在计划时间唤醒或后台启动应用。Windows 唤醒允许电池供电时启动，且切换到电池后不中止已开始的 Run。
-第一版 CronTask 不继承交互 Run 的临时附件；投递 Run 可读取创建时绑定的简历内容，但页面强制上传本地文件时必须转为 `needsAttention`，不得绕过 Run 级文件授权。
+第一版 CronTask 不继承交互 Run 的临时附件。纯岗位搜索和网页 JD 阅读可以创建不绑定简历的投递 CronTask；若创建前已通过 `ReadResume({resumeId})` 建立绑定，创建确认会冻结该简历授权。后台 Run 仍须先调用 `ReadResume` 读取授权范围内的索引和正文，不能靠任务参数自动注入。没有冻结简历授权时，任何实际需要简历内容或投递状态写入的步骤必须转为 `needsAttention`；页面强制上传本地文件时同样必须接管，不得绕过 Run 级文件授权。
 
 ## 5. MVP 工具定义
 
@@ -193,7 +206,7 @@ CreateResume
 UpdateResume
 ```
 
-`UpdateProfile` 和 `UpdateResume` 接收结构化 patch 与 expected revision。是否展示 diff、等待确认或直接提交由 Harness 根据场景策略决定，模型不调用 Preview/Commit 工具。包含未确认 `【待确认】` 的简历草稿不能调用 `UpdateResume` 写入正式版本；Harness 必须先完成文本确认并移除已确认标签。
+`ReadResume({})` 返回 `id/name/revision/updatedAt/targetRoles` 索引，不包含 `content` 或正文摘要；`ReadResume({resumeId})` 才返回完整正文，并把该 ID 与 revision 绑定到当前会话。`UpdateProfile` 和 `UpdateResume` 接收结构化 patch 与 expected revision。是否展示 diff、等待确认或直接提交由 Harness 根据场景策略决定，模型不调用 Preview/Commit 工具。包含未确认 `【待确认】` 的简历草稿不能调用 `UpdateResume` 写入正式版本；Harness 必须先完成文本确认并移除已确认标签。
 
 ### 5.3 岗位网络工具草案（0.2.0 禁用）
 
@@ -233,33 +246,37 @@ ReadUrl
 
 `SearchJobs` 在 0.3.0 仍禁用。未来若另行裁决，只能在用户显式给出岗位、地区和关键词范围后访问登记来源，并受当前 Run 查询数、页数、结果数、下载量和墙钟预算约束。结果只作为临时数据；无界翻页、后台扫描、周期监控和“扫描全网”永久禁止。
 
-0.3.0 的确认入库需要单独定义窄写命令、revision、幂等键和确认提案。此前讨论过的 `SaveJob`、`AddJobToLibrary` 等名称不自动复活；工具命名与是否向模型暴露必须在 0.3.0 设计评审中单独决定。
+`ReadUrl` 若未来启用，仍不得隐式入库。当前投递场景已经单独提供窄写工具 `SaveJob`：它只能保存 Agent 已通过受控浏览器观察到的岗位，具有独立 Schema、资源键、幂等账本和确认策略；它不是岗位搜索接口，也不依赖 `ReadUrl`。
 
 ### 5.4 浏览器操作工具（投递场景规划）
 
-浏览器能力使用 `agent-browser` CLI 作为执行层，由 Host 将模型调用固定映射为 CLI 参数数组，不向模型开放原始命令、任意参数、`eval`、`chat` 或插件能力。CLI 通过随机本地 CDP 端口连接由应用自带 Electron 启动的隔离浏览器伴随进程，不连接 Avery 主进程，也不需要额外安装 Chromium。登录态保存在伴随进程独立的持久化 Profile 中，由用户在可见窗口内手动登录并跨 Session 复用。
+浏览器能力由 Host 统一映射到受控执行层，不向模型开放原始 CLI、CDP 方法、任意参数、JavaScript 或插件能力。Electron 隔离浏览器使用 `agent-browser` CLI 和 Avery 专用 Profile；Chrome/Edge 使用内部轻量 CDP 驱动连接用户已经打开、已登录且启用本机 CDP 的浏览器。个人浏览器只创建并登记一个 `zhipin.com` 任务标签页，不能向模型暴露或切换到邮箱等其他标签页；无人值守时还必须携带创建确认写入的任务级授权。轻量驱动固定禁止 `Runtime.enable`、`Page.enable`、`Network.enable`、`WebMCP.enable` 和 `Target.setAutoAttach`。切换浏览器会解绑旧 Runtime 并废弃页面引用，但不得关闭或清理用户浏览器。
 
 隔离伴随进程只承载招聘网页 target，不初始化 Avery Renderer 或 Backend，因此 CLI 无法枚举主应用页面。第一阶段仍只实施应用层网络限制：导航及重定向仅接受经校验的公开 `http/https` 地址，拒绝本机、内网和特殊协议；页面输出使用内容边界并限长；上传只接受 Host 签发的文件引用；提交、发送和敏感上传继续由 Harness 判断并确认。这里的进程隔离是页面与身份隔离，不等同于受控代理或完整网络出口隔离。
 
 规划工具列表：
 
-| 工具 | 职责 | 对应 CLI |
+| 工具 | 职责 | 执行映射 |
 | --- | --- | --- |
-| `BrowserNavigate` | 在当前标签页导航到指定 URL | `agent-browser open <url>` |
-| `BrowserSnapshot` | 获取当前页面结构、可交互元素及稳定引用 | `agent-browser snapshot` |
-| `BrowserReadPage` | 读取当前页面的正文内容 | `agent-browser read` |
-| `BrowserClick` | 点击指定页面元素 | `agent-browser click <selector>` |
-| `BrowserFill` | 清空并填写指定输入框 | `agent-browser fill <selector> <text>` |
-| `BrowserFillForm` | 使用同一份页面快照一次填写 1～30 个普通输入框；不允许点击、选择、上传、提交或执行脚本 | Host 校验后通过 stdin 映射为 `agent-browser batch --bail --json` 中的多个 `fill` 命令 |
-| `BrowserSelect` | 选择指定下拉选项 | `agent-browser select <selector> <value>` |
-| `BrowserSetChecked` | 设置复选框或单选项的选中状态 | 选中：`agent-browser check <selector>`；取消选中：`agent-browser uncheck <selector>` |
-| `BrowserPressKey` | 在当前页面按下指定按键 | `agent-browser press <key>` |
-| `BrowserUploadFile` | 将 Host 授权的文件上传到指定网页控件 | `agent-browser upload <selector> <files>` |
-| `BrowserWait` | 等待元素、页面状态或 URL 变化 | `agent-browser wait <selector>`、`wait --text <text>`、`wait --url <pattern>` 或 `wait --load <state>` |
-| `BrowserSwitchTab` | 切换到指定浏览器标签页 | `agent-browser tab <tabId或label>` |
-| `BrowserGoBack` | 返回当前标签页的上一历史页面 | `agent-browser back` |
+| `BrowserNavigate` | 在当前标签页导航到指定 URL | 隔离：`agent-browser open`；个人：`Target.createTarget` / `Page.navigate` |
+| `BrowserSnapshot` | 获取当前页面结构、可交互元素及稳定引用 | 隔离：CLI Snapshot；个人：固定语义扫描表达式 |
+| `BrowserScreenshot` | 截取当前视口并仅向支持视觉输入的模型注入下一轮；不接受输出路径、不生成元素引用 | Host 生成临时路径；隔离使用 CLI，个人使用 `Page.captureScreenshot`；读取后立即删除 |
+| `BrowserReadPage` | 读取当前页面的正文内容 | 隔离：CLI Read；个人：固定限长读取表达式 |
+| `BrowserClick` | 点击指定页面元素 | 隔离：CLI Click；个人：命中校验后发送真实鼠标事件 |
+| `BrowserFill` | 清空并填写指定输入框 | 隔离：CLI Fill；个人：鼠标聚焦、清空、`Input.insertText` |
+| `BrowserFillForm` | 选择投递档案和/或已绑定简历，由 Host 内部检查当前表单，经精确校验、上下文语义评分和全局冲突消解后填写文本框、原生下拉、日期选择器、自定义下拉、最多三级级联菜单或普通单选项；通过 `continuationId` 续填，并用短 `fieldId + candidateId` 处理歧义 | Host 保存短寿命来源和续填状态；动态控件每批最多执行两个并重新绑定 DOM，单字段失败进入 `skipped` 而不中断其余字段；结果返回摘要、`remainingCount`、`done`、`ambiguous`、`unmatched` 与 `missingFields` |
+| `BrowserValidateForm` | 填写后重新检查必填项和浏览器原生校验结果；不触发提交 | 复用受控页面快照，仅返回字段引用、标签和问题，不回显字段值 |
+| `BrowserSelect` | 选择指定下拉选项 | 隔离：CLI Select；个人：固定逻辑处理原生 `select` |
+| `BrowserSetChecked` | 设置复选框或单选项的选中状态 | 隔离：CLI Check；个人：状态校验后发送真实鼠标事件 |
+| `BrowserPressKey` | 在当前页面按下指定按键 | 隔离：CLI Press；个人：受限 `Input.dispatchKeyEvent` |
+| `BrowserUploadFile` | 将 Host 授权的文件上传到指定网页控件 | 隔离：CLI Upload；个人：`DOM.setFileInputFiles`，路径仅由 Host 注入 |
+| `BrowserWait` | 等待元素、页面状态或 URL 变化 | 隔离：CLI Wait；个人：固定轮询，`networkidle` 降级为 DOM 稳定 |
+| `BrowserSwitchTab` | 切换到指定浏览器标签页 | 隔离：CLI Tab；个人：只允许专用 BOSS 任务标签页 |
+| `BrowserGoBack` | 返回当前标签页的上一历史页面 | 隔离：CLI Back；个人：受限页面历史导航 |
 
-`BrowserFillForm` 是唯一允许使用 `agent-browser batch` 的模型工具封装。模型输入只包含同一 `pageRevision` 下的 `fields: Array<{ ref, text }>`；Host 必须验证字段数量、总文本长度、引用唯一性及元素为非密码类输入框，并通过 JSON stdin 传递参数，禁止拼接命令字符串。Batch 只包含 `fill`，不接受 `click`、`select`、`check`、`upload`、`wait`、导航、提交、任意 selector 或 JavaScript。执行结果只返回填写数量和结构化失败，不回显字段正文；任一字段失败即停止后续字段，但已成功填写的字段不回滚。
+`BrowserFillForm → 按 continuationId 续填 → BrowserValidateForm` 构成低成本填表闭环。Inspect 是 FillForm 的 Host 内部步骤，不再作为 Agent 工具暴露；字段特征仅在 Host 的短寿命计划中使用，不进入模型上下文。首次调用只选择资料来源，后续调用只携带 `continuationId`、可选的短 `fieldId + candidateId` 决议，以及用户明确提供的规范字段 `decisions`。页面版本、DOM 引用、来源路径、类型兼容和不可复用来源冲突全部由 Host 保存并校验。稳定文本控件使用 Host 生成的 Batch；日期编辑器、自定义下拉和最多三级级联由 Host 每批最多执行两个，批次间重新检查页面并重绑定字段。表单批次超时只终止当前写操作，不把可见浏览器直接判定为崩溃并关闭。任何路径都不接受模型提供的 selector、CLI 参数、脚本或资料正文，也不执行上传、协议、导航和提交。
+
+档案库提供 `application`（投递档案）模板，使用 `[个人信息]`、`[教育经历N]`、`[工作经历N]`、`[项目经历N]` 与 `[求职意向]` 分区和 `字段名：字段值` 格式。自动匹配只复制非空的明确值；模板与简历冲突、缺失或无法识别时跳过，不调用隐藏模型、不推测硬事实。密码、验证码、文件上传、协议和最终提交仍由各自工具处理；这不妨碍它们在已经冻结对应授权的无人值守任务中自动执行。
 
 ### 5.5 Todo
 
@@ -398,14 +415,18 @@ Provider 的 strict tool calling 只能提高参数命中率，不能替代上�
 示例：
 
 ```text
-批次：[ReadProfile, ReadResume, Read, UpdateResume, UpdateTodo]
+批次 1：[ReadProfile, Read]
 
 阶段 A：ReadProfile ─┐
-       ReadResume  ──┼─ 并行读取
-       Read        ──┘
-阶段 B：UpdateResume    串行写入并刷新 resume revision
-阶段 C：UpdateTodo      串行写入 run:todos
+       Read        ──┘ 并行读取
+
+批次 2：ReadResume({})           串行读取索引
+批次 3：ReadResume({resumeId})   串行读取正文并建立绑定
+批次 4：UpdateResume             串行写入并刷新绑定 revision
+批次 5：UpdateTodo               串行写入 run:todos
 ```
+
+`ReadResume` 统一串行执行，避免同一批次读取多份正文时产生绑定竞态。若具体 `resumeId` 需要根据索引选择，模型必须先等待索引结果，再在下一轮读取正文；已明确知道 ID 时，Harness 仍按工具顺序先完成绑定再放行后续依赖写入。
 
 若某个节点进入 `waiting_*`，屏障后的工具全部标记 `SKIPPED_AFTER_WAIT`，不得继续产生副作用。
 
@@ -467,4 +488,4 @@ interface ToolEnvelope<T> {
 
 ## 14. 总结
 
-MVP 工具集优先使用少量、高辨识度的 PascalCase 工具。`Read`、`Glob`、`Grep` 是通用 UTF-8 文件只读能力，来源差异由虚拟挂载和端口授权处理；简历、档案、Todo、投递状态和 CronTask 只在权限、Schema 或副作用真正不同的地方拆分。默认场景不注册岗位网络工具；投递场景使用 12 个原子浏览器工具和 1 个受限批量输入工具完成自主岗位发现、JD 阅读和投递，不包装 `SearchJobs` 高层工具。确认阶段属于 Harness；CronTask 以一次周期授权换取无人值守执行，但不扩展场景能力。
+MVP 工具集优先使用少量、高辨识度的 PascalCase 工具。`Read`、`Glob`、`Grep` 是通用 UTF-8 文件只读能力，来源差异由虚拟挂载和端口授权处理；简历、档案、Todo、投递状态和 CronTask 只在权限、Schema 或副作用真正不同的地方拆分。默认场景不注册岗位网络工具；投递场景共使用 16 个浏览器工具，其中 Inspect/Validate 提供紧凑只读表单状态，FillForm 负责档案驱动批量填写，其余保持受控原子动作；不包装 `SearchJobs` 高层工具。确认阶段属于 Harness；CronTask 以一次周期授权换取无人值守执行，但不扩展场景能力。

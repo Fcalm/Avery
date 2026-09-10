@@ -6,13 +6,13 @@
 
 已冻结的基础方向：
 
-- 使用 `agent-browser` CLI 作为浏览器执行层，不在 Avery 内重写一套 Playwright 驱动。
+- Electron 隔离浏览器使用固定版本的 `agent-browser` CLI；Chrome/Edge 个人浏览器使用 Avery 内部轻量 CDP 驱动，避免第三方初始化开启高风险调试域。
 - 模型只看到 Avery 注册的原子 Browser Tools，不看到 CLI、Shell、任意参数或 `agent-browser chat`。
 - Host 使用参数数组调用固定 CLI 映射，不拼接 Shell 命令。
-- `agent-browser` 只通过随机本地 CDP 端口连接独立 Electron 伴随进程，不连接 Avery 主进程，也不额外下载 Chromium。
-- 登录由用户在可见浏览器内完成，登录态保存在 Avery 独立的持久化 Profile 中并跨 Agent Session 复用。
+- `agent-browser` 只通过随机本地 CDP 端口连接独立 Electron 伴随进程；个人浏览器由轻量驱动连接授权式 CDP，所有模式都不连接 Avery 主进程。
+- Electron 登录态保存在 Avery 独立 Profile；Chrome/Edge 复用用户浏览器现有登录态，但只向 Agent 登记 BOSS 标签页。
 - Browser Profile、浏览器 Runtime、Agent Session 和 Agent Run 是不同生命周期，不能复用同一个 ID 代替。
-- 提交申请、发送消息和敏感文件上传仍由 Avery Harness 判断与确认，`agent-browser` 不拥有最终授权。
+- 提交申请、发送消息和敏感文件上传仍由 Avery Harness 判断与确认，任何底层浏览器驱动都不拥有最终授权。
 - 第一阶段只做应用层安全限制，不声明具备进程级网络出口隔离。
 - 不增加模型可见的 `BrowserBatch`；若未来需要批量执行，只能作为经过基准和取消验证后的 Host 内部优化。
 
@@ -36,7 +36,7 @@
 - 不自动绕过验证码、反自动化机制或站点访问限制。
 - 不实现进程级受控代理或完整网络出口限制。
 - 不允许多个浏览器 Runtime 并发写入同一个 Profile。
-- 不承诺 Batch 的事务性；只允许 `BrowserFillForm` 在 Host 校验后用 JSON stdin 执行纯 `fill` Batch，其他模型工具不得使用 Batch。
+- 不承诺 Batch 的事务性；只允许 `BrowserFillForm` 在 Host 生成私有匹配计划后用 JSON stdin 执行受限 `fill`/原生 `select`/普通单选项 `check` Batch，其他模型工具不得使用 Batch。
 
 ## 3. 总体架构与生命周期
 
@@ -48,12 +48,8 @@ Tool Scheduler
 Harness
     ↓ URL/文件/风险/确认/取消校验
 Browser Tool Adapter
-    ↓ 固定参数数组、超时、JSON解析
-agent-browser CLI / daemon
-    ↓ 随机 localhost CDP
-Avery Persistent Profile
-    ↓
-Isolated Electron Companion + Visible Browser Window
+    ├─ Electron → agent-browser CLI / daemon → 隔离 companion + Avery Profile
+    └─ Chrome/Edge → PersonalBrowserCdpRuntime → 单个 BOSS 任务 target
 ```
 
 生命周期划分：
@@ -70,14 +66,15 @@ Isolated Electron Companion + Visible Browser Window
 
 ## 4. 模型可见工具基线
 
-| 工具 | 主要输入 | 对应 CLI | 风险说明 |
+| 工具 | 主要输入 | 底层映射 | 风险说明 |
 | --- | --- | --- | --- |
-| `BrowserNavigate` | `url` | `agent-browser open <url>` | 导航前校验 URL；导航后记录最终 URL |
+| `BrowserNavigate` | `url` | 隔离浏览器：`agent-browser open`；个人浏览器：首次 `Target.createTarget`，后续 `Page.navigate` | 导航前校验 URL；个人浏览器在同一登录 Context 建立并固定任务标签页，避免复用用户原页面的历史栈；导航后记录最终 URL |
 | `BrowserSnapshot` | 可选读取范围 | `agent-browser snapshot` | 返回页面 revision、元素引用和截断信息 |
+| `BrowserScreenshot` | 无 | Host 生成临时路径后执行 `agent-browser screenshot <path>` | 仅视觉模型可用；PNG 以内联图片注入下一模型轮，临时文件随即删除，不创建 ref |
 | `BrowserReadPage` | 可选正文范围 | `agent-browser read` | 页面内容按不可信数据处理并限长 |
 | `BrowserClick` | `ref`、`pageRevision` | `agent-browser click <selector>` | 提交、发送、授权等目标可能需要确认 |
 | `BrowserFill` | `ref`、`pageRevision`、`text` | `agent-browser fill <selector> <text>` | 不在 Trace 中记录敏感明文 |
-| `BrowserFillForm` | `pageRevision`、1～30 个 `{ref,text}` | `agent-browser batch --bail --json`，stdin 仅含 `fill` 数组 | 同页普通输入框批量填写；禁止脚本、点击、提交、上传和动态级联 |
+| `BrowserFillForm` | `pageRevision`、`profileIds`、`useBoundResume`、可选 `targetRefs` | `agent-browser batch --bail --json`，stdin 仅含 Host 匹配的 `fill`/原生 `select`/普通单选项 `check` | 档案驱动自动填写；敏感正文不进入模型参数、确认提案、Trace 或结果 |
 | `BrowserSelect` | `ref`、`pageRevision`、`value` | `agent-browser select <selector> <value>` | 只允许 Snapshot 中的有效引用 |
 | `BrowserSetChecked` | `ref`、`pageRevision`、`checked` | `check <selector>` / `uncheck <selector>` | 同意协议等字段可能需要确认 |
 | `BrowserPressKey` | `key` | `agent-browser press <key>` | 使用按键枚举；禁止注入任意 CLI 参数 |
@@ -86,7 +83,7 @@ Isolated Electron Companion + Visible Browser Window
 | `BrowserSwitchTab` | `tabId` | `agent-browser tab <tabId>` | 只接受当前 browser session 已登记标签页 |
 | `BrowserGoBack` | 无 | `agent-browser back` | 执行后废弃旧页面元素引用 |
 
-工具名称和职责以 `03-tools.md` 为协议来源。`BrowserSnapshot` 的结构化输出应包含当前 URL、标题、`pageRevision`、活动标签页和当前 Runtime 已登记的标签页摘要，使 `BrowserSwitchTab` 不依赖额外的模型可见列表工具。`BrowserFillForm` 只优化同一稳定 DOM 中普通输入框的填写；级联下拉、动态新增经历、上传、协议与最终提交继续拆成原子工具，并在 DOM 改变后重新 Snapshot。滚动第一阶段通过受限的 `BrowserPressKey` 键值完成；若目标站点验收证明不足，再单独评审 `BrowserScroll`，不能临时开放原始 CLI。
+工具名称和职责以 `03-tools.md` 为协议来源。`BrowserSnapshot` 的结构化输出应包含当前 URL、标题、`pageRevision`、活动标签页和当前 Runtime 已登记的标签页摘要，使 `BrowserSwitchTab` 不依赖额外的模型可见列表工具。`BrowserFillForm` 负责档案驱动的文本、原生下拉、自定义下拉和最多三级级联菜单填写；Host 在动态控件改变 DOM 后重新定位并有限收敛。动态新增经历、上传、协议与最终提交继续拆成原子工具。详细实现与验收见 `15-dynamic-form-fill-development-plan.md`。滚动第一阶段通过受限的 `BrowserPressKey` 键值完成；若目标站点验收证明不足，再单独评审 `BrowserScroll`，不能临时开放原始 CLI。
 
 ## 5. 开发部分
 
@@ -154,7 +151,7 @@ Isolated Electron Companion + Visible Browser Window
 
 ### BT-04：工具契约、页面引用与注册表
 
-目标：把 12 个 Browser Tools 实现为严格 Schema、稳定输出和可验证页面引用，而不是 CLI 字符串包装。
+目标：把浏览器能力实现为严格 Schema、稳定输出和可验证页面引用，并提供表单 Inspect/Fill/Validate 闭环，而不是开放 CLI 字符串包装。
 
 主要开发：
 
@@ -167,7 +164,7 @@ Isolated Electron Companion + Visible Browser Window
 
 验收标准：
 
-- [ ] 12 个工具名称、Schema 和 CLI 映射具有契约 fixture，OpenAI 与 DeepSeek Tool Schema 均可接受。
+- [ ] 14 个工具名称、Schema 和 CLI 映射具有契约 fixture，兼容 OpenAI 风格 Tool Schema。
 - [ ] 模型猜中未启用 Browser Tool 名称时返回 `TOOL_NOT_ALLOWED`，CLI 调用次数为 0。
 - [ ] 页面导航后使用旧 ref 返回 `BROWSER_STALE_PAGE_REF`，不会点击相同序号的新元素。
 - [ ] Snapshot 能为多标签页流程提供可用的 `tabId`，`BrowserSwitchTab` 不能切换到未登记标签页。
@@ -208,6 +205,7 @@ Isolated Electron Companion + Visible Browser Window
 - 需要确认时冻结 proposal hash、页面 revision、目标元素和规范化参数；确认后不让模型重新生成动作。
 - 确认恢复时重新检查 tab、URL、page revision 和目标元素；任一变化使旧确认失效。
 - 登录、验证码、站点异常和无法可靠判定的最终动作进入用户接管，不让 Agent 猜测或绕过。
+- BOSS 页面只允许可见浏览器运行；导航、点击、填写、选择、按键和上传至少间隔 2 秒。最终 URL 或页面强特征命中验证、限流、账号异常时立即暂停，不关闭页面、不更换实例重试。
 - 三档确认权限只改变普通动作的确认频率，不扩大 Browser Tool 白名单、文件范围或网络权限。
 
 验收标准：
@@ -217,6 +215,7 @@ Isolated Electron Companion + Visible Browser Window
 - [ ] 用户确认后页面或元素发生变化，旧 proposal 被拒绝并要求重新确认。
 - [ ] `fully_trusted` 不绕过产品定义的强制确认和用户接管边界。
 - [ ] 登录和验证码流程能暂停 Run、释放执行资源，并在用户完成后从新 Snapshot 恢复。
+- [ ] BOSS 无人值守访问在启动浏览器前被拒绝；风险跳转只执行一次导航并保留可见页面供用户核对。
 - [ ] 最终回复只有在对应 Tool Receipt 成功时才声明“已提交”或“已发送”。
 
 ### BT-07：调度、取消、超时与对账
@@ -325,13 +324,13 @@ test(browser): 覆盖取消迟到与提交对账
 
 | ID | 开发部分 | 状态 | 当前证据 | 下一步 |
 | --- | --- | --- | --- | --- |
-| BP-00 | 方案与工具命名冻结 | 已完成 | `03-tools.md` 和本文已冻结 `BrowserFillForm` 受限纯填写 Batch，模型仍不可访问原始 CLI 或脚本 | 后续变更另行评审 |
+| BP-00 | 方案与工具命名冻结 | 已完成 | `03-tools.md` 和本文已冻结 `BrowserFillForm` 档案驱动私有计划，模型仍不可访问敏感字段正文、原始 CLI 或脚本 | 后续变更另行评审 |
 | BT-01 | 依赖、版本与发布物 | 待复审 | 已固定 `agent-browser@0.34.0`；开发态和 Windows 目录包均使用 Electron 43.3.0 companion，不下载 Chromium | 复审依赖许可、漏洞与正式签名配置 |
 | BT-02 | CLI 执行器与错误协议 | 待复审 | 随机 CDP、无 pin 发现 target、精确选择 `/ready` 后启用 sticky pin；固定参数、错误与限长测试通过 | 复审握手错误映射和输出限长 |
-| BT-03 | Profile、Runtime 与登录持久化 | 进行中 | 已实现独立 Profile、固定 namespace/session、父进程跟随、用户关闭后重启和清理生命周期 | 补真实账号跨应用重启登录保持验证 |
-| BT-04 | 工具契约、页面引用与注册表 | 已完成 | 12 个原子工具和第 13 个受限批量输入工具 `BrowserFillForm` 已启用；Batch stdin、Schema、陈旧引用、类型/长度边界和 Trace 脱敏回归通过 | 真实站点差异继续纳入 BT-09 验证 |
+| BT-03 | Profile、Runtime 与登录持久化 | 进行中 | Electron 使用独立 Profile；Chrome/Edge 只附着用户现有登录浏览器且不接管其生命周期 | 补真实账号和本机 CDP 的跨应用重启验证 |
+| BT-04 | 工具契约、页面引用与注册表 | 已完成 | 16 个浏览器工具已启用，包含表单 Inspect/Fill/Validate 闭环；`BrowserScreenshot` 仅向视觉模型注入受控临时 PNG；Batch stdin、Schema、陈旧引用、类型/长度边界和 Trace 脱敏回归通过 | 真实站点差异继续纳入 BT-09 验证 |
 | BT-05 | 导航、内容与文件安全 | 待复审 | URL/DNS 私网拒绝、重定向复检、Run 附件授权、25 MB 限额和敏感 Trace 清理已实现，安全单测通过 | 复审应用层网络限制的剩余风险 |
-| BT-06 | Harness 风险、确认与用户接管 | 待复审 | proposal 冻结、三类确认拒绝、页面变化、登录/CAPTCHA 接管与恢复回归通过 | 复审真实界面确认卡与人工接管体验 |
+| BT-06 | Harness 风险、确认与用户接管 | 待复审 | proposal 冻结、三类确认拒绝、页面变化、登录/CAPTCHA 接管与恢复回归通过；BOSS 已增加可见模式、2 秒动作间隔与风险跳转熔断 | 用真实账号低频验证是否降低风控，不执行自动投递 |
 | BT-07 | 调度、取消、超时与对账 | 进行中 | 浏览器动作复用现有 Scheduler/Ledger；取消或超时的已开始写入标记 `status_unknown` | 补迟到结果、并发、幂等和崩溃恢复测试 |
 | BT-08 | 桌面 UI、浏览器可见性与交接 | 进行中 | 已移除安装流程，增加隔离伴随进程状态、Profile 清理、高风险确认与停止接管的最小 IPC/UI | 补 Bridge 契约与窄窗口交互验证 |
 | BT-09 | 测试矩阵、场景评估与发布门禁 | 进行中 | 受控测试站、104 项 Vitest、8 项 Backend、AgentHost E2E、开发/打包态 companion 与 Windows 目录打包冒烟通过 | 完成 AP-06 真实模型和真实站点人工验证，不对真实岗位自动投递 |
@@ -384,7 +383,7 @@ test(browser): 覆盖取消迟到与提交对账
 浏览器工具只有同时满足以下条件才能加入启用的投递场景快照：
 
 - BT-01 至 BT-09 全部复审通过。
-- 13 个工具在模型可见注册表和执行入口使用同一份冻结 ScenarioSnapshot。
+- 14 个工具在模型可见注册表和执行入口使用同一份冻结 ScenarioSnapshot。
 - Profile 持久化、身份隔离、清除和打包态运行通过验证。
 - 高风险动作确认、取消迟到、超时状态未知和崩溃恢复回归全部通过。
 - Prompt injection、命令注入、路径逃逸、受限 URL 和 Trace 脱敏测试通过。
@@ -395,4 +394,15 @@ test(browser): 覆盖取消迟到与提交对账
 
 ## 9. 总结
 
-浏览器工具仍由 Avery Agent Loop 统一编排，`agent-browser` 只负责执行固定原子命令。浏览网页运行在应用自带 Electron 的隔离伴随进程中，不需要安装第二份 Chromium，也不向 CLI 暴露 Avery 主界面 target。架构调整已完成统一测试和打包态验证，但真实账号登录保持、招聘测试站人工验证和复审尚未完成，因此仍不能视为生产放行。
+浏览器工具仍由 Avery Agent Loop 统一编排。Electron 隔离浏览器由 `agent-browser` 执行固定原子命令；Chrome/Edge 由内部轻量 CDP 驱动执行同一工具契约，不开启 `Runtime.enable` 等高风险调试域。个人浏览器只创建并附着一个 BOSS 任务标签页，不接管浏览器启动、关闭和个人数据清理。架构调整需完成最小自动化、真实招聘站人工验证和后续发布门禁后才能视为生产放行。
+
+### 7.5 2026-09-03 可选真实浏览器
+
+- 设置页增加 `Avery 隔离浏览器 / Google Chrome / Microsoft Edge` 三种选择；Windows 新安装默认选择 Edge，旧设置缺失该字段时按 Edge 处理。
+- Desktop Main 只从操作系统标准安装位置发现 Chrome/Edge，并把已解析的可执行文件路径传给 Backend；Renderer 和模型均看不到物理路径。
+- Chrome/Edge 模式从浏览器 `DevToolsActivePort` 和有限的本机端口发现现有 CDP，校验浏览器产品后精确绑定已打开的 BOSS target；不启动新进程、不传 `--user-data-dir`、不创建或清除 Profile。未启用 CDP 或未打开 BOSS 标签页时明确暂停并提示用户处理，不降级到隔离 Profile。
+- Chrome 144+ 的授权式远程调试只在 `DevToolsActivePort` 第二行提供浏览器级 WebSocket，`/json/version` 与 `/json/list` 可能返回 404。Runtime 必须校验并使用 `ws://127.0.0.1:<port>/devtools/browser/<id>`，首次连接失败时提示用户批准 Chrome 弹窗；不能把 HTTP 404 误判为未启用 CDP。
+- 个人浏览器中的非 BOSS 标签页不会出现在工具结果或标签注册表中；外部模式的导航也限制在 `zhipin.com`。2026-09-04 起个人浏览器不再启动 `agent-browser` daemon，而是通过受限方法白名单连接单个任务 target；退出和切换设置只断开 CDP WebSocket，不终止用户浏览器进程。
+- 逐项实测确认 `agent-browser 0.34.0` 初始化中的 `Runtime.enable` 会立即触发 BOSS 风控。个人浏览器固定禁止 `Runtime.enable`、`Page.enable`、`Network.enable`、`WebMCP.enable` 和 `Target.setAutoAttach`，完整实现依据见 `14-personal-browser-lightweight-cdp-development-plan.md`。
+- 正在运行投递任务时，设置变更只保存偏好；下一次投递任务再切换。个人浏览器的无人值守运行必须携带投递 CronTask 创建确认写入的任务级授权，并在执行时保持浏览器可连接和 BOSS 已登录；否则暂停等待用户接管。
+- 选择真实浏览器用于改善 BOSS 直聘等站点对 Electron 的兼容性，不构成绕过验证码、平台风控或服务条款的保证。

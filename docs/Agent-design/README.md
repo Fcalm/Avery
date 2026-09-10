@@ -24,6 +24,10 @@
 - [拟真浏览器 Agent 测评分支需求](./11-realistic-browser-evaluation-branch.md)：记录后续复杂 DOM、动态组件、安全干扰、可复现用例和测评指标需求；当前不开发。
 - [Agent 测评系统开发规划](./12-agent-evaluation-system-development-plan.md)：定义开发者模式下的应用内测评控制台、Prompt/Browser Runner、多候选快照、评分、存储、页面和分阶段验收。
 - [Agent 测评系统评分与 Trace 修正方案](./13-evaluation-system-scoring-and-trace-revision.md)：记录 Prompt Judge 主评分、浏览器函数评分、Trace 可视化、页面分流和 Judge 原因展示的修正依据。
+- [个人浏览器轻量 CDP 开发规划](./14-personal-browser-lightweight-cdp-development-plan.md)：记录 BOSS 风控根因、Chrome/Edge 受限 CDP 驱动、单任务 target、安全白名单与最小验证进度。
+- [动态表单填写开发规划](./15-dynamic-form-fill-development-plan.md)：定义 `BrowserFillForm` 对自定义下拉、三级级联、缺失字段和有限收敛的职责与验收。
+- [地区与纯点选日期开发规划](./16-region-and-date-picker-development-plan.md)：定义纯点选日期和需要显式确认的地区级联状态机。
+- [表单字段混合匹配开发规划](./17-hybrid-form-field-matching-development-plan.md)：定义网页与用户数据特征包、精确校验、上下文语义匹配、全局冲突消解和 Agent 指定映射续填。
 
 对应产品与总体架构依据：
 
@@ -55,13 +59,13 @@
 | --- | --- | --- |
 | 0.2.0 默认场景 `default` | 读写简历与档案；通过通用 UTF-8 文件工具读取授权文件；维护 Run Todo；结构化提问 | 不注册 `SearchJobs`、`ReadUrl`，不访问岗位 URL，不拥有任意 HTTP 或浏览器能力 |
 | 0.3.0 默认场景候选 | 继承 0.2.0；用户显式提供 URL 时可调用受限 `ReadUrl` 生成预览 | `SearchJobs` 仍禁用；确认入库必须经过独立窄写入边界 |
-| 投递场景 `application` | 读取简历/档案/授权文件，使用 12 个受控原子浏览器工具和 `BrowserFillForm` 受限批量输入工具自主搜索、阅读 JD 和投递 | 不得写简历/档案，不开放 `SearchJobs`、原始 CLI、任意脚本或未经确认的高风险外部动作 |
+| 投递场景 `application` | 读取简历/档案/授权文件，使用 16 个受控浏览器工具自主搜索、阅读 JD，并通过表单 Inspect/Fill/Validate 闭环完成档案驱动填写与投递 | 不得写简历/档案，不开放 `SearchJobs`、原始 CLI、任意脚本或未经确认的高风险外部动作 |
 
 默认场景坚持本地材料闭环，不开放岗位联网发现或 URL 提取。投递场景允许 Agent 通过受控浏览器自主搜索岗位、读取公开 JD，并在用户授权范围内填写和投递；它不能把页面内容当成指令、不能携带未授权文件或绕过最终外部动作确认。
 
 `SearchJobs` 仅是未承诺版本的候选设计。启用前必须另行更新 PRD 和路线图，并通过来源白名单、SSRF、预算、取消、超时、脱敏、审计和站点条款专项验收。无界翻页、后台监控、周期搜索和持续全网爬取永久禁止。
 
-投递场景已进入开发态：新会话可冻结独立的 Prompt、100 轮预算和 30 个工具白名单，并通过隔离浏览器执行原子动作、受限批量输入、读取/更新投递状态及管理 CronTask；确定性本地 AgentHost E2E 与打包浏览器冒烟已通过，但真实站点发布门禁仍需持续验证。场景切换仍须新建会话，不能临时继承默认场景权限。
+投递场景已进入开发态：新会话可冻结独立的 Prompt、100 轮预算和 34 个工具白名单，并通过受控浏览器执行原子动作、视觉模型截图、档案驱动批量填表、独立保存岗位、读取/更新投递状态及管理 CronTask；确定性本地 AgentHost E2E 与打包浏览器冒烟已通过，但真实站点发布门禁仍需持续验证。场景切换仍须新建会话，不能临时继承默认场景权限。
 
 ## 3. 边界与数据流
 

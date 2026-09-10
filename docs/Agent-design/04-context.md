@@ -19,7 +19,7 @@ Context 不是数据库，也不是完整会话。它由“Session 首次建立�
 1. 编译后的 System Prompt Manifest。
 2. 当前版本与场景快照实际启用的工具定义；`disabled_draft` 工具不得进入 Context。
 3. 会话级结构化记忆：目标、已确认事实、决策、未完成工作。
-4. 当前 Run 业务快照：选中简历、岗位、Profile、项目授权；确认模式由 Runtime Reminder 追加。
+4. 当前 Run 业务快照：岗位、Profile、项目授权和简历绑定元数据；简历正文只通过 `ReadResume({resumeId})` 工具结果渐进披露，不自动注入；确认模式由 Runtime Reminder 追加。
 5. 已压缩的早期对话摘要及来源范围。
 6. 最近完整用户轮次，包含不可拆分的工具调用组。
 7. 当前 Run 已产生的工具结果。
@@ -46,7 +46,7 @@ interface ContextSnapshot {
 }
 ```
 
-构建期间任一关键 revision 改变时，快照作废并重新准备；不能把新简历内容和旧 revision 拼成一个请求。
+构建期间任一关键 revision 改变时，快照作废并重新准备；简历绑定记录只保存 ID、revision 和绑定时间，不复制正文。依赖工具执行前重新读取当前 revision，不能把新简历内容和旧 revision 拼成一个请求。
 
 SessionPrefixSnapshot 原子冻结 Scenario、Prompt Manifest 与 Tool Manifest；每个 RunSnapshot 引用该 Session 快照，并冻结本 Run 的 DataScope、Provider/模型与预算。发送前不得重新读取“最新工具列表”替换快照定义，否则仍会产生混合版本。
 

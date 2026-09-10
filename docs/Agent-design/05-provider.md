@@ -251,6 +251,10 @@ interface ProviderError {
 
 ## 11. Provider 快照与切换
 
+用户可以同时配置多个 Provider。Desktop Credential Store 使用版本化注册表分别保存每个 Provider 的加密 API Key、端点、默认模型和上下文参数；旧版单 Provider 文件在首次读取时映射到注册表，下一次保存时迁移为 v2，不删除原凭据。Renderer 只能读取脱敏的 Provider/模型目录，不能取得明文或密文 Key。
+
+对话输入框的选择由 `{ provider, model }` 组成，并随会话助手状态持久化。Host 创建 Run 时必须把 Provider 和模型一起冻结；Kernel 的补全和压缩摘要均显式携带该 Provider，Adapter 按请求查找对应配置。禁止通过改变全局“当前 Provider”来实现对话切换，否则不同会话并发运行时可能把请求发往错误端点或串用凭据。切换只允许发生在新的 Run 边界，正在执行的工具链不受输入框后续选择影响。
+
 每个 Run 冻结：
 
 - Provider/Adapter ID 与协议版本。
