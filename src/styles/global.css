@@ -2866,6 +2866,105 @@ select:focus, select:focus-visible,
 }
 .assistant-trace .trace-event-list-aside .empty-copy { margin: 0; padding: var(--space-3); }
 
+/* 轨迹概览以对话为单位汇总 token，圆环三段分别对应缓存输入、未命中输入和输出。 */
+.assistant-trace .trace-detail-header.trace-dashboard {
+  display: flex;
+  min-height: 156px;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-5);
+  padding: var(--space-5) var(--space-6);
+}
+.trace-dashboard-copy { min-width: 0; }
+.trace-dashboard-copy h2 {
+  overflow: hidden;
+  margin: 0;
+  color: var(--color-text-primary);
+  font-family: var(--font-sans);
+  font-size: var(--text-page-title);
+  font-weight: 600;
+  line-height: 36px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.trace-dashboard-copy > div { display: flex; flex-wrap: wrap; gap: var(--space-6); margin-top: var(--space-4); }
+.trace-dashboard-copy span { color: var(--color-text-secondary); font-family: var(--font-sans); font-size: var(--text-ui); line-height: 20px; }
+.trace-dashboard-actions { display: flex; flex: 0 0 auto; align-items: flex-start; gap: var(--space-2); }
+.trace-dashboard-actions .trace-detail-delete { margin-top: var(--space-1); }
+.trace-token-usage { display: flex; align-items: center; gap: var(--space-5); }
+/* 数据文本位于圆环左侧：三列横排，上为名称、下为数值。 */
+.trace-token-legend { display: flex; align-items: flex-start; gap: var(--space-6); margin: 0; }
+.trace-token-legend > div { display: flex; flex-direction: column; gap: var(--space-2); }
+.trace-token-legend dt { display: inline-flex; align-items: center; gap: var(--space-2); color: var(--color-text-secondary); font-family: var(--font-sans); font-size: var(--text-ui); line-height: 20px; white-space: nowrap; }
+.trace-token-legend dd { margin: 0; color: var(--color-text-primary); font-family: var(--font-sans); font-size: var(--text-frame-title); font-weight: 600; line-height: 28px; white-space: nowrap; }
+.trace-token-legend i { width: 12px; height: 12px; flex: 0 0 12px; border-radius: var(--radius-mark); }
+.trace-token-ring { width: 128px; height: 128px; }
+/* 悬停加粗时描边外缘（15.5 + 5 = 20.5）会超出 40×40 视口，必须允许溢出绘制，否则圆环四个基点被方形视口裁切。 */
+.trace-token-ring svg { display: block; width: 100%; height: 100%; overflow: visible; transform: rotate(-90deg); transform-box: fill-box; transform-origin: center; }
+.trace-token-ring circle { fill: none; stroke-width: 8; }
+.trace-token-ring-track { stroke: var(--color-control-light); }
+.trace-token-ring-segment { cursor: help; pointer-events: stroke; transition: stroke-width var(--transition-standard), opacity var(--transition-standard); }
+.trace-token-ring-segment.is-active { stroke-width: 10; }
+.trace-token-ring-segment.is-dim { opacity: .35; }
+.trace-token-ring-segment.is-cached { stroke: var(--trace-token-cached); }
+.trace-token-ring-segment.is-input { stroke: var(--trace-token-input); }
+.trace-token-ring-segment.is-output { stroke: var(--trace-token-output); }
+/* 悬停详情面板沿用参考示例的深色浮层：跟随指针，展示名称、数值占比与说明。 */
+.trace-token-tooltip { position: fixed; z-index: 40; max-width: 240px; padding: 10px 14px; border-radius: 10px; background: rgba(22, 48, 34, .94); color: #fff; pointer-events: none; font-family: var(--font-sans); box-shadow: 0 6px 18px rgba(0, 0, 0, .25); }
+.trace-token-tooltip-name { display: flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 600; line-height: 20px; }
+.trace-token-tooltip-name i { width: 10px; height: 10px; flex: 0 0 10px; border-radius: 3px; }
+.trace-token-tooltip-value { margin-top: 2px; font-size: 18px; font-weight: 700; line-height: 24px; }
+.trace-token-tooltip-desc { margin-top: 2px; color: #bcd9c8; font-size: var(--text-meta); line-height: 18px; }
+
+/* 搜索与筛选属于轨迹缩略栏，不参与右侧详情滚动。 */
+.assistant-trace .trace-list-toolbar {
+  display: flex;
+  position: sticky;
+  z-index: 2;
+  top: 0;
+  flex: 0 0 auto;
+  gap: var(--space-2);
+  border-bottom: 1px solid var(--line-subtle);
+  padding: var(--space-3) var(--space-4);
+  background: var(--color-surface-card);
+}
+.assistant-trace .trace-list-toolbar .trace-search { min-width: 0; flex: 1 1 auto; min-height: 34px; }
+.trace-filter-wrap { position: relative; flex: 0 0 auto; }
+.trace-filter-trigger {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-control);
+  padding: 0;
+  color: var(--color-text-primary);
+  background: var(--color-surface-card);
+}
+.trace-filter-trigger:hover,
+.trace-filter-trigger:focus-visible { outline: none; background: var(--color-control-light); }
+.trace-filter-menu {
+  display: grid;
+  position: absolute;
+  z-index: 3;
+  top: calc(100% + var(--space-2));
+  right: 0;
+  width: 152px;
+  gap: var(--space-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-overlay);
+  padding: var(--space-2);
+  background: var(--color-surface-card);
+  box-shadow: var(--shadow-overlay);
+}
+.trace-filter-menu section { display: grid; gap: 2px; }
+.trace-filter-menu section + section { border-top: 1px solid var(--line-subtle); padding-top: var(--space-2); }
+.trace-filter-menu small { padding: 0 var(--space-2); color: var(--color-text-secondary); font-size: var(--text-meta); line-height: 18px; }
+.trace-filter-menu button { min-height: 30px; border: 0; border-radius: var(--radius-control); padding: 0 var(--space-2); color: var(--color-text-primary); background: transparent; font: inherit; font-size: var(--text-meta); text-align: left; }
+.trace-filter-menu button:hover,
+.trace-filter-menu button:focus-visible { outline: none; background: var(--color-control-light); }
+.trace-filter-menu button.selected { color: var(--color-tag-text); background: var(--color-tag-surface); }
+
 @media (max-width: 899px) {
   .assistant-trace .trace-workbench {
     display: flex;
@@ -2884,6 +2983,16 @@ select:focus, select:focus-visible,
   .assistant-trace .trace-detail-header { flex: 0 0 auto; }
   .assistant-trace .trace-event-list-aside { max-height: 200px; }
   .assistant-trace .trace-event-detail-card { min-height: 320px; }
+  .assistant-trace .trace-detail-header.trace-dashboard { min-height: 0; }
+}
+
+@media (max-width: 619px) {
+  .assistant-trace .trace-detail-header.trace-dashboard { align-items: flex-start; padding: var(--space-4); }
+  .trace-dashboard-copy h2 { font-size: var(--text-frame-title); line-height: 28px; }
+  .trace-dashboard-copy > div { flex-direction: column; gap: var(--space-1); margin-top: var(--space-3); }
+  .trace-token-usage { gap: var(--space-3); }
+  .trace-token-legend { display: none; }
+  .trace-token-ring { width: 88px; height: 88px; }
 }
 
 /* 投递管理与岗位库沿用参考的“概览 + 工作区”信息架构，视觉继续使用 Avery 的浅色 token。 */

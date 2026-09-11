@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type MouseEventHandler } from 'react';
 import type { AgentObservability, AgentTraceEvent } from '@avery/contracts';
 import { Icon } from '../../../shared/components/Icon';
-import { Modal, Button, Select } from '../../../shared/components/UI';
+import { Modal, Button } from '../../../shared/components/UI';
 
 type TraceSummary = AgentObservability['traces'][number];
 
@@ -354,6 +354,96 @@ function TurnIndex({ runIndex, count, createdAt, expanded, onToggle }: { runInde
   </button>;
 }
 
+interface TraceTokenUsage {
+  cachedInputTokens: number;
+  uncachedInputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+}
+
+/**
+ * Trace 摘要当前只保证 prompt、completion 和 total 三项；缓存命中字段采用前向兼容读取，
+ * 以便主进程补齐 cachedInputTokens 后，Renderer 无需改变展示协议即可直接绘制第三段。
+ */
+export function CreateTraceTokenUsage(traces: TraceSummary[]): TraceTokenUsage {
+  let cachedInputTokens = 0;
+  let promptTokens = 0;
+  let outputTokens = 0;
+  let reportedTotalTokens = 0;
+  for (const trace of traces) {
+    const usage = trace.usage;
+    promptTokens += Math.max(0, usage.promptTokens);
+    outputTokens += Math.max(0, usage.completionTokens);
+    reportedTotalTokens += Math.max(0, usage.totalTokens);
+    const cached = Number((usage as unknown as { cachedInputTokens?: unknown }).cachedInputTokens);
+    if (Number.isFinite(cached)) cachedInputTokens += Math.max(0, Math.min(usage.promptTokens, cached));
+  }
+  const uncachedInputTokens = Math.max(0, promptTokens - cachedInputTokens);
+  const totalTokens = Math.max(reportedTotalTokens, cachedInputTokens + uncachedInputTokens + outputTokens);
+  return { cachedInputTokens, uncachedInputTokens, outputTokens, totalTokens };
+}
+
+function TokenUsageRing({ usage }: { usage: TraceTokenUsage }) {
+  const segments = [
+    { key: 'cached', label: '命中输入', tokens: usage.cachedInputTokens, color: 'var(--trace-token-cached)', desc: '由 Provider 缓存命中、无需重新计费的输入 token 数量' },
+    { key: 'input', label: '输入（未命中）', tokens: usage.uncachedInputTokens, color: 'var(--trace-token-input)', desc: '未经缓存、完整发送给 Provider 的输入 token 数量' },
+    { key: 'output', label: '输出', tokens: usage.outputTokens, color: 'var(--trace-token-output)', desc: '模型生成的输出 token 数量' },
+  ];
+  const [hovered, setHovered] = useState<string | null>(null);
+  const [position, setPosition] = useState({ x: 0, y: 0 });
+  const tooltipRef = useRef<HTMLDivElement>(null);
+
+  // 悬停详情面板跟随指针，靠近视口边缘时翻转到指针另一侧，避免被裁切。
+  const TrackTooltip: MouseEventHandler = (event) => {
+    const pad = 14;
+    const width = tooltipRef.current?.offsetWidth ?? 220;
+    const height = tooltipRef.current?.offsetHeight ?? 88;
+    let x = event.clientX + pad;
+    let y = event.clientY + pad;
+    if (x + width > window.innerWidth - 8) x = event.clientX - width - pad;
+    if (y + height > window.innerHeight - 8) y = event.clientY - height - pad;
+    setPosition({ x, y });
+  };
+
+  function Enter(key: string): MouseEventHandler {
+    return (event) => { setHovered(key); TrackTooltip(event); };
+  }
+
+  const active = hovered === 'total'
+    ? { label: '总 token', tokens: usage.totalTokens, color: null, desc: '缓存命中输入、未命中输入与输出 token 之和' }
+    : hovered ? segments.find((segment) => segment.key === hovered) ?? null : null;
+  let offset = 0;
+  return <div className="trace-token-usage">
+    <dl className="trace-token-legend">
+      <div onMouseEnter={Enter('total')} onMouseMove={TrackTooltip} onMouseLeave={() => setHovered(null)}>
+        <dt>总 token</dt><dd>{usage.totalTokens.toLocaleString()}</dd>
+      </div>
+      {segments.filter((segment) => segment.key !== 'input').map((segment) => <div key={segment.key} onMouseEnter={Enter(segment.key)} onMouseMove={TrackTooltip} onMouseLeave={() => setHovered(null)}>
+        <dt><i aria-hidden="true" style={{ background: segment.color }} />{segment.label}</dt>
+        <dd>{segment.tokens.toLocaleString()}</dd>
+      </div>)}
+    </dl>
+    <div className="trace-token-ring" role="img" aria-label={`Token 总计 ${usage.totalTokens.toLocaleString()}`}>
+      <svg viewBox="0 0 40 40" aria-hidden="true" focusable="false">
+        <circle className="trace-token-ring-track" cx="20" cy="20" r="15.5" pathLength="100" />
+        {segments.map((segment) => {
+          const percentage = usage.totalTokens ? segment.tokens / usage.totalTokens * 100 : 0;
+          const segmentLength = percentage ? Math.max(percentage - 1.2, 0) : 0;
+          const dashOffset = -(offset + (percentage ? .6 : 0));
+          offset += percentage;
+          const state = hovered === segment.key ? ' is-active' : hovered && hovered !== 'total' ? ' is-dim' : '';
+          return <circle key={segment.key} className={`trace-token-ring-segment is-${segment.key}${state}`} cx="20" cy="20" r="15.5" pathLength="100" strokeDasharray={`${segmentLength} ${100 - segmentLength}`} strokeDashoffset={dashOffset} onMouseEnter={Enter(segment.key)} onMouseMove={TrackTooltip} onMouseLeave={() => setHovered(null)} />;
+        })}
+      </svg>
+    </div>
+    {active && <div ref={tooltipRef} className="trace-token-tooltip" style={{ left: position.x, top: position.y }}>
+      <div className="trace-token-tooltip-name">{active.color && <i aria-hidden="true" style={{ background: active.color }} />}{active.label}</div>
+      <div className="trace-token-tooltip-value">{active.tokens.toLocaleString()} · 占比 {(usage.totalTokens ? active.tokens / usage.totalTokens * 100 : 0).toFixed(1)}%</div>
+      <div className="trace-token-tooltip-desc">{active.desc}</div>
+    </div>}
+  </div>;
+}
+
 /** 按会话聚合 Trace；每次模型请求在右侧时间线中以 Request-n 分隔。 */
 function TraceViewer({ traces, conversations, onSelectTrace, onDeleteTraces, focusConversationId }: { traces: TraceSummary[]; conversations: ConversationOption[]; onSelectTrace: (requestId: string) => Promise<AgentTraceEvent[]>; onDeleteTraces?: (sessionIds: string[]) => Promise<void>; focusConversationId?: string | null }) {
   const isCurrentConversationMode = focusConversationId !== undefined;
@@ -368,6 +458,8 @@ function TraceViewer({ traces, conversations, onSelectTrace, onDeleteTraces, foc
   const [traceView, setTraceView] = useState<TraceView>('messages');
   const [query, setQuery] = useState('');
   const [eventFilter, setEventFilter] = useState<EventFilter>('all');
+  const [showTraceFilter, setShowTraceFilter] = useState(false);
+  const traceFilterRef = useRef<HTMLDivElement>(null);
 
   const conversationTraces = useMemo<ConversationTrace[]>(() => {
     const titles = new Map(conversations.map((conversation) => [conversation.id, conversation.title]));
@@ -436,6 +528,15 @@ function TraceViewer({ traces, conversations, onSelectTrace, onDeleteTraces, foc
     setCollapsedTurns(new Set());
   }, [selectedConversationId]);
 
+  useEffect(() => {
+    if (!showTraceFilter) return;
+    function CloseTraceFilter(event: PointerEvent) {
+      if (!traceFilterRef.current?.contains(event.target as Node)) setShowTraceFilter(false);
+    }
+    document.addEventListener('pointerdown', CloseTraceFilter);
+    return () => document.removeEventListener('pointerdown', CloseTraceFilter);
+  }, [showTraceFilter]);
+
   function ToggleEvent(id: string) {
     setExpanded((current) => { const next = new Set(current); next.has(id) ? next.delete(id) : next.add(id); return next; });
   }
@@ -456,6 +557,13 @@ function TraceViewer({ traces, conversations, onSelectTrace, onDeleteTraces, foc
     }
   }
 
+  const selectedTrace = traceView === 'messages' && selectedEvent
+    ? selectedConversation?.traces[selectedEvent.runIndex - 1]
+    : traceView === 'requests' && selectedApiRequest
+      ? selectedConversation?.traces[selectedApiRequest.runIndex - 1]
+      : selectedConversation?.traces.at(-1);
+  const traceUsage = CreateTraceTokenUsage(selectedConversation?.traces ?? []);
+
   return <div className={`trace-window ${isCurrentConversationMode ? 'trace-window-current-conversation' : ''}`}>
     <div className="trace-workbench">
       {!isCurrentConversationMode && <aside aria-label="对话记录">
@@ -470,6 +578,10 @@ function TraceViewer({ traces, conversations, onSelectTrace, onDeleteTraces, foc
         })}</div>
       </aside>}
       {isCurrentConversationMode && <aside className="trace-event-list-aside" aria-label="当前对话轨迹事件">
+        <div className="trace-list-toolbar">
+          <div className="trace-search"><Icon name="search" size={14} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={traceView === 'messages' ? '搜索消息内容' : '搜索请求内容'} aria-label={traceView === 'messages' ? '搜索消息内容' : '搜索请求内容'} /></div>
+          <div className="trace-filter-wrap" ref={traceFilterRef}><button className="trace-filter-trigger" type="button" aria-label="筛选轨迹" title="筛选轨迹" aria-expanded={showTraceFilter} onClick={() => setShowTraceFilter((current) => !current)}><Icon name="more" size={16} /></button>{showTraceFilter && <div className="trace-filter-menu" role="menu" aria-label="轨迹筛选"><section><small>视图</small>{([{ value: 'messages', label: '消息轨迹' }, { value: 'requests', label: 'API 请求' }] as Array<{ value: TraceView; label: string }>).map((item) => <button key={item.value} type="button" role="menuitemradio" aria-checked={traceView === item.value} className={traceView === item.value ? 'selected' : ''} onClick={() => { setTraceView(item.value); setShowTraceFilter(false); }}>{item.label}</button>)}</section>{traceView === 'messages' && <section><small>事件</small>{(['all', 'System', 'User', 'Tool', 'Assistant', 'Success', 'Failed'] as EventFilter[]).map((item) => <button key={item} type="button" role="menuitemradio" aria-checked={eventFilter === item} className={eventFilter === item ? 'selected' : ''} onClick={() => { setEventFilter(item); setShowTraceFilter(false); }}>{item === 'all' ? '全部事件' : item}</button>)}</section>}</div>}</div>
+        </div>
         <div className="trace-list-heading"><b>{traceView === 'messages' ? '消息轨迹' : 'API 请求'}</b><small>{traceView === 'messages' ? visibleTimeline.length : visibleApiRequests.length} 条</small></div>
         {traceView === 'messages'
           ? visibleTimelineTurns.length ? <div className="trace-turn-list">{visibleTimelineTurns.map((turn) => { const key = `messages-${turn.runIndex}`; const isExpanded = !collapsedTurns.has(key); return <section className="trace-turn" key={key}><TurnIndex runIndex={turn.runIndex} count={turn.items.length} createdAt={turn.createdAt} expanded={isExpanded} onToggle={() => ToggleTurn('messages', turn.runIndex)} />{isExpanded && <div className="trace-turn-events">{turn.items.map((event) => <EventThumbnail key={event.id} event={event} selected={selectedEvent?.id === event.id} onSelect={() => setSelectedEventId(event.id)} />)}</div>}</section>; })}</div> : <p className="empty-copy">没有符合筛选条件的消息事件。</p>
@@ -477,14 +589,9 @@ function TraceViewer({ traces, conversations, onSelectTrace, onDeleteTraces, foc
       </aside>}
       <main>
         {selectedConversation ? <>
-          <div className="trace-detail-header">
-            <div className="trace-detail-metadata">
-              <span><b>{FormatDateTime((traceView === 'messages' ? selectedEvent?.createdAt : selectedApiRequest?.createdAt) ?? selectedConversation.traces[0].createdAt)}</b></span>
-              <span><b>{traceView === 'messages' && selectedEvent ? selectedConversation.traces[selectedEvent.runIndex - 1]?.model : selectedApiRequest?.model ?? selectedConversation.traces.at(-1)?.model}</b></span>
-              <span><b>{traceView === 'messages' && selectedEvent ? `API REQUEST-${selectedEvent.apiRequestIndex}` : traceView === 'requests' && selectedApiRequest ? `API REQUEST-${selectedApiRequest.apiRequestIndex}` : `${selectedConversation.traces.length} runs`}</b></span>
-              <span className="trace-scene"><b>求职助手</b></span>{onDeleteTraces && <button className="trace-detail-delete" type="button" aria-label={`删除${selectedConversation.title}的 Trace`} title="删除此对话的 Trace" onClick={() => { setDeleteError(null); setDeleteTarget(selectedConversation); }}><Icon name="delete" size={14} /></button>}
-            </div>
-            <div className="trace-detail-controls"><Select value={traceView} onChange={(value) => setTraceView(value as TraceView)} ariaLabel="轨迹视图" options={[{ value: 'messages', label: '消息轨迹' }, { value: 'requests', label: 'API 请求' }]} /><div className="trace-search"><Icon name="search" size={14} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={traceView === 'messages' ? '搜索消息内容' : '搜索请求内容'} aria-label={traceView === 'messages' ? '搜索消息内容' : '搜索请求内容'} /></div>{traceView === 'messages' && <Select className="trace-event-filter" value={eventFilter} onChange={(value) => setEventFilter(value as EventFilter)} ariaLabel="筛选事件" options={[{ value: 'all', label: '全部事件' }, { value: 'System', label: 'System' }, { value: 'User', label: 'User' }, { value: 'Tool', label: 'Tool' }, { value: 'Assistant', label: 'Assistant' }, { value: 'Success', label: 'Success' }, { value: 'Failed', label: 'Failed' }]} />}</div>
+          <div className="trace-detail-header trace-dashboard">
+            <div className="trace-dashboard-copy"><h2>{selectedConversation.title}</h2><div><span>{FormatDateTime(selectedTrace?.createdAt ?? selectedConversation.traces[0].createdAt)}</span><span>{selectedTrace?.model ?? selectedConversation.traces.at(-1)?.model ?? '未记录模型'}</span></div></div>
+            <div className="trace-dashboard-actions">{onDeleteTraces && <button className="trace-detail-delete" type="button" aria-label={`删除${selectedConversation.title}的 Trace`} title="删除此对话的 Trace" onClick={() => { setDeleteError(null); setDeleteTarget(selectedConversation); }}><Icon name="delete" size={14} /></button>}<TokenUsageRing usage={traceUsage} /></div>
           </div>
           {traceView === 'messages'
             ? isCurrentConversationMode ? selectedEvent ? <EventDetail event={selectedEvent} /> : <p className="empty-copy">此对话暂时没有可显示的 System、User、Tool 或 Assistant 事件。</p> : visibleTimeline.length ? <div className="trace-event-list">{visibleTimeline.map((event, index) => { const previous = visibleTimeline[index - 1]; const startsRequest = index === 0 || previous.requestId !== event.requestId || previous.apiRequestIndex !== event.apiRequestIndex; return <div key={event.id} className="trace-request-group">{startsRequest && <div className="trace-request-divider"><span>API REQUEST-{event.apiRequestIndex}</span><code>{event.requestKind}</code><small>{FormatTime(event.createdAt)}</small></div>}<EventRow event={event} expanded={expanded.has(event.id)} onToggle={() => ToggleEvent(event.id)} /></div>; })}</div> : <p className="empty-copy">此对话暂时没有可显示的 System、User、Tool 或 Assistant 事件。</p>

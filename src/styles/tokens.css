@@ -75,6 +75,9 @@
   --trace-role-assistant-text: #66519c;
   --trace-turn-surface: #e6f0ff;
   --trace-turn-text: #24599a;
+  --trace-token-cached: #dcefe1;
+  --trace-token-input: #86bb92;
+  --trace-token-output: #2f7a4d;
 
   --font-serif: "SF Pro Display", "PingFang SC", "Microsoft YaHei", Arial, sans-serif;
   --font-heading-serif: "Noto Serif SC", "Source Han Serif SC", "Songti SC", "SimSun", serif;

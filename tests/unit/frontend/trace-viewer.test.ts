@@ -1,12 +1,24 @@
 import { describe, expect, it } from 'vitest';
-import type { AgentTraceEvent } from '../../../packages/contracts/src/index';
-import { BuildApiRequests, BuildTimeline } from '../../../src/features/developer/components/TraceViewer';
+import type { AgentObservability, AgentTraceEvent } from '../../../packages/contracts/src/index';
+import { BuildApiRequests, BuildTimeline, CreateTraceTokenUsage } from '../../../src/features/developer/components/TraceViewer';
 
 function Event(ordinal: number, eventType: string, payload: unknown): AgentTraceEvent {
   return { ordinal, eventType, payload, tokenCount: 1, createdAt: ordinal };
 }
 
+function Trace(usage: AgentObservability['traces'][number]['usage']): AgentObservability['traces'][number] {
+  return { requestId: 'request-test', sessionId: 'session-1', model: 'model-a', state: 'completed', summary: '', createdAt: 1, completedAt: 2, eventCount: 1, usage };
+}
+
 describe('TraceViewer timeline', () => {
+  it('将缓存命中、未命中输入与输出 token 拆为互不重叠的圆环分段', () => {
+    const first = Trace({ source: 'provider', promptTokens: 100, completionTokens: 20, totalTokens: 120, reportedRequestCount: 1, unreportedRequestCount: 0 });
+    const second = Trace({ source: 'provider', promptTokens: 100, completionTokens: 30, totalTokens: 130, reportedRequestCount: 1, unreportedRequestCount: 0 });
+    Object.assign(first.usage, { cachedInputTokens: 25 });
+
+    expect(CreateTraceTokenUsage([first, second])).toEqual({ cachedInputTokens: 25, uncachedInputTokens: 175, outputTokens: 50, totalTokens: 250 });
+  });
+
   it('新轨迹只展示 append-only 消息，不展开 API 请求中的重复历史', () => {
     const events = [
       Event(1, 'message_appended', { messageId: 'm1', apiRequestIndex: 1, source: 'system', message: { role: 'system', content: 'prompt' } }),
