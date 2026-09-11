@@ -144,7 +144,14 @@ async function Bootstrap(): Promise<void> {
     return service;
   };
 
-  const conversations = Facade(['CreateConversation', 'RenameConversation', 'DeleteConversation', 'AppendConversationMessages', 'CompleteConversationMessage', 'RemoveConversationMessage']);
+  const conversations = {
+    ...Facade(['CreateConversation', 'RenameConversation', 'AppendConversationMessages', 'CompleteConversationMessage', 'RemoveConversationMessage']),
+    DeleteConversation: async (conversationId: string) => {
+      const result = await guardedBusiness.DeleteConversation(conversationId);
+      agent.DeleteSessionResources(conversationId);
+      return result;
+    },
+  };
   const resumes = Facade(['UpsertResume', 'RenameResume', 'DeleteResume', 'GetResumeRevisions', 'SetResumeRevisionPinned']);
   const jobs = Facade(['UpsertJob', 'SetJobFavorite', 'DeleteJob']);
   const applications = Facade(['UpsertApplication', 'MoveApplicationStatus', 'DeleteApplication']);

@@ -50,6 +50,65 @@ export interface JobSearchPort {
   }>;
 }
 
+export interface JobCollectionQuery {
+  keyword: string;
+  city: string;
+}
+
+export interface JobCollectionFilters {
+  jobTypes?: Array<'intern' | 'campus_recruitment' | 'social_recruitment'>;
+  experience?: string[];
+  education?: string[];
+  salaryMinMonthlyK?: number;
+  companySizes?: string[];
+  industries?: string[];
+  excludeKeywords?: string[];
+}
+
+export interface JobCollectionCandidate {
+  candidateId: string;
+  platform: 'boss_zhipin';
+  sourceJobId: string;
+  title: string;
+  company: string;
+  city: string;
+  salary: string;
+  experience: string;
+  education: string;
+  jobType: 'intern' | 'campus_recruitment' | 'social_recruitment';
+  jd: string;
+  url: string;
+  alreadySaved: boolean;
+  contactStatus: string;
+}
+
+/** 会话级岗位采集端口：候选只进入短寿命缓存，显式 SaveCandidate 后才写岗位库。 */
+export interface JobCollectionPort {
+  Collect(input: {
+    sessionId: string;
+    platforms: Array<'boss_zhipin'>;
+    queries: JobCollectionQuery[];
+    filters?: JobCollectionFilters;
+    sort: 'relevance' | 'newest';
+    maxResults: number;
+    signal?: AbortSignal;
+    deadline?: number;
+  }): Promise<{
+    status: 'completed' | 'completed_with_shortage';
+    collectionId: string;
+    candidates: JobCollectionCandidate[];
+    counts: { collected: number; duplicates: number; filtered: number };
+    truncated: boolean;
+    warnings: string[];
+  }>;
+  SaveCandidate(input: {
+    sessionId: string;
+    collectionId: string;
+    candidateId: string;
+    matchScore?: number;
+  }): Promise<{ jobId: string; jobRevision: number }>;
+}
+
 /** ReadUrl 端口：只允许 http/https，宿主负责 SSRF、来源与预算限制。 */
 export interface UrlReadPort {
   Read(input: { url: string; signal?: AbortSignal; deadline?: number }): Promise<{
@@ -132,6 +191,8 @@ export interface BrowserAutomationPort {
   SetUnattended?(value: boolean, context?: { cronTaskId?: string; browserAuthorized?: boolean }): Promise<void> | void;
   /** 设置下一次浏览器动作使用的内核；切换时必须淘汰旧会话，不能跨 Profile 复用引用。 */
   SetEngine?(value: BrowserEngine): Promise<void> | void;
+  /** 仅供受信任 Host 适配器运行固定页面提取表达式；不存在对应模型工具，也不得传入模型生成的脚本。 */
+  EvaluateTrustedPage?(input: { site: 'boss_zhipin'; expression: string; signal?: AbortSignal; deadline?: number }): Promise<unknown>;
 }
 
 /** 文件读取端口：由宿主注入（agent-file-reader）；路径校验与资源边界由宿主持有，模块不可绕过。 */
@@ -203,6 +264,7 @@ export interface ToolPorts {
   resumeWrite: ResumeWritePort;
   profileWrite?: ProfileWritePort;
   jobSearch?: JobSearchPort;
+  jobCollection?: JobCollectionPort;
   urlRead?: UrlReadPort;
   browser?: BrowserAutomationPort;
   skill?: SkillReadPort;

@@ -29,7 +29,7 @@ export const ApplicationScenario: ScenarioSnapshot = {
   status: 'active',
   toolNames: [
     'Read', 'Glob', 'Grep', 'ReadProfile', 'ReadResume', 'CreateTodo', 'UpdateTodo', 'DeleteTodo', 'ReadTodo', 'AskUserQuestion',
-    'LoadSkill', 'CreateCronTask', 'ReadCronTask', 'UpdateCronTask', 'DeleteCronTask', 'ReadApplicationStatus', 'SaveJob', 'UpdateApplicationStatus',
+    'LoadSkill', 'CreateCronTask', 'ReadCronTask', 'UpdateCronTask', 'DeleteCronTask', 'CollectJobs', 'ReadApplicationStatus', 'SaveJob', 'UpdateApplicationStatus',
     'BrowserNavigate', 'BrowserSnapshot', 'BrowserScreenshot', 'BrowserReadPage', 'BrowserClick', 'BrowserFill', 'BrowserFillForm', 'BrowserValidateForm', 'BrowserSelect',
     'BrowserSetChecked', 'BrowserPressKey', 'BrowserUploadFile', 'BrowserWait', 'BrowserSwitchTab', 'BrowserGoBack',
   ],
@@ -203,7 +203,7 @@ You may read the user's authorized resume, profile, attachments, and project fil
 
 ### Goal
 Use atomic browser actions to search suitable jobs, read job descriptions, fill application forms, upload authorized files, and communicate on recruiting platforms.
-Website-based job search, job-description reading, and saving an observed job to the local job library are browser tasks in this scenario; they do not require a bound resume. Resume content is never injected automatically: call ReadResume without arguments for the content-free index, then ReadResume({resumeId}) to load and bind one resume. Resume-dependent tools remain blocked until that second call succeeds. BrowserUploadFile instead requires a separately authorized fileId and does not become authorized merely because a resume is bound.
+Website-based job search, job-description reading, and saving a selected job to the local job library are tasks in this scenario; they do not require a bound resume. Prefer CollectJobs for supported scripted discovery: it returns at most 10 temporary BOSS candidates and never saves them automatically. Review those results and call SaveJob with collectionId and candidateId only for candidates worth keeping. If a collection expires, call CollectJobs again instead of reconstructing candidate fields. Resume content is never injected automatically: call ReadResume without arguments for the content-free index, then ReadResume({resumeId}) to load and bind one resume. Resume-dependent tools remain blocked until that second call succeeds. BrowserUploadFile instead requires a separately authorized fileId and does not become authorized merely because a resume is bound.
 
 ### Browser protocol
 - BrowserSnapshot establishes element refs and a page revision. Never guess refs. BrowserNavigate, BrowserClick, BrowserSelect, BrowserPressKey, BrowserSwitchTab, and BrowserGoBack invalidate all refs even when the visible page appears unchanged; call BrowserSnapshot again before the next ref-based action. After a Run pauses for confirmation or user takeover, the next Run must also start browser work with a fresh BrowserSnapshot.

@@ -238,9 +238,9 @@ describe('agent-modules-defaults', () => {
     expect(ApplicationScenarioPlaceholder.enabled).toBe(true);
     const applicationNames = CreateToolsModule(CreatePorts()).GetToolDefinitions('application').map((tool) => tool.definition.function.name);
     expect(new Set(applicationNames)).toEqual(new Set(ApplicationScenario.toolNames));
-    expect(applicationNames).toHaveLength(33);
+    expect(applicationNames).toHaveLength(34);
     expect(applicationNames).toContain('DeleteTodo');
-    expect(applicationNames).toEqual(expect.arrayContaining(['CreateCronTask', 'ReadCronTask', 'UpdateCronTask', 'DeleteCronTask', 'ReadApplicationStatus', 'SaveJob', 'UpdateApplicationStatus']));
+    expect(applicationNames).toEqual(expect.arrayContaining(['CreateCronTask', 'ReadCronTask', 'UpdateCronTask', 'DeleteCronTask', 'CollectJobs', 'ReadApplicationStatus', 'SaveJob', 'UpdateApplicationStatus']));
     expect(applicationNames).not.toEqual(expect.arrayContaining(['CreateResume', 'UpdateResume', 'UpdateProfile', 'SearchJobs']));
     const instructions = BuildApplicationCompiledInstructions('application-tools');
     expect(instructions.compiled).toContain('BrowserSelect');
@@ -288,6 +288,29 @@ describe('agent-modules-defaults', () => {
 
     expect(search).not.toHaveBeenCalled();
     expect(JSON.parse(result.content)).toMatchObject({ ok: false, code: 'TOOL_NOT_ALLOWED' });
+  });
+
+  it('CollectJobs 将会话与截止时间交给 Host 端口且不会写入岗位库', async () => {
+    const collect = vi.fn(async () => ({ status: 'completed' as const, collectionId: 'collection-1', candidates: [], counts: { collected: 0, duplicates: 0, filtered: 0 }, truncated: false, warnings: [] }));
+    const deadline = Date.now() + 10_000;
+    const context = CreateToolContext({ scenarioId: 'application', deadline, ports: { ...CreateToolContext().ports, jobCollection: { Collect: collect, SaveCandidate: vi.fn() } } });
+    const result = await CreateToolsModule(CreatePorts()).ExecuteToolCall({
+      id: 'collect-1', type: 'function', function: { name: 'CollectJobs', arguments: JSON.stringify({ platforms: ['boss_zhipin'], queries: [{ keyword: '产品经理', city: '佛山' }], sort: 'relevance', maxResults: 10 }) },
+    }, context);
+
+    expect(collect).toHaveBeenCalledWith(expect.objectContaining({ sessionId: 'session-1', maxResults: 10, deadline }));
+    expect(JSON.parse(result.content)).toMatchObject({ ok: true, collectionId: 'collection-1' });
+  });
+
+  it('SaveJob 引用模式只把候选引用与决策分传给 Host', async () => {
+    const saveCandidate = vi.fn(async () => ({ jobId: 'job-boss-a1', jobRevision: 2 }));
+    const context = CreateToolContext({ scenarioId: 'application', ports: { ...CreateToolContext().ports, jobCollection: { Collect: vi.fn(), SaveCandidate: saveCandidate } } });
+    const result = await CreateToolsModule(CreatePorts()).ExecuteToolCall({
+      id: 'save-collected-1', type: 'function', function: { name: 'SaveJob', arguments: JSON.stringify({ collectionId: 'collection-1', candidateId: 'candidate-1', matchScore: 88 }) },
+    }, context);
+
+    expect(saveCandidate).toHaveBeenCalledWith({ sessionId: 'session-1', collectionId: 'collection-1', candidateId: 'candidate-1', matchScore: 88 });
+    expect(result.receipt?.resourceIds).toEqual(['jobs:job-boss-a1']);
   });
 
   it('BrowserFillForm 只在投递场景接受已选择的档案来源且不把正文放入模型参数', async () => {

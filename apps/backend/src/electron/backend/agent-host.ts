@@ -4,13 +4,14 @@ import * as path from 'node:path';
 import { RunAgentLoop } from '@avery/agent-core';
 import { CreateRunSnapshot, ResolveModules } from '@avery/agent-module-host';
 import { ApplicationScenario, BuildApplicationCompiledInstructions, BuildDefaultCompiledInstructions, CreateDefaultModules, DefaultScenario } from '@avery/agent-modules-defaults';
-import type { AgentMessage, AgentModules, BrowserAutomationPort, BrowserEngine, CompiledInstructions, ConfirmationMode, ProviderUsageFact, ReasoningEffort, ScenarioSnapshot, SkillSnapshot } from '@avery/agent-sdk';
+import type { AgentMessage, AgentModules, BrowserAutomationPort, BrowserEngine, CompiledInstructions, ConfirmationMode, JobCollectionPort, ProviderUsageFact, ReasoningEffort, ScenarioSnapshot, SkillSnapshot } from '@avery/agent-sdk';
 import { AgentFileReader } from './agent-file-reader';
 import { AgentResumePort } from './agent-resume-port';
 import { ResumeLockStore } from './resume-lock-store';
 import { CreateVisionUserMessage, HydrateVisionMessage, SupportsVisionInput } from './vision-input';
 import { AgentBrowserRuntime } from './agent-browser-runtime';
 import { AgentSkillRegistry } from './agent-skill-registry';
+import { JobCollectionService } from './job-collection-service';
 import { CreateCronTaskSchema } from '@avery/contracts';
 
 /** 用户编辑锁的稳定 ownerId；前端经 bridge 加解锁都以此为准。 */
@@ -132,6 +133,8 @@ export interface AgentHostOptions {
   createDefaultModules?: (ports: Parameters<typeof CreateDefaultModules>[0]) => AgentModules;
   /** 构造期测试接缝；用于完整链路测试连接精确本地 fixture origin。 */
   browserRuntime?: AgentHostBrowserRuntime;
+  /** 构造期测试接缝；生产环境由 Host 创建会话级短寿命岗位采集缓存。 */
+  jobCollectionPort?: JobCollectionPort;
   /** 测评宿主专用接缝：生产组合根不传入，候选 Prompt 只能在隔离 AgentHost 内生效。 */
   compileInstructions?: (scenarioId: 'default' | 'application', toolPolicyHash: string) => CompiledInstructions;
   /** 测评宿主专用冻结场景；可收窄工具和轮数，不能由生产 Renderer 请求设置。 */
@@ -179,6 +182,8 @@ export class AgentHost {
   private resumeReadPort: AgentResumePort;
   private resumeWritePort: AgentResumePort;
   private browserRuntime: AgentHostBrowserRuntime;
+  private jobCollectionPort: JobCollectionPort | null = null;
+  private jobCollectionService: JobCollectionService | null = null;
   private createDefaultModules: (ports: Parameters<typeof CreateDefaultModules>[0]) => AgentModules;
   private moduleError: string | null = null;
   private moduleConfiguration: any = { enabled: false, trusted: false, status: 'default', directoryName: null, modules: [] };
@@ -242,6 +247,16 @@ export class AgentHost {
       },
       recordLog: (level, event, detail) => options.observability?.RecordLog?.(level, event, detail),
     });
+    if (options.jobCollectionPort) {
+      this.jobCollectionPort = options.jobCollectionPort;
+    } else if (typeof this.browserRuntime.EvaluateTrustedPage === 'function') {
+      this.jobCollectionService = new JobCollectionService({
+        browser: this.browserRuntime,
+        loadViewModel: () => this.business.LoadViewModel(),
+        saveJob: (input) => this.business.SaveTrackedJob(input),
+      });
+      this.jobCollectionPort = this.jobCollectionService;
+    }
     this.moduleError = null;
     this.moduleConfiguration = { enabled: false, trusted: false, status: 'default', directoryName: null, modules: [] };
     this.modules = this.BuildModules();
@@ -253,8 +268,14 @@ export class AgentHost {
   }
 
   async Close(): Promise<void> {
+    this.jobCollectionService?.Close();
     await this.browserRuntime.Close();
     await this.fileReader.Close();
+  }
+
+  /** 会话删除后立即清除仅属于该会话的短寿命岗位候选。 */
+  DeleteSessionResources(sessionId: string): void {
+    this.jobCollectionService?.DeleteSession(sessionId);
   }
 
   /** 构造官方默认六槽；端口全部由宿主持有。 */
@@ -1331,6 +1352,7 @@ export class AgentHost {
           },
         },
         browser: scenarioId === 'application' ? this.browserRuntime : undefined,
+        jobCollection: scenarioId === 'application' ? this.jobCollectionPort ?? undefined : undefined,
         skill: {
           Load: async (skillInput: { skillId: string; resource?: string }) => this.skillRegistry.Load(snapshots.skills, scenarioId, skillInput),
         },

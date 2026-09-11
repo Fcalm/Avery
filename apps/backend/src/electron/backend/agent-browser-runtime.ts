@@ -1228,6 +1228,26 @@ export class AgentBrowserRuntime implements BrowserAutomationPort {
     }
   }
 
+  /**
+   * 为 Host 内置站点适配器执行固定只读提取表达式。该入口不进入 Tool Registry，
+   * 调用方只能是随应用发布的受信任代码，模型文本和网页内容不得构造 expression。
+   */
+  async EvaluateTrustedPage(input: { site: 'boss_zhipin'; expression: string; signal?: AbortSignal; deadline?: number }): Promise<unknown> {
+    if (input.site !== 'boss_zhipin' || typeof input.expression !== 'string' || !input.expression.trim()
+      || Buffer.byteLength(input.expression, 'utf8') > 256_000) {
+      throw new AgentBrowserError('BROWSER_ARGUMENT_INVALID', 'Trusted page extraction input is invalid.');
+    }
+    const currentUrl = await this.RefreshCurrentUrl(input.signal, input.deadline);
+    if (!IsBossBrowserUrl(currentUrl)) {
+      throw new AgentBrowserError('BROWSER_NAVIGATION_DENIED', 'The BOSS collector can only inspect a zhipin.com page.');
+    }
+    const encoded = Buffer.from(input.expression, 'utf8').toString('base64');
+    const response = await this.RunCommand(['eval', '-b', encoded], { signal: input.signal, deadline: input.deadline });
+    this.running = true;
+    this.ThrowIfBossRisk(response.data);
+    return response.data?.result ?? response.data?.value ?? response.data;
+  }
+
   async GetStatus(probeConnection = false): Promise<{ available: boolean; profileExists: boolean; running: boolean; pageRevision: number; state: 'not_installed' | 'stopped' | 'ready' | 'unhealthy'; engine: BrowserEngine; message?: string; currentUrl?: string }> {
     // 外部浏览器可能是便携安装；是否可附着只能在执行时通过本机 CDP 判断，不能用标准安装路径误判。
     const browserAvailable = this.browserEngine === 'electron' ? existsSync(this.companionExecutablePath) : true;

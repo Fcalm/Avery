@@ -7,7 +7,7 @@ export type { AgentStreamEvent } from './events';
 export type { KernelRunFunction, KernelRunInput, KernelRunResult } from './kernel';
 export { DropOldestTurnGroups, IsUserTurn, KeepRecentTurnGroups, SplitTurnGroups } from './turn-group';
 export type {
-  BrowserActionProposal, BrowserAutomationPort, BrowserEngine, BrowserToolName, FileReadPort, JobSearchPort, ProfileWritePort, RegisteredAgentTool, ResumeReadPort, ResumeWritePort,
+  BrowserActionProposal, BrowserAutomationPort, BrowserEngine, BrowserToolName, FileReadPort, JobCollectionCandidate, JobCollectionFilters, JobCollectionPort, JobCollectionQuery, JobSearchPort, ProfileWritePort, RegisteredAgentTool, ResumeReadPort, ResumeWritePort,
   SkillReadPort, ToolContext, ToolLedgerPort, ToolPorts, UrlReadPort,
 } from './tools';
 export type {
