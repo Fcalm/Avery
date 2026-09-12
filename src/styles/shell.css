@@ -156,6 +156,9 @@ button { background: none; border: 0; }
 /* 一级导航 + 滑动指示器。导航固定在侧栏内不随列表滚动；
    滚动条只属于下方的对话列表区域。 */
 .nav { position: relative; flex: none; display: flex; flex-direction: column; gap: 1px; }
+/* 工作页导航直接位于侧栏内，与新建对话按钮的间隔取设置页 sb-scroll 的 10px 顶边距；
+   设置页导航在 sb-scroll 内，由滚动容器的边距负责，不重复加。 */
+.sb-inner > .nav { margin-top: 10px; }
 .nav-ind {
   position: absolute; left: 0; right: 0; top: 0; height: 34px; border-radius: 9px;
   background: var(--accent-soft); opacity: 0;
