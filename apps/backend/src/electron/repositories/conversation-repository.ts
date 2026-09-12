@@ -12,12 +12,14 @@ export class ConversationRepository {
 
   /** 读取全部会话与其消息，供页面启动时组装会话侧 ViewModel；时间为 UTC epoch 毫秒，revision 供外部冲突校验。 */
   ListAll(): any[] {
-    const conversations = this.db.prepare('SELECT id, title, revision, updated_at FROM conversations ORDER BY last_used_at DESC').all();
+    const conversations = this.db.prepare('SELECT id, title, revision, updated_at, pinned, archived FROM conversations ORDER BY last_used_at DESC').all();
     return conversations.map((conversation: any) => ({
       id: conversation.id,
       title: conversation.title,
       revision: conversation.revision,
       updatedAt: conversation.updated_at,
+      pinned: conversation.pinned === 1,
+      archived: conversation.archived === 1,
       messages: this.db.prepare('SELECT id, role, content, reasoning_content, created_at FROM conversation_messages WHERE conversation_id = ? ORDER BY created_at').all(conversation.id).map((message: any) => ({
         id: message.id,
         role: message.role,
@@ -74,6 +76,34 @@ export class ConversationRepository {
   Touch(id: string): void {
     if (typeof id !== 'string' || id.length === 0 || id.length > 200) throw new Error('Conversation id is invalid.');
     this.db.prepare('UPDATE conversations SET updated_at = ?, last_used_at = ? WHERE id = ?').run(GetNow(), GetNow(), id);
+  }
+
+  /** 设置会话置顶标记；仅元数据变更，不刷新最近使用时间，避免置顶操作打乱"最近"排序。 */
+  SetPinned(id: string, pinned: boolean, expectedRevision?: number): any {
+    if (typeof id !== 'string' || id.length === 0 || id.length > 200) throw new Error('Conversation id is invalid.');
+    if (typeof pinned !== 'boolean') throw new Error('Conversation pinned flag is invalid.');
+    const existing = this.db.prepare('SELECT revision FROM conversations WHERE id = ?').get(id);
+    if (!existing) throw new Error('Conversation was not found.');
+    AssertRevision(existing, expectedRevision, 'conversation', id);
+    const nextRevision = existing.revision + 1;
+    const result = this.db.prepare('UPDATE conversations SET pinned = ?, revision = ? WHERE id = ?').run(pinned ? 1 : 0, nextRevision, id);
+    if (!result.changes) throw new Error('Conversation was not found.');
+    WriteAudit(this.db, 'user', 'set-pinned', 'conversation', id, { pinned });
+    return { id, pinned, revision: nextRevision };
+  }
+
+  /** 设置会话归档标记；会话与消息保留在库中，归档仅使其从"最近"列表移出。 */
+  SetArchived(id: string, archived: boolean, expectedRevision?: number): any {
+    if (typeof id !== 'string' || id.length === 0 || id.length > 200) throw new Error('Conversation id is invalid.');
+    if (typeof archived !== 'boolean') throw new Error('Conversation archived flag is invalid.');
+    const existing = this.db.prepare('SELECT revision FROM conversations WHERE id = ?').get(id);
+    if (!existing) throw new Error('Conversation was not found.');
+    AssertRevision(existing, expectedRevision, 'conversation', id);
+    const nextRevision = existing.revision + 1;
+    const result = this.db.prepare('UPDATE conversations SET archived = ?, revision = ? WHERE id = ?').run(archived ? 1 : 0, nextRevision, id);
+    if (!result.changes) throw new Error('Conversation was not found.');
+    WriteAudit(this.db, 'user', 'set-archived', 'conversation', id, { archived });
+    return { id, archived, revision: nextRevision };
   }
 
   /** 向会话追加消息；按消息 ID upsert，重复投递不会产生重复记录。 */

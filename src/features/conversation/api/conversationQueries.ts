@@ -48,6 +48,32 @@ export function useDeleteConversation(handlers?: WorkspaceMutationHandlers) {
   });
 }
 
+/** 设置会话置顶标记；成功后写回服务器确认的 pinned 状态与 revision。 */
+export function useSetConversationPinned(handlers?: WorkspaceMutationHandlers) {
+  return useWorkspaceMutation<{ id: string; pinned: boolean; expectedRevision?: number }, { id: string; pinned: boolean; revision: number }>({
+    mutationFn: ({ id, pinned, expectedRevision }, options) => Unwrap(platformClient.workspace.SetConversationPinned(id, pinned, expectedRevision, options)),
+    applyServer: (data, vars, result) => ({
+      ...data,
+      conversations: data.conversations.map((item) => (item.id === vars.id ? { ...item, pinned: result.pinned, revision: result.revision } : item)),
+    }),
+    conflictCode: 'REVISION_CONFLICT',
+    ...handlers,
+  });
+}
+
+/** 设置会话归档标记；归档仅使其从"最近"列表移出，记录与消息保留。 */
+export function useSetConversationArchived(handlers?: WorkspaceMutationHandlers) {
+  return useWorkspaceMutation<{ id: string; archived: boolean; expectedRevision?: number }, { id: string; archived: boolean; revision: number }>({
+    mutationFn: ({ id, archived, expectedRevision }, options) => Unwrap(platformClient.workspace.SetConversationArchived(id, archived, expectedRevision, options)),
+    applyServer: (data, vars, result) => ({
+      ...data,
+      conversations: data.conversations.map((item) => (item.id === vars.id ? { ...item, archived: result.archived, revision: result.revision } : item)),
+    }),
+    conflictCode: 'REVISION_CONFLICT',
+    ...handlers,
+  });
+}
+
 /** 追加消息并持久化；消息已由流式流程在本地缓存写入，这里只做后端落库。 */
 export function useAppendConversationMessages(handlers?: WorkspaceMutationHandlers) {
   return useWorkspaceMutation<{ conversationId: string; messages: ChatMessage[] }, { conversationId: string; count: number }>({

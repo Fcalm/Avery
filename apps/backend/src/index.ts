@@ -145,7 +145,7 @@ async function Bootstrap(): Promise<void> {
   };
 
   const conversations = {
-    ...Facade(['CreateConversation', 'RenameConversation', 'AppendConversationMessages', 'CompleteConversationMessage', 'RemoveConversationMessage']),
+    ...Facade(['CreateConversation', 'RenameConversation', 'SetConversationPinned', 'SetConversationArchived', 'AppendConversationMessages', 'CompleteConversationMessage', 'RemoveConversationMessage']),
     DeleteConversation: async (conversationId: string) => {
       const result = await guardedBusiness.DeleteConversation(conversationId);
       agent.DeleteSessionResources(conversationId);

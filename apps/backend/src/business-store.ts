@@ -253,6 +253,10 @@ export class BusinessStore {
   RenameConversation(id: string, title: string, expectedRevision?: number): any { return this.conversationService.Rename(id, title, expectedRevision); }
   /** 删除会话并级联清理其消息。 */
   DeleteConversation(id: string): any { return this.conversationService.Delete(id); }
+  /** 设置会话置顶标记；透传期望版本供外部修改冲突检测。 */
+  SetConversationPinned(id: string, pinned: boolean, expectedRevision?: number): any { return this.conversationService.SetPinned(id, pinned, expectedRevision); }
+  /** 设置会话归档标记；透传期望版本供外部修改冲突检测。 */
+  SetConversationArchived(id: string, archived: boolean, expectedRevision?: number): any { return this.conversationService.SetArchived(id, archived, expectedRevision); }
   /** 向会话追加消息，按消息 ID 幂等写入。 */
   AppendConversationMessages(conversationId: string, messages: any[]): any { return this.conversationService.AppendMessages(conversationId, messages); }
   /** 写入流式占位消息的最终正文。 */

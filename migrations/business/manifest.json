@@ -8,6 +8,7 @@
     { "version": 6, "name": "v6-workspace-operations", "file": "v6-workspace-operations.sql", "kind": "sql", "checksumSeed": "business-store-v1-workspace-operations" },
     { "version": 7, "name": "v7-cron-tasks", "file": "v7-cron-tasks.sql", "kind": "sql", "checksumSeed": "business-store-v1-cron-tasks-unattended" },
     { "version": 8, "name": "v8-cron-browser-authorization", "file": "v8-cron-browser-authorization.sql", "kind": "sql", "checksumSeed": "business-store-v1-cron-browser-task-grant" },
-    { "version": 9, "name": "v9-boss-contact-batches", "file": "v9-boss-contact-batches.sql", "kind": "sql", "checksumSeed": "avery-boss-contact-batches-v1" }
+    { "version": 9, "name": "v9-boss-contact-batches", "file": "v9-boss-contact-batches.sql", "kind": "sql", "checksumSeed": "avery-boss-contact-batches-v1" },
+    { "version": 10, "name": "v10-conversation-pin-archive", "file": "v10-conversation-pin-archive.sql", "kind": "sql", "checksumSeed": "avery-conversation-pin-archive-v1" }
   ]
 }

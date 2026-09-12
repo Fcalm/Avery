@@ -1,7 +1,8 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 
 type NoticeTone = 'success' | 'error' | 'pending';
-type Notice = { id: number; message: string; tone: NoticeTone };
+type NoticeAction = { label: string; run: () => void };
+type Notice = { id: number; message: string; tone: NoticeTone; action?: NoticeAction; duration?: number };
 
 function InferNoticeTone(message: string): NoticeTone {
   if (/失败|错误|无法|请先|不可|冲突|异常|未知|被占用|未获取|缺失/.test(message)) return 'error';
@@ -26,7 +27,7 @@ interface UiStoreValue {
   developerView: 'logs' | 'evaluation';
   setDeveloperView: (view: 'logs' | 'evaluation') => void;
   notice: Notice | null;
-  ShowNotice: (message: string, tone?: NoticeTone) => void;
+  ShowNotice: (message: string, tone?: NoticeTone, options?: { action?: NoticeAction; duration?: number }) => void;
   profileConflict: boolean;
   setProfileConflict: (open: boolean) => void;
 }
@@ -50,13 +51,13 @@ function UiStoreProvider({ children }: { children: ReactNode }) {
     if (noticeTimerRef.current !== null) window.clearTimeout(noticeTimerRef.current);
   }, []);
 
-  const ShowNotice = useCallback((message: string, tone: NoticeTone = InferNoticeTone(message)) => {
+  const ShowNotice = useCallback((message: string, tone: NoticeTone = InferNoticeTone(message), options?: { action?: NoticeAction; duration?: number }) => {
     if (noticeTimerRef.current !== null) window.clearTimeout(noticeTimerRef.current);
-    setNotice({ id: ++noticeIdRef.current, message, tone });
+    setNotice({ id: ++noticeIdRef.current, message, tone, action: options?.action, duration: options?.duration });
     noticeTimerRef.current = window.setTimeout(() => {
       setNotice(null);
       noticeTimerRef.current = null;
-    }, 3200);
+    }, options?.duration ?? 3200);
   }, []);
 
   const value = useMemo(() => ({

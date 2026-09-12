@@ -201,6 +201,8 @@ export interface WorkspaceBridge {
   GetSettings: () => Promise<Partial<SettingsDto>>;
   SaveSettings: (settings: Partial<SettingsDto>, options?: WriteCommandOptions) => Promise<{ saved: boolean }>;
   CreateConversation: (conversation: { id: string; title: string }, options?: WriteCommandOptions) => Promise<ConversationDto>;
+  SetConversationPinned: (id: string, pinned: boolean, expectedRevision?: number, options?: WriteCommandOptions) => Promise<{ id: string; pinned: boolean; revision: number }>;
+  SetConversationArchived: (id: string, archived: boolean, expectedRevision?: number, options?: WriteCommandOptions) => Promise<{ id: string; archived: boolean; revision: number }>;
   RenameConversation: (id: string, title: string, expectedRevision?: number, options?: WriteCommandOptions) => Promise<{ id: string; title: string; revision: number }>;
   DeleteConversation: (id: string, options?: WriteCommandOptions) => Promise<{ id: string }>;
   AppendConversationMessages: (conversationId: string, messages: ChatMessageInput[], options?: WriteCommandOptions) => Promise<{ conversationId: string; count: number }>;
@@ -245,7 +247,7 @@ export const BridgeNamespaces = {
   ] as const,
   workspace: [
     'GetStatus', 'GetViewModel', 'GetSettings', 'SaveSettings',
-    'CreateConversation', 'RenameConversation', 'DeleteConversation', 'AppendConversationMessages',
+    'CreateConversation', 'RenameConversation', 'SetConversationPinned', 'SetConversationArchived', 'DeleteConversation', 'AppendConversationMessages',
     'CompleteConversationMessage', 'RemoveConversationMessage', 'UpsertResume', 'RenameResume',
     'DeleteResume', 'UpsertJob', 'SetJobFavorite', 'DeleteJob', 'UpsertApplication',
     'MoveApplicationStatus', 'DeleteApplication', 'GetProfiles', 'SaveProfiles', 'ReloadProfiles',

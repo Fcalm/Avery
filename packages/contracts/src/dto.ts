@@ -21,12 +21,14 @@ export interface ChatMessageInput {
   attachments?: Array<{ name: string; path: string }>;
 }
 
-/** 会话 DTO：含 revision 供外部修改冲突校验。 */
+/** 会话 DTO：含 revision 供外部修改冲突校验；pinned/archived 仅控制"最近"列表的排序与可见性。 */
 export interface ConversationDto {
   id: string;
   title: string;
   revision?: number;
   updatedAt?: number;
+  pinned?: boolean;
+  archived?: boolean;
   messages: ChatMessageDto[];
 }
 

@@ -26,6 +26,16 @@ export class ConversationService {
     return this.repository.Delete(id);
   }
 
+  /** 设置会话置顶标记；透传期望版本供冲突检测。 */
+  SetPinned(id: string, pinned: boolean, expectedRevision?: number): any {
+    return this.repository.SetPinned(id, pinned, expectedRevision);
+  }
+
+  /** 设置会话归档标记；透传期望版本供冲突检测。 */
+  SetArchived(id: string, archived: boolean, expectedRevision?: number): any {
+    return this.repository.SetArchived(id, archived, expectedRevision);
+  }
+
   /** 向会话追加消息，按消息 ID 幂等写入。 */
   AppendMessages(conversationId: string, messages: any[]): any {
     return this.repository.AppendMessages(conversationId, messages);
