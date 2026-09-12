@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type CSSProperties, type KeyboardEvent, type MouseEvent } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type CSSProperties, type KeyboardEvent, type MouseEvent } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useLayoutEffect } from 'react';
 import type { AgentObservability, AgentStreamEvent, BrowserActionState, ConfirmationMode, ReasoningEffort } from '@avery/contracts';
@@ -39,6 +39,20 @@ const ConfirmationOptions: Array<{ id: ConfirmationMode; label: string; descript
   { id: 'allow_low_risk', label: '允许低风险', description: '低风险操作自动执行，其他操作仍确认', icon: 'user-check' },
   { id: 'fully_trusted', label: '完全信任', description: '在当前工具与数据授权范围内自动执行', icon: 'user-x' },
 ];
+/** 思考强度菜单的档位说明；强度越高推理越深，耗时与 token 消耗随之增加。 */
+const ReasoningEffortDescriptions: Record<ReasoningEffort, string> = {
+  low: '直接作答，几乎不占用思考时间。',
+  medium: '适度自查要点，速度与质量均衡。',
+  high: '会多轮自查后再回答，适合改简历和准备面试。',
+  xhigh: '更深入地拆解任务，适合复杂的多步骤工作。',
+  max: '穷尽推理与规划，耗时最长，适合最棘手的问题。',
+};
+
+/** 上下文弹层中的 token 数按 k 缩写；无数据时显示占位符，不编造用量。 */
+function FormatTokenCount(value: number) {
+  if (!Number.isFinite(value) || value <= 0) return '—';
+  return value >= 1000 ? `${(value / 1000).toFixed(value >= 100000 ? 0 : 1)}k` : String(Math.round(value));
+}
 
 function TruncateResumeTitle(title: string) {
   const characters = Array.from(title.trim() || '未命名简历');
@@ -191,6 +205,7 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
   const [observability, setObservability] = useState<AgentObservability | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const composerRef = useRef<HTMLDivElement>(null);
+  const composerTextareaRef = useRef<HTMLTextAreaElement>(null);
   const messageListRef = useRef<HTMLDivElement>(null);
   const enteredConversationRef = useRef<string | null>(null);
   const resumeSideRef = useRef<HTMLElement>(null);
@@ -325,6 +340,14 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
     observer.observe(composerElement);
     return () => observer.disconnect();
   }, []);
+
+  /** 原型输入框随内容自动增高，超过 150px 后内部滚动。 */
+  useLayoutEffect(() => {
+    const el = composerTextareaRef.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = `${Math.min(150, el.scrollHeight)}px`;
+  }, [composer]);
 
   useEffect(() => {
     if (!showPermission && !showScenario && !showModel && !showReasoningEffort && !showResumeMenu) return undefined;
@@ -867,55 +890,118 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
   }
 
   const isEmptyConversation = !conversation?.messages.length;
+  const isNewThread = isEmptyConversation && scenarioId === 'default';
   const shouldShowTodo = !isEmptyConversation && isTaskActive && agentTodos.length > 0;
   const hasComposerBlocker = Boolean(pendingQuestions || pendingEdit || pendingCronTask || pendingBrowserAction);
   const reasoningEffortOptions = GetReasoningEffortOptions(model);
-  const reasoningEffortIndex = Math.max(0, reasoningEffortOptions.indexOf(reasoningEffort));
+  const CurrentConfirmation = ConfirmationOptions.find((item) => item.id === permission) ?? ConfirmationOptions[0];
+  const CurrentScenario = ScenarioOptions.find((item) => item.id === scenarioId) ?? ScenarioOptions[0];
   return <div className={`assistant-layout ${isComposerCompact ? 'is-composer-compact' : ''}`} style={{ '--assistant-main-min-width': `${ASSISTANT_MAIN_MIN_WIDTH}px` } as CSSProperties}>
-    {assistantView === 'trace' ? <section className="assistant-main assistant-trace" aria-label="当前对话轨迹"><TraceViewer traces={observability?.traces ?? []} conversations={conversations} focusConversationId={activeConversationId} onSelectTrace={GetAgentTraceEvents} /></section> : <section className={`assistant-main ${isEmptyConversation ? 'is-empty-conversation' : ''}`}>
-      {conversation?.messages.length ? <div ref={messageListRef} className="message-list"><div className="message-thread">{conversation.messages.map((message) => <article key={message.id} className={`chat-message ${message.role}`}><div className="message-meta">{message.role === 'assistant' ? <><span className="agent-dot" />AVERY 回信</> : '你'}<time>{FormatTime(message.createdAt)}</time></div>{message.role === 'assistant' && settings.thinkingEnabled && message.thinkingContent && <details className="thinking-block"><summary>思考内容</summary><div className="thinking-content"><MarkdownText content={message.thinkingContent} /></div></details>}<MarkdownText content={message.content} /></article>)}</div></div> : <EmptyAssistant scenarioId={scenarioId} />}
+    {assistantView === 'trace' ? <section className="assistant-main assistant-trace" aria-label="当前对话轨迹"><TraceViewer traces={observability?.traces ?? []} conversations={conversations} focusConversationId={activeConversationId} onSelectTrace={GetAgentTraceEvents} /></section> : <section className={`assistant-main ${isNewThread ? 'is-new-thread' : ''} ${isEmptyConversation ? 'is-empty-conversation' : ''}`}>
+      {conversation?.messages.length ? <div ref={messageListRef} className="message-list"><div className="message-thread">{conversation.messages.map((message) => <article key={message.id} className={`chat-message ${message.role}`}><div className="message-meta">{message.role === 'assistant' ? <><span className="agent-dot" />AVERY 回信</> : '你'}<time>{FormatTime(message.createdAt)}</time></div>{message.role === 'assistant' && settings.thinkingEnabled && message.thinkingContent && <details className="thinking-block"><summary>思考内容</summary><div className="thinking-content"><MarkdownText content={message.thinkingContent} /></div></details>}<MarkdownText content={message.content} /></article>)}</div></div> : <EmptyAssistant scenarioId={scenarioId} name={settings.nickname} />}
       <div className="composer-dock">
         {shouldShowTodo && <div className="task-dock"><div className="task-summary"><span className={`task-status-icon ${GetTodoPresentation(activeTodo?.status ?? 'pending').className}`} aria-hidden="true">{GetTodoPresentation(activeTodo?.status ?? 'pending').symbol}</span><span className="task-summary-copy">{activeTodo?.title ?? '正在处理任务'}</span><span className={`task-summary-status ${GetTodoPresentation(activeTodo?.status ?? 'pending').className}`}>{GetTodoPresentation(activeTodo?.status ?? 'pending').label}</span></div><div className="task-card" aria-label="Todo 列表"><div className="task-card-heading">Todo · {agentTodos.length} 项</div><div className="task-list">{agentTodos.map((todo) => { const presentation = GetTodoPresentation(todo.status); return <div key={todo.id} className={`task-list-item ${presentation.className}`}><span className="task-status-icon" aria-hidden="true">{presentation.symbol}</span><span className="task-list-title">{todo.title}</span><span className="task-list-status">{presentation.label}</span></div>; })}</div></div></div>}
-        {!hasComposerBlocker && attachments.length > 0 && <div className="attachment-row">{attachments.map((attachment) => <span className="attachment-chip" key={`${attachment.name}-${attachment.path}`}><Icon name="resume" size={14} /><span className="attachment-name">{attachment.name}</span><button type="button" aria-label={`移除 ${attachment.name}`} onClick={() => setAttachments((current) => current.filter((item) => item !== attachment))}><Icon name="close" size={13} /></button></span>)}</div>}
-        {!hasComposerBlocker && !conversation?.messages.length && <div className="composer-context-tags"><button className="workspace-tag" type="button" onClick={() => void HandleSelectProject()}><Icon name="jobs" size={16} /><span>{projectEnvironment ? projectEnvironment.name : '选择工作区'}</span></button><div className="menu-wrap"><button className="scenario-button context-scenario-tag" type="button" disabled={Boolean(activeRequestRef.current)} aria-label={`场景：${ScenarioOptions.find((item) => item.id === scenarioId)?.label}`} aria-expanded={showScenario} onClick={() => setShowScenario((value) => !value)}><Icon name={scenarioId === 'application' ? 'applications' : 'assistant'} size={16} /><span className="context-tag-label">场景</span><span className="scenario-label">{ScenarioOptions.find((item) => item.id === scenarioId)?.label}</span><span className="chevron-indicator" aria-hidden="true" /></button>{showScenario && <div className="popup-menu scenario-menu" role="menu" aria-label="切换场景">{ScenarioOptions.map((item) => <button key={item.id} type="button" role="menuitem" className={item.id === scenarioId ? 'selected' : ''} onClick={() => HandleScenarioChange(item.id)}><b><Icon name={item.icon} size={15} />{item.label}</b><small>{item.description}</small></button>)}</div>}</div></div>}
-        {pendingQuestions ? <QuestionComposer questions={pendingQuestions.questions} answers={questionAnswers} otherAnswers={otherAnswers} questionIndex={pendingQuestionIndex} onAnswer={(questionId, answer) => setQuestionAnswers((current) => ({ ...current, [questionId]: answer }))} onOtherAnswer={(questionId, answer) => setOtherAnswers((current) => ({ ...current, [questionId]: answer }))} onPrevious={() => setPendingQuestionIndex((current) => Math.max(0, current - 1))} onCancel={CancelPendingQuestions} onContinue={ContinuePendingQuestions} /> : pendingEdit ? <ConfirmationComposer title="确认 Agent 修改简历" description={pendingEdit.reason} preview={pendingEdit.content} confirmLabel="确认并保存" onCancel={() => void HandlePendingEdit(false)} onConfirm={() => void HandlePendingEdit(true)} /> : pendingCronTask ? <ConfirmationComposer title="确认创建无人值守定时任务" description={`${pendingCronTask.summary}\n任务消息：${pendingCronTask.message}`} preview={JSON.stringify(pendingCronTask.schedule, null, 2)} confirmLabel="确认整个周期" onCancel={() => void HandlePendingCronTask(false)} onConfirm={() => void HandlePendingCronTask(true)} /> : pendingBrowserAction ? <ConfirmationComposer title="确认浏览器外部动作" description={`${pendingBrowserAction.summary ?? pendingBrowserAction.toolName}${pendingBrowserAction.url ? `\n目标网站：${pendingBrowserAction.url}` : ''}\n风险级别：${pendingBrowserAction.risk === 'high' ? '高风险' : pendingBrowserAction.risk === 'medium' ? '中风险' : '低风险'}`} confirmLabel="确认执行" onCancel={() => void HandlePendingBrowserAction(false)} onConfirm={() => void HandlePendingBrowserAction(true)} /> : <div ref={composerRef} className="composer">
-          <textarea value={composer} placeholder={scenarioId === 'application' ? '写下岗位关键词或粘贴招聘网址，如：搜索上海的前端开发岗位…' : '写下你的需求，如：把这段项目经历写得更突出成果…'} onChange={(event) => setComposer(event.target.value)} onKeyDown={HandleKeyDown} />
-          <div className="composer-bar">
-            <div>
-              <input ref={inputRef} className="visually-hidden" type="file" multiple accept=".pdf,.doc,.docx,.txt,image/png,image/jpeg,image/gif,image/webp" onChange={HandleFiles} />
-              <button type="button" aria-label="上传文件" title="上传文件" onClick={() => inputRef.current?.click()}><Icon name="plus" size={18} /></button>
-              <div className="menu-wrap">
-                <button className="permission-button" type="button" aria-label={`权限：${ConfirmationOptions.find((item) => item.id === permission)?.label}`} aria-expanded={showPermission} onClick={() => setShowPermission((value) => !value)}><Icon name={permission === 'fully_trusted' ? 'user-x' : 'user-check'} size={15} /><span className="permission-label">{ConfirmationOptions.find((item) => item.id === permission)?.label}</span><span className="chevron-indicator" aria-hidden="true" /></button>
-                {showPermission && <div className="popup-menu permission-menu" role="menu" aria-label="选择确认权限">{ConfirmationOptions.map((item) => <button key={item.id} type="button" role="menuitemradio" aria-checked={item.id === permission} className={item.id === permission ? 'selected' : ''} onClick={() => { if (item.id === 'fully_trusted') { setShowPermission(false); setShowFullyTrustedWarning(true); } else void ApplyConfirmationMode(item.id); }}><span className="permission-menu-option-title"><Icon name={item.icon} size={15} /><b>{item.label}</b></span><small>{item.description}</small></button>)}</div>}
+        {pendingQuestions ? <QuestionComposer questions={pendingQuestions.questions} answers={questionAnswers} otherAnswers={otherAnswers} questionIndex={pendingQuestionIndex} onAnswer={(questionId, answer) => setQuestionAnswers((current) => ({ ...current, [questionId]: answer }))} onOtherAnswer={(questionId, answer) => setOtherAnswers((current) => ({ ...current, [questionId]: answer }))} onPrevious={() => setPendingQuestionIndex((current) => Math.max(0, current - 1))} onCancel={CancelPendingQuestions} onContinue={ContinuePendingQuestions} /> : pendingEdit ? <ConfirmationComposer title="确认 Agent 修改简历" description={pendingEdit.reason} preview={pendingEdit.content} confirmLabel="确认并保存" onCancel={() => void HandlePendingEdit(false)} onConfirm={() => void HandlePendingEdit(true)} /> : pendingCronTask ? <ConfirmationComposer title="确认创建无人值守定时任务" description={`${pendingCronTask.summary}\n任务消息：${pendingCronTask.message}`} preview={JSON.stringify(pendingCronTask.schedule, null, 2)} confirmLabel="确认整个周期" onCancel={() => void HandlePendingCronTask(false)} onConfirm={() => void HandlePendingCronTask(true)} /> : pendingBrowserAction ? <ConfirmationComposer title="确认浏览器外部动作" description={`${pendingBrowserAction.summary ?? pendingBrowserAction.toolName}${pendingBrowserAction.url ? `\n目标网站：${pendingBrowserAction.url}` : ''}\n风险级别：${pendingBrowserAction.risk === 'high' ? '高风险' : pendingBrowserAction.risk === 'medium' ? '中风险' : '低风险'}`} confirmLabel="确认执行" onCancel={() => void HandlePendingBrowserAction(false)} onConfirm={() => void HandlePendingBrowserAction(true)} /> : <div className="composer-col">
+          {attachments.length > 0 && <div className="ctx">{attachments.map((attachment) => <span className="ctx-item" key={`${attachment.name}-${attachment.path}`}><Icon name="resume" size={12} /><span className="ctx-name">{attachment.name}</span><button className="ctx-x" type="button" aria-label={`移除 ${attachment.name}`} onClick={() => setAttachments((current) => current.filter((item) => item !== attachment))}><Icon name="close" size={11} /></button></span>)}</div>}
+          <div ref={composerRef} className="composer">
+            <textarea ref={composerTextareaRef} rows={1} value={composer} placeholder={scenarioId === 'application' ? '写下岗位关键词或粘贴招聘网址，如：搜索上海的前端开发岗位…' : '让 Avery 帮你定制简历、寻找职位或准备面试'} onChange={(event) => setComposer(event.target.value)} onKeyDown={HandleKeyDown} />
+            <div className="cmp-bar">
+              <div className="cmp-tools">
+                <input ref={inputRef} className="visually-hidden" type="file" multiple accept=".pdf,.doc,.docx,.txt,image/png,image/jpeg,image/gif,image/webp" onChange={HandleFiles} />
+                <button className="cmp-btn icon-only" type="button" aria-label="上传文件" title="上传文件" onClick={() => inputRef.current?.click()}><Icon name="paperclip" size={15} /></button>
+                <div className="menu-wrap">
+                  <button className="cmp-btn permission-button" type="button" aria-label={`确认权限：${CurrentConfirmation.label}`} aria-haspopup="true" aria-expanded={showPermission} onClick={() => setShowPermission((value) => !value)}><Icon name={permission === 'fully_trusted' ? 'user-x' : 'user-check'} size={15} /><span>{CurrentConfirmation.label}</span><Icon name="chevron-up" className="chev" size={10} /></button>
+                  {showPermission && <div className="menu pop" role="menu" aria-label="选择确认权限">
+                    <div className="menu-label">确认权限</div>
+                    {ConfirmationOptions.map((item) => <button key={item.id} type="button" role="menuitemradio" aria-checked={item.id === permission} className={item.id === permission ? 'menu-item sel' : 'menu-item'} onClick={() => { if (item.id === 'fully_trusted') { setShowPermission(false); setShowFullyTrustedWarning(true); } else void ApplyConfirmationMode(item.id); }}>
+                      <Icon name={item.icon} size={16} />
+                      <span><span className="mt">{item.label}</span><span className="md">{item.description}</span></span>
+                      <Icon name="check" className="tick" size={14} />
+                    </button>)}
+                    <div className="menu-foot">权限越高，Avery 能做的事越多，需要你确认的步骤越少。</div>
+                  </div>}
+                </div>
+                <div className="menu-wrap">
+                  <button className="cmp-btn model-button" type="button" aria-label={`模型：${provider} ${model}`} aria-haspopup="true" aria-expanded={showModel} onClick={() => setShowModel((value) => !value)}>{provider === 'DeepSeek' ? <Icon name="deepseek" size={15} /> : <Icon name="brain" size={15} />}<span>{model}</span><Icon name="chevron-up" className="chev" size={10} /></button>
+                  {showModel && <div className="menu pop model-menu" role="menu" aria-label="使用的模型">
+                    <div className="menu-label">使用的模型</div>
+                    {providerCatalog.map((entry, entryIndex) => <Fragment key={entry.provider}>
+                      {entryIndex > 0 && <div className="menu-sep" />}
+                      {entry.models.map((availableModel) => <button key={`${entry.provider}:${availableModel}`} type="button" role="menuitemradio" aria-checked={entry.provider === provider && availableModel === model} className={entry.provider === provider && availableModel === model ? 'menu-item sel' : 'menu-item'} onClick={() => HandleSelectModel(entry.provider, availableModel)}>
+                        {entry.provider === 'DeepSeek' ? <Icon name="deepseek" size={16} /> : <Icon name="brain" size={16} />}
+                        <span><span className="mt">{availableModel}</span><span className="md">{entry.provider}</span></span>
+                        <Icon name="check" className="tick" size={14} />
+                      </button>)}
+                    </Fragment>)}
+                  </div>}
+                </div>
+                <div className="menu-wrap">
+                  <button className="cmp-btn reasoning-effort-button" type="button" aria-label={`思考强度：${ReasoningEffortLabels[reasoningEffort]}`} title="思考强度按会话保存，并在下一轮模型请求生效" aria-haspopup="true" aria-expanded={showReasoningEffort} onClick={() => setShowReasoningEffort((value) => !value)}><Icon name="gauge" size={15} /><span>思考 {ReasoningEffortLabels[reasoningEffort]}</span><Icon name="chevron-up" className="chev" size={10} /></button>
+                  {showReasoningEffort && <div className="menu pop" role="menu" aria-label="思考强度">
+                    <div className="menu-label">思考强度</div>
+                    <div className="seg" role="radiogroup" aria-label="思考强度">
+                      {reasoningEffortOptions.map((effort) => <button key={effort} type="button" role="radio" aria-checked={effort === reasoningEffort} className={effort === reasoningEffort ? 'seg-i sel' : 'seg-i'} onClick={() => HandleSelectReasoningEffort(effort)}>{ReasoningEffortLabels[effort]}</button>)}
+                    </div>
+                    <div className="think-d">{ReasoningEffortDescriptions[reasoningEffort]}</div>
+                  </div>}
+                </div>
               </div>
-            </div>
-            <div>
-              <div className="composer-usage-ring" role="status" title={usagePresentation.title} aria-label={usagePresentation.title}>
-                <svg viewBox="0 0 36 36" aria-hidden="true" focusable="false">
-                  <circle className="composer-usage-ring-track" cx="18" cy="18" r="11.75" pathLength="100" />
-                  <circle className="composer-usage-ring-progress" cx="18" cy="18" r="11.75" pathLength="100" style={{ strokeDashoffset: 100 - usagePresentation.progress }} />
-                </svg>
-              </div>
-              <div className="menu-wrap">
-                <button className={`model-button ${provider === 'DeepSeek' ? 'is-deepseek' : ''}`} type="button" aria-label={`模型：${provider} ${model}`} aria-expanded={showModel} onClick={() => setShowModel((value) => !value)}>{provider === 'DeepSeek' && <Icon name="deepseek" size={15} />}<span className="model-label">{provider} · {model}</span><span className="chevron-indicator" aria-hidden="true" /></button>
-                {showModel && <div className="popup-menu right" role="menu" aria-label="切换 Provider 和模型">{providerCatalog.flatMap((entry) => entry.models.map((availableModel) => <button key={`${entry.provider}:${availableModel}`} className={entry.provider === provider && availableModel === model ? 'selected' : ''} onClick={() => HandleSelectModel(entry.provider, availableModel)}><b>{entry.provider}</b><small>{availableModel}</small></button>))}</div>}
-              </div>
-              <div className="menu-wrap reasoning-effort-wrap">
-                <button className="reasoning-effort-button" type="button" aria-label={`思考模式：${ReasoningEffortLabels[reasoningEffort]}`} aria-expanded={showReasoningEffort} title="思考强度按会话保存，并在下一轮模型请求生效" onClick={() => setShowReasoningEffort((value) => !value)}><span>{ReasoningEffortLabels[reasoningEffort]}</span><span className="chevron-indicator" aria-hidden="true" /></button>
-                {showReasoningEffort && <div className="popup-menu right reasoning-effort-menu" role="group" aria-label="选择思考强度">
-                  <span className="reasoning-effort-options" aria-hidden="true">{reasoningEffortOptions.map((effort, index) => <span key={effort} className={index === reasoningEffortIndex ? 'is-active' : ''}>{ReasoningEffortLabels[effort]}</span>)}</span>
-                  <div className="reasoning-effort-slider" style={{ '--reasoning-progress': `${(reasoningEffortIndex / Math.max(1, reasoningEffortOptions.length - 1)) * 100}%` } as CSSProperties}>
-                    <input type="range" min="0" max={reasoningEffortOptions.length - 1} step="1" value={reasoningEffortIndex} aria-label={`思考模式：${ReasoningEffortLabels[reasoningEffort]}`} aria-valuetext={ReasoningEffortLabels[reasoningEffort]} onChange={(event) => HandleSelectReasoningEffort(reasoningEffortOptions[Number(event.target.value)] ?? GetDefaultReasoningEffort(reasoningEffortOptions))} />
+              <div className="cmp-right">
+                <div className="ctx-wrap">
+                  <button className="ctx-ring" type="button" aria-label={usagePresentation.title}>
+                    <svg viewBox="0 0 22 22" aria-hidden="true" focusable="false">
+                      <circle className="track" cx="11" cy="11" r="8" pathLength="100" />
+                      <circle className="val" cx="11" cy="11" r="8" pathLength="100" style={{ strokeDashoffset: 100 - usagePresentation.progress }} />
+                    </svg>
+                    <span className="ctx-pct">{usage.source === 'actual' ? `${usage.percent}%` : '—'}</span>
+                  </button>
+                  <div className="ctx-pop" role="tooltip">
+                    <div className="cp-h">上下文使用</div>
+                    <div className="cp-big"><span className="cp-pct">{usage.source === 'actual' ? `${usage.percent}%` : '—'}</span><span className="cp-tok">上下文窗口 {FormatTokenCount(usage.limit)} tokens</span></div>
+                    <div className="cp-rows">
+                      <div className="cp-row"><span>压缩阈值</span><b>{usage.threshold}%</b></div>
+                      <div className="cp-row dim"><span>累计请求</span><b>{usage.reportedRequestCount + usage.unreportedRequestCount} 次</b></div>
+                    </div>
+                    <div className="cp-note">{usagePresentation.title}</div>
                   </div>
-                </div>}
+                </div>
+                {activeRequestRef.current ? <button className="send" type="button" onClick={HandleStop} aria-label="停止生成"><Icon name="stop" size={16} /></button> : <button className="send" type="button" disabled={!composer.trim() && attachments.length === 0} onClick={() => void HandleSend()} aria-label="发送消息"><Icon name="send" size={16} /></button>}
               </div>
-              <button type="button" disabled title="即将支持" aria-label="语音输入，即将支持"><Icon name="music" size={16} /></button>
-              {activeRequestRef.current ? <button className="send-plane" type="button" onClick={HandleStop} aria-label="停止生成"><Icon name="stop" size={15} /></button> : <button className="send-plane" type="button" onClick={() => void HandleSend()} aria-label="寄出"><Icon name="applications" size={17} /></button>}
             </div>
+          </div>
+          {!conversation?.messages.length && <div className="nv-bar">
+            <div className="nv-slot">
+              <button className="nv-btn" type="button" title="选择一个文件夹作为项目空间" onClick={() => void HandleSelectProject()}>
+                <Icon name="folder-simple" size={15} />
+                <span>{projectEnvironment ? projectEnvironment.name : '项目空间'}</span>
+              </button>
+              {projectEnvironment && <button className="nv-x" type="button" aria-label="移除项目空间" title="移除项目空间" onClick={() => setProjectEnvironment(null)}><Icon name="close" size={13} /></button>}
+            </div>
+            <div className="menu-wrap">
+              <button className="nv-btn scenario-button" type="button" aria-label={`场景：${CurrentScenario.label}`} aria-haspopup="true" aria-expanded={showScenario} disabled={Boolean(activeRequestRef.current)} onClick={() => setShowScenario((value) => !value)}>
+                <Icon name={CurrentScenario.icon} size={15} />
+                <span>{CurrentScenario.label}</span>
+                <Icon name="chevron-up" className="chev" size={9} />
+              </button>
+              {showScenario && <div className="menu pop nv-menu" role="menu" aria-label="场景选择">
+                <div className="menu-label">场景</div>
+                {ScenarioOptions.map((item) => <button key={item.id} type="button" role="menuitemradio" aria-checked={item.id === scenarioId} className={item.id === scenarioId ? 'menu-item sel' : 'menu-item'} onClick={() => HandleScenarioChange(item.id)}>
+                  <Icon name={item.icon} size={16} />
+                  <span><span className="mt">{item.label}</span><span className="md">{item.description}</span></span>
+                  <Icon name="check" className="tick" size={14} />
+                </button>)}
+                <div className="menu-foot">场景在整段对话里生效，开始对话后不再显示这两个按钮。</div>
+              </div>}
+            </div>
+          </div>}
+          <div className="composer-foot">
+            <span>Enter 发送</span><span className="kbd-hint">Shift + Enter</span><span>换行</span>
+            <span className="sep" />
+            <span>{CurrentConfirmation.description}</span>
           </div>
         </div>}
       </div>
-      {isEmptyConversation && <QuickStart scenarioId={scenarioId} onUse={setComposer} />}
+      {scenarioId === 'application' && isEmptyConversation && <QuickStart scenarioId={scenarioId} onUse={setComposer} />}
     </section>}
     <section ref={resumeSideRef} className={`resume-side ${resumePanelOpen ? 'open' : ''}`} aria-hidden={!resumePanelOpen} style={{ '--panel-width': `${panelWidth}px` } as CSSProperties}>{resumePanelOpen && <button className="resume-side-backdrop" aria-label="关闭简历栏" onClick={() => setResumePanelOpen(false)} />}<div className="resize-bar" onMouseDown={HandleResize} /><aside><div className="resume-paper">{editing ? <textarea value={resumeText} onChange={(event) => HandleEditChange(event.target.value)} /> : <ResumePreview name={resume?.name ?? '未命名简历'} content={resumeText} />}</div><div className="resume-bottom-bar"><div className="resume-switcher"><button className="resume-switcher-trigger" type="button" disabled={!resumes.length} aria-haspopup="menu" aria-expanded={showResumeMenu} title={resume?.name ?? '选择简历'} onClick={() => setShowResumeMenu((value) => !value)}><span>{TruncateResumeTitle(resume?.name ?? '选择简历')}</span><Icon name={showResumeMenu ? 'chevron-up' : 'chevron-down'} size={15} /></button>{showResumeMenu && <div className="resume-switcher-menu" role="menu" aria-label="切换简历">{resumes.map((item) => <button key={item.id} type="button" role="menuitem" className={item.id === currentResumeId ? 'selected' : ''} title={item.name} onClick={() => HandleSelectResume(item.id)}>{TruncateResumeTitle(item.name)}</button>)}</div>}</div><div className="resume-action-row"><Button onClick={editing ? HandleCancelEditing : () => void HandleStartEditing()}>{editing ? '取消' : '编辑'}</Button><Button disabled={!editing || !history.length} onClick={() => { const last = history.at(-1); if (last) { setResumeText(last); setHistory((current) => current.slice(0, -1)); } }}>撤销</Button><Button variant="primary" disabled={!editing} onClick={() => void HandleSaveResume()}>保存</Button></div></div></aside></section>
     <Modal open={showFullyTrustedWarning} title="开启完全信任模式" onClose={() => setShowFullyTrustedWarning(false)}><p className="modal-copy">开启后，Agent 可在当前场景的工具白名单与数据授权范围内自动执行操作，不再逐项请求确认。此设置不会授予新的工具、文件或账号权限。</p><div className="modal-actions"><Button onClick={() => setShowFullyTrustedWarning(false)}>取消</Button><Button variant="primary" onClick={() => { setShowFullyTrustedWarning(false); void ApplyConfirmationMode('fully_trusted'); }}>我了解风险，继续</Button></div></Modal>
@@ -964,11 +1050,12 @@ function ConfirmationComposer({ title, description, preview, confirmLabel, onCan
   </section>;
 }
 
-function EmptyAssistant({ scenarioId }: { scenarioId: 'default' | 'application' }) {
+function EmptyAssistant({ scenarioId, name }: { scenarioId: 'default' | 'application'; name: string }) {
   if (scenarioId === 'application') {
     return <div className="assistant-empty application-assistant-empty"><div className="assistant-start-island"><p className="eyebrow">AVERY 投递助手 · 公开测试</p><h2>在真实招聘网站上开始求职</h2><p>Agent 可搜索岗位、读取 JD、填写表单和上传已授权材料。登录与验证码由你接管，发送消息、勾选协议和最终提交仍会请求确认。</p></div></div>;
   }
-  return <div className="assistant-empty"><div className="assistant-start-island"><p className="eyebrow">AVERY 简历助手</p><h2>今天想从哪里开始？</h2><p>写下一个求职目标，或从下面的常用任务开始。</p></div></div>;
+  // 原型新建对话界面：只有一句问候，与输入框一起垂直居中。
+  return <div className="empty"><h1>{name ? `你好${name}，需要什么帮助？` : '你好，需要什么帮助？'}</h1></div>;
 }
 
 function QuickStart({ scenarioId, onUse }: { scenarioId: 'default' | 'application'; onUse: (prompt: string) => void }) {

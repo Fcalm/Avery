@@ -106,9 +106,6 @@ input:focus, textarea:focus, select:focus { background: var(--titlebar-control);
 .thinking-block summary small { margin-left: auto; color: var(--ink-faint); font-size: var(--text-meta); letter-spacing: 0; }
 .thinking-block[open] summary small { display: none; }
 .thinking-block > p { margin: 0; border-top: 1px dashed var(--line-thinking); padding: 10px 12px 12px; color: var(--ink-soft); font-size: 12px; line-height: 1.75; }
-.scenario-button { color: var(--accent-strong) !important; }
-.scenario-menu { width: 205px; }
-.scenario-menu button b { color: var(--ink); }
 
 .user-menu-wrap { position: relative; }
 .user-menu-wrap::before { position: absolute; right: 0; bottom: 100%; left: 0; height: 12px; content: ''; }
@@ -145,13 +142,6 @@ input:focus, textarea:focus, select:focus { background: var(--titlebar-control);
 .switch-control::after { position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%; background: var(--card); box-shadow: var(--shadow-control); content: ''; transition: transform .18s ease; }
 .switch-control:checked { background: var(--accent); }.switch-control:checked::after { transform: translateX(14px); }.switch-control:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .model-select-row { display: flex; align-items: center; gap: 8px; }.model-select-row select { min-width: 0; flex: 1; }
-.composer-bar .chevron-indicator { display: inline-block; flex: 0 0 14px; width: 14px; height: 14px; margin-left: var(--space-1); vertical-align: -.2em; background: currentColor; -webkit-mask: url("/assets/iconfont/chevron-down.png") center / contain no-repeat; mask: url("/assets/iconfont/chevron-down.png") center / contain no-repeat; font-size: 0; transition: transform var(--transition-standard); }
-.composer-bar button[aria-expanded="true"] .chevron-indicator { transform: rotate(180deg); }
-.composer-usage-ring { display: grid; width: 36px; height: 36px; flex: 0 0 36px; place-items: center; }
-.composer-usage-ring svg { width: 18px; height: 18px; overflow: visible; transform: rotate(-90deg); }
-.composer-usage-ring :is(.composer-usage-ring-track, .composer-usage-ring-progress) { fill: none; }
-.composer-usage-ring-track { stroke: var(--color-border); stroke-width: 5; }
-.composer-usage-ring-progress { stroke: var(--color-text-primary); stroke-width: 5; stroke-dasharray: 100; stroke-linecap: round; transition: stroke-dashoffset 280ms ease; }
 
 .trace-window aside button { display: grid; gap: 3px; width: 100%; border: 0; border-radius: 7px; padding: 8px; color: var(--ink-soft); background: transparent; text-align: left; cursor: pointer; }.trace-window aside button:hover, .trace-window aside button.selected { background: var(--card); box-shadow: var(--shadow-nav-current); }.trace-window aside button b { margin: 0; color: var(--accent-strong); }.trace-event-list { display: grid; gap: 10px; }.trace-event-list article { overflow: hidden; border: 1px solid var(--line); border-radius: 7px; }.trace-event-list article header { display: flex; justify-content: space-between; gap: 10px; padding: 7px 10px; background: var(--paper-deep); font-size: var(--text-meta); }.trace-event-list article time { color: var(--ink-faint); }.trace-event-list pre { overflow: auto; max-height: 220px; margin: 0; padding: 10px; color: var(--ink-soft); background: var(--card); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: var(--text-meta); line-height: 1.6; }
 .project-environment-row { display: flex; align-items: center; gap: 7px; padding: 0 4px 7px; }.project-environment-row button { border: 0; border-radius: 6px; padding: 5px 7px; color: var(--ink-soft); background: var(--paper-deep); font-size: var(--text-meta); }.project-environment-row button:first-child { color: var(--accent-strong); }.project-environment-row button:hover { background: var(--accent-soft); }
@@ -364,25 +354,9 @@ input:focus, textarea:focus, select:focus { background: var(--titlebar-control);
 .assistant-empty > p:not(.eyebrow), .assistant-start-island > p:not(.eyebrow) { font-size: var(--text-ui); line-height: 22px; }
 .assistant-empty div { justify-content: flex-start; gap: var(--space-2); margin-top: var(--space-4); }
 .assistant-empty button { padding: 7px var(--space-3); box-shadow: var(--shadow-surface); font-size: var(--text-ui); }
-.composer-dock { width: min(776px, 100%); align-self: center; padding: var(--space-2) var(--space-7) 28px; }
 .task-dock { margin-bottom: var(--space-2); }
 .task-summary { min-height: 38px; border-radius: var(--radius-control); padding: var(--space-2) var(--space-3); box-shadow: var(--shadow-surface); font-size: var(--text-meta); }
 .task-card { border-radius: var(--radius-overlay); padding: var(--space-4); box-shadow: var(--shadow-raised); transform: translateY(var(--space-2)); }
-.composer { position: relative; z-index: 2; height: 128px; min-height: 128px; border-radius: var(--radius-overlay); padding: var(--space-3) var(--space-4) var(--space-2); box-shadow: var(--shadow-raised); }
-.composer:focus-within { box-shadow: var(--shadow-raised); }
-.composer textarea { height: 62px; min-height: 62px; max-height: 62px; resize: none; overflow-y: auto; padding: 0; font-size: var(--text-body); line-height: 28px; }
-.composer textarea, .composer textarea:focus, .composer textarea:focus-visible { border: 0 !important; outline: 0 !important; box-shadow: none !important; background: transparent !important; }
-.composer, .composer:focus-within { box-shadow: var(--shadow-raised) !important; }
-.composer-bar { min-height: 36px; border-top: 1px solid var(--line-subtle); padding-top: var(--space-2); }
-.composer-bar > div { gap: var(--space-1); }
-.composer-bar button { display: inline-flex; align-items: center; gap: var(--space-1); height: 36px; min-height: 36px; border-radius: var(--radius-control); padding: 0 var(--space-2); font-size: var(--text-meta); line-height: 18px; }
-.composer-bar button:focus-visible { box-shadow: none; }
-.send-plane { width: 36px; height: 36px; padding: 0 !important; transform: none; }
-.send-plane .iconfont-applications { --icon-image: url("/assets/iconfont/telegram.png") !important; }
-.attachment-row { gap: var(--space-2); margin-bottom: var(--space-2); }
-.attachment-row span { display: inline-flex; align-items: center; gap: var(--space-1); border-radius: var(--radius-control); padding: var(--space-1) var(--space-2); }
-.project-environment-row { position: relative; z-index: 1; height: 0; padding: 0; }
-.project-environment-row button { display: inline-flex; position: absolute; top: 128px; left: var(--space-4); align-items: center; gap: var(--space-1); min-height: 24px; border-radius: 0 0 var(--radius-control) var(--radius-control); padding: var(--space-1) var(--space-2); color: var(--accent-strong); background: var(--accent-soft); font-size: var(--text-meta); line-height: 18px; }
 .browser-runtime-bar { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); margin-bottom: var(--space-2); border: 1px solid var(--line); border-radius: var(--radius-control); padding: var(--space-2) var(--space-3); color: var(--ink-soft); background: var(--surface-card-muted); box-shadow: var(--shadow-surface); }
 .browser-runtime-bar > span { display: grid; min-width: 0; grid-template-columns: auto minmax(0,1fr); align-items: center; gap: 2px var(--space-2); }
 .browser-runtime-bar > span svg { grid-row: 1 / 3; color: var(--accent); }
@@ -394,7 +368,6 @@ input:focus, textarea:focus, select:focus { background: var(--titlebar-control);
 .browser-confirmation-card { border-radius: var(--radius-control); padding: var(--space-3); background: var(--paper-deep); }
 .browser-confirmation-card p { margin: 0 0 var(--space-2); overflow-wrap: anywhere; }
 .browser-confirmation-card p:last-child { margin-bottom: 0; }
-.composer-tip { min-height: 24px; margin-top: var(--space-6); }
 .resume-side { position: relative; z-index: 5; }
 .resume-side aside { padding: var(--space-5); background: var(--card); }
 .resume-side header > button { display: grid; place-items: center; }
@@ -423,9 +396,6 @@ input:focus, textarea:focus, select:focus { background: var(--titlebar-control);
   .assistant-start-island { padding: var(--space-4) 0; }
   .assistant-empty h2 { font-size: 28px; line-height: 40px; }
   .composer-dock { padding-right: var(--space-4); padding-left: var(--space-4); }
-  .composer-bar { align-items: flex-end; gap: var(--space-1); }
-  .composer-bar > div:last-child { flex-wrap: wrap; justify-content: flex-end; }
-  .composer-bar .menu-wrap:first-of-type { max-width: 115px; }
   .resume-side.open { width: min(520px, 94vw); flex-basis: min(520px, 94vw); }
 }
 
@@ -707,35 +677,6 @@ body.is-resizing-resume, body.is-resizing-resume * { cursor: col-resize !importa
 .drawer-content::-webkit-scrollbar-track, .resume-paper::-webkit-scrollbar-track { background: transparent; }
 .drawer-content::-webkit-scrollbar-thumb, .resume-paper::-webkit-scrollbar-thumb { border-radius: 999px; background-color: var(--scrollbar-idle); }
 .drawer-content::-webkit-scrollbar-thumb:hover, .drawer-content::-webkit-scrollbar-thumb:active, .resume-paper::-webkit-scrollbar-thumb:hover, .resume-paper::-webkit-scrollbar-thumb:active { background-color: var(--scrollbar-active); }
-
-/* 拖动压缩时，场景保留无障碍名称但只显示图标；所有关键按钮禁止收缩变形。 */
-.composer-bar > div { min-width: 0; }
-.composer-bar > div:last-child { flex-wrap: nowrap; justify-content: flex-end; }
-.composer-bar .menu-wrap, .composer-bar button { flex: 0 0 auto; }
-.composer-bar .scenario-button { white-space: nowrap; }
-.composer-bar .scenario-button .iconfont-png { width: 15px !important; height: 15px !important; }
-.composer-bar .permission-button .iconfont-user-check { color: var(--success); }
-.composer-bar .permission-button .iconfont-user-x { color: var(--danger); }
-.composer-bar .model-button.is-deepseek .iconfont-deepseek { color: var(--accent); }
-.assistant-layout.is-composer-compact .composer-bar .permission-button, .assistant-layout.is-composer-compact .composer-bar .scenario-button, .assistant-layout.is-composer-compact .composer-bar .model-button.is-deepseek { width: 36px; min-width: 36px; justify-content: center; padding: 0; }
-.assistant-layout.is-composer-compact .composer-bar .permission-label, .assistant-layout.is-composer-compact .composer-bar .scenario-label, .assistant-layout.is-composer-compact .composer-bar .model-button.is-deepseek .model-label, .assistant-layout.is-composer-compact .composer-bar .permission-button .chevron-indicator, .assistant-layout.is-composer-compact .composer-bar .scenario-button .chevron-indicator, .assistant-layout.is-composer-compact .composer-bar .model-button.is-deepseek .chevron-indicator { display: none; }
-.composer-bar .send-plane { min-width: 36px; flex-basis: 36px; }
-.composer-bar .menu-wrap:last-of-type > button { max-width: 132px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-
-/* 思考模式是会话级前端偏好：按钮仅显示当前档位，点击后展开离散滑块，尚不参与请求参数。 */
-.reasoning-effort-wrap { flex: 0 0 auto; }
-.reasoning-effort-button { min-width: 58px; justify-content: center; }
-.reasoning-effort-menu { display: grid; grid-template-rows: 16px 14px; row-gap: var(--space-2); box-sizing: border-box; width: 244px; overflow: visible; padding: var(--space-3) var(--space-3) var(--space-2); }
-.reasoning-effort-options { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); align-items: center; color: var(--color-text-secondary); font-size: 11px; font-weight: 600; line-height: 16px; text-align: center; }
-.reasoning-effort-options span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.reasoning-effort-options span.is-active { color: var(--ink); }
-.reasoning-effort-slider { position: relative; width: 100%; height: 14px; }
-.reasoning-effort-slider input { position: absolute; z-index: 1; inset: 0; box-sizing: border-box; width: 100%; min-height: 14px !important; max-height: 14px; height: 14px; border: 0 !important; border-radius: 0; padding: 0; margin: 0; appearance: none; background: transparent !important; box-shadow: none !important; cursor: pointer; }
-.reasoning-effort-slider input::-webkit-slider-runnable-track { height: 14px; border: 0; border-radius: var(--radius-control); background: linear-gradient(to right, var(--ink) 0 var(--reasoning-progress), var(--color-border) var(--reasoning-progress) 100%); }
-.reasoning-effort-slider input::-moz-range-track { height: 14px; border: 0; border-radius: var(--radius-control); background: linear-gradient(to right, var(--ink) 0 var(--reasoning-progress), var(--color-border) var(--reasoning-progress) 100%); }
-.reasoning-effort-slider input::-webkit-slider-thumb { width: 14px; height: 14px; margin-top: 0; border: 0; border-radius: var(--radius-control); appearance: none; background: var(--ink); box-shadow: none; }
-.reasoning-effort-slider input::-moz-range-thumb { width: 14px; height: 14px; border: 0; border-radius: var(--radius-control); background: var(--ink); box-shadow: none; }
-.reasoning-effort-slider input:focus-visible { outline: 2px solid var(--ink); outline-offset: 3px; }
 
 /* 真实投递以公开测试入口呈现；外部动作的确认与授权仍由 Harness 控制。 */
 .assistant-empty .application-scenario-entry { display: flex; width: min(430px, 100%); align-items: center; justify-content: flex-start; gap: var(--space-3); margin: var(--space-4) auto 0; border: 1px solid var(--accent); padding: var(--space-3) var(--space-4); color: var(--accent-strong); background: var(--accent-soft); text-align: left; }
@@ -1530,13 +1471,6 @@ select:focus, select:focus-visible,
 .markdown-text pre,
 .markdown-text code { background: var(--color-bg-end); }
 .markdown-text pre code { background: transparent; }
-.composer,
-.composer:focus-within {
-  border-color: var(--color-border-glass);
-  background: var(--color-surface-glass);
-  box-shadow: var(--shadow-glass) !important;
-  backdrop-filter: blur(var(--blur-glass));
-}
 .thinking-block summary { gap: var(--space-1); }
 .thinking-block summary::after { margin-left: 0; }
 
@@ -1994,136 +1928,7 @@ select:focus, select:focus-visible,
 .evaluation-workspace { min-height: 0; overflow-y: auto; }
 .evaluation-run-list { max-height: 264px; overflow-y: auto; padding-right: var(--space-1); }
 
-/* 对话开始前的上下文标签与输入框相邻展示；会话建立后由组件移除，避免占用阅读空间。 */
-.composer-context-tags {
-  display: flex;
-  position: relative;
-  z-index: 1;
-  width: auto;
-  align-self: center;
-  overflow: visible;
-  margin: 0 var(--space-5);
-  border-radius: var(--radius-card) var(--radius-card) 0 0;
-  background: var(--color-surface-card);
-}
-.composer-context-tags:has(.context-scenario-tag[aria-expanded='true']) { z-index: 3; }
-.composer-context-tags > :is(button, .menu-wrap) { min-width: 0; flex: 1 1 0; }
-.composer-context-tags :is(.workspace-tag, .context-scenario-tag) {
-  display: inline-flex;
-  width: 100%;
-  min-height: 40px;
-  align-items: center;
-  gap: var(--space-2);
-  overflow: hidden;
-  border: 0;
-  padding: 0 var(--space-3);
-  color: var(--color-text-primary) !important;
-  background: transparent;
-  font-family: var(--font-sans);
-  font-size: var(--text-ui);
-  text-align: left;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.composer-context-tags .workspace-tag { border-radius: var(--radius-card) 0 0 0; }
-.composer-context-tags .context-scenario-tag { border-radius: 0 var(--radius-card) 0 0; }
-.composer-context-tags :is(.workspace-tag, .context-scenario-tag):hover,
-.composer-context-tags :is(.workspace-tag, .context-scenario-tag):focus-visible {
-  outline: none;
-  color: var(--color-surface-card) !important;
-  background: var(--color-text-secondary);
-}
-.composer-context-tags .context-scenario-tag[aria-expanded='true'] { color: var(--color-surface-card) !important; background: var(--color-text-secondary); }
-.composer-context-tags .workspace-tag > span,
-.composer-context-tags .model-label,
-.composer-context-tags .scenario-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.composer-context-tags .context-tag-label { flex: 0 0 auto; color: var(--color-text-secondary); }
-.composer-context-tags :is(.workspace-tag, .context-scenario-tag):is(:hover, :focus-visible) .context-tag-label,
-.composer-context-tags .context-scenario-tag[aria-expanded='true'] .context-tag-label { color: inherit; }
-.composer-context-tags .chevron-indicator {
-  display: inline-block;
-  width: 14px;
-  height: 14px;
-  flex: 0 0 14px;
-  margin-left: auto;
-  background: currentColor;
-  -webkit-mask: url('/assets/iconfont/chevron-down.png') center / contain no-repeat;
-  mask: url('/assets/iconfont/chevron-down.png') center / contain no-repeat;
-  transition: transform var(--transition-standard);
-}
-.composer-context-tags button[aria-expanded='true'] .chevron-indicator { transform: rotate(180deg); }
-.composer-context-tags .popup-menu { top: auto; right: auto; bottom: calc(100% + var(--space-2)); left: 0; }
-.composer-context-tags .scenario-menu {
-  display: grid;
-  width: min(272px, calc(100vw - var(--space-6)));
-  gap: var(--space-1);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-card);
-  padding: var(--space-2);
-  background: var(--color-surface-card);
-  box-shadow: var(--shadow-overlay);
-}
-.composer-context-tags .scenario-menu button {
-  display: grid;
-  width: 100%;
-  min-height: 44px;
-  gap: 2px;
-  border: 0;
-  border-radius: var(--radius-control);
-  padding: var(--space-2) var(--space-3);
-  color: var(--color-text-primary);
-  background: transparent;
-  text-align: left;
-}
-.composer-context-tags .scenario-menu button:hover,
-.composer-context-tags .scenario-menu button:focus-visible,
-.composer-context-tags .scenario-menu button.selected { outline: none; background: var(--color-control-light); }
-.composer-context-tags .scenario-menu button b { display: inline-flex; align-items: center; gap: var(--space-2); color: inherit; font-size: var(--text-ui); }
-.composer-context-tags .scenario-menu button small { color: var(--color-text-secondary); font-size: var(--text-meta); }
 .assistant-empty button:hover { color: var(--color-text-primary); background: var(--color-control-light); }
-
-/* 附件是输入区的状态标签：使用中性灰胶囊，不沿用旧版浅黄色强调。 */
-.attachment-row { display: flex; flex-wrap: wrap; gap: var(--space-2); margin: 0 0 var(--space-2); }
-.attachment-row > .attachment-chip {
-  display: inline-flex;
-  min-width: 0;
-  max-width: 100%;
-  align-items: center;
-  gap: var(--space-1);
-  border-radius: var(--radius-pill);
-  padding: var(--space-1) var(--space-1) var(--space-1) var(--space-2);
-  color: var(--color-text-primary);
-  background: var(--color-control-light);
-  font-size: var(--text-meta);
-  line-height: 20px;
-}
-.attachment-row > .attachment-chip .attachment-name {
-  min-width: 0;
-  overflow: hidden;
-  border-radius: 0;
-  padding: 0;
-  color: inherit;
-  background: transparent;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.attachment-row > .attachment-chip .iconfont-png { display: inline-block; border-radius: 0; padding: 0; background: currentColor; }
-.attachment-row > .attachment-chip > button {
-  display: grid;
-  width: 20px;
-  min-width: 20px;
-  height: 20px;
-  min-height: 20px;
-  flex: 0 0 20px;
-  place-items: center;
-  border: 0;
-  border-radius: 50%;
-  padding: 0;
-  color: var(--color-text-primary);
-  background: transparent;
-}
-.attachment-row > .attachment-chip > button:hover,
-.attachment-row > .attachment-chip > button:focus-visible { outline: none; color: var(--color-text-primary); background: var(--color-surface-card); }
 
 /* Todo 缩略条和展开卡片共享同一内容表面，仅通过信息密度区分层级。 */
 .task-dock { position: relative; z-index: 3; margin-bottom: var(--space-2); font-family: var(--font-sans); font-size: var(--text-ui); }
@@ -2234,12 +2039,6 @@ select:focus, select:focus-visible,
   margin-right: auto;
   margin-left: auto;
 }
-.assistant-main.is-empty-conversation .composer-dock {
-  flex: 0 0 auto;
-  margin: 0;
-  padding-top: var(--space-2);
-  padding-bottom: 0;
-}
 .assistant-quick-start {
   display: flex;
   width: min(776px, 100%);
@@ -2260,14 +2059,6 @@ select:focus, select:focus-visible,
 .assistant-quick-start button:hover,
 .assistant-quick-start button:focus-visible { color: var(--color-text-primary); background: color-mix(in srgb, var(--color-surface-card) 58%, transparent); box-shadow: none; }
 
-/* 对话输入区使用不透明白色低圆角表面，避免与工作区背景发生材质叠加。 */
-.composer,
-.composer:focus-within {
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-card);
-  background: var(--color-surface-card);
-  box-shadow: none !important;
-}
 .sidebar .assistant-nav.is-active .nav-entry,
 .sidebar .assistant-nav.is-active .nav-entry:hover,
 .sidebar .nav-entry.is-active,

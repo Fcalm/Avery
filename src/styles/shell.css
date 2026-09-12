@@ -379,3 +379,186 @@ button { background: none; border: 0; }
 @media (prefers-reduced-motion: reduce) {
   .app-toast { animation-duration: .001ms !important; }
 }
+
+/* ============================================================================
+   对话主区：输入框（共享组件）+ 新建对话空态 —— 一比一复刻 Avery 原型
+   ---------------------------------------------------------------------------
+   结构：composer-dock（渐变衬底）> composer-col（792px 居中）> 附件 ctx 药丸
+   + composer 输入卡（textarea / cmp-bar 工具行 / usage 环 / 发送钮）
+   + nv-bar（仅新建对话：项目空间 + 场景）+ composer-foot 快捷键行。
+   全部样式取自 avery-prototype.html 对应段落；本文件在 global.css 之后加载，
+   同名旧规则以这里为准。
+   ============================================================================ */
+@keyframes viewIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+
+/* 新建对话空态：问候语与输入框作为一组垂直居中（原型 .thread{margin-top:auto}
+   + .composer-wrap{margin-bottom:auto} 的布局在 React 里的等价写法）。 */
+.assistant-main.is-new-thread .empty { margin-top: auto; }
+.assistant-main.is-new-thread .composer-dock { margin-bottom: auto; background: none; }
+.empty {
+  flex: none; width: 100%; max-width: 792px; margin: 0 auto; padding: 0 0 14px;
+  text-align: center; animation: viewIn .5s var(--ease) both;
+}
+.empty h1 { font-size: 26px; font-weight: 640; letter-spacing: -.02em; margin: 0; }
+
+/* 输入框底座：消息区之上的渐变衬底 + 792px 居中列 */
+.composer-dock {
+  position: relative; z-index: 2; flex: none;
+  padding: 0 26px 18px;
+  background: linear-gradient(to bottom, transparent, var(--panel) 22%);
+}
+.composer-dock .composer-col { max-width: 792px; margin: 0 auto; }
+
+/* 附件药丸（.ctx） */
+.ctx { display: flex; flex-wrap: wrap; gap: 7px; margin-bottom: 9px; }
+.ctx-item {
+  display: inline-flex; align-items: center; gap: 6px; padding: 4px 5px 4px 10px;
+  border: 1px solid var(--border); border-radius: var(--r-pill); background: var(--raised);
+  font-size: 11.5px; color: var(--text-2);
+  animation: childIn .34s var(--ease) both;
+}
+@keyframes childIn { from { opacity: 0; transform: translateY(7px); } to { opacity: 1; transform: none; } }
+.ctx-item > i, .ctx-item > .iconfont-png { flex: none; color: var(--text-3); }
+.ctx-name { min-width: 0; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ctx-x {
+  width: 18px; height: 18px; display: grid; place-items: center; border-radius: var(--r-pill);
+  color: var(--text-3); transition: background-color .16s var(--ease), color .16s var(--ease);
+}
+.ctx-x:hover { background: var(--surface-2); color: var(--text); }
+
+/* 输入卡 */
+.composer {
+  display: block; padding: 9px 9px 7px 12px;
+  border: 1px solid var(--border-2); border-radius: var(--r-card); background: var(--raised);
+  box-shadow: var(--shadow);
+  transition: border-color .2s var(--ease), box-shadow .25s var(--ease), background-color .3s var(--ease);
+}
+.composer:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.composer textarea {
+  display: block; width: 100%; min-height: 24px; max-height: 150px; resize: none;
+  border: 0; outline: 0; background: none; box-shadow: none;
+  padding: 4px 2px 2px; font-size: 14px; line-height: 1.5;
+}
+.composer textarea::placeholder { color: var(--text-3); }
+
+/* 工具行：左侧 附件/权限/模型/思考，右侧 usage 环 + 发送 */
+.cmp-bar { display: flex; align-items: center; gap: 4px; margin-top: 6px; }
+.cmp-tools { display: flex; align-items: center; gap: 2px; flex: 1; min-width: 0; }
+.cmp-right { display: flex; align-items: center; gap: 4px; flex: none; }
+.cmp-btn {
+  display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 8px;
+  border-radius: 8px; color: var(--text-2); font-size: 12.5px; font-weight: 500; white-space: nowrap;
+  transition: background-color .16s var(--ease), color .16s var(--ease), transform .12s var(--ease);
+}
+.cmp-btn i { font-size: 15px; flex: none; }
+.cmp-btn:hover { background: var(--surface-2); color: var(--text); }
+.cmp-btn:active { transform: scale(.97); }
+.cmp-btn[aria-expanded="true"] { background: var(--surface-2); color: var(--text); }
+.cmp-btn .chev { font-size: 10px; color: var(--text-3); transition: transform .25s var(--ease); }
+.cmp-btn[aria-expanded="true"] .chev { transform: rotate(180deg); }
+.cmp-btn.icon-only { width: 28px; padding: 0; justify-content: center; }
+
+/* 输入框内的菜单向上展开 */
+.menu.pop {
+  right: 0; left: auto; top: auto; bottom: calc(100% + 8px); width: 272px;
+  max-height: min(60vh, 420px); overflow-y: auto;
+  transform-origin: bottom left; animation: menuInUp .2s var(--ease) both;
+}
+.menu.nv-menu { width: 262px; transform-origin: bottom right; }
+.menu-item .md { display: block; font-size: 12px; color: var(--text-3); line-height: 1.45; }
+/* 仅拉伸文本包装层；不能命中作为直接子元素的 .iconfont-png 图标（span），否则图标被拉宽。 */
+.menu-item > span:not(.iconfont-png) { flex: 1; min-width: 0; }
+.menu-foot {
+  font-size: 11px; line-height: 1.45; color: var(--text-3);
+  padding: 8px 10px 4px; margin-top: 4px; border-top: 1px solid var(--border);
+}
+
+/* 思考强度菜单：分段选择器 + 档位说明 */
+.seg {
+  display: grid; grid-template-columns: repeat(5, 1fr); gap: 3px;
+  padding: 3px; margin: 0 5px 8px; background: var(--surface-2); border-radius: 9px;
+}
+.seg-i {
+  height: 26px; border-radius: 6px; font-size: 12px; font-weight: 550; color: var(--text-2);
+  transition: background-color .18s var(--ease), color .18s var(--ease);
+}
+.seg-i:hover { color: var(--text); }
+.seg-i.sel { background: var(--raised); color: var(--accent); }
+.think-d { font-size: 12px; line-height: 1.5; color: var(--text-2); padding: 0 10px 8px; }
+
+/* 上下文使用环：hover 出详情弹层；token 明细不编造，只呈现后端真实可得的数据 */
+.ctx-wrap { position: relative; display: flex; align-items: center; flex: none; }
+.ctx-ring {
+  display: inline-flex; align-items: center; gap: 5px; height: 28px; padding: 0 8px 0 4px;
+  border-radius: 8px; transition: background-color .18s var(--ease);
+}
+.ctx-ring:hover, .ctx-ring:focus-visible { background: var(--surface-2); }
+.ctx-ring svg { width: 22px; height: 22px; flex: none; transform: rotate(-90deg); }
+.ctx-ring .track { fill: none; stroke: var(--border-2); stroke-width: 2.6; }
+.ctx-ring .val { fill: none; stroke: var(--accent); stroke-width: 2.6; stroke-linecap: round; stroke-dasharray: 100; transition: stroke-dashoffset .6s var(--ease); }
+.ctx-pct { font-family: var(--font-data); font-size: 10.5px; color: var(--text-3); transition: color .18s var(--ease); }
+.ctx-ring:hover .ctx-pct { color: var(--text-2); }
+.ctx-pop {
+  position: absolute; bottom: calc(100% + 10px); right: 0; z-index: 45; width: 268px; padding: 13px;
+  background: var(--raised); border: 1px solid var(--border); border-radius: var(--r-card);
+  box-shadow: var(--shadow-lg);
+  opacity: 0; transform: translateY(6px) scale(.97); transform-origin: bottom right; pointer-events: none;
+  transition: opacity .2s var(--ease), transform .26s var(--ease);
+}
+.ctx-pop::before { content: ""; position: absolute; left: 0; right: 0; top: 100%; height: 12px; }
+.ctx-wrap:hover .ctx-pop, .ctx-wrap:focus-within .ctx-pop { opacity: 1; transform: none; pointer-events: auto; }
+.cp-h { font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--text-3); margin-bottom: 9px; }
+.cp-big { display: flex; align-items: baseline; gap: 9px; margin-bottom: 11px; }
+.cp-big .cp-pct { font-family: var(--font-data); font-size: 22px; font-weight: 640; letter-spacing: -.02em; }
+.cp-big .cp-tok { font-family: var(--font-data); font-size: 11px; color: var(--text-3); }
+.cp-rows { display: grid; gap: 7px; margin-bottom: 10px; }
+.cp-row { display: flex; align-items: center; justify-content: space-between; font-size: 12.5px; color: var(--text-2); }
+.cp-row b { font-family: var(--font-data); font-size: 11.5px; font-weight: 500; color: var(--text); }
+.cp-row.dim { padding-top: 8px; border-top: 1px solid var(--border); color: var(--text-3); }
+.cp-row.dim b { color: var(--text-3); }
+.cp-note { padding-top: 9px; border-top: 1px solid var(--border); font-size: 11.5px; line-height: 1.45; color: var(--text-3); }
+
+/* 发送按钮 */
+.send {
+  width: 30px; height: 30px; flex: none; display: grid; place-items: center;
+  border-radius: var(--r-control); background: var(--accent); color: var(--accent-on);
+  transition: background-color .18s var(--ease), transform .12s var(--ease), opacity .2s var(--ease);
+}
+.send i { font-size: 16px; }
+.send:hover { background: var(--accent-hover); }
+.send:active { transform: scale(.92); }
+.send:disabled { opacity: .35; cursor: not-allowed; transform: none; }
+
+/* 快捷键行 */
+.composer-foot { display: flex; align-items: center; gap: 10px; padding: 7px 3px 0; font-size: 11px; color: var(--text-3); }
+.composer-foot .sep { flex: 1; }
+.kbd-hint { font-family: var(--font-data); font-size: 10.5px; border: 1px solid var(--border); border-radius: 5px; padding: 0 4px; background: var(--surface); }
+
+/* 新建对话页：输入框下方的项目空间 + 场景选择 */
+.nv-bar { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 7px; padding: 0 2px; }
+.nv-slot { display: flex; align-items: center; gap: 1px; min-width: 0; }
+.nv-btn {
+  display: inline-flex; align-items: center; gap: 7px; height: 28px; padding: 0 9px; min-width: 0;
+  border-radius: 8px; color: var(--text-2); font-size: 12.5px; font-weight: 500; white-space: nowrap;
+  transition: background-color .16s var(--ease), color .16s var(--ease), transform .12s var(--ease);
+}
+.nv-btn i { font-size: 15px; flex: none; }
+.nv-btn span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.nv-btn:hover { background: var(--surface-2); color: var(--text); }
+.nv-btn:active { transform: scale(.97); }
+.nv-btn[aria-expanded="true"] { background: var(--surface-2); color: var(--text); }
+.nv-btn:disabled { opacity: .5; }
+.nv-btn .chev { font-size: 9px; color: var(--text-3); margin-left: -2px; transition: transform .25s var(--ease); }
+.nv-btn[aria-expanded="true"] .chev { transform: rotate(180deg); }
+.nv-x {
+  width: 22px; height: 22px; flex: none; display: grid; place-items: center; border-radius: 50%;
+  color: var(--text-3); transition: background-color .16s var(--ease), color .16s var(--ease);
+}
+.nv-x:hover { background: var(--surface-2); color: var(--text); }
+
+/* 窄输入栏：按钮只保留图标（沿用既有的紧凑密度逻辑） */
+.assistant-layout.is-composer-compact .cmp-btn:not(.icon-only) span { display: none; }
+.assistant-layout.is-composer-compact .composer-foot > span:last-child { display: none; }
+@media (prefers-reduced-motion: reduce) {
+  .empty, .ctx-item, .menu.pop { animation-duration: .001ms !important; }
+}

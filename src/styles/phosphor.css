@@ -89,3 +89,8 @@
 .ph-folder-open::before { content: "\e256"; }
 .ph-sliders-horizontal::before { content: "\e434"; }
 .ph-user-circle::before { content: "\e4c4"; }
+/* 对话输入框（原型一比一）：附件 / 模型 / 思考强度 / 项目空间 */
+.ph-paperclip::before { content: "\e39a"; }
+.ph-brain::before { content: "\e74e"; }
+.ph-gauge::before { content: "\e628"; }
+.ph-folder-simple::before { content: "\e25a"; }
