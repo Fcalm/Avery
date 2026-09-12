@@ -26,7 +26,7 @@ export interface RegisteredAgentTool {
   /** 允许使用该工具的场景 ID 白名单；缺省表示仅默认场景。 */
   allowedScenarios?: string[];
   /** Harness 在工具执行入口统一校验的会话资源；禁止各工具自行复制授权判断。 */
-  requiredResources?: Array<'bound_resume'>;
+  requiredResources?: Array<'bound_resume' | 'personal_browser'>;
 }
 
 /** 业务幂等键与工具账本端口：写工具在执行前落 started，完成后落 succeeded/failed/status_unknown。 */
@@ -107,6 +107,19 @@ export interface JobCollectionPort {
     candidateId: string;
     matchScore?: number;
   }): Promise<{ jobId: string; jobRevision: number }>;
+}
+
+export interface BossContactPort {
+  Prepare(input: {
+    sessionId: string;
+    items: Array<{ jobId: string; message: { mode: 'first_quick_phrase' } | { mode: 'custom'; text: string } }>;
+    imageAssetId?: string;
+    authorizedAssetIds: string[];
+    resume: { id: string; name?: string; revision?: number };
+    unattended?: boolean;
+  }): Promise<BrowserActionProposal>;
+  Execute(input: { proposal: BrowserActionProposal; signal?: AbortSignal; deadline?: number }): Promise<{ data: unknown; status: 'succeeded' | 'status_unknown' }>;
+  Cancel(proposal: BrowserActionProposal): Promise<void> | void;
 }
 
 /** ReadUrl 端口：只允许 http/https，宿主负责 SSRF、来源与预算限制。 */
@@ -265,6 +278,7 @@ export interface ToolPorts {
   profileWrite?: ProfileWritePort;
   jobSearch?: JobSearchPort;
   jobCollection?: JobCollectionPort;
+  bossContact?: BossContactPort;
   urlRead?: UrlReadPort;
   browser?: BrowserAutomationPort;
   skill?: SkillReadPort;

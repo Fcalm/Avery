@@ -6,6 +6,13 @@ const DefaultTimeoutMs = 60_000;
 const MaxSnapshotElements = 300;
 const MaxSnapshotChars = 50_000;
 const MaxReadChars = 50_000;
+const BossChatPhrasePrefix = '发送常用语：';
+const BossChatPhraseTextLimit = 200;
+const BossChatPhraseTruncationMarker = '…【部分内容已截断】';
+const BossChatPhrasePanelSelector = '.sentence-panel';
+const BossChatPhraseControlSelector = '.chat-controls .btn-dict[aria-label="常用语"]';
+const BossChatImageControlSelector = '.chat-controls .btn-sendimg[aria-label="发送图片"]';
+const BossChatImageInputSelector = `${BossChatImageControlSelector} input[type="file"]`;
 
 const BrowserMethods = new Set([
   'Target.getTargets',
@@ -115,18 +122,33 @@ function SafeJson(value: unknown): string {
 }
 
 const SnapshotExpression = `(() => {
-  const normalize = (value, limit = 180) => String(value || '').replace(/\\s+/g, ' ').trim().slice(0, limit);
+  const normalizedText = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
+  const normalize = (value, limit = 180) => normalizedText(value).slice(0, limit);
   const visible = (element) => {
     const style = getComputedStyle(element);
     const rect = element.getBoundingClientRect();
     return style.display !== 'none' && style.visibility !== 'hidden' && Number(style.opacity || 1) > 0
       && rect.width > 0 && rect.height > 0;
   };
+  const bossChatPage = (location.hostname === 'zhipin.com' || location.hostname.endsWith('.zhipin.com'))
+    && location.pathname === '/web/geek/chat';
+  const bossChatNameOf = (element) => {
+    if (!bossChatPage) return '';
+    if (element.matches(${JSON.stringify(BossChatPhraseControlSelector)})) return '常用语';
+    if (element.matches(${JSON.stringify(BossChatImageInputSelector)})) return '发送图片';
+    if (element.closest(${JSON.stringify(BossChatPhrasePanelSelector)})) {
+      const fullPhrase = normalizedText(element.innerText || element.textContent);
+      const phrase = fullPhrase.slice(0, ${BossChatPhraseTextLimit});
+      if (phrase) return ${JSON.stringify(BossChatPhrasePrefix)} + phrase
+        + (fullPhrase.length > ${BossChatPhraseTextLimit} ? ${JSON.stringify(BossChatPhraseTruncationMarker)} : '');
+    }
+    return '';
+  };
   const nameOf = (element) => {
     const labelledBy = element.getAttribute('aria-labelledby');
     const labelledText = labelledBy ? labelledBy.split(/\\s+/).map((id) => document.getElementById(id)?.textContent || '').join(' ') : '';
     const explicitLabel = element.id ? document.querySelector('label[for="' + CSS.escape(element.id) + '"]')?.textContent : '';
-    return normalize(element.getAttribute('aria-label') || labelledText || explicitLabel || element.closest('label')?.textContent
+    return bossChatNameOf(element) || normalize(element.getAttribute('aria-label') || labelledText || explicitLabel || element.closest('label')?.textContent
       || element.getAttribute('placeholder') || element.getAttribute('alt') || element.getAttribute('title') || element.textContent);
   };
   const labelOf = (element) => {
@@ -136,6 +158,9 @@ const SnapshotExpression = `(() => {
     return normalize(labelledText || explicitLabel || element.closest('label')?.textContent);
   };
   const roleOf = (element) => {
+    if (bossChatPage && element.matches(${JSON.stringify(BossChatPhraseControlSelector)})) return 'button';
+    if (bossChatPage && element.matches(${JSON.stringify(BossChatImageInputSelector)})) return 'filechooser';
+    if (bossChatPage && bossChatNameOf(element).startsWith(${JSON.stringify(BossChatPhrasePrefix)})) return 'button';
     const explicit = normalize(element.getAttribute('role'), 40).toLowerCase();
     if (explicit) return explicit;
     const tag = element.tagName.toLowerCase();
@@ -206,13 +231,34 @@ const SnapshotExpression = `(() => {
     }
     return parts.join(' > ');
   };
-  const candidates = [...document.querySelectorAll('a[href],button,input,textarea,select,[role],[contenteditable="true"]')];
+  const standardCandidates = [...document.querySelectorAll('a[href],button,input,textarea,select,[role],[contenteditable="true"]')];
+  const bossPhraseCandidates = bossChatPage ? [...document.querySelectorAll(${JSON.stringify(`${BossChatPhrasePanelSelector} *`)})]
+    .filter((element) => {
+      if (!(element instanceof HTMLElement) || !visible(element)) return false;
+      const text = normalize(element.innerText || element.textContent, 220);
+      if (!text || /^(添加常用语|管理常用语|编辑|删除|关闭|取消)$/.test(text)) return false;
+      const interactive = ['A', 'BUTTON', 'LI'].includes(element.tagName)
+        || typeof element.onclick === 'function' || getComputedStyle(element).cursor === 'pointer';
+      if (!interactive) return false;
+      return ![...element.querySelectorAll('*')].some((child) => child instanceof HTMLElement && visible(child)
+        && normalize(child.innerText || child.textContent, 220) === text
+        && (['A', 'BUTTON', 'LI'].includes(child.tagName) || typeof child.onclick === 'function' || getComputedStyle(child).cursor === 'pointer'));
+    }) : [];
+  const bossCandidates = bossChatPage
+    ? [...document.querySelectorAll(${JSON.stringify(`${BossChatPhraseControlSelector},${BossChatImageInputSelector}`)}), ...bossPhraseCandidates]
+    : [];
+  // 聊天动作必须优先进入有限快照，避免长会话页面的普通控件先耗尽元素上限。
+  const candidates = [...new Set([...bossCandidates, ...standardCandidates])];
   const items = [];
   for (const element of candidates) {
     if (items.length >= ${MaxSnapshotElements}) break;
-    if (!(element instanceof HTMLElement) || !visible(element)) continue;
+    if (!(element instanceof HTMLElement)) continue;
     const tag = element.tagName.toLowerCase();
     const type = normalize(element.getAttribute('type'), 40).toLowerCase();
+    const bossHiddenImageInput = bossChatPage && element.matches(${JSON.stringify(BossChatImageInputSelector)})
+      && element.closest(${JSON.stringify(BossChatImageControlSelector)}) instanceof HTMLElement
+      && visible(element.closest(${JSON.stringify(BossChatImageControlSelector)}));
+    if (!visible(element) && !bossHiddenImageInput) continue;
     if (tag === 'input' && type === 'hidden') continue;
     let href;
     if (element instanceof HTMLAnchorElement && element.href) {
@@ -222,12 +268,16 @@ const SnapshotExpression = `(() => {
       } catch {}
     }
     const context = contextOf(element);
+    const bossPhraseText = bossChatPage && element.closest(${JSON.stringify(BossChatPhrasePanelSelector)})
+      ? normalizedText(element.innerText || element.textContent)
+      : '';
     items.push({
       selector: selectorOf(element),
       tag,
       role: roleOf(element),
       type,
       name: nameOf(element),
+      textTruncated: bossPhraseText.length > ${BossChatPhraseTextLimit},
       rawLabel: labelOf(element),
       section: sectionOf(element),
       fieldName: normalize(element.getAttribute('name'), 180),
@@ -241,7 +291,7 @@ const SnapshotExpression = `(() => {
       groupHeading: context.groupHeading,
       recordIndex: context.recordIndex,
       formExcluded: Boolean(element.closest('nav,header,footer,[role="navigation"]')),
-      disabled: Boolean(element.disabled || element.getAttribute('aria-disabled') === 'true'),
+      disabled: Boolean(element.disabled || element.getAttribute('aria-disabled') === 'true' || element.classList.contains('disabled')),
       required: Boolean(element.required || element.getAttribute('aria-required') === 'true'),
       readOnly: Boolean(element.readOnly),
       autocomplete: normalize(element.getAttribute('autocomplete'), 80),
@@ -606,6 +656,7 @@ export class PersonalBrowserCdpRuntime implements PersonalBrowserRuntimePort {
         ...(typeof raw.valid === 'boolean' ? { valid: raw.valid } : {}),
         ...(typeof raw.validationMessage === 'string' && raw.validationMessage ? { validationMessage: raw.validationMessage } : {}),
         ...(typeof raw.checked === 'boolean' ? { checked: raw.checked } : {}),
+        ...(raw.textTruncated === true ? { textTruncated: true } : {}),
         ...(Array.isArray(raw.options) ? { options: raw.options.slice(0, 50) } : {}),
         ...(IsBossUrl(raw.href) ? { href: raw.href } : {}),
       };
@@ -617,6 +668,7 @@ export class PersonalBrowserCdpRuntime implements PersonalBrowserRuntimePort {
       title: String(value.title ?? ''),
       snapshot: lines.join('\n').slice(0, MaxSnapshotChars),
       refs,
+      partialTextTruncated: value.items.some((item: any) => item?.textTruncated === true),
       truncated: value.truncated === true || lines.join('\n').length > MaxSnapshotChars,
     };
   }
@@ -631,15 +683,33 @@ export class PersonalBrowserCdpRuntime implements PersonalBrowserRuntimePort {
   private LocateExpression(locator: ElementFingerprint): string {
     return `(() => {
       const expected = ${SafeJson(locator)};
-      const normalize = (value, limit = 180) => String(value || '').replace(/\\s+/g, ' ').trim().slice(0, limit);
+      const normalizedText = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
+      const normalize = (value, limit = 180) => normalizedText(value).slice(0, limit);
+      const bossChatPage = (location.hostname === 'zhipin.com' || location.hostname.endsWith('.zhipin.com'))
+        && location.pathname === '/web/geek/chat';
+      const bossChatNameOf = (element) => {
+        if (!bossChatPage) return '';
+        if (element.matches(${JSON.stringify(BossChatPhraseControlSelector)})) return '常用语';
+        if (element.matches(${JSON.stringify(BossChatImageInputSelector)})) return '发送图片';
+        if (element.closest(${JSON.stringify(BossChatPhrasePanelSelector)})) {
+          const fullPhrase = normalizedText(element.innerText || element.textContent);
+          const phrase = fullPhrase.slice(0, ${BossChatPhraseTextLimit});
+          if (phrase) return ${JSON.stringify(BossChatPhrasePrefix)} + phrase
+            + (fullPhrase.length > ${BossChatPhraseTextLimit} ? ${JSON.stringify(BossChatPhraseTruncationMarker)} : '');
+        }
+        return '';
+      };
       const nameOf = (element) => {
         const labelledBy = element.getAttribute('aria-labelledby');
         const labelledText = labelledBy ? labelledBy.split(/\\s+/).map((id) => document.getElementById(id)?.textContent || '').join(' ') : '';
         const explicitLabel = element.id ? document.querySelector('label[for="' + CSS.escape(element.id) + '"]')?.textContent : '';
-        return normalize(element.getAttribute('aria-label') || labelledText || explicitLabel || element.closest('label')?.textContent
+        return bossChatNameOf(element) || normalize(element.getAttribute('aria-label') || labelledText || explicitLabel || element.closest('label')?.textContent
           || element.getAttribute('placeholder') || element.getAttribute('alt') || element.getAttribute('title') || element.textContent);
       };
       const roleOf = (element) => {
+        if (bossChatPage && element.matches(${JSON.stringify(BossChatPhraseControlSelector)})) return 'button';
+        if (bossChatPage && element.matches(${JSON.stringify(BossChatImageInputSelector)})) return 'filechooser';
+        if (bossChatPage && bossChatNameOf(element).startsWith(${JSON.stringify(BossChatPhrasePrefix)})) return 'button';
         const explicit = normalize(element.getAttribute('role'), 40).toLowerCase();
         if (explicit) return explicit;
         const tag = element.tagName.toLowerCase();
@@ -690,7 +760,7 @@ export class PersonalBrowserCdpRuntime implements PersonalBrowserRuntimePort {
         tag: actual.tag,
         type: actual.type,
         checked: 'checked' in element ? Boolean(element.checked) : undefined,
-        disabled: Boolean(element.disabled || element.getAttribute('aria-disabled') === 'true'),
+        disabled: Boolean(element.disabled || element.getAttribute('aria-disabled') === 'true' || element.classList.contains('disabled')),
         contentEditable: element.isContentEditable,
       };
     })()`;
@@ -707,6 +777,8 @@ export class PersonalBrowserCdpRuntime implements PersonalBrowserRuntimePort {
 
   private async ClickPoint(point: { x: number; y: number }, options: PersonalBrowserCommandOptions): Promise<void> {
     const sessionId = this.taskSessionId ?? undefined;
+    // BOSS 在标签页失去激活状态时可能静默丢弃 CDP 鼠标事件，动作前重新激活专用任务页。
+    if (this.taskTargetId) await this.Send('Target.activateTarget', { targetId: this.taskTargetId }, undefined, options);
     await this.Send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: Math.round(point.x), y: Math.round(point.y), button: 'none', pointerType: 'mouse' }, sessionId, options);
     await this.Send('Input.dispatchMouseEvent', { type: 'mousePressed', x: Math.round(point.x), y: Math.round(point.y), button: 'left', buttons: 1, clickCount: 1, pointerType: 'mouse' }, sessionId, options, true);
     await this.Pause(80, options, true);
@@ -810,13 +882,25 @@ export class PersonalBrowserCdpRuntime implements PersonalBrowserRuntimePort {
 
   private async Upload(ref: unknown, filePath: unknown, options: PersonalBrowserCommandOptions): Promise<Record<string, any>> {
     const locator = this.Ref(ref);
-    await this.Locate(locator, options);
     const path = RequireText(filePath, 'filePath', 4_000);
+    const bossHiddenImageInput = locator.tag === 'input' && locator.type === 'file'
+      && locator.role === 'filechooser' && locator.name === '发送图片';
+    if (!bossHiddenImageInput) await this.Locate(locator, options);
     const expression = `(() => {
       const expected = ${SafeJson(locator)};
       let element;
       try { element = document.querySelector(expected.selector); } catch { return null; }
-      return element instanceof HTMLInputElement && element.type === 'file' ? element : null;
+      if (!(element instanceof HTMLInputElement) || element.type !== 'file') return null;
+      if (${JSON.stringify(bossHiddenImageInput)}) {
+        const onBossChat = (location.hostname === 'zhipin.com' || location.hostname.endsWith('.zhipin.com'))
+          && location.pathname === '/web/geek/chat';
+        const control = element.closest(${JSON.stringify(BossChatImageControlSelector)});
+        if (!onBossChat || !(control instanceof HTMLElement) || element.disabled) return null;
+        const style = getComputedStyle(control);
+        const rect = control.getBoundingClientRect();
+        if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity || 1) <= 0 || rect.width <= 0 || rect.height <= 0) return null;
+      }
+      return element;
     })()`;
     const evaluated = await this.Evaluate(expression, options, false);
     const objectId = evaluated.result?.objectId;

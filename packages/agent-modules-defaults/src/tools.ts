@@ -228,6 +228,20 @@ function BuildRegistry(): RegisteredAgentTool[] {
       timeoutMs: 120_000, isConcurrencySafe: false, sideEffect: 'none', risk: 'low', confirmation: 'never', idempotency: 'not_needed', allowedScenarios: ['application'], resourceKeys: () => ['browser:avery-default', 'jobs:collection-cache'],
     },
     {
+      definition: CreateDefinition('ContactBossJobs', 'Contact 1 to 10 saved BOSS jobs as one confirmed serial batch in the authorized personal browser. The Host—not the model—loads trusted job URLs, verifies the target, records the preset greeting sent by BOSS when initial contact starts, optionally sends a frozen custom message and one authorized PNG/JPEG image, and prevents duplicate sends.', {
+        type: 'object', properties: {
+          items: { type: 'array', minItems: 1, maxItems: 10, items: { oneOf: [
+            { type: 'object', properties: { jobId: { type: 'string', minLength: 1, maxLength: 200 }, message: { type: 'object', properties: { mode: { const: 'first_quick_phrase' } }, required: ['mode'], additionalProperties: false } }, required: ['jobId', 'message'], additionalProperties: false },
+            { type: 'object', properties: { jobId: { type: 'string', minLength: 1, maxLength: 200 }, message: { type: 'object', properties: { mode: { const: 'custom' }, text: { type: 'string', minLength: 1, maxLength: 1000 } }, required: ['mode', 'text'], additionalProperties: false } }, required: ['jobId', 'message'], additionalProperties: false },
+          ] } },
+          imageAssetId: { type: 'string', minLength: 1, maxLength: 1000 },
+        }, required: ['items'], additionalProperties: false,
+      }),
+      timeoutMs: 600_000, isConcurrencySafe: false, sideEffect: 'external_action', risk: 'high', confirmation: 'scenario_policy', idempotency: 'required', allowedScenarios: ['application'],
+      resourceKeys: (input) => Array.isArray(input?.items) ? input.items.slice(0, 10).map((item: any) => `jobs:${String(item?.jobId ?? '')}`) : ['jobs:boss-contact'],
+      requiredResources: ['bound_resume', 'personal_browser'],
+    },
+    {
       definition: CreateDefinition('ReadApplicationStatus', 'Search persisted job and application tracking records before deciding whether a job was already applied to. Filter by the observed company, title, and/or URL when checking one target. Page observations are not a substitute for this status.', {
         type: 'object', properties: {
           company: { type: 'string', minLength: 1, maxLength: 300 },
@@ -955,6 +969,45 @@ export function CreateToolsModule(ports: AgentDefaultPorts): ToolsModule {
     }
   }
 
+  async function ContactBossJobs(context: ToolContext, callId: string, args: Record<string, unknown>): Promise<ToolExecutionResult> {
+    const service = context.ports.bossContact;
+    if (!service) return CreateToolResult(callId, { ok: false, code: 'RESOURCE_NOT_AUTHORIZED', message: 'BOSS contact automation is unavailable in the current Host.' });
+    const items = args.items as Array<{ jobId: string; message: { mode: 'first_quick_phrase' } | { mode: 'custom'; text: string } }>;
+    if (new Set(items.map((item) => item.jobId)).size !== items.length) return CreateToolResult(callId, { ok: false, code: 'INVALID_TOOL_ARGUMENTS', message: 'ContactBossJobs jobId values must be unique.' });
+    let proposal: BrowserActionProposal;
+    try {
+      proposal = await service.Prepare({ sessionId: context.sessionId, items, ...(typeof args.imageAssetId === 'string' ? { imageAssetId: args.imageAssetId } : {}), authorizedAssetIds: context.attachments.map((item) => item.path), resume: context.boundResume!, unattended: context.unattended });
+    } catch (error) {
+      const value = error as { code?: unknown; message?: unknown };
+      return CreateToolResult(callId, { ok: false, code: typeof value.code === 'string' ? value.code : 'BOSS_JOB_NOT_ELIGIBLE', message: typeof value.message === 'string' ? value.message : 'The BOSS contact batch could not be prepared.' });
+    }
+    const idempotencyKey = CreateIdempotencyKey(context, 'ContactBossJobs', proposal.proposalHash);
+    const requiresConfirmation = !context.unattended && (context.confirmationMode !== 'fully_trusted' || typeof args.imageAssetId === 'string');
+    if (requiresConfirmation) {
+      if (!context.pendingBrowserActions) return CreateToolResult(callId, { ok: false, code: 'BROWSER_CONFIRMATION_UNAVAILABLE', message: 'BOSS batch confirmation storage is unavailable.' }, { disposition: 'pause' });
+      const confirmationId = `browser-confirmation-${randomUUID()}`;
+      context.pendingBrowserActions.set(confirmationId, { kind: 'boss_contact', confirmationId, proposal, idempotencyKey, requestId: context.requestId, runId: context.runId, toolCallId: callId, createdAt: Date.now() });
+      context.persistSessionState();
+      context.emit({ type: 'browser_confirmation', requestId: context.requestId, confirmationId, browserAction: { confirmationId, toolName: 'ContactBossJobs', summary: proposal.summary, risk: 'high' } });
+      return CreateToolResult(callId, { ok: false, code: 'CONFIRMATION_REQUIRED', confirmationId, proposalHash: proposal.proposalHash, summary: proposal.summary, message: 'The BOSS contact batch is waiting for user confirmation.' }, { disposition: 'wait_confirmation' });
+    }
+    const previous = await GetLedger(context).FindByIdempotencyKey(idempotencyKey);
+    if (previous?.status === 'succeeded' && previous.receipt) return CreateToolResult(callId, { ok: true, replayed: true }, { receipt: previous.receipt });
+    if (previous?.status === 'status_unknown') return CreateToolResult(callId, { ok: false, code: 'MESSAGE_STATUS_UNKNOWN', message: 'The previous batch outcome is unknown and must be reconciled before retrying.' }, { disposition: 'pause' });
+    const ledgerEntry = await StartLedger(context, 'ContactBossJobs', args, idempotencyKey);
+    try {
+      const outcome = await service.Execute({ proposal, signal: context.signal, deadline: context.deadline });
+      if (outcome.status !== 'succeeded') { await FinishLedger(context, ledgerEntry, 'status_unknown', { errorCode: 'MESSAGE_STATUS_UNKNOWN' }); return CreateToolResult(callId, { ok: false, code: 'MESSAGE_STATUS_UNKNOWN', data: outcome.data }, { disposition: 'pause' }); }
+      const receipt: ToolReceipt = { receiptId: `receipt-${randomUUID()}`, toolDefinitionId: 'ContactBossJobs', resourceIds: proposal.resourceIds, idempotencyKey };
+      await FinishLedger(context, ledgerEntry, 'succeeded', { receipt });
+      return CreateToolResult(callId, outcome.data as Record<string, unknown>, { receipt });
+    } catch (error) {
+      const value = error as { code?: unknown; message?: unknown; statusUnknown?: unknown }; const code = typeof value.code === 'string' ? value.code : 'MESSAGE_SEND_FAILED';
+      await FinishLedger(context, ledgerEntry, value.statusUnknown === true ? 'status_unknown' : 'failed', { errorCode: code });
+      return CreateToolResult(callId, { ok: false, code, message: typeof value.message === 'string' ? value.message : 'The BOSS contact batch failed.' }, value.statusUnknown === true ? { disposition: 'pause' } : undefined);
+    }
+  }
+
   async function SaveJob(context: ToolContext, callId: string, args: Record<string, unknown>): Promise<ToolExecutionResult> {
     const fromCollection = typeof args.collectionId === 'string';
     const tracking = context.ports.applicationTracking;
@@ -1248,7 +1301,7 @@ export function CreateToolsModule(ports: AgentDefaultPorts): ToolsModule {
     version: '0.1.0',
     sdkVersion: '0.1.0',
     slot: 'tools',
-    capabilities: ['tools:default:18', 'tools:application:34', 'browser:atomic', 'browser:vision-screenshot', 'browser:fill-batch', 'skills:progressive', 'cron:scheduled', 'applications:tracking', 'jobs:collection'],
+    capabilities: ['tools:default:18', 'tools:application:35', 'browser:atomic', 'browser:vision-screenshot', 'browser:fill-batch', 'skills:progressive', 'cron:scheduled', 'applications:tracking', 'jobs:collection', 'boss:contact-batch'],
     /** 返回设计文档 MVP 白名单工具；旧名仅兼容旧快照，不再向新模型暴露。 */
     GetToolDefinitions(scenarioId = 'default') { return registry.filter((tool) => tool.allowedScenarios?.includes(scenarioId)); },
     /** 统一执行管道：Schema 校验与一次修复、写工具幂等账本、按工具超时、结构化错误码、统一 disposition。 */
@@ -1301,6 +1354,7 @@ export function CreateToolsModule(ports: AgentDefaultPorts): ToolsModule {
           case 'UpdateCronTask': return await UpdateCronTask(executionContext, call.id, args);
           case 'DeleteCronTask': return await DeleteCronTask(executionContext, call.id, args);
           case 'CollectJobs': return await CollectJobs(executionContext, call.id, args);
+          case 'ContactBossJobs': return await ContactBossJobs(executionContext, call.id, args);
           case 'ReadApplicationStatus': return await ReadApplicationStatus(executionContext, call.id, args);
           case 'SaveJob': return await SaveJob(executionContext, call.id, args);
           case 'UpdateApplicationStatus': return await UpdateApplicationStatus(executionContext, call.id, args);

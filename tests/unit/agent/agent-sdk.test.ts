@@ -1,6 +1,6 @@
 import { describe, expect, expectTypeOf, it } from 'vitest';
 import {
-  DropOldestTurnGroups, KeepRecentTurnGroups, SlotOrder, SlotToModuleKey, SplitTurnGroups,
+  DropOldestTurnGroups, IsRuntimeContextMessage, KeepRecentTurnGroups, SlotOrder, SlotToModuleKey, SplitTurnGroups,
 } from '../../../packages/agent-sdk/src/index';
 import type {
   AgentMessage, FileReadPort, KernelRunInput, NormalizedUsage, ProviderUsageFact, RunDisposition,
@@ -8,6 +8,15 @@ import type {
 } from '../../../packages/agent-sdk/src/index';
 
 describe('agent-sdk 六槽与窄契约', () => {
+  it('识别带 metadata 与旧格式的运行时业务快照', () => {
+    expect(IsRuntimeContextMessage({
+      role: 'user', content: '<runtime-context>{}</runtime-context>',
+      metadata: { source: 'runtime', visibility: 'hidden', kind: 'runtime_context' },
+    })).toBe(true);
+    expect(IsRuntimeContextMessage({ role: 'user', content: '<runtime-context>legacy</runtime-context>' })).toBe(true);
+    expect(IsRuntimeContextMessage({ role: 'user', content: '用户提问' })).toBe(false);
+  });
+
   it('固定六槽顺序及聚合键映射', () => {
     expect(SlotOrder).toEqual(['model-provider', 'context-builder', 'compaction', 'tools', 'interaction', 'observability']);
     expect(SlotToModuleKey).toEqual({

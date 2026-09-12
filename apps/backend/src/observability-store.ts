@@ -156,12 +156,13 @@ export class ObservabilityStore {
    * 写入单次 Provider usage 的原始事实。Trace 汇总和会话账本都只消费此形状：
    * 缺失 usage 必须明确为 unavailable，禁止把本地 token 估算写入本表。
    */
-  RecordTraceUsage(requestId: string, usage: { source: 'provider' | 'unavailable'; promptTokens: number; completionTokens: number; totalTokens: number }): void {
+  RecordTraceUsage(requestId: string, usage: { source: 'provider' | 'unavailable'; promptTokens: number; completionTokens: number; totalTokens: number; cachedInputTokens: number }): void {
     if (typeof requestId !== 'string' || !requestId || requestId.length > 200) throw new Error('Trace request id is invalid.');
     const validSource = usage?.source === 'provider' || usage?.source === 'unavailable';
-    const validTokens = [usage?.promptTokens, usage?.completionTokens, usage?.totalTokens].every((value) => Number.isSafeInteger(value) && value >= 0)
-      && usage.totalTokens === usage.promptTokens + usage.completionTokens;
-    const validUnavailable = usage?.source !== 'unavailable' || usage.totalTokens === 0;
+    const validTokens = [usage?.promptTokens, usage?.completionTokens, usage?.totalTokens, usage?.cachedInputTokens].every((value) => Number.isSafeInteger(value) && value >= 0)
+      && usage.totalTokens === usage.promptTokens + usage.completionTokens
+      && usage.cachedInputTokens <= usage.promptTokens;
+    const validUnavailable = usage?.source !== 'unavailable' || (usage.totalTokens === 0 && usage.cachedInputTokens === 0);
     if (!validSource || !validTokens || !validUnavailable) throw new Error('Provider usage is invalid.');
     this.AppendTraceEvent(requestId, 'provider_usage', usage, 0);
   }
@@ -169,15 +170,17 @@ export class ObservabilityStore {
   /** 从原始 Provider usage 事件构建 Trace 汇总，避免用 Trace token_count 的估算值参与账单展示。 */
   private GetTraceUsage(requestId: string): any {
     const rows = this.db.prepare("SELECT payload_json FROM agent_trace_events WHERE request_id = ? AND event_type = 'provider_usage' ORDER BY ordinal").all(requestId);
-    const usage = { source: 'unavailable' as 'provider' | 'unavailable', promptTokens: 0, completionTokens: 0, totalTokens: 0, reportedRequestCount: 0, unreportedRequestCount: 0 };
+    const usage = { source: 'unavailable' as 'provider' | 'unavailable', promptTokens: 0, completionTokens: 0, totalTokens: 0, cachedInputTokens: 0, reportedRequestCount: 0, unreportedRequestCount: 0 };
     for (const row of rows) {
       try {
-        const fact = JSON.parse(row.payload_json) as { source?: unknown; promptTokens?: unknown; completionTokens?: unknown; totalTokens?: unknown };
-        const tokens = [fact.promptTokens, fact.completionTokens, fact.totalTokens];
+        const fact = JSON.parse(row.payload_json) as { source?: unknown; promptTokens?: unknown; completionTokens?: unknown; totalTokens?: unknown; cachedInputTokens?: unknown };
+        const cachedInputTokens = fact.cachedInputTokens ?? 0;
+        const tokens = [fact.promptTokens, fact.completionTokens, fact.totalTokens, cachedInputTokens];
         const valid = tokens.every((value) => Number.isSafeInteger(value) && (value as number) >= 0)
-          && (fact.totalTokens as number) === (fact.promptTokens as number) + (fact.completionTokens as number);
+          && (fact.totalTokens as number) === (fact.promptTokens as number) + (fact.completionTokens as number)
+          && (cachedInputTokens as number) <= (fact.promptTokens as number);
         if (fact.source === 'provider' && valid) {
-          usage.source = 'provider'; usage.promptTokens += fact.promptTokens as number; usage.completionTokens += fact.completionTokens as number; usage.totalTokens += fact.totalTokens as number; usage.reportedRequestCount += 1;
+          usage.source = 'provider'; usage.promptTokens += fact.promptTokens as number; usage.completionTokens += fact.completionTokens as number; usage.totalTokens += fact.totalTokens as number; usage.cachedInputTokens += cachedInputTokens as number; usage.reportedRequestCount += 1;
         } else if (fact.source === 'unavailable') usage.unreportedRequestCount += 1;
       } catch { usage.unreportedRequestCount += 1; }
     }

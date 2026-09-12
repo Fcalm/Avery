@@ -10,6 +10,7 @@ import { GetAgentBalance, IsDesktopAgentAvailable } from '../features/assistant/
 import { ASSISTANT_MAIN_MIN_WIDTH } from '../shared/layoutConstants';
 import { ListEvalRuns } from '../features/developer/api/evaluationQueries';
 import { SettingsTabs, type SettingTab } from '../features/settings/pages/SettingsPage';
+import { ResolveActiveConversationAfterDeletion } from '../features/conversation/conversationDeletion';
 
 const MinSidebarWidth = 192;
 const MaxSidebarWidth = 320;
@@ -35,7 +36,9 @@ function AppShell({ page, sidebarCollapsed, onNavigate, onRestartOnboarding, set
   const [balance, setBalance] = useState<Array<{ currency: string; totalBalance: string }> | null>(null);
   const [refreshingBalance, setRefreshingBalance] = useState(false);
   const appShellRef = useRef<HTMLDivElement>(null);
+  const activeConversationIdRef = useRef(activeConversationId);
   const sidebarWidthRef = useRef(224);
+  activeConversationIdRef.current = activeConversationId;
   const minimumContentWidth = page === 'assistant' ? ASSISTANT_MAIN_MIN_WIDTH : MinContentWidth;
   const sidebarRouteOrder: PageId[] = ['jobs', 'applications', 'resumes', 'profiles', 'developer'];
   const sidebarRoutes = sidebarRouteOrder.flatMap((id) => {
@@ -145,10 +148,17 @@ function AppShell({ page, sidebarCollapsed, onNavigate, onRestartOnboarding, set
     renameConversation.mutate({ id: renameConversationId, title, expectedRevision });
     setRenameConversationId(null);
   }
-  function ConfirmDeleteConversation() {
+  async function ConfirmDeleteConversation() {
     if (!deleteConversationId) return;
-    deleteConversation.mutate({ id: deleteConversationId });
+    const deletedId = deleteConversationId;
     setDeleteConversationId(null);
+    try {
+      await deleteConversation.mutateAsync({ id: deletedId });
+      const nextActiveId = ResolveActiveConversationAfterDeletion(activeConversationIdRef.current, deletedId);
+      if (nextActiveId !== activeConversationIdRef.current) setActiveConversationId(nextActiveId);
+    } catch {
+      // 失败提示由统一 mutation 处理；删除失败时保留当前会话及其全部状态。
+    }
   }
 
   function StartSidebarResize(event: ReactPointerEvent<HTMLDivElement>) {

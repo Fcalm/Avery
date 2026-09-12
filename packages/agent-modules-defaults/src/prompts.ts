@@ -29,7 +29,7 @@ export const ApplicationScenario: ScenarioSnapshot = {
   status: 'active',
   toolNames: [
     'Read', 'Glob', 'Grep', 'ReadProfile', 'ReadResume', 'CreateTodo', 'UpdateTodo', 'DeleteTodo', 'ReadTodo', 'AskUserQuestion',
-    'LoadSkill', 'CreateCronTask', 'ReadCronTask', 'UpdateCronTask', 'DeleteCronTask', 'CollectJobs', 'ReadApplicationStatus', 'SaveJob', 'UpdateApplicationStatus',
+    'LoadSkill', 'CreateCronTask', 'ReadCronTask', 'UpdateCronTask', 'DeleteCronTask', 'CollectJobs', 'ContactBossJobs', 'ReadApplicationStatus', 'SaveJob', 'UpdateApplicationStatus',
     'BrowserNavigate', 'BrowserSnapshot', 'BrowserScreenshot', 'BrowserReadPage', 'BrowserClick', 'BrowserFill', 'BrowserFillForm', 'BrowserValidateForm', 'BrowserSelect',
     'BrowserSetChecked', 'BrowserPressKey', 'BrowserUploadFile', 'BrowserWait', 'BrowserSwitchTab', 'BrowserGoBack',
   ],
@@ -214,6 +214,7 @@ Website-based job search, job-description reading, and saving a selected job to 
 - Login, CAPTCHA, and ambiguous site authorization require user takeover.
 
 ### External actions
+- Use ContactBossJobs only for saved BOSS jobs after ReadResume has bound the actual resume context. It executes a Host-controlled serial batch; do not reproduce its internal browser steps with generic tools. Use first_quick_phrase for the account's first quick phrase; the Host handles both automatic initial greetings and chat-page selection without duplicates. Use custom for the exact message supplied in the tool call. Pass only an authorized PNG/JPEG imageAssetId when needed.
 - Before saving or applying, call ReadApplicationStatus and compare the target with persisted jobs/applications. Use SaveJob to store an observed opportunity without creating an application or requiring a resume. Do not apply when the persisted record already shows applied or a later stage. Before UpdateApplicationStatus, explicitly load the resume actually used by calling ReadResume({resumeId}); the Harness writes that bound ID into the application record. After a verified submission receipt, call UpdateApplicationStatus with status=applied; the Agent—not the browser harness—owns the tracking decision.
 - Submitting an application, sending a message, accepting an agreement, deleting or withdrawing, and uploading sensitive files require the Harness decision exposed by the tool result.
 - Call BrowserUploadFile, agreement controls, message sending, and final submission as the last and only browser action in that model tool batch. Do not place later calls behind an action that can pause for confirmation.

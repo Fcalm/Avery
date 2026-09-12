@@ -24,7 +24,6 @@ import { ASSISTANT_MAIN_MIN_WIDTH } from '../../../shared/layoutConstants';
 import { CreateSessionUsagePresentation } from '../usagePresentation';
 import { TraceViewer } from '../../developer/components/TraceViewer';
 import type { ChatMessage, PageId } from '../../../types/domain';
-import { UserContinuationQueue } from '../userContinuationQueue';
 
 const ScenarioOptions: Array<{ id: 'default' | 'application'; label: string; icon: IconName; description: string }> = [
   { id: 'default', label: '默认场景', icon: 'assistant', description: '读写简历与档案，不执行岗位投递' },
@@ -181,10 +180,10 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
   const [savedText, setSavedText] = useState(resumeText);
   const [history, setHistory] = useState<string[]>([]);
   const [agentTodos, setAgentTodos] = useState<AgentTodo[]>([]);
-  const [pendingEdit, setPendingEdit] = useState<{ confirmationId: string; name?: string; content: string; reason: string } | null>(null);
-  const [pendingBrowserAction, setPendingBrowserAction] = useState<BrowserActionState | null>(null);
-  const [pendingCronTask, setPendingCronTask] = useState<{ confirmationId: string; title: string; message: string; scenarioId: 'default' | 'application'; schedule: unknown; summary: string } | null>(null);
-  const [pendingQuestions, setPendingQuestions] = useState<Array<{ id: string; question: string; options: string[] }> | null>(null);
+  const [pendingEdit, setPendingEdit] = useState<{ requestId: string; confirmationId: string; name?: string; content: string; reason: string } | null>(null);
+  const [pendingBrowserAction, setPendingBrowserAction] = useState<(BrowserActionState & { requestId: string }) | null>(null);
+  const [pendingCronTask, setPendingCronTask] = useState<{ requestId: string; confirmationId: string; title: string; message: string; scenarioId: 'default' | 'application'; schedule: unknown; summary: string } | null>(null);
+  const [pendingQuestions, setPendingQuestions] = useState<{ requestId: string; questions: Array<{ id: string; question: string; options: string[] }> } | null>(null);
   const [questionAnswers, setQuestionAnswers] = useState<Record<string, string>>({});
   const [otherAnswers, setOtherAnswers] = useState<Record<string, string>>({});
   const [pendingQuestionIndex, setPendingQuestionIndex] = useState(0);
@@ -197,17 +196,7 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
   const resumeSideRef = useRef<HTMLElement>(null);
   const panelWidthRef = useRef(430);
   const activeRequestRef = useRef<string | null>(null);
-  // 流式终态会早于 agent:send IPC 返回；IPC 未收尾前后端仍可能持有浏览器 Run 锁。
-  const transportRequestRef = useRef<string | null>(null);
   const activePlaceholderRef = useRef<{ conversationId: string; requestId: string; content: string; thinkingContent: string } | null>(null);
-  const handleSendRef = useRef<(content: string) => void>(() => undefined);
-  const continuationQueueRef = useRef<UserContinuationQueue | null>(null);
-  if (!continuationQueueRef.current) {
-    continuationQueueRef.current = new UserContinuationQueue(
-      () => activeRequestRef.current !== null || transportRequestRef.current !== null,
-      (content) => handleSendRef.current(content),
-    );
-  }
   const resumesRef = useRef(resumes);
   // 用户编辑锁：记录持有锁的简历，保存/取消/卸载时释放。
   const editLockRef = useRef<string | null>(null);
@@ -427,6 +416,25 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
 
   useEffect(() => { void RefreshSessionAssistantState(activeConversationId); }, [activeConversationId, RefreshSessionAssistantState]);
 
+  /** 从已保存会话进入新建页时清空会话草稿态；首次打开页面时同样得到干净默认值。 */
+  useEffect(() => {
+    if (activeConversationId) return;
+    setComposer('');
+    setAttachments([]);
+    setProjectEnvironment(null);
+    setScenarioId('default');
+    setAgentTodos([]);
+    setPendingEdit(null);
+    setPendingBrowserAction(null);
+    setPendingCronTask(null);
+    setPendingQuestions(null);
+    setQuestionAnswers({});
+    setOtherAnswers({});
+    setPendingQuestionIndex(0);
+    setIsTaskActive(false);
+    enteredConversationRef.current = null;
+  }, [activeConversationId]);
+
   /** 会话切换、页面重进和设置更新时优先恢复会话选择；没有缓存的旧会话才使用安全默认值。 */
   useEffect(() => {
     const defaultModel = ResolveProviderModel(settings.provider, settings.model);
@@ -455,10 +463,19 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
 
   // 卸载时释放仍持有的用户编辑锁，避免锁在租约期内阻塞 Agent 编辑。
   useEffect(() => () => { if (editLockRef.current) void ReleaseResumeEditLock(editLockRef.current); }, []);
-  useEffect(() => () => continuationQueueRef.current?.Clear(), []);
-
   useEffect(() => SubscribeAgentStream((event: AgentStreamEvent) => {
     const updatedContent = event.content;
+    if (event.type === 'run_released' && event.requestId) {
+      if (activeRequestRef.current === event.requestId) {
+        const placeholder = activePlaceholderRef.current;
+        if (placeholder?.requestId === event.requestId) {
+          completeMessageRef.current.mutate({ conversationId: placeholder.conversationId, messageId: `reply-${placeholder.requestId}`, content: placeholder.content, thinkingContent: placeholder.thinkingContent });
+          activePlaceholderRef.current = null;
+        }
+        activeRequestRef.current = null;
+      }
+      return;
+    }
     if (event.type === 'resume_updated' && event.resumeId && typeof updatedContent === 'string') {
       // 后端已落库：失效工作空间聚合缓存并从事件内容同步本地展示。
       queryClient.invalidateQueries({ queryKey: WORKSPACE_QUERY_KEY });
@@ -476,17 +493,17 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
       ShowNotice('Agent 已创建并保存简历');
       return;
     }
-    if (event.type === 'resume_confirmation' && event.confirmationId && typeof updatedContent === 'string') {
-      setPendingEdit({ confirmationId: event.confirmationId, name: event.resumeName, content: updatedContent, reason: event.reason ?? '更新简历内容' });
+    if (event.type === 'resume_confirmation' && event.requestId && event.confirmationId && typeof updatedContent === 'string') {
+      setPendingEdit({ requestId: event.requestId, confirmationId: event.confirmationId, name: event.resumeName, content: updatedContent, reason: event.reason ?? '更新简历内容' });
       return;
     }
-    if (event.type === 'browser_confirmation' && event.browserAction?.confirmationId) {
-      setPendingBrowserAction(event.browserAction);
+    if (event.type === 'browser_confirmation' && event.requestId && event.browserAction?.confirmationId) {
+      setPendingBrowserAction({ ...event.browserAction, requestId: event.requestId });
       return;
     }
-    if (event.type === 'cron_task_confirmation' && event.confirmationId && event.cronTask) {
+    if (event.type === 'cron_task_confirmation' && event.requestId && event.confirmationId && event.cronTask) {
       setPendingCronTask({
-        confirmationId: event.confirmationId, title: event.cronTask.title ?? '定时任务', message: event.cronTask.message ?? '',
+        requestId: event.requestId, confirmationId: event.confirmationId, title: event.cronTask.title ?? '定时任务', message: event.cronTask.message ?? '',
         scenarioId: event.cronTask.scenarioId ?? 'default', schedule: event.cronTask.schedule, summary: event.cronTask.summary ?? '该任务将以无人值守模式定时执行。',
       });
       return;
@@ -517,7 +534,7 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
       setAgentTodos((current) => current.filter((item) => item.id !== deletedTaskId));
       return;
     }
-    if (event.type === 'question_requested' && event.questions) { setPendingQuestions(event.questions); setQuestionAnswers(Object.fromEntries(event.questions.map((question) => [question.id, question.options[0] ?? '其他']))); setOtherAnswers({}); setPendingQuestionIndex(0); return; }
+    if (event.type === 'question_requested' && event.requestId && event.questions) { setPendingQuestions({ requestId: event.requestId, questions: event.questions }); setQuestionAnswers(Object.fromEntries(event.questions.map((question) => [question.id, question.options[0] ?? '其他']))); setOtherAnswers({}); setPendingQuestionIndex(0); return; }
     if (event.type === 'waiting_user_input' || event.type === 'waiting_confirmation' || event.type === 'paused') {
       const waitingRequestId = activeRequestRef.current;
       if (!waitingRequestId || event.requestId !== waitingRequestId) return;
@@ -526,7 +543,6 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
       if (placeholder) completeMessageRef.current.mutate({ conversationId: placeholder.conversationId, messageId: `reply-${placeholder.requestId}`, content: placeholder.content, thinkingContent: placeholder.thinkingContent });
       activePlaceholderRef.current = null;
       activeRequestRef.current = null;
-      continuationQueueRef.current?.Release();
       if (event.type === 'paused') ShowNotice('Agent 运行已暂停');
       if (waitingSessionId) void RefreshSessionAssistantState(waitingSessionId);
       return;
@@ -573,11 +589,10 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
       ShowNotice(event.message ?? 'Agent 请求失败');
     }
     activeRequestRef.current = null;
-    continuationQueueRef.current?.Release();
     if (completedSessionId) void RefreshSessionAssistantState(completedSessionId);
   }), [ShowNotice, currentResumeId, RefreshSessionAssistantState]);
 
-  async function HandleSend(contentOverride?: string) {
+  async function HandleSend(contentOverride?: string, continuationOfRequestId?: string) {
     const text = (contentOverride ?? composer).trim();
     if (text === '/reload' || text === '/reload-session') {
       if (!activeConversationId) { ShowNotice('请先发送一条消息建立会话，再重载会话上下文'); return; }
@@ -586,7 +601,9 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
       else ShowNotice(result.reason === 'busy' ? 'Agent 正在处理，请等待本轮结束后再试' : '会话上下文重载失败');
       return;
     }
-    if ((!text && attachments.length === 0) || activeRequestRef.current) return;
+    if ((!text && attachments.length === 0) || (activeRequestRef.current && activeRequestRef.current !== continuationOfRequestId)) return;
+    // 交互答案属于已进入等待终态的旧 Run；只清理同一 request 的 Renderer 残留，不影响其他在途请求。
+    if (continuationOfRequestId && activeRequestRef.current === continuationOfRequestId) activeRequestRef.current = null;
     let targetId = activeConversationId;
     if (!targetId) {
       try {
@@ -606,7 +623,6 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
     PersistConversationComposerState(targetId, { confirmationMode: permission, provider, model, reasoningEffort });
     setActiveConversationId(targetId);
     activeRequestRef.current = requestId;
-    transportRequestRef.current = requestId;
     try {
       let boundProject = projectEnvironment;
       if (projectEnvironment?.projectId) {
@@ -624,17 +640,13 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
       setIsTaskActive(false);
       ShowNotice(error instanceof Error ? error.message : '无法发起 Agent 请求');
     } finally {
-      if (transportRequestRef.current === requestId) transportRequestRef.current = null;
-      // 流式终态正常会先清空 activeRequest；此处同时兜底事件丢失，避免回答永久滞留。
       if (activeRequestRef.current === requestId) activeRequestRef.current = null;
-      continuationQueueRef.current?.Release();
     }
   }
-  handleSendRef.current = (content) => { void HandleSend(content); };
 
-  /** 确认和问答结果必须作为真实 user 消息发送；旧 Run 未收尾时先排队，不能被忙碌检查丢弃。 */
-  function ContinueWithUserMessage(content: string) {
-    continuationQueueRef.current?.Submit(content);
+  /** 确认和问答结果立即复用标准发送链路，先写入真实 user 消息，不再经过不可见的内存队列。 */
+  function ContinueWithUserMessage(requestId: string, content: string) {
+    void HandleSend(content, requestId);
   }
 
   function HandleStop() { if (activeRequestRef.current) void CancelAgentRequest(activeRequestRef.current); }
@@ -783,9 +795,10 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
     if (!pendingEdit) return;
     try {
       const result = await ConfirmResumeEdit(pendingEdit.confirmationId, accepted);
+      const requestId = pendingEdit.requestId;
       ShowNotice(result.applied ? '已确认并保存 Agent 修改' : '已拒绝 Agent 修改');
       setPendingEdit(null);
-      ContinueWithUserMessage(result.applied
+      ContinueWithUserMessage(requestId, result.applied
         ? '我已确认并保存上述简历修改，请继续任务。'
         : '我拒绝了上述简历修改，请根据我的决定调整方案并继续任务。');
     } catch (error) { ShowNotice(error instanceof Error ? error.message : '无法处理简历确认'); }
@@ -795,9 +808,10 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
     if (!pendingCronTask) return;
     try {
       const result = await ConfirmCronTask(pendingCronTask.confirmationId, accepted);
+      const requestId = pendingCronTask.requestId;
       ShowNotice(result.created ? '定时任务已保存并注册后台唤醒' : '已取消创建定时任务');
       setPendingCronTask(null);
-      ContinueWithUserMessage(result.created
+      ContinueWithUserMessage(requestId, result.created
         ? '我已确认创建上述定时任务，任务已经保存，请继续。'
         : '我拒绝创建上述定时任务，请根据我的决定调整方案并继续。');
     } catch (error) { ShowNotice(error instanceof Error ? error.message : '无法处理定时任务确认'); }
@@ -806,32 +820,37 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
   async function HandlePendingBrowserAction(accepted: boolean) {
     const confirmationId = pendingBrowserAction?.confirmationId;
     if (!confirmationId) return;
+    const requestId = pendingBrowserAction.requestId;
     try {
       const result = await ConfirmBrowserAction(confirmationId, accepted);
       setPendingBrowserAction(null);
       if (result.status === 'succeeded') {
         ShowNotice('浏览器动作已执行，Agent 将自动继续');
-        ContinueWithUserMessage('我已确认上述浏览器操作，操作已执行成功。请重新读取当前页面状态并继续任务。');
+        const batchResult = pendingBrowserAction.toolName === 'ContactBossJobs' && result.data
+          ? `\nBOSS 联系批次已执行完毕。请按以下逐项结果判断，不要把批次结束等同于全部联系成功：${JSON.stringify(result.data)}`
+          : '';
+        ContinueWithUserMessage(requestId, `我已确认上述浏览器操作，操作已执行成功。${batchResult || '请重新读取当前页面状态并继续任务。'}`);
       } else if (result.status === 'status_unknown') {
         ShowNotice('动作结果未知，Agent 将重新核对页面');
-        ContinueWithUserMessage('我已确认上述浏览器操作，但执行结果未知。请重新读取当前页面状态，不要重复执行该操作。');
+        ContinueWithUserMessage(requestId, '我已确认上述浏览器操作，但执行结果未知。请重新读取当前页面状态，不要重复执行该操作。');
       } else if (result.status === 'failed') {
         ShowNotice('浏览器动作执行失败，Agent 将根据结果继续');
-        ContinueWithUserMessage(`我已确认上述浏览器操作，但执行失败${result.message ? `：${result.message}` : ''}。请根据结果调整方案并继续任务。`);
+        ContinueWithUserMessage(requestId, `我已确认上述浏览器操作，但执行失败${result.message ? `：${result.message}` : ''}。请根据结果调整方案并继续任务。`);
       } else {
         ShowNotice('已拒绝浏览器动作，Agent 将自动继续');
-        ContinueWithUserMessage('我拒绝执行上述浏览器操作，请根据我的决定调整方案并继续任务。');
+        ContinueWithUserMessage(requestId, '我拒绝执行上述浏览器操作，请根据我的决定调整方案并继续任务。');
       }
     } catch (error) { ShowNotice(error instanceof Error ? error.message : '无法处理浏览器确认'); }
   }
 
   function SubmitQuestionAnswers() {
     if (!pendingQuestions) return;
-    const incomplete = pendingQuestions.some((question) => questionAnswers[question.id] === '其他' && !otherAnswers[question.id]?.trim());
+    const incomplete = pendingQuestions.questions.some((question) => questionAnswers[question.id] === '其他' && !otherAnswers[question.id]?.trim());
     if (incomplete) { ShowNotice('请选择或填写每一道问题的答案'); return; }
-    const answer = pendingQuestions.map((question) => `【${question.question}】${questionAnswers[question.id] === '其他' ? otherAnswers[question.id].trim() : questionAnswers[question.id]}`).join('\n');
+    const answer = pendingQuestions.questions.map((question) => `【${question.question}】${questionAnswers[question.id] === '其他' ? otherAnswers[question.id].trim() : questionAnswers[question.id]}`).join('\n');
+    const requestId = pendingQuestions.requestId;
     setPendingQuestions(null);
-    ContinueWithUserMessage(answer);
+    ContinueWithUserMessage(requestId, answer);
   }
 
   function CancelPendingQuestions() {
@@ -843,11 +862,12 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
 
   function ContinuePendingQuestions() {
     if (!pendingQuestions) return;
-    if (pendingQuestionIndex < pendingQuestions.length - 1) { setPendingQuestionIndex((current) => current + 1); return; }
+    if (pendingQuestionIndex < pendingQuestions.questions.length - 1) { setPendingQuestionIndex((current) => current + 1); return; }
     SubmitQuestionAnswers();
   }
 
   const isEmptyConversation = !conversation?.messages.length;
+  const shouldShowTodo = !isEmptyConversation && isTaskActive && agentTodos.length > 0;
   const hasComposerBlocker = Boolean(pendingQuestions || pendingEdit || pendingCronTask || pendingBrowserAction);
   const reasoningEffortOptions = GetReasoningEffortOptions(model);
   const reasoningEffortIndex = Math.max(0, reasoningEffortOptions.indexOf(reasoningEffort));
@@ -855,10 +875,10 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
     {assistantView === 'trace' ? <section className="assistant-main assistant-trace" aria-label="当前对话轨迹"><TraceViewer traces={observability?.traces ?? []} conversations={conversations} focusConversationId={activeConversationId} onSelectTrace={GetAgentTraceEvents} /></section> : <section className={`assistant-main ${isEmptyConversation ? 'is-empty-conversation' : ''}`}>
       {conversation?.messages.length ? <div ref={messageListRef} className="message-list"><div className="message-thread">{conversation.messages.map((message) => <article key={message.id} className={`chat-message ${message.role}`}><div className="message-meta">{message.role === 'assistant' ? <><span className="agent-dot" />AVERY 回信</> : '你'}<time>{FormatTime(message.createdAt)}</time></div>{message.role === 'assistant' && settings.thinkingEnabled && message.thinkingContent && <details className="thinking-block"><summary>思考内容</summary><div className="thinking-content"><MarkdownText content={message.thinkingContent} /></div></details>}<MarkdownText content={message.content} /></article>)}</div></div> : <EmptyAssistant scenarioId={scenarioId} />}
       <div className="composer-dock">
-        {isTaskActive && agentTodos.length > 0 && <div className="task-dock"><div className="task-summary"><span className={`task-status-icon ${GetTodoPresentation(activeTodo?.status ?? 'pending').className}`} aria-hidden="true">{GetTodoPresentation(activeTodo?.status ?? 'pending').symbol}</span><span className="task-summary-copy">{activeTodo?.title ?? '正在处理任务'}</span><span className={`task-summary-status ${GetTodoPresentation(activeTodo?.status ?? 'pending').className}`}>{GetTodoPresentation(activeTodo?.status ?? 'pending').label}</span></div><div className="task-card" aria-label="Todo 列表"><div className="task-card-heading">Todo · {agentTodos.length} 项</div><div className="task-list">{agentTodos.map((todo) => { const presentation = GetTodoPresentation(todo.status); return <div key={todo.id} className={`task-list-item ${presentation.className}`}><span className="task-status-icon" aria-hidden="true">{presentation.symbol}</span><span className="task-list-title">{todo.title}</span><span className="task-list-status">{presentation.label}</span></div>; })}</div></div></div>}
+        {shouldShowTodo && <div className="task-dock"><div className="task-summary"><span className={`task-status-icon ${GetTodoPresentation(activeTodo?.status ?? 'pending').className}`} aria-hidden="true">{GetTodoPresentation(activeTodo?.status ?? 'pending').symbol}</span><span className="task-summary-copy">{activeTodo?.title ?? '正在处理任务'}</span><span className={`task-summary-status ${GetTodoPresentation(activeTodo?.status ?? 'pending').className}`}>{GetTodoPresentation(activeTodo?.status ?? 'pending').label}</span></div><div className="task-card" aria-label="Todo 列表"><div className="task-card-heading">Todo · {agentTodos.length} 项</div><div className="task-list">{agentTodos.map((todo) => { const presentation = GetTodoPresentation(todo.status); return <div key={todo.id} className={`task-list-item ${presentation.className}`}><span className="task-status-icon" aria-hidden="true">{presentation.symbol}</span><span className="task-list-title">{todo.title}</span><span className="task-list-status">{presentation.label}</span></div>; })}</div></div></div>}
         {!hasComposerBlocker && attachments.length > 0 && <div className="attachment-row">{attachments.map((attachment) => <span className="attachment-chip" key={`${attachment.name}-${attachment.path}`}><Icon name="resume" size={14} /><span className="attachment-name">{attachment.name}</span><button type="button" aria-label={`移除 ${attachment.name}`} onClick={() => setAttachments((current) => current.filter((item) => item !== attachment))}><Icon name="close" size={13} /></button></span>)}</div>}
         {!hasComposerBlocker && !conversation?.messages.length && <div className="composer-context-tags"><button className="workspace-tag" type="button" onClick={() => void HandleSelectProject()}><Icon name="jobs" size={16} /><span>{projectEnvironment ? projectEnvironment.name : '选择工作区'}</span></button><div className="menu-wrap"><button className="scenario-button context-scenario-tag" type="button" disabled={Boolean(activeRequestRef.current)} aria-label={`场景：${ScenarioOptions.find((item) => item.id === scenarioId)?.label}`} aria-expanded={showScenario} onClick={() => setShowScenario((value) => !value)}><Icon name={scenarioId === 'application' ? 'applications' : 'assistant'} size={16} /><span className="context-tag-label">场景</span><span className="scenario-label">{ScenarioOptions.find((item) => item.id === scenarioId)?.label}</span><span className="chevron-indicator" aria-hidden="true" /></button>{showScenario && <div className="popup-menu scenario-menu" role="menu" aria-label="切换场景">{ScenarioOptions.map((item) => <button key={item.id} type="button" role="menuitem" className={item.id === scenarioId ? 'selected' : ''} onClick={() => HandleScenarioChange(item.id)}><b><Icon name={item.icon} size={15} />{item.label}</b><small>{item.description}</small></button>)}</div>}</div></div>}
-        {pendingQuestions ? <QuestionComposer questions={pendingQuestions} answers={questionAnswers} otherAnswers={otherAnswers} questionIndex={pendingQuestionIndex} onAnswer={(questionId, answer) => setQuestionAnswers((current) => ({ ...current, [questionId]: answer }))} onOtherAnswer={(questionId, answer) => setOtherAnswers((current) => ({ ...current, [questionId]: answer }))} onPrevious={() => setPendingQuestionIndex((current) => Math.max(0, current - 1))} onCancel={CancelPendingQuestions} onContinue={ContinuePendingQuestions} /> : pendingEdit ? <ConfirmationComposer title="确认 Agent 修改简历" description={pendingEdit.reason} preview={pendingEdit.content} confirmLabel="确认并保存" onCancel={() => void HandlePendingEdit(false)} onConfirm={() => void HandlePendingEdit(true)} /> : pendingCronTask ? <ConfirmationComposer title="确认创建无人值守定时任务" description={`${pendingCronTask.summary}\n任务消息：${pendingCronTask.message}`} preview={JSON.stringify(pendingCronTask.schedule, null, 2)} confirmLabel="确认整个周期" onCancel={() => void HandlePendingCronTask(false)} onConfirm={() => void HandlePendingCronTask(true)} /> : pendingBrowserAction ? <ConfirmationComposer title="确认浏览器外部动作" description={`${pendingBrowserAction.summary ?? pendingBrowserAction.toolName}${pendingBrowserAction.url ? `\n目标网站：${pendingBrowserAction.url}` : ''}\n风险级别：${pendingBrowserAction.risk === 'high' ? '高风险' : pendingBrowserAction.risk === 'medium' ? '中风险' : '低风险'}`} confirmLabel="确认执行" onCancel={() => void HandlePendingBrowserAction(false)} onConfirm={() => void HandlePendingBrowserAction(true)} /> : <div ref={composerRef} className="composer">
+        {pendingQuestions ? <QuestionComposer questions={pendingQuestions.questions} answers={questionAnswers} otherAnswers={otherAnswers} questionIndex={pendingQuestionIndex} onAnswer={(questionId, answer) => setQuestionAnswers((current) => ({ ...current, [questionId]: answer }))} onOtherAnswer={(questionId, answer) => setOtherAnswers((current) => ({ ...current, [questionId]: answer }))} onPrevious={() => setPendingQuestionIndex((current) => Math.max(0, current - 1))} onCancel={CancelPendingQuestions} onContinue={ContinuePendingQuestions} /> : pendingEdit ? <ConfirmationComposer title="确认 Agent 修改简历" description={pendingEdit.reason} preview={pendingEdit.content} confirmLabel="确认并保存" onCancel={() => void HandlePendingEdit(false)} onConfirm={() => void HandlePendingEdit(true)} /> : pendingCronTask ? <ConfirmationComposer title="确认创建无人值守定时任务" description={`${pendingCronTask.summary}\n任务消息：${pendingCronTask.message}`} preview={JSON.stringify(pendingCronTask.schedule, null, 2)} confirmLabel="确认整个周期" onCancel={() => void HandlePendingCronTask(false)} onConfirm={() => void HandlePendingCronTask(true)} /> : pendingBrowserAction ? <ConfirmationComposer title="确认浏览器外部动作" description={`${pendingBrowserAction.summary ?? pendingBrowserAction.toolName}${pendingBrowserAction.url ? `\n目标网站：${pendingBrowserAction.url}` : ''}\n风险级别：${pendingBrowserAction.risk === 'high' ? '高风险' : pendingBrowserAction.risk === 'medium' ? '中风险' : '低风险'}`} confirmLabel="确认执行" onCancel={() => void HandlePendingBrowserAction(false)} onConfirm={() => void HandlePendingBrowserAction(true)} /> : <div ref={composerRef} className="composer">
           <textarea value={composer} placeholder={scenarioId === 'application' ? '写下岗位关键词或粘贴招聘网址，如：搜索上海的前端开发岗位…' : '写下你的需求，如：把这段项目经历写得更突出成果…'} onChange={(event) => setComposer(event.target.value)} onKeyDown={HandleKeyDown} />
           <div className="composer-bar">
             <div>

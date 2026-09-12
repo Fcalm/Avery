@@ -1,10 +1,16 @@
 import type { AgentMessage, TurnGroup } from './types';
 
+/** 识别本轮注入的业务快照，并兼容未标注 metadata 的历史存量格式。 */
+export function IsRuntimeContextMessage(message: AgentMessage): boolean {
+  return message.metadata?.kind === 'runtime_context'
+    || (message.role === 'user' && String(message.content).startsWith('<runtime-context>'));
+}
+
 /** 判断是否为一个真实用户轮次：排除运行时上下文与摘要消息。 */
 export function IsUserTurn(message: AgentMessage): boolean {
   return message.role === 'user'
     && message.metadata?.source !== 'runtime'
-    && !String(message.content).startsWith('<runtime-context>')
+    && !IsRuntimeContextMessage(message)
     && !String(message.content).startsWith('<summary');
 }
 

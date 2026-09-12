@@ -228,6 +228,28 @@ describe('AgentHost 浏览器失败与用户接管', () => {
     await host.Close();
   });
 
+  it('AskUserQuestion 等待态之后释放 Host 运行资源，答案可以进入同一会话的新 Run', async () => {
+    const provider = CreateProvider((index) => index === 0
+      ? ToolCall(index, 'AskUserQuestion', { questions: [{ id: 'choice', question: '请选择方案', options: ['方案 A', '方案 B'] }] })
+      : { content: '已收到方案 A，继续执行。', toolCalls: [] });
+    const browser = {
+      Prepare: vi.fn(), Execute: vi.fn(), GetStatus: vi.fn(), ClearProfile: vi.fn(), ResetPageReferences: vi.fn(), Close: vi.fn(async () => undefined),
+    };
+    const { host, events } = await CreateHost(provider, browser as any);
+
+    await Send(host, 'question-1', '需要选择时询问我');
+    const waitingIndex = events.findIndex((event) => event.type === 'waiting_user_input' && event.requestId === 'question-1');
+    const releasedIndex = events.findIndex((event) => event.type === 'run_released' && event.requestId === 'question-1');
+    expect(waitingIndex).toBeGreaterThanOrEqual(0);
+    expect(releasedIndex).toBeGreaterThan(waitingIndex);
+    expect((host as any).browserRunId).toBeNull();
+
+    await Send(host, 'question-2', '【请选择方案】方案 A');
+    expect(events).toContainEqual(expect.objectContaining({ type: 'completed', requestId: 'question-2', content: expect.stringContaining('继续执行') }));
+    expect((host as any).pendingQuestions.has('failure-session')).toBe(false);
+    await host.Close();
+  });
+
   it('外部动作 STATUS_UNKNOWN 后暂停且后续 Run 不自动重试', async () => {
     const provider = CreateProvider((index) => index === 0
       ? ToolCall(index, 'BrowserClick', { ref: '@e1', pageRevision: 1 })

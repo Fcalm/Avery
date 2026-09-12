@@ -238,9 +238,9 @@ describe('agent-modules-defaults', () => {
     expect(ApplicationScenarioPlaceholder.enabled).toBe(true);
     const applicationNames = CreateToolsModule(CreatePorts()).GetToolDefinitions('application').map((tool) => tool.definition.function.name);
     expect(new Set(applicationNames)).toEqual(new Set(ApplicationScenario.toolNames));
-    expect(applicationNames).toHaveLength(34);
+    expect(applicationNames).toHaveLength(35);
     expect(applicationNames).toContain('DeleteTodo');
-    expect(applicationNames).toEqual(expect.arrayContaining(['CreateCronTask', 'ReadCronTask', 'UpdateCronTask', 'DeleteCronTask', 'CollectJobs', 'ReadApplicationStatus', 'SaveJob', 'UpdateApplicationStatus']));
+    expect(applicationNames).toEqual(expect.arrayContaining(['CreateCronTask', 'ReadCronTask', 'UpdateCronTask', 'DeleteCronTask', 'CollectJobs', 'ContactBossJobs', 'ReadApplicationStatus', 'SaveJob', 'UpdateApplicationStatus']));
     expect(applicationNames).not.toEqual(expect.arrayContaining(['CreateResume', 'UpdateResume', 'UpdateProfile', 'SearchJobs']));
     const instructions = BuildApplicationCompiledInstructions('application-tools');
     expect(instructions.compiled).toContain('BrowserSelect');
@@ -311,6 +311,19 @@ describe('agent-modules-defaults', () => {
 
     expect(saveCandidate).toHaveBeenCalledWith({ sessionId: 'session-1', collectionId: 'collection-1', candidateId: 'candidate-1', matchScore: 88 });
     expect(result.receipt?.resourceIds).toEqual(['jobs:job-boss-a1']);
+  });
+
+  it('ContactBossJobs 冻结一个批次并使用现有浏览器确认通道', async () => {
+    const proposal = { proposalHash: 'boss-plan-hash', toolName: 'ContactBossJobs' as any, canonicalArguments: { frozen: true }, summary: '即将联系 1 个岗位', risk: 'high' as const, forceConfirmation: false, pageRevision: 0, resourceIds: ['jobs:job-1'] };
+    const prepare = vi.fn(async () => proposal);
+    const base = CreateToolContext();
+    const resume = { id: 'resume-1', name: '产品简历', content: 'resume', revision: 2 };
+    const context = CreateToolContext({ scenarioId: 'application', confirmationMode: 'allow_low_risk', boundResume: resume, pendingBrowserActions: new Map(), ports: { ...base.ports, resumeRead: { ...base.ports.resumeRead, ReadCurrent: vi.fn(async () => resume) }, bossContact: { Prepare: prepare, Execute: vi.fn(), Cancel: vi.fn() } } });
+    const result = await CreateToolsModule(CreatePorts()).ExecuteToolCall({ id: 'contact-1', type: 'function', function: { name: 'ContactBossJobs', arguments: JSON.stringify({ items: [{ jobId: 'job-1', message: { mode: 'first_quick_phrase' } }] }) } }, context);
+
+    expect(result.disposition).toBe('wait_confirmation');
+    expect(JSON.parse(result.content)).toMatchObject({ code: 'CONFIRMATION_REQUIRED', proposalHash: 'boss-plan-hash' });
+    expect(context.pendingBrowserActions?.size).toBe(1);
   });
 
   it('BrowserFillForm 只在投递场景接受已选择的档案来源且不把正文放入模型参数', async () => {
@@ -565,6 +578,15 @@ describe('agent-modules-defaults', () => {
     });
     expect(dynamic.message?.content).toContain('"boundResume":{"id":"resume-1","name":"后端简历","revision":3}');
     expect(dynamic.message?.content).not.toContain('content');
+    expect(dynamic.message?.metadata).toEqual({ source: 'runtime', visibility: 'hidden', kind: 'runtime_context' });
+    const unchanged = context.CreateDynamicSnapshot('session-1', {
+      resumeEditing: false,
+      boundResume: { id: 'resume-1', name: '后端简历', revision: 3 },
+      profiles: [],
+      attachments: [],
+    });
+    expect(unchanged.changed).toBe(false);
+    expect(unchanged.message?.content).toBe(dynamic.message?.content);
   });
 
   it('压缩按 token 阈值和完整轮次工作，保留待确认标签与工具链', () => {
@@ -789,7 +811,7 @@ describe('agent-modules-defaults', () => {
       return SseResponse([
         { choices: [{ delta: { content: 'hello ' } }] },
         { choices: [{ delta: { reasoning_content: 'reason' } }] },
-        { choices: [], usage: { prompt_tokens: 11, completion_tokens: 7, total_tokens: 18 } },
+        { choices: [], usage: { prompt_tokens: 11, prompt_cache_hit_tokens: 8, prompt_cache_miss_tokens: 3, completion_tokens: 7, total_tokens: 18 } },
         '[DONE]',
       ]);
     });
@@ -807,7 +829,7 @@ describe('agent-modules-defaults', () => {
       onDelta: (delta) => deltas.push(delta),
     });
 
-    expect(result).toMatchObject({ content: 'hello ', reasoningContent: 'reason', usage: { promptTokens: 11, completionTokens: 7, totalTokens: 18 } });
+    expect(result).toMatchObject({ content: 'hello ', reasoningContent: 'reason', usage: { promptTokens: 11, completionTokens: 7, totalTokens: 18, cachedInputTokens: 8 } });
     expect(deltas).toEqual([{ reasoning: '', content: 'hello ' }, { reasoning: 'reason', content: '' }]);
     expect(onRequest).toHaveBeenCalledOnce();
     expect(onRequest).toHaveBeenCalledWith({

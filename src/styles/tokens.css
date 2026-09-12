@@ -29,8 +29,8 @@
   --color-control-light: #f3f3f1;
   --color-tag-surface: #e4efe7;
   --color-tag-text: #2f7a4d;
-  /* 应用根层保持半透明浅绿染色，让桌面在磨砂后仍可辨识。 */
-  --app-background: linear-gradient(135deg, rgb(220 235 212 / 70%), rgb(142 199 122 / 70%));
+  /* 根层使用独立的白色玻璃表面，不再混入工作台的绿色底色。 */
+  --app-background: rgb(255 255 255 / 55%);
   --paper: transparent;
   --titlebar-surface: var(--color-surface-glass);
   --titlebar-control: var(--color-surface-card);

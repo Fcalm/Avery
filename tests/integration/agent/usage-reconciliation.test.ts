@@ -10,7 +10,7 @@ const directories: string[] = [];
 function UsageResponse(): Response {
   const body = [
     `data: ${JSON.stringify({ choices: [{ delta: { content: '完成' } }], usage: null })}\n\n`,
-    `data: ${JSON.stringify({ choices: [{ delta: { content: '', role: null }, finish_reason: 'stop', index: 0 }], usage: { prompt_tokens: 11, completion_tokens: 7, total_tokens: 18 } })}\n\n`,
+    `data: ${JSON.stringify({ choices: [{ delta: { content: '', role: null }, finish_reason: 'stop', index: 0 }], usage: { prompt_tokens: 11, prompt_cache_hit_tokens: 8, prompt_cache_miss_tokens: 3, completion_tokens: 7, total_tokens: 18 } })}\n\n`,
     'data: [DONE]\n\n',
   ].join('');
   return new Response(body, { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
@@ -53,12 +53,12 @@ describe('Agent Usage 三方对账', () => {
       await host.Send({ requestId: 'request-usage-1', sessionId: 'session-usage-1', content: '回复完成' });
 
       const expected = {
-        source: 'actual', promptTokens: 11, completionTokens: 7, totalTokens: 18,
+        source: 'actual', promptTokens: 11, completionTokens: 7, totalTokens: 18, cachedInputTokens: 8,
         reportedRequestCount: 1, unreportedRequestCount: 0,
       };
       expect((await host.GetSessionAssistantState('session-usage-1')).usage).toMatchObject(expected);
       expect(observability.GetTraces()[0]?.usage).toEqual({
-        source: 'provider', promptTokens: 11, completionTokens: 7, totalTokens: 18,
+        source: 'provider', promptTokens: 11, completionTokens: 7, totalTokens: 18, cachedInputTokens: 8,
         reportedRequestCount: 1, unreportedRequestCount: 0,
       });
       const persisted = JSON.parse(readFileSync(join(userDataPath, 'agent-state.json'), 'utf8')) as { sessionUsage: Array<[string, unknown]> };

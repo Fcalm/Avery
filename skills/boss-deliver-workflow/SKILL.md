@@ -11,18 +11,20 @@ metadata:
 
 Deliver job applications on Boss直聘 using browser automation. There are two delivery scenarios, and both share the same chat-page delivery steps after entering the conversation.
 
-## Step 0: Prepare the greeting message (前提)
+Keep the authorized Chrome process running and the BOSS account logged in. Avery activates its dedicated BOSS task tab before mouse actions, so the user does not need to keep Chrome in the foreground. If the browser disconnects, ask the user to reopen the logged-in BOSS page and authorize the connection again before retrying.
+
+## Step 0: Mandatory prerequisite — set up the greeting message and 常用语 on the 消息通知 page
 
 Before any delivery, ensure a qualifying greeting message (打招呼语) exists:
 
-1. Navigate to the greeting settings page: 消息通知 → 设置打招呼语.
+1. Navigate to the greeting settings page: https://www.zhipin.com/web/geek/notify-set?type=greetSet
 2. Make sure the **启用招呼语** button is OFF (关闭). If it is on, click it to turn it off.
-3. Open the **常用语（x条）** page and take a screenshot to check the existing greetings.
+3. Open this page：https://www.zhipin.com/web/geek/notify-set?type=replySet，and take a screenshot to check the existing greetings.
 4. If no greeting satisfies the requirements below, edit or create one so that it does.
 
 ### Greeting message requirements (招呼语要点)
 
-- Under 200 Chinese characters. Structure, in order: 能力展示 + 个人信息 + 求职意向 + 到岗信息.
+- Under 200 Chinese characters（2 letters count as one Chinese character）. Structure, in order: 能力展示 + 个人信息 + 求职意向 + 到岗信息.
 - **能力展示**: lead with the ability most relevant to the target job's JD, then rank the rest. Example (product manager role): "5年产品经理经验/从0-1完成产品全流程跟进".
 - **个人信息**: school – graduation year – major and degree. Example: "我是北京大学27届毕业的计算机本科生".
 - **求职意向**: e.g. "我对这个岗位很感兴趣，希望能跟您深入交流".

@@ -129,7 +129,7 @@ interface AgentToolDefinition<TInput, TOutput> {
     'Read', 'Glob', 'Grep', 'ReadProfile', 'ReadResume',
     'CreateTodo', 'UpdateTodo', 'DeleteTodo', 'ReadTodo', 'AskUserQuestion', 'LoadSkill',
     'CreateCronTask', 'ReadCronTask', 'UpdateCronTask', 'DeleteCronTask',
-    'CollectJobs', 'ReadApplicationStatus', 'SaveJob', 'UpdateApplicationStatus',
+    'CollectJobs', 'ContactBossJobs', 'ReadApplicationStatus', 'SaveJob', 'UpdateApplicationStatus',
     'BrowserNavigate', 'BrowserSnapshot', 'BrowserScreenshot', 'BrowserReadPage', 'BrowserClick',
     'BrowserFill', 'BrowserFillForm', 'BrowserValidateForm', 'BrowserSelect', 'BrowserSetChecked', 'BrowserPressKey',
     'BrowserUploadFile', 'BrowserWait', 'BrowserSwitchTab', 'BrowserGoBack'
@@ -141,6 +141,8 @@ interface AgentToolDefinition<TInput, TOutput> {
 
 `CollectJobs` 使用 Host 内置平台适配器采集最多 10 个 BOSS 候选，只写入 15 分钟的会话内存缓存，不自动写岗位库。Agent 判断后使用 `SaveJob(collectionId, candidateId)` 保存选中候选；浏览器直接观察岗位的完整字段模式作为独立 Schema 分支保留。
 
+`ContactBossJobs` 每次串行联系 1 至 10 个已保存的 BOSS 岗位，使用平台预设首条招呼语或冻结的自定义消息，并可向全部目标发送同一张已授权 PNG/JPEG 图片。它只接受岗位 ID、消息模式和资源 ID；URL、DOM、选择器、页面脚本与重试策略均由 Host 持有。工具要求有效简历绑定和已授权个人浏览器，并通过批次提案确认、发送前检查点、送达验证和 `uncertain` 停止规则防止重复发送。
+
 投递防重由 Agent 负责：保存或投递前必须调用 `ReadApplicationStatus` 检查持久化记录。`SaveJob` 不创建投递记录，也不要求绑定简历；只有浏览器返回有效成功回执后才能调用 `UpdateApplicationStatus(status='applied')`，该投递记录必须绑定实际使用的简历。Harness 不猜测公司、岗位和 URL 指纹，也不把“点击过提交按钮”当成已投递事实。
 `ReadApplicationStatus` 支持按公司、岗位名和 URL 定向检索；无条件读取或匹配过多时每类最多返回 200 条并显式标记 `truncated`，既避免漏查旧投递，也防止工具结果无界增长。
 
@@ -148,7 +150,7 @@ interface AgentToolDefinition<TInput, TOutput> {
 
 | 分类 | 工具/操作 | 规则 |
 | --- | --- | --- |
-| 强制绑定 | `UpdateResume`、`UpdateApplicationStatus` | 两者声明 `requiredResources: ['bound_resume']`，由 Harness 统一门禁；前者还必须匹配绑定 ID，后者自动写入绑定 ID |
+| 强制绑定 | `UpdateResume`、`UpdateApplicationStatus`、`ContactBossJobs` | 三者声明 `requiredResources: ['bound_resume']`，由 Harness 统一门禁；前者还必须匹配绑定 ID，投递状态自动写入绑定 ID，BOSS 联系批次冻结简历 revision |
 | 渐进读取并绑定 | `ReadResume` | 无参数只返回无正文索引；传入索引中的 `resumeId` 才返回正文并建立会话绑定 |
 | 不绑定 | `CreateResume`、`CollectJobs`、`ReadApplicationStatus`、`SaveJob`、浏览器搜索/读取/普通交互、Todo、Skill、Profile、CronTask 管理 | 这些动作本身不以简历作为数据归属 |
 | 独立文件授权 | `BrowserUploadFile` | 需要 Run 中明确授权的 `fileId`；绑定简历不会自动授权某个 PDF/图片文件 |
@@ -472,7 +474,7 @@ interface ToolEnvelope<T> {
 - 模型可见工具名全部符合 PascalCase 规则且跨 Provider 可接受。
 - 默认场景按意图进一步收窄工具，不暴露任何投递或浏览器能力。
 - 0.2.0 默认场景不注册、不展示也不执行 `SearchJobs`、`ReadUrl`。
-- 默认场景暴露冻结的 18 个工具；投递场景暴露冻结的 34 个工具，不包含 `CreateResume`、`UpdateResume`、`UpdateProfile`、`SearchJobs` 或 `ReadUrl`。
+- 默认场景暴露冻结的 18 个工具；投递场景暴露冻结的 35 个工具，不包含 `CreateResume`、`UpdateResume`、`UpdateProfile`、`SearchJobs` 或 `ReadUrl`。
 - CronTask 创建确认前数据库与 OS 调度均无新增记录；无人值守 Run 即使恢复旧快照也不能调用 CronTask 工具。
 - 多次逾期只执行最近 occurrence；既有 Run 活跃、浏览器长期占用、登录或验证码接管均写入明确的 `missed`/`needsAttention` 原因。
 - 投递 Agent 在浏览器执行前读取投递状态，并只在有效回执后更新 `applied`。
@@ -490,4 +492,4 @@ interface ToolEnvelope<T> {
 
 ## 14. 总结
 
-MVP 工具集优先使用少量、高辨识度的 PascalCase 工具。`Read`、`Glob`、`Grep` 是通用 UTF-8 文件只读能力，来源差异由虚拟挂载和端口授权处理；简历、档案、Todo、投递状态和 CronTask 只在权限、Schema 或副作用真正不同的地方拆分。默认场景不注册岗位网络工具；投递场景使用 16 个受控浏览器工具，并额外提供不暴露选择器或脚本参数的 `CollectJobs` 岗位采集工具；不启用旧 `SearchJobs` 草案。确认阶段属于 Harness；CronTask 以一次周期授权换取无人值守执行，但不扩展场景能力。
+MVP 工具集优先使用少量、高辨识度的 PascalCase 工具。`Read`、`Glob`、`Grep` 是通用 UTF-8 文件只读能力，来源差异由虚拟挂载和端口授权处理；简历、档案、Todo、投递状态和 CronTask 只在权限、Schema 或副作用真正不同的地方拆分。默认场景不注册岗位网络工具；投递场景使用 16 个受控浏览器工具，并额外提供不暴露选择器或脚本参数的 `CollectJobs` 岗位采集工具与 `ContactBossJobs` 批量打招呼工具；不启用旧 `SearchJobs` 草案。确认阶段属于 Harness；CronTask 以一次周期授权换取无人值守执行，但不扩展场景能力。

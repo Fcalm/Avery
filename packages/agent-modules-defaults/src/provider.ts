@@ -102,11 +102,13 @@ function NormalizeModelUsage(value: unknown): ModelUsage | undefined {
   const promptTokens = usage?.prompt_tokens;
   const completionTokens = usage?.completion_tokens;
   const totalTokens = usage?.total_tokens;
+  const cachedInputTokens = usage?.prompt_cache_hit_tokens;
   if (typeof promptTokens !== 'number' || !Number.isSafeInteger(promptTokens) || promptTokens < 0) return undefined;
   if (typeof completionTokens !== 'number' || !Number.isSafeInteger(completionTokens) || completionTokens < 0) return undefined;
   if (typeof totalTokens !== 'number' || !Number.isSafeInteger(totalTokens) || totalTokens < 0) return undefined;
   if (totalTokens !== promptTokens + completionTokens) return undefined;
-  return { promptTokens, completionTokens, totalTokens };
+  if (cachedInputTokens !== undefined && (typeof cachedInputTokens !== 'number' || !Number.isSafeInteger(cachedInputTokens) || cachedInputTokens < 0 || cachedInputTokens > promptTokens)) return undefined;
+  return { promptTokens, completionTokens, totalTokens, cachedInputTokens: cachedInputTokens ?? 0 };
 }
 
 /**

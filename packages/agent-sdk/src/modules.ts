@@ -82,7 +82,7 @@ export interface ContextBuilderModule extends ModuleManifest {
     refreshReason?: SessionContextSnapshot['refreshReason'];
   }): Promise<SessionContextSnapshot>;
   SerializeSessionContext(snapshot: SessionContextSnapshot): string;
-  /** 业务快照变化时返回动态快照消息；否则返回 unchanged。 */
+  /** 每轮返回当前业务快照；changed 仅表示相对上一轮内容是否变化。 */
   CreateDynamicSnapshot(sessionId: string, context: RuntimeContext | null): { changed: boolean; message: AgentMessage | null };
 }
 

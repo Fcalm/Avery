@@ -4,7 +4,8 @@ import * as path from 'node:path';
 import { RunAgentLoop } from '@avery/agent-core';
 import { CreateRunSnapshot, ResolveModules } from '@avery/agent-module-host';
 import { ApplicationScenario, BuildApplicationCompiledInstructions, BuildDefaultCompiledInstructions, CreateDefaultModules, DefaultScenario } from '@avery/agent-modules-defaults';
-import type { AgentMessage, AgentModules, BrowserAutomationPort, BrowserEngine, CompiledInstructions, ConfirmationMode, JobCollectionPort, ProviderUsageFact, ReasoningEffort, ScenarioSnapshot, SkillSnapshot } from '@avery/agent-sdk';
+import { IsRuntimeContextMessage } from '@avery/agent-sdk';
+import type { AgentMessage, AgentModules, BossContactPort, BrowserAutomationPort, BrowserEngine, CompiledInstructions, ConfirmationMode, JobCollectionPort, ProviderUsageFact, ReasoningEffort, ScenarioSnapshot, SkillSnapshot } from '@avery/agent-sdk';
 import { AgentFileReader } from './agent-file-reader';
 import { AgentResumePort } from './agent-resume-port';
 import { ResumeLockStore } from './resume-lock-store';
@@ -12,6 +13,7 @@ import { CreateVisionUserMessage, HydrateVisionMessage, SupportsVisionInput } fr
 import { AgentBrowserRuntime } from './agent-browser-runtime';
 import { AgentSkillRegistry } from './agent-skill-registry';
 import { JobCollectionService } from './job-collection-service';
+import { BossContactService } from './boss-contact-service';
 import { CreateCronTaskSchema } from '@avery/contracts';
 
 /** 用户编辑锁的稳定 ownerId；前端经 bridge 加解锁都以此为准。 */
@@ -64,7 +66,7 @@ function NormalizeSessionUsage(value: unknown): any {
   return {
     source,
     inputTokens: number('inputTokens'), contextLimit: number('contextLimit'), compressionCount: number('compressionCount'), compressionThreshold: number('compressionThreshold'),
-    promptTokens: number('promptTokens'), completionTokens: number('completionTokens'), totalTokens: number('totalTokens'), reportedRequestCount: number('reportedRequestCount'), unreportedRequestCount: number('unreportedRequestCount'), updatedAt: number('updatedAt'),
+    promptTokens: number('promptTokens'), completionTokens: number('completionTokens'), totalTokens: number('totalTokens'), cachedInputTokens: number('cachedInputTokens'), reportedRequestCount: number('reportedRequestCount'), unreportedRequestCount: number('unreportedRequestCount'), updatedAt: number('updatedAt'),
   };
 }
 
@@ -184,6 +186,7 @@ export class AgentHost {
   private browserRuntime: AgentHostBrowserRuntime;
   private jobCollectionPort: JobCollectionPort | null = null;
   private jobCollectionService: JobCollectionService | null = null;
+  private bossContactPort: BossContactPort | null = null;
   private createDefaultModules: (ports: Parameters<typeof CreateDefaultModules>[0]) => AgentModules;
   private moduleError: string | null = null;
   private moduleConfiguration: any = { enabled: false, trusted: false, status: 'default', directoryName: null, modules: [] };
@@ -257,6 +260,19 @@ export class AgentHost {
       });
       this.jobCollectionPort = this.jobCollectionService;
     }
+    if (typeof this.browserRuntime.EvaluateTrustedPage === 'function') {
+      this.bossContactPort = new BossContactService({
+        browser: this.browserRuntime,
+        loadViewModel: () => this.business.LoadViewModel(),
+        saveJob: (input) => this.business.SaveTrackedJob(input),
+        resolveAsset: async (assetId) => this.business.ResolveAttachmentUri(assetId),
+        readResume: (resumeId) => this.resumeReadPort.ReadCurrent(resumeId),
+        getBrowserStatus: () => this.browserRuntime.GetStatus(true),
+        createBatch: (input) => this.business.CreateBossContactBatch(input),
+        checkpointBatch: (batchId, jobId, step, result) => this.business.CheckpointBossContactBatch(batchId, jobId, step, result),
+        finishBatch: (batchId, status, result) => this.business.FinishBossContactBatch(batchId, status, result),
+      });
+    }
     this.moduleError = null;
     this.moduleConfiguration = { enabled: false, trusted: false, status: 'default', directoryName: null, modules: [] };
     this.modules = this.BuildModules();
@@ -273,9 +289,40 @@ export class AgentHost {
     await this.fileReader.Close();
   }
 
-  /** 会话删除后立即清除仅属于该会话的短寿命岗位候选。 */
+  /** 会话删除后清除全部会话私有运行态；Tool Ledger 与 Trace 作为外部动作审计继续保留。 */
   DeleteSessionResources(sessionId: string): void {
     this.jobCollectionService?.DeleteSession(sessionId);
+    const requestIds = new Set<string>();
+    for (const [requestId, snapshot] of this.runSnapshots) {
+      if (snapshot?.sessionId === sessionId) requestIds.add(requestId);
+    }
+    for (const [requestId, control] of this.runtimeControls) {
+      if (control.sessionId !== sessionId) continue;
+      requestIds.add(requestId);
+      this.controllers.get(requestId)?.abort();
+    }
+    this.histories.delete(sessionId);
+    this.tasks.delete(sessionId);
+    this.pendingQuestions.delete(sessionId);
+    this.projectEnvironments.delete(sessionId);
+    this.sessionSnapshots.delete(sessionId);
+    this.sessionUsage.delete(sessionId);
+    this.sessionScenarios.delete(sessionId);
+    this.sessionAssistantStates.delete(sessionId);
+    this.sessionResumeBindings.delete(sessionId);
+    this.loadedSkills.delete(sessionId);
+    this.loadedSkillResources.delete(sessionId);
+    for (const [confirmationId, pending] of this.pendingEdits) {
+      if ((pending as any)?.sessionId === sessionId) this.pendingEdits.delete(confirmationId);
+    }
+    for (const [confirmationId, pending] of this.pendingBrowserActions) {
+      if (requestIds.has((pending as any)?.requestId)) this.pendingBrowserActions.delete(confirmationId);
+    }
+    for (const [confirmationId, pending] of this.pendingCronTasks) {
+      if (requestIds.has((pending as any)?.requestId)) this.pendingCronTasks.delete(confirmationId);
+    }
+    for (const requestId of requestIds) this.runSnapshots.delete(requestId);
+    this.SaveState();
   }
 
   /** 构造官方默认六槽；端口全部由宿主持有。 */
@@ -591,6 +638,7 @@ export class AgentHost {
       throw Object.assign(new Error('Browser confirmation expired. Take a new snapshot and prepare the action again.'), { code: 'VALIDATION_ERROR' });
     }
     if (!accepted) {
+      if (pending.proposal?.toolName === 'ContactBossJobs') await this.bossContactPort?.Cancel(pending.proposal);
       const result = { confirmationId: normalizedId, status: 'rejected', summary: pending.proposal?.summary };
       this.Emit({ type: 'browser_action_completed', requestId: pending.requestId, confirmationId: normalizedId, browserAction: result });
       return result;
@@ -623,8 +671,10 @@ export class AgentHost {
       startedAt: Date.now(),
     });
     try {
-      const timeoutMs = pending.proposal.toolName === 'BrowserFillForm' ? 120_000 : 30_000;
-      const outcome = await this.browserRuntime.Execute({ proposal: pending.proposal, signal: execution.signal, deadline: Date.now() + timeoutMs });
+      const timeoutMs = pending.proposal.toolName === 'ContactBossJobs' ? 600_000 : pending.proposal.toolName === 'BrowserFillForm' ? 120_000 : 30_000;
+      const outcome = pending.proposal.toolName === 'ContactBossJobs'
+        ? await this.bossContactPort!.Execute({ proposal: pending.proposal, signal: execution.signal, deadline: Date.now() + timeoutMs })
+        : await this.browserRuntime.Execute({ proposal: pending.proposal, signal: execution.signal, deadline: Date.now() + timeoutMs });
       if (execution.signal?.aborted) throw Object.assign(new Error('Browser action completion arrived after cancellation.'), { code: 'CANCELLED' });
       if (outcome.status === 'status_unknown') {
         await ledger.Finish(ledgerId, 'status_unknown', { errorCode: 'BROWSER_STATUS_UNKNOWN', finishedAt: Date.now() });
@@ -875,6 +925,7 @@ export class AgentHost {
         promptTokens: storedUsage?.promptTokens ?? 0,
         completionTokens: storedUsage?.completionTokens ?? 0,
         totalTokens: storedUsage?.totalTokens ?? 0,
+        cachedInputTokens: storedUsage?.cachedInputTokens ?? 0,
         reportedRequestCount: storedUsage?.reportedRequestCount ?? 0,
         unreportedRequestCount: storedUsage?.unreportedRequestCount ?? 0,
       },
@@ -903,28 +954,29 @@ export class AgentHost {
   /** 将每次已完成模型请求的 usage 合并到单会话账本；缺失值仅记未上报，绝不估算。 */
   private RecordSessionUsage(requestId: string, sessionId: string, usage: ProviderUsageFact, contextLimit: number, threshold: number): void {
     const previous = this.sessionUsage.get(sessionId);
-    const base = previous?.source === 'actual' ? previous : { promptTokens: 0, completionTokens: 0, totalTokens: 0, reportedRequestCount: 0, unreportedRequestCount: 0, compressionCount: 0 };
+    const base = previous?.source === 'actual' ? previous : { promptTokens: 0, completionTokens: 0, totalTokens: 0, cachedInputTokens: 0, reportedRequestCount: 0, unreportedRequestCount: 0, compressionCount: 0 };
     const providerUsageIsValid = usage?.source === 'provider'
-      && [usage.promptTokens, usage.completionTokens, usage.totalTokens].every((value) => Number.isSafeInteger(value) && value >= 0)
-      && usage.totalTokens === usage.promptTokens + usage.completionTokens;
+      && [usage.promptTokens, usage.completionTokens, usage.totalTokens, usage.cachedInputTokens].every((value) => Number.isSafeInteger(value) && value >= 0)
+      && usage.totalTokens === usage.promptTokens + usage.completionTokens
+      && usage.cachedInputTokens <= usage.promptTokens;
     if (!providerUsageIsValid) {
-      this.RecordProviderUsageFact(requestId, { source: 'unavailable', promptTokens: 0, completionTokens: 0, totalTokens: 0 });
+      this.RecordProviderUsageFact(requestId, { source: 'unavailable', promptTokens: 0, completionTokens: 0, totalTokens: 0, cachedInputTokens: 0 });
       const next = previous?.source === 'actual'
         ? { ...previous, contextLimit, compressionThreshold: threshold, unreportedRequestCount: previous.unreportedRequestCount + 1, updatedAt: Date.now() }
         : {
           source: 'unavailable', inputTokens: 0, contextLimit, compressionCount: previous?.compressionCount ?? 0, compressionThreshold: threshold,
-          promptTokens: 0, completionTokens: 0, totalTokens: 0, reportedRequestCount: 0, unreportedRequestCount: (previous?.unreportedRequestCount ?? 0) + 1, updatedAt: Date.now(),
+          promptTokens: 0, completionTokens: 0, totalTokens: 0, cachedInputTokens: 0, reportedRequestCount: 0, unreportedRequestCount: (previous?.unreportedRequestCount ?? 0) + 1, updatedAt: Date.now(),
         };
       this.sessionUsage.set(sessionId, next);
       this.SaveState();
       return;
     }
     this.RecordProviderUsageFact(requestId, {
-      source: 'provider', promptTokens: usage.promptTokens, completionTokens: usage.completionTokens, totalTokens: usage.totalTokens,
+      source: 'provider', promptTokens: usage.promptTokens, completionTokens: usage.completionTokens, totalTokens: usage.totalTokens, cachedInputTokens: usage.cachedInputTokens,
     });
     const next = {
       source: 'actual', inputTokens: usage.promptTokens, contextLimit, compressionCount: base.compressionCount, compressionThreshold: threshold,
-      promptTokens: base.promptTokens + usage.promptTokens, completionTokens: base.completionTokens + usage.completionTokens, totalTokens: base.totalTokens + usage.totalTokens,
+      promptTokens: base.promptTokens + usage.promptTokens, completionTokens: base.completionTokens + usage.completionTokens, totalTokens: base.totalTokens + usage.totalTokens, cachedInputTokens: base.cachedInputTokens + usage.cachedInputTokens,
       reportedRequestCount: base.reportedRequestCount + 1, unreportedRequestCount: base.unreportedRequestCount, updatedAt: Date.now(),
     };
     this.sessionUsage.set(sessionId, next);
@@ -1243,16 +1295,17 @@ export class AgentHost {
       ? [this.skillRegistry.Load(snapshots.skills, scenarioId, { skillId: explicitSkill.manifest.id }).message]
       : [];
     const snapshot = this.modules.contextBuilder.CreateDynamicSnapshot(sessionId, runtimeContext);
-    // 动态快照是本次 Run 新加入的消息，不应伪装成既有历史，否则 append-only Trace 无法识别其真实加入时刻。
+    // 动态快照只服务本次 Run；历史中的旧格式快照必须先移除，避免过期档案继续影响模型判断。
     const messagesBeforeUser: AgentMessage[] = [
-      ...(snapshot.changed && snapshot.message ? [snapshot.message] : []),
+      ...(snapshot.message ? [snapshot.message] : []),
       ...skillIndexMessages,
     ];
     const usesVisionInput = SupportsVisionInput(provider, model);
     const resolveAttachment = (uri: string) => this.business?.ResolveAttachmentUri?.(uri) ?? Promise.resolve(null);
+    const persistedHistory = history.filter((message: AgentMessage) => !IsRuntimeContextMessage(message));
     const requestHistory: AgentMessage[] = usesVisionInput
-      ? await Promise.all(history.map((message: AgentMessage) => HydrateVisionMessage(message, resolveAttachment)))
-      : history;
+      ? await Promise.all(persistedHistory.map((message: AgentMessage) => HydrateVisionMessage(message, resolveAttachment)))
+      : persistedHistory;
     const userMessage = usesVisionInput
       ? await CreateVisionUserMessage(userContent, attachments, resolveAttachment)
       : { role: 'user' as const, content: userContent };
@@ -1353,6 +1406,7 @@ export class AgentHost {
         },
         browser: scenarioId === 'application' ? this.browserRuntime : undefined,
         jobCollection: scenarioId === 'application' ? this.jobCollectionPort ?? undefined : undefined,
+        bossContact: scenarioId === 'application' ? this.bossContactPort ?? undefined : undefined,
         skill: {
           Load: async (skillInput: { skillId: string; resource?: string }) => this.skillRegistry.Load(snapshots.skills, scenarioId, skillInput),
         },
@@ -1461,7 +1515,7 @@ export class AgentHost {
       } else if (!modelRequestCompleted) {
         this.sessionUsage.set(sessionId, {
           source: 'unavailable', inputTokens: 0, contextLimit, compressionCount: result.compressionCount, compressionThreshold: threshold,
-          promptTokens: 0, completionTokens: 0, totalTokens: 0, reportedRequestCount: 0, unreportedRequestCount: 1, updatedAt: Date.now(),
+          promptTokens: 0, completionTokens: 0, totalTokens: 0, cachedInputTokens: 0, reportedRequestCount: 0, unreportedRequestCount: 1, updatedAt: Date.now(),
         });
       }
       this.SaveState();
@@ -1476,6 +1530,8 @@ export class AgentHost {
     }
     } finally {
       if (this.browserRunId === requestId) this.browserRunId = null;
+      // waiting_* 只表示 Kernel 停止调度；必须在 Host 锁与运行资源清理后再允许 Renderer 发起续轮。
+      this.Emit({ type: 'run_released', requestId, sessionId });
     }
   }
 

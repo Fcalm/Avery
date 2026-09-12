@@ -9,6 +9,7 @@ import { JobRepository } from './electron/repositories/job-repository';
 import { ApplicationRepository } from './electron/repositories/application-repository';
 import { ProfileRepository } from './electron/repositories/profile-repository';
 import { CronTaskRepository } from './electron/repositories/cron-task-repository';
+import { BossContactBatchRepository } from './electron/repositories/boss-contact-batch-repository';
 import { ConversationService } from './electron/backend/services/conversation-service';
 import { ResumeService } from './electron/backend/services/resume-service';
 import { JobService } from './electron/backend/services/job-service';
@@ -49,6 +50,7 @@ export class BusinessStore {
   applications: ApplicationRepository;
   profiles: ProfileRepository;
   cronTasks: CronTaskRepository;
+  bossContactBatches: BossContactBatchRepository;
   conversationService: ConversationService;
   resumeService: ResumeService;
   jobService: JobService;
@@ -97,6 +99,7 @@ export class BusinessStore {
     this.applications = new ApplicationRepository({ db: this.db });
     this.profiles = new ProfileRepository({ profilePath: this.profilePath });
     this.cronTasks = new CronTaskRepository(this.db);
+    this.bossContactBatches = new BossContactBatchRepository(this.db);
     this.conversationService = new ConversationService({ repository: this.conversations });
     this.resumeService = new ResumeService({ repository: this.resumes });
     this.jobService = new JobService({ repository: this.jobs });
@@ -286,9 +289,18 @@ export class BusinessStore {
       experience: input.experience ?? existingJob?.experience ?? '', jobSeekingType: input.jobSeekingType ?? input.employmentType ?? existingJob?.jobSeekingType ?? 'social_recruitment',
       channel: input.channel ?? existingJob?.channel ?? 'company_website', favorite: input.favorite ?? existingJob?.favorite ?? false,
       url: input.url, jd: input.jd ?? existingJob?.jd ?? '', matchScore: input.matchScore ?? existingJob?.matchScore,
+      contactStatus: input.contactStatus ?? existingJob?.contactStatus,
+      contactedAt: input.contactedAt ?? existingJob?.contactedAt,
+      bossContactBatchId: input.bossContactBatchId ?? existingJob?.bossContactBatchId,
+      bossContactCheckpoint: input.bossContactCheckpoint ?? existingJob?.bossContactCheckpoint,
+      bossContactMessageHash: input.bossContactMessageHash ?? existingJob?.bossContactMessageHash,
+      bossContactImageHash: input.bossContactImageHash ?? existingJob?.bossContactImageHash,
     }, existingJob?.revision);
     return { jobId: savedJob.id, jobRevision: savedJob.revision };
   }
+  CreateBossContactBatch(input: any): void { this.bossContactBatches.Create(input); }
+  CheckpointBossContactBatch(batchId: string, jobId: string, step: string, result?: unknown): void { this.bossContactBatches.Checkpoint(batchId, jobId, step, result); }
+  FinishBossContactBatch(batchId: string, status: string, result: unknown): void { this.bossContactBatches.Finish(batchId, status, result); }
   /** 创建或编辑投递；透传期望版本供外部修改冲突检测。 */
   UpsertApplication(application: any, expectedRevision?: number): any { return this.applicationService.Upsert(application, expectedRevision); }
   /** 推进投递状态并记录迁移事件；透传期望版本供外部修改冲突检测。 */

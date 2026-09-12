@@ -1,3 +1,4 @@
+import { IsRuntimeContextMessage } from '@avery/agent-sdk';
 import type { AgentMessage, KernelRunInput, KernelRunResult, ModelUsage, ProviderRequestSnapshot, ProviderUsageFact, RunDisposition, ToolCallFragment, ToolDisposition, ToolExecutionResult } from '@avery/agent-sdk';
 import { CreateRuntimeReminderMessage, ShouldInjectRuntimeReminder } from './runtime-reminder';
 
@@ -103,9 +104,11 @@ function RecordAppendedMessage(input: KernelRunInput, apiRequestIndex: number, s
   }, EstimateTraceTokens(JSON.stringify(traceMessage)));
 }
 
-/** 提取不含 system 消息的完整 append-only transcript；只有显式压缩可以改变历史前缀。 */
+/** 提取可持久化的 append-only transcript；运行时业务快照只对当前请求有效，避免旧资料污染后续会话。 */
 function HistorySnapshot(transcript: AgentMessage[]): AgentMessage[] {
-  return transcript.filter((message) => message.role !== 'system').map(({ providerContent: _providerContent, ...message }) => message);
+  return transcript
+    .filter((message) => message.role !== 'system' && !IsRuntimeContextMessage(message))
+    .map(({ providerContent: _providerContent, ...message }) => message);
 }
 
 /**
@@ -159,13 +162,15 @@ function ThrowIfRunCancelled(signal: KernelRunInput['signal']): void {
 
 /** 将 Provider 模块边界的可选 usage 转为唯一事实；无效或缺失时显式 unavailable，禁止估算。 */
 function CreateProviderUsageFact(usage: ModelUsage | undefined): ProviderUsageFact {
+  const cachedInputTokens = usage?.cachedInputTokens ?? 0;
   if (!usage
     || ![usage.promptTokens, usage.completionTokens, usage.totalTokens]
       .every((value) => Number.isSafeInteger(value) && value >= 0)
-    || usage.totalTokens !== usage.promptTokens + usage.completionTokens) {
-    return { source: 'unavailable', promptTokens: 0, completionTokens: 0, totalTokens: 0 };
+    || usage.totalTokens !== usage.promptTokens + usage.completionTokens
+    || !Number.isSafeInteger(cachedInputTokens) || cachedInputTokens < 0 || cachedInputTokens > usage.promptTokens) {
+    return { source: 'unavailable', promptTokens: 0, completionTokens: 0, totalTokens: 0, cachedInputTokens: 0 };
   }
-  return { source: 'provider', promptTokens: usage.promptTokens, completionTokens: usage.completionTokens, totalTokens: usage.totalTokens };
+  return { source: 'provider', promptTokens: usage.promptTokens, completionTokens: usage.completionTokens, totalTokens: usage.totalTokens, cachedInputTokens };
 }
 
 /** 从工具结果解析统一 disposition；优先读取结构化字段，其次兼容旧 payload 标记。 */

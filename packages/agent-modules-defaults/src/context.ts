@@ -4,7 +4,7 @@ import { AgentDefaultPorts } from './ports';
 
 /** 上下文构建模块：读取业务只读快照并序列化为会话上下文；不读取工作空间或项目规则文件。 */
 export function CreateContextBuilderModule(ports: AgentDefaultPorts): ContextBuilderModule {
-  /** 会话业务快照内容哈希缓存：仅在内容变化时向 Transcript 追加动态快照消息。 */
+  /** 会话业务快照内容哈希缓存：用于标识相对上一轮是否变化。 */
   const snapshotHashes = new Map<string, string>();
 
   return {
@@ -47,14 +47,17 @@ export function CreateContextBuilderModule(ports: AgentDefaultPorts): ContextBui
     SerializeSessionContext(session) {
       return session.compiledPrefix;
     },
-    /** 仅在业务快照内容变化时，向内部 Transcript 追加稳定格式的动态消息。 */
+    /** 每轮注入当前业务快照；该消息仅用于当前模型请求，Kernel 不得将其写入历史。 */
     CreateDynamicSnapshot(sessionId, context) {
       if (!context) return { changed: false, message: null };
       const content = `<runtime-context>\n${JSON.stringify(context)}\n</runtime-context>`;
       const hash = createHash('sha256').update(content).digest('hex');
-      if (snapshotHashes.get(sessionId) === hash) return { changed: false, message: null };
+      const changed = snapshotHashes.get(sessionId) !== hash;
       snapshotHashes.set(sessionId, hash);
-      return { changed: true, message: { role: 'user', content } };
+      return {
+        changed,
+        message: { role: 'user', content, metadata: { source: 'runtime', visibility: 'hidden', kind: 'runtime_context' } },
+      };
     },
   };
 }

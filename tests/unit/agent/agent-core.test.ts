@@ -15,7 +15,7 @@ describe('agent-core RunAgentLoop', () => {
 
     expect(result.outcome).toBe('completed');
     expect(result.disposition).toBe('completed');
-    expect(harness.usages).toEqual([{ source: 'unavailable', promptTokens: 0, completionTokens: 0, totalTokens: 0 }]);
+    expect(harness.usages).toEqual([{ source: 'unavailable', promptTokens: 0, completionTokens: 0, totalTokens: 0, cachedInputTokens: 0 }]);
     expect(harness.events.map((event) => event.type)).toEqual(['content_delta', 'completed']);
     expect(harness.events).not.toContainEqual(expect.objectContaining({ type: 'cancelled' }));
     expect(harness.trace.finish).toHaveBeenCalledOnce();
@@ -29,7 +29,7 @@ describe('agent-core RunAgentLoop', () => {
 
     await RunAgentLoop(harness.input);
 
-    expect(harness.usages).toEqual([{ source: 'provider', promptTokens: 11, completionTokens: 7, totalTokens: 18 }]);
+    expect(harness.usages).toEqual([{ source: 'provider', promptTokens: 11, completionTokens: 7, totalTokens: 18, cachedInputTokens: 0 }]);
   });
 
   it('自定义 Provider 越过 Adapter 返回矛盾 usage 时仍降级为 unavailable', async () => {
@@ -39,7 +39,33 @@ describe('agent-core RunAgentLoop', () => {
 
     await RunAgentLoop(harness.input);
 
-    expect(harness.usages).toEqual([{ source: 'unavailable', promptTokens: 0, completionTokens: 0, totalTokens: 0 }]);
+    expect(harness.usages).toEqual([{ source: 'unavailable', promptTokens: 0, completionTokens: 0, totalTokens: 0, cachedInputTokens: 0 }]);
+  });
+
+  it('动态业务快照只在本轮请求可见，且保存历史时清理旧格式快照', async () => {
+    const requestMessages: AgentMessage[][] = [];
+    const legacyContext: AgentMessage = { role: 'user', content: '<runtime-context>{"profiles":["旧档案"]}</runtime-context>' };
+    const currentContext: AgentMessage = {
+      role: 'user', content: '<runtime-context>{"profiles":["当前档案"]}</runtime-context>',
+      metadata: { source: 'runtime', visibility: 'hidden', kind: 'runtime_context' },
+    };
+    const harness = CreateKernelHarness({
+      history: [legacyContext],
+      streamCompletion: vi.fn(async ({ history }) => {
+        requestMessages.push(history);
+        return { content: '完成', toolCalls: [] };
+      }),
+    });
+    harness.input.messagesBeforeUser = [currentContext];
+
+    const result = await RunAgentLoop(harness.input);
+
+    expect(requestMessages[0]).toContain(legacyContext);
+    expect(requestMessages[0]).toContain(currentContext);
+    expect(result.transcript).not.toContain(legacyContext);
+    expect(result.transcript).not.toContain(currentContext);
+    expect(harness.input.histories.get('session-1')).not.toContain(legacyContext);
+    expect(harness.input.histories.get('session-1')).not.toContain(currentContext);
   });
 
   it('工具进入等待状态后停止请求模型，并跳过批次中的后续工具', async () => {

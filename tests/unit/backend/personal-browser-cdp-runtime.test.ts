@@ -8,6 +8,7 @@ import {
 } from '../../../apps/backend/src/electron/backend/personal-browser-cdp-runtime';
 
 type Listener = (event: any) => void;
+const LongBossPhrasePreview = `发送常用语：${'长'.repeat(200)}…【部分内容已截断】`;
 
 class TranscriptSocket {
   readyState = 0;
@@ -15,7 +16,10 @@ class TranscriptSocket {
   readonly sent: Array<{ id: number; method: string; params: Record<string, any>; sessionId?: string }> = [];
   private readonly listeners = new Map<string, Listener[]>();
 
-  constructor(private readonly anchorUrl = 'https://www.zhipin.com/web/geek/job') {
+  constructor(
+    private readonly anchorUrl = 'https://www.zhipin.com/web/geek/job',
+    private readonly chatControls = false,
+  ) {
     queueMicrotask(() => {
       this.readyState = 1;
       this.Emit('open', {});
@@ -58,8 +62,12 @@ class TranscriptSocket {
       if (expression.includes('readyState: document.readyState')) return { result: { value: { url: this.anchorUrl, readyState: 'complete' } } };
       if (expression.includes('const candidates =')) return { result: { value: {
         url: this.anchorUrl,
-        title: '岗位列表',
-        items: [
+        title: this.chatControls ? '聊天' : '岗位列表',
+        items: this.chatControls ? [
+          { selector: '.btn-dict', tag: 'div', role: 'button', type: '', name: '常用语' },
+          { selector: '.sentence-item', tag: 'li', role: 'button', type: '', name: LongBossPhrasePreview, textTruncated: true },
+          { selector: '.btn-sendimg input', tag: 'input', role: 'filechooser', type: 'file', name: '发送图片' },
+        ] : [
           {
             selector: '#search', tag: 'input', role: 'searchbox', type: 'search', name: '搜索职位',
             rawLabel: '职位关键词', id: 'search', placeholder: '请输入职位', ariaLabel: '搜索职位', section: '求职意向',
@@ -68,6 +76,7 @@ class TranscriptSocket {
           { selector: '#submit', tag: 'button', role: 'button', type: '', name: '搜索' },
         ],
       } } };
+      if (expression.includes("element.type !== 'file'")) return { result: { objectId: 'boss-file-input' } };
       if (expression.includes('elementFromPoint')) {
         const input = expression.includes('"tag":"input"');
         return { result: { value: { stale: false, x: input ? 100 : 200, y: 60, tag: input ? 'input' : 'button', type: input ? 'search' : '', disabled: false } } };
@@ -126,6 +135,7 @@ describe('PersonalBrowserCdpRuntime', () => {
       && String(message.params.expression ?? '').includes('const candidates ='))?.params.expression ?? '');
     expect(() => new Function(snapshotExpression)).not.toThrow();
     expect(snapshotExpression).toContain('split(/\\s+/)');
+    expect(snapshotExpression).toContain("element.classList.contains('disabled')");
     expect(evaluated).toMatchObject({ success: true, data: { result: { ok: true } } });
     await expect(runtime.Run(['eval', '-b', '%%%'])).rejects.toMatchObject<Partial<PersonalBrowserCdpError>>({ code: 'BROWSER_ARGUMENT_INVALID' });
     await expect(access(screenshotPath)).resolves.toBeUndefined();
@@ -137,6 +147,13 @@ describe('PersonalBrowserCdpRuntime', () => {
     expect(socket.sent.map((message) => message.method)).not.toEqual(expect.arrayContaining([
       'Runtime.enable', 'Page.enable', 'Network.enable', 'WebMCP.enable', 'Target.setAutoAttach',
     ]));
+    const firstMouseMove = socket.sent.findIndex((message) => message.method === 'Input.dispatchMouseEvent'
+      && message.params.type === 'mouseMoved');
+    expect(firstMouseMove).toBeGreaterThan(0);
+    expect(socket.sent[firstMouseMove - 1]).toMatchObject({
+      method: 'Target.activateTarget',
+      params: { targetId: 'task' },
+    });
     expect(socket.sent.filter((message) => message.sessionId).every((message) => message.sessionId === 'task-session')).toBe(true);
     await runtime.Close();
   });
@@ -165,6 +182,47 @@ describe('PersonalBrowserCdpRuntime', () => {
     socket.targetClosed = true;
     await expect(runtime.Run(['open', 'https://www.zhipin.com/web/geek/job?query=agent'])).resolves.toMatchObject({ success: true });
     expect(socket.sent.filter((message) => message.method === 'Target.createTarget')).toHaveLength(2);
+    await runtime.Close();
+  });
+
+  it('BOSS 聊天页暴露常用语条目并允许授权文件绑定隐藏图片输入框', async () => {
+    let socket!: TranscriptSocket;
+    const runtime = new PersonalBrowserCdpRuntime({
+      endpoint: 'ws://127.0.0.1:9222/devtools/browser/test-id',
+      webSocketFactory: () => {
+        socket = new TranscriptSocket('https://www.zhipin.com/web/geek/chat', true);
+        return socket;
+      },
+      delay: async () => undefined,
+    });
+
+    const snapshot = await runtime.Run(['snapshot']);
+    expect(snapshot.data.refs).toMatchObject({
+      e1: { role: 'button', name: '常用语' },
+      e2: { role: 'button', name: LongBossPhrasePreview, textTruncated: true },
+      e3: { role: 'filechooser', type: 'file', name: '发送图片' },
+    });
+    expect(snapshot.data).toMatchObject({ partialTextTruncated: true });
+    expect(snapshot.data.snapshot).toContain('【部分内容已截断】');
+    const snapshotExpression = String(socket.sent.find((message) => message.method === 'Runtime.evaluate'
+      && String(message.params.expression ?? '').includes('const candidates ='))?.params.expression ?? '');
+    expect(snapshotExpression).not.toContain('text.length > 200');
+    expect(snapshotExpression).toContain('【部分内容已截断】');
+
+    await expect(runtime.Run(['upload', '@e3', 'D:\\authorized\\resume.png'])).resolves.toMatchObject({
+      success: true,
+      data: { uploaded: true },
+    });
+    expect(socket.sent).toContainEqual(expect.objectContaining({
+      method: 'DOM.setFileInputFiles',
+      params: { files: ['D:\\authorized\\resume.png'], objectId: 'boss-file-input' },
+      sessionId: 'task-session',
+    }));
+    const uploadStart = socket.sent.findIndex((message) => message.method === 'Runtime.evaluate'
+      && String(message.params.expression ?? '').includes("element.type !== 'file'"));
+    expect(socket.sent.slice(uploadStart, uploadStart + 2).map((message) => message.method)).toEqual([
+      'Runtime.evaluate', 'DOM.setFileInputFiles',
+    ]);
     await runtime.Close();
   });
 });

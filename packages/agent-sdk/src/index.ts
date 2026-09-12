@@ -5,9 +5,9 @@ export { SlotToModuleKey } from './modules';
 export type { AgentModules, CompactionModule, ContextBuilderModule, InteractionModule, ModelProviderModule, ObservabilityModule, ProviderRequestSnapshot, SessionContextSnapshot, SessionContextSource, ToolsModule } from './modules';
 export type { AgentStreamEvent } from './events';
 export type { KernelRunFunction, KernelRunInput, KernelRunResult } from './kernel';
-export { DropOldestTurnGroups, IsUserTurn, KeepRecentTurnGroups, SplitTurnGroups } from './turn-group';
+export { DropOldestTurnGroups, IsRuntimeContextMessage, IsUserTurn, KeepRecentTurnGroups, SplitTurnGroups } from './turn-group';
 export type {
-  BrowserActionProposal, BrowserAutomationPort, BrowserEngine, BrowserToolName, FileReadPort, JobCollectionCandidate, JobCollectionFilters, JobCollectionPort, JobCollectionQuery, JobSearchPort, ProfileWritePort, RegisteredAgentTool, ResumeReadPort, ResumeWritePort,
+  BossContactPort, BrowserActionProposal, BrowserAutomationPort, BrowserEngine, BrowserToolName, FileReadPort, JobCollectionCandidate, JobCollectionFilters, JobCollectionPort, JobCollectionQuery, JobSearchPort, ProfileWritePort, RegisteredAgentTool, ResumeReadPort, ResumeWritePort,
   SkillReadPort, ToolContext, ToolLedgerPort, ToolPorts, UrlReadPort,
 } from './tools';
 export type {

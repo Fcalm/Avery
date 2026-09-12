@@ -37,6 +37,7 @@ export interface BrowserActionState {
   risk?: 'low' | 'medium' | 'high';
   status?: 'rejected' | 'succeeded' | 'failed' | 'status_unknown' | 'user_action_required';
   message?: string;
+  data?: unknown;
   receipt?: { receiptId: string; toolDefinitionId: string; resourceIds: string[]; idempotencyKey?: string };
 }
 
@@ -57,8 +58,9 @@ export interface CronBrowserAccessStatus {
 
 /** Agent 流式事件：preload 单通道 `agent:stream` 的全部事件类型。 */
 export interface AgentStreamEvent {
-  type: 'thinking_delta' | 'content_delta' | 'completed' | 'cancelled' | 'error' | 'resume_updated' | 'resume_created' | 'resume_confirmation' | 'cron_task_confirmation' | 'cron_task_changed' | 'cron_run_completed' | 'task_created' | 'task_updated' | 'task_deleted' | 'question_requested' | 'waiting_user_input' | 'waiting_confirmation' | 'paused' | 'browser_confirmation' | 'browser_action_completed' | 'browser_user_action';
+  type: 'thinking_delta' | 'content_delta' | 'completed' | 'cancelled' | 'error' | 'run_released' | 'resume_updated' | 'resume_created' | 'resume_confirmation' | 'cron_task_confirmation' | 'cron_task_changed' | 'cron_run_completed' | 'task_created' | 'task_updated' | 'task_deleted' | 'question_requested' | 'waiting_user_input' | 'waiting_confirmation' | 'paused' | 'browser_confirmation' | 'browser_action_completed' | 'browser_user_action';
   requestId?: string;
+  sessionId?: string;
   delta?: string;
   content?: string;
   thinkingContent?: string;
@@ -93,7 +95,7 @@ export interface AgentObservability {
   taskCount: number;
   contextUsage: { inputTokens: number; contextLimit: number; compressionCount: number; compressionThreshold: number };
   logs: Array<{ time: string; level: 'INFO' | 'WARN' | 'ERROR'; event: string; detail: string }>;
-  traces: Array<{ requestId: string; sessionId: string; model: string; state: string; summary: string; createdAt: number; completedAt: number | null; eventCount: number; usage: { source: 'provider' | 'unavailable'; promptTokens: number; completionTokens: number; totalTokens: number; reportedRequestCount: number; unreportedRequestCount: number } }>;
+  traces: Array<{ requestId: string; sessionId: string; model: string; state: string; summary: string; createdAt: number; completedAt: number | null; eventCount: number; usage: { source: 'provider' | 'unavailable'; promptTokens: number; completionTokens: number; totalTokens: number; cachedInputTokens: number; reportedRequestCount: number; unreportedRequestCount: number } }>;
 }
 
 /** 单会话的助手运行状态；用于恢复输入栏 usage、模型与确认权限，不含真实路径或凭据。 */
@@ -107,6 +109,7 @@ export interface AgentSessionAssistantState {
     promptTokens: number;
     completionTokens: number;
     totalTokens: number;
+    cachedInputTokens: number;
     reportedRequestCount: number;
     unreportedRequestCount: number;
   };

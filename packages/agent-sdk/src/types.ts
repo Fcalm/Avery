@@ -269,6 +269,12 @@ export interface AgentMessage {
     | {
       source: 'runtime';
       visibility: 'hidden';
+      /** 仅在当前模型请求可见的业务只读快照，禁止写入会话历史。 */
+      kind: 'runtime_context';
+    }
+    | {
+      source: 'runtime';
+      visibility: 'hidden';
       kind: 'runtime_reminder';
       reminderRevision: number;
       injectedAtTurn: number;
@@ -315,6 +321,8 @@ export interface ModelUsage {
   promptTokens: number;
   completionTokens: number;
   totalTokens: number;
+  /** Provider 返回的输入缓存命中 token；旧 Provider 未提供时保持 undefined。 */
+  cachedInputTokens?: number;
 }
 
 /** 单次模型响应的唯一 usage 事实：只接受 Provider 原始结果，缺失时显式标记 unavailable。 */
@@ -323,6 +331,8 @@ export interface ProviderUsageFact {
   promptTokens: number;
   completionTokens: number;
   totalTokens: number;
+  /** 已校验的缓存命中输入 token；仅缺少 Provider 字段时为 0。 */
+  cachedInputTokens: number;
 }
 
 /** 一次完整模型补全：正文、可选思考正文与工具调用列表。 */
