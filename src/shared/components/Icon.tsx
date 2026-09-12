@@ -3,7 +3,7 @@ import type { CSSProperties, ImgHTMLAttributes } from 'react';
 /** 图标字重：对应 Phosphor 的 Regular / Light / Fill 三套本地字体。 */
 type IconWeight = 'regular' | 'light' | 'fill';
 
-type IconName = 'assistant' | 'jobs' | 'applications' | 'resumes' | 'profiles' | 'developer' | 'plus' | 'resume' | 'resume-panel' | 'browser' | 'panel-expand' | 'panel-shrink' | 'brand' | 'more' | 'settings' | 'developer-mode' | 'balance' | 'logout' | 'sidebar-expand' | 'sidebar-collapse' | 'chevron-down' | 'chevron-up' | 'chevron-right' | 'send' | 'edit' | 'delete' | 'archive' | 'heart' | 'map-pin' | 'arrow-right' | 'loading' | 'error' | 'recovery' | 'refresh' | 'close' | 'stop' | 'music' | 'user-check' | 'user-x' | 'deepseek' | 'window-minimize' | 'window-restore' | 'window-maximize' | 'trace' | 'logs' | 'search' | 'moon' | 'sun' | 'check' | 'pin';
+type IconName = 'assistant' | 'jobs' | 'applications' | 'resumes' | 'profiles' | 'developer' | 'plus' | 'resume' | 'resume-panel' | 'browser' | 'panel-expand' | 'panel-shrink' | 'brand' | 'more' | 'settings' | 'developer-mode' | 'balance' | 'logout' | 'sidebar-expand' | 'sidebar-collapse' | 'chevron-down' | 'chevron-up' | 'chevron-right' | 'send' | 'edit' | 'delete' | 'archive' | 'heart' | 'map-pin' | 'arrow-right' | 'arrow-left' | 'loading' | 'error' | 'recovery' | 'refresh' | 'close' | 'stop' | 'music' | 'user-check' | 'user-x' | 'deepseek' | 'window-minimize' | 'window-restore' | 'window-maximize' | 'trace' | 'logs' | 'search' | 'moon' | 'sun' | 'check' | 'check-circle' | 'pin' | 'account' | 'workspace' | 'sliders';
 
 /**
  * IconName 到 Phosphor 字形的映射。深松绿设计系统的图标统一来自
@@ -12,7 +12,8 @@ type IconName = 'assistant' | 'jobs' | 'applications' | 'resumes' | 'profiles' |
  */
 const glyphs: Record<IconName, string> = {
   assistant: 'chats-circle', jobs: 'stack', applications: 'kanban', resumes: 'file-text', profiles: 'identification-card', developer: 'code', plus: 'plus', resume: 'file-text', 'resume-panel': 'file-text', browser: 'globe', 'panel-expand': 'arrows-out-simple', 'panel-shrink': 'arrows-in-simple', brand: 'sparkle', more: 'dots-three', settings: 'gear-six', 'developer-mode': 'code', balance: 'coins', logout: 'sign-out', 'sidebar-expand': 'sidebar-simple', 'sidebar-collapse': 'sidebar-simple', 'chevron-down': 'caret-down', 'chevron-up': 'caret-up', 'chevron-right': 'caret-right', send: 'paper-plane-right', edit: 'pencil-simple', delete: 'trash', archive: 'archive', heart: 'heart', 'map-pin': 'map-pin', 'arrow-right': 'arrow-right', loading: 'circle-notch', error: 'warning', recovery: 'arrows-counter-clockwise', refresh: 'arrows-clockwise', close: 'x', stop: 'stop', music: 'microphone', 'user-check': 'user-check', // Phosphor 无 user-x，语义最接近的是授权盾牌
-  'user-x': 'shield-check', deepseek: 'deepseek', 'window-minimize': 'minus', 'window-restore': 'corners-in', 'window-maximize': 'corners-out', trace: 'tree-structure', logs: 'list-dashes', search: 'magnifying-glass', moon: 'moon', sun: 'sun', check: 'check', pin: 'push-pin',
+  'user-x': 'shield-check', deepseek: 'deepseek', 'window-minimize': 'minus', 'window-restore': 'corners-in', 'window-maximize': 'corners-out', trace: 'tree-structure', logs: 'list-dashes', search: 'magnifying-glass', moon: 'moon', sun: 'sun', check: 'check', 'check-circle': 'check-circle', pin: 'push-pin', account: 'user-circle', workspace: 'folder-open', sliders: 'sliders-horizontal',
+  'arrow-left': 'arrow-left',
 };
 
 /** 未收录于 Phosphor 的品牌图标继续走本地 PNG 资源。 */

@@ -1,4 +1,4 @@
-import { useEffect, useState, type CSSProperties } from 'react';
+import { useEffect, useState } from 'react';
 import { AppShell } from './AppShell';
 import { UiStoreProvider, useUiStore } from './UiStore';
 import { useWorkspaceData } from '../features/workspace/api/useWorkspaceData';
@@ -34,7 +34,7 @@ function ErrorScreen({ onRetry }: { onRetry: () => void }) {
 function AppContent() {
   const workspace = useWorkspaceData();
   const { settings, setSettings } = useSettingsStore();
-  const { profileConflict, setProfileConflict, notice, ShowNotice } = useUiStore();
+  const { profileConflict, setProfileConflict, notice, ShowNotice, HideNotice } = useUiStore();
   const profiles = useProfiles();
   const reloadProfiles = useReloadProfiles({ onFailure: ShowNotice });
   const keepProfiles = useKeepProfiles({ onFailure: ShowNotice });
@@ -78,7 +78,12 @@ function AppContent() {
       {page === 'jobs' && <JobsPage />}{page === 'applications' && <ApplicationsPage />}{page === 'resumes' && <ResumesPage onGoAssistant={() => setPage('assistant')} />}{page === 'profiles' && <ProfilesPage />}{page === 'settings' && <SettingsPage onNavigateDeveloper={() => setPage('developer')} tab={settingsTab} requestedTab={requestedSettingsTab} tabRequestVersion={settingsTabRequestVersion} onTabChange={setSettingsTab} />}{page === 'developer' && <DeveloperPage />}
     </AppShell>
     <Modal open={profileConflict} title="档案文件已被外部修改" onClose={() => undefined}><p className="modal-copy">本地工作空间的档案文件（profile.json）已被其他程序修改。请选择保留磁盘版本，还是覆盖为应用中的最新版本。</p><div className="modal-actions"><Button onClick={() => void ResolveProfileConflict('reload')}>重新加载磁盘版本</Button><Button variant="primary" onClick={() => void ResolveProfileConflict('keep')}>保留应用版本</Button></div></Modal>
-    {notice && <div key={notice.id} className={`app-toast app-toast-${notice.tone}`} role="status" aria-live="polite" style={{ '--toast-duration': `${notice.duration ?? 3200}ms` } as CSSProperties}><span className="app-toast-indicator" aria-hidden="true" />{notice.message}{notice.action && <button className="app-toast-action" type="button" onClick={() => { notice.action?.run(); }}><Icon name="recovery" size={13} />{notice.action.label}</button>}</div>}
+    {/* 原型同款通知：底部居中药丸，图标随语气区分；点击动作先收起再执行 */}
+    {notice && <div key={notice.id} className={`app-toast${notice.action ? ' has-action' : ''}`} role="status" aria-live="polite">
+      <Icon name={notice.tone === 'error' ? 'error' : notice.tone === 'pending' ? 'loading' : 'check-circle'} size={14} />
+      <span>{notice.message}</span>
+      {notice.action && <button className="app-toast-act" type="button" onClick={() => { HideNotice(); notice.action?.run(); }}>{notice.action.label}</button>}
+    </div>}
   </>;
 }
 

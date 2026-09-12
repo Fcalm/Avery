@@ -84,7 +84,7 @@ function AppShell({ page, onNavigate, onRestartOnboarding, settingsTab, onReques
   const liveConversations = conversations.filter((item) => !(item.archived ?? false)).slice().sort((a, b) => Number(b.pinned ?? false) - Number(a.pinned ?? false));
   const searchKeyword = searchQuery.trim().toLowerCase();
   const visibleConversations = searchKeyword ? liveConversations.filter((item) => item.title.toLowerCase().includes(searchKeyword)) : liveConversations;
-  const crumbLeaf = page === 'assistant' ? (activeConversation?.title ?? '新对话') : page === 'settings' ? '设置' : MainRoutes.find((route) => route.id === page)?.label ?? '';
+  const crumbLeaf = page === 'assistant' ? (activeConversation?.title ?? '新对话') : MainRoutes.find((route) => route.id === page)?.label ?? '';
   const balanceText = refreshingBalance && !balance ? '刷新中…' : balance?.map((item) => FormatBalance(item.currency, item.totalBalance)).join(' / ') ?? '未配置';
 
   const RefreshBalance = useCallback(async (manual = false) => {
@@ -145,6 +145,7 @@ function AppShell({ page, onNavigate, onRestartOnboarding, settingsTab, onReques
   }, [onNavigate, setActiveConversationId]);
 
   // 导航滑动指示器：测量当前项的位置，折叠动画结束后再校准一次。
+  // settingsTab 变化时设置侧栏的指示器也要跟随移动。
   const MoveNavIndicator = useCallback(() => {
     const nav = navRef.current;
     const indicator = navIndicatorRef.current;
@@ -162,7 +163,7 @@ function AppShell({ page, onNavigate, onRestartOnboarding, settingsTab, onReques
     const timer = window.setTimeout(MoveNavIndicator, 420);
     document.fonts?.ready.then(MoveNavIndicator).catch(() => undefined);
     return () => { window.removeEventListener('resize', MoveNavIndicator); window.clearTimeout(timer); };
-  }, [MoveNavIndicator, page, collapsed, settings.developerMode]);
+  }, [MoveNavIndicator, page, settingsTab, collapsed, settings.developerMode]);
 
   function HandleNewConversation() {
     // 仅切换到未保存草稿；首次发送时由助手页创建实际会话，避免空会话进入历史列表。
@@ -306,24 +307,30 @@ function AppShell({ page, onNavigate, onRestartOnboarding, settingsTab, onReques
         </div>
         <span className="tb-div" aria-hidden="true" />
         <div className="crumb">
-          <span className="crumb-root">{page === 'assistant' ? '求职' : '工作区'}</span>
-          <Icon name="chevron-right" size={12} className="crumb-sep" />
-          <div className="menu-wrap">
-            <button className="crumb-btn" type="button" data-menu-trigger="crumb" aria-expanded={showCrumbMenu} aria-haspopup="menu" title="切换会话" onClick={() => SetShowCrumbMenu((value) => !value)}>
-              <b className="crumb-last">{crumbLeaf}</b>
-              <Icon name="chevron-down" size={12} className="chev" />
-            </button>
-            {showCrumbMenu && <div className="menu drop lg open" data-floating-menu role="menu" aria-label="快速切换会话">
-              <button className="menu-item plain" type="button" onClick={HandleNewConversation}><Icon name="plus" size={16} /><span className="mt">新建对话</span></button>
-              <div className="menu-sep" aria-hidden="true" />
-              {liveConversations.map((item) => <button key={item.id} type="button" role="menuitemradio" aria-checked={item.id === activeConversationId} className={`menu-item ${item.id === activeConversationId ? 'sel' : ''}`} title={item.title} onClick={() => { setActiveConversationId(item.id); SetShowCrumbMenu(false); onNavigate('assistant'); }}>
-                <Icon name={item.pinned ? 'pin' : 'assistant'} size={16} weight={item.pinned ? 'fill' : 'regular'} />
-                <span><span className="mt">{item.title}</span></span>
-                <Icon name="check" size={14} className="tick" />
-              </button>)}
-              {!liveConversations.length && <div className="menu-label">还没有会话</div>}
-            </div>}
-          </div>
+          {page === 'settings' ? <>
+            <span className="crumb-root">设置</span>
+            <Icon name="chevron-right" size={12} className="crumb-sep" />
+            <b className="crumb-last">{SettingsTabs.find((item) => item.id === settingsTab)?.label}</b>
+          </> : <>
+            <span className="crumb-root">{page === 'assistant' ? '求职' : '工作区'}</span>
+            <Icon name="chevron-right" size={12} className="crumb-sep" />
+            <div className="menu-wrap">
+              <button className="crumb-btn" type="button" data-menu-trigger="crumb" aria-expanded={showCrumbMenu} aria-haspopup="menu" title="切换会话" onClick={() => SetShowCrumbMenu((value) => !value)}>
+                <b className="crumb-last">{crumbLeaf}</b>
+                <Icon name="chevron-down" size={12} className="chev" />
+              </button>
+              {showCrumbMenu && <div className="menu drop lg open" data-floating-menu role="menu" aria-label="快速切换会话">
+                <button className="menu-item plain" type="button" onClick={HandleNewConversation}><Icon name="plus" size={16} /><span className="mt">新建对话</span></button>
+                <div className="menu-sep" aria-hidden="true" />
+                {liveConversations.map((item) => <button key={item.id} type="button" role="menuitemradio" aria-checked={item.id === activeConversationId} className={`menu-item ${item.id === activeConversationId ? 'sel' : ''}`} title={item.title} onClick={() => { setActiveConversationId(item.id); SetShowCrumbMenu(false); onNavigate('assistant'); }}>
+                  <Icon name={item.pinned ? 'pin' : 'assistant'} size={16} weight={item.pinned ? 'fill' : 'regular'} />
+                  <span><span className="mt">{item.title}</span></span>
+                  <Icon name="check" size={14} className="tick" />
+                </button>)}
+                {!liveConversations.length && <div className="menu-label">还没有会话</div>}
+              </div>}
+            </div>
+          </>}
         </div>
       </div>
 
@@ -347,12 +354,28 @@ function AppShell({ page, onNavigate, onRestartOnboarding, settingsTab, onReques
     <div className="app-body">
       <aside className="sidebar" aria-label={page === 'settings' ? '设置导航' : '主导航'}>
         {page === 'settings' ? <div className="sb-inner">
-          <button className="nav-item settings-return" type="button" onClick={() => onNavigate('assistant')} title="返回主页面"><Icon name="sidebar-expand" size={17} /><span>返回主页面</span></button>
-          <div className="sb-sec">
-            <div className="sb-sec-h"><span>设置</span><small>应用偏好</small></div>
-            <nav className="settings-tabs" role="tablist" aria-label="设置分类">
-              {SettingsTabs.map((item) => <button key={item.id} className={`nav-item ${settingsTab === item.id ? 'is-active' : ''}`} type="button" role="tab" aria-selected={settingsTab === item.id} title={item.label} onClick={() => onRequestSettingsTab(item.id)}><span>{item.label}</span></button>)}
+          {/* 原型设置侧栏：主色返回入口 + 带指示器的分类导航 + 用户卡 */}
+          <button className="sb-new-chat" type="button" onClick={() => onNavigate('assistant')} title="返回工作区">
+            <Icon name="arrow-left" size={15} />
+            <span>返回工作区</span>
+          </button>
+          <div className="sb-scroll">
+            <nav className="nav" ref={navRef} role="tablist" aria-label="设置分类">
+              <div className="nav-ind" ref={navIndicatorRef} aria-hidden="true" />
+              {SettingsTabs.map((item) => <button key={item.id} className={`nav-item ${settingsTab === item.id ? 'is-active' : ''}`} type="button" role="tab" aria-selected={settingsTab === item.id} title={item.label} onClick={() => onRequestSettingsTab(item.id)}>
+                <Icon name={item.id === 'account' ? 'account' : item.id === 'workspace' ? 'workspace' : item.id === 'api' ? 'sliders' : item.id === 'browser' ? 'browser' : 'developer-mode'} size={17} />
+                <span>{item.label}</span>
+              </button>)}
             </nav>
+          </div>
+          <div className="sb-foot">
+            <div className="uc-row">
+              <button className="user-card" type="button" data-menu-trigger="user" aria-expanded={userMenuPosition !== null} aria-haspopup="menu" title="账户" onClick={(event) => OpenUserMenu(event.currentTarget)}>
+                <span className="avatar" aria-hidden="true">{settings.nickname.slice(0, 1)}</span>
+                <span className="uc-body"><span className="uc-name">{settings.nickname}</span></span>
+                <Icon name="chevron-up" size={12} className="chev" />
+              </button>
+            </div>
           </div>
         </div> : <div className="sb-inner">
           <button className="sb-new-chat" type="button" onClick={HandleNewConversation} title="与 Avery 开启新聊天">
@@ -361,16 +384,17 @@ function AppShell({ page, onNavigate, onRestartOnboarding, settingsTab, onReques
             <span className="kbd">Ctrl K</span>
           </button>
 
-          <div className="sb-scroll">
-            <nav className="nav" ref={navRef} aria-label="工作区">
-              <div className="nav-ind" ref={navIndicatorRef} aria-hidden="true" />
-              {navRoutes.map((route) => <button key={route.id} className={`nav-item ${page === route.id ? 'is-active' : ''}`} type="button" aria-current={page === route.id ? 'page' : undefined} title={route.label} onClick={() => onNavigate(route.id)}>
-                <Icon name={route.icon} size={17} />
-                <span>{route.label}</span>
-                {route.id === 'assistant' && liveConversations.length > 0 && <span className="count">{liveConversations.length}</span>}
-              </button>)}
-            </nav>
+          {/* 导航固定不滚动，滚动条只出现在下方的会话列表区域 */}
+          <nav className="nav" ref={navRef} aria-label="工作区">
+            <div className="nav-ind" ref={navIndicatorRef} aria-hidden="true" />
+            {navRoutes.map((route) => <button key={route.id} className={`nav-item ${page === route.id ? 'is-active' : ''}`} type="button" aria-current={page === route.id ? 'page' : undefined} title={route.label} onClick={() => onNavigate(route.id)}>
+              <Icon name={route.icon} size={17} />
+              <span>{route.label}</span>
+              {route.id === 'assistant' && liveConversations.length > 0 && <span className="count">{liveConversations.length}</span>}
+            </button>)}
+          </nav>
 
+          <div className="sb-scroll">
             <div className="sb-sec" aria-label="历史会话">
               <div className="sb-sec-h">
                 <span>最近</span>

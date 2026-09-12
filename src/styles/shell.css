@@ -153,8 +153,9 @@ button { background: none; border: 0; }
 .sb-scroll::-webkit-scrollbar-thumb { background: transparent; border-radius: 99px; border: 2px solid transparent; background-clip: content-box; }
 .sb-scroll:hover::-webkit-scrollbar-thumb { background: var(--border-2); background-clip: content-box; }
 
-/* 一级导航 + 滑动指示器 */
-.nav { position: relative; display: flex; flex-direction: column; gap: 1px; }
+/* 一级导航 + 滑动指示器。导航固定在侧栏内不随列表滚动；
+   滚动条只属于下方的对话列表区域。 */
+.nav { position: relative; flex: none; display: flex; flex-direction: column; gap: 1px; }
 .nav-ind {
   position: absolute; left: 0; right: 0; top: 0; height: 34px; border-radius: 9px;
   background: var(--accent-soft); opacity: 0;
@@ -263,9 +264,7 @@ button { background: none; border: 0; }
   font-family: var(--font-sans);
 }
 
-/* 设置态侧栏：返回入口 + 设置分类 */
-.settings-return { margin-bottom: 4px; }
-.settings-tabs { display: flex; flex-direction: column; gap: 1px; }
+/* 设置态侧栏：主色“返回工作区”入口 + 分类导航，结构复用主侧栏的 nav/nav-ind */
 
 /* --------------------------------------------------------------- 下拉菜单 */
 .menu-wrap { position: relative; }
@@ -340,6 +339,10 @@ button { background: none; border: 0; }
 .app-shell.is-collapsed .nav-item, .app-shell.is-collapsed .sb-new-chat { justify-content: center; padding: 0; }
 .app-shell.is-collapsed .user-card { justify-content: center; padding: 0; flex: none; }
 
+/* ---------------------------------------------------------------- 设置主区 */
+/* 分类导航已上移到全局侧栏，旧两列网格退化为单列内容流 */
+.settings-page { display: block; min-height: 0; padding: var(--space-2); background: transparent; }
+
 /* ------------------------------------------------------------------- 降级 */
 @media (prefers-reduced-motion: reduce) {
   .topbar, .sidebar, .nav-ind, .menu, .menu-item, .thread-item, .ti-more, .sb-new-chat, .icon-btn, .crumb-btn, .win-btn, .tb-txt-btn {
@@ -351,15 +354,25 @@ button { background: none; border: 0; }
 }
 
 /* ---------------------------------------------------------------- Toast */
-/* 通知位置跟随新顶栏高度；撤回动作与进度条时长由 --toast-duration 内联控制。 */
-/* 通知背景为固定的浅色底（成功/错误/警示三色），正文固定深色以兼容深色主题。 */
-.app-toast { top: calc(var(--titlebar-height) + var(--space-4)); color: #18181b; }
-.app-toast::after { animation-duration: var(--toast-duration, 3.2s); }
-.app-toast-action {
-  display: inline-flex; align-items: center; gap: 4px; flex: none;
-  margin-left: var(--space-2); border-radius: var(--r-pill); padding: 2px 10px;
-  color: var(--toast-color); border: 1px solid color-mix(in srgb, var(--toast-color) 35%, transparent);
-  font-size: 12px; font-weight: 550;
-  transition: background-color .16s var(--ease);
+/* 原型同款底部居中通知：药丸外形、深底浅字（随主题反转，深色下自动变为浅底深字）。
+   无进度条；带撤回动作时右侧出现反色小药丸按钮，停留时长由 UiStore 按动作区分。 */
+.app-toast {
+  position: fixed; left: 50%; bottom: 26px; z-index: 80;
+  display: flex; align-items: center; gap: 9px; padding: 9px 15px;
+  max-width: min(calc(100vw - 40px), 480px);
+  background: var(--text); color: var(--bg); border-radius: var(--r-pill);
+  font-size: 12.5px; font-weight: 500; box-shadow: var(--shadow-lg);
+  animation: toastIn .32s var(--ease) both;
 }
-.app-toast-action:hover { background: color-mix(in srgb, var(--toast-color) 12%, transparent); }
+.app-toast i { flex: none; }
+.app-toast.has-action { padding-right: 8px; }
+.app-toast-act {
+  flex: none; margin-left: 3px; padding: 4px 10px; border-radius: var(--r-pill);
+  background: var(--bg); color: var(--text); font-size: 12px; font-weight: 600;
+  transition: opacity .16s var(--ease);
+}
+.app-toast-act:hover { opacity: .82; }
+@keyframes toastIn { from { opacity: 0; transform: translate(-50%, 10px); } to { opacity: 1; transform: translate(-50%, 0); } }
+@media (prefers-reduced-motion: reduce) {
+  .app-toast { animation-duration: .001ms !important; }
+}

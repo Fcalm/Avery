@@ -84,3 +84,8 @@
 .ph-shield-check::before { content: "\e40c"; }
 .ph-list-dashes::before { content: "\e2f4"; }
 .ph-archive::before { content: "\e00c"; }
+.ph-arrow-left::before { content: "\e058"; }
+.ph-check-circle::before { content: "\e184"; }
+.ph-folder-open::before { content: "\e256"; }
+.ph-sliders-horizontal::before { content: "\e434"; }
+.ph-user-circle::before { content: "\e4c4"; }

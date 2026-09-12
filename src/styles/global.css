@@ -3327,51 +3327,8 @@ body.settings-has-configured-api-key .settings-panel.api-panel .form-field:has(i
   .browser-runtime-bar > div:last-child { align-self: flex-end; }
 }
 
-/* 全局操作反馈：所有保存结果由应用根节点统一展示，避免页面切换时丢失提示。 */
-.app-toast {
-  position: fixed;
-  z-index: 300;
-  top: calc(36px + var(--space-4));
-  left: 50%;
-  display: inline-flex;
-  overflow: hidden;
-  max-width: min(calc(100vw - 32px), 480px);
-  align-items: center;
-  gap: var(--space-2);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-control);
-  padding: 10px var(--space-4);
-  background: var(--toast-background);
-  box-shadow: 0 8px 24px color-mix(in srgb, var(--toast-color) 16%, transparent);
-  color: var(--color-text-primary);
-  font-size: var(--text-ui);
-  line-height: 20px;
-  transform: translateX(-50%);
-  animation: app-toast-enter .18s ease-out both;
-}
-.app-toast-indicator {
-  width: 8px;
-  height: 8px;
-  flex: 0 0 8px;
-  background: var(--toast-color);
-}
-.app-toast::after {
-  position: absolute;
-  right: 0;
-  bottom: 0;
-  left: 0;
-  height: 3px;
-  background: var(--toast-color);
-  content: '';
-  opacity: .66;
-  transform-origin: left;
-  animation: app-toast-progress 3.2s linear forwards;
-}
-.app-toast-success { --toast-color: var(--success); --toast-background: #edf6ef; }
-.app-toast-error { --toast-color: var(--danger); --toast-background: #fbedeb; }
-.app-toast-pending { --toast-color: var(--warning); --toast-background: #fbf5e8; }
-@keyframes app-toast-enter { from { opacity: 0; transform: translate(-50%, -8px); } to { opacity: 1; transform: translate(-50%, 0); } }
-@keyframes app-toast-progress { from { transform: scaleX(1); } to { transform: scaleX(0); } }
+/* 全局操作反馈：所有保存结果由应用根节点统一展示，避免页面切换时丢失提示。
+   通知的视觉样式已随外壳迁移到 shell.css（原型药丸样式）。 */
 
 /* 仅对话保留顶层标头：白色实体表面承载会话上下文与面板操作。 */
 .letterhead {

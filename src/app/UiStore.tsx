@@ -3,6 +3,9 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 type NoticeTone = 'success' | 'error' | 'pending';
 type NoticeAction = { label: string; run: () => void };
 type Notice = { id: number; message: string; tone: NoticeTone; action?: NoticeAction; duration?: number };
+/* 原型节奏：普通通知 1.9 秒自动消失；带动作的通知停留 5 秒留出点击窗口。 */
+const BaseNoticeDuration = 1900;
+const ActionNoticeDuration = 5000;
 
 function InferNoticeTone(message: string): NoticeTone {
   if (/失败|错误|无法|请先|不可|冲突|异常|未知|被占用|未获取|缺失/.test(message)) return 'error';
@@ -28,6 +31,7 @@ interface UiStoreValue {
   setDeveloperView: (view: 'logs' | 'evaluation') => void;
   notice: Notice | null;
   ShowNotice: (message: string, tone?: NoticeTone, options?: { action?: NoticeAction; duration?: number }) => void;
+  HideNotice: () => void;
   profileConflict: boolean;
   setProfileConflict: (open: boolean) => void;
 }
@@ -57,7 +61,11 @@ function UiStoreProvider({ children }: { children: ReactNode }) {
     noticeTimerRef.current = window.setTimeout(() => {
       setNotice(null);
       noticeTimerRef.current = null;
-    }, options?.duration ?? 3200);
+    }, options?.duration ?? (options?.action ? ActionNoticeDuration : BaseNoticeDuration));
+  }, []);
+  const HideNotice = useCallback(() => {
+    if (noticeTimerRef.current !== null) { window.clearTimeout(noticeTimerRef.current); noticeTimerRef.current = null; }
+    setNotice(null);
   }, []);
 
   const value = useMemo(() => ({
@@ -68,8 +76,8 @@ function UiStoreProvider({ children }: { children: ReactNode }) {
     rightPanelExpanded, setRightPanelExpanded,
     assistantView, setAssistantView,
     developerView, setDeveloperView,
-    notice, ShowNotice, profileConflict, setProfileConflict,
-  }), [activeConversationId, currentResumeId, resumePanelOpen, rightPanelWidth, rightPanelExpanded, assistantView, developerView, notice, profileConflict, ShowNotice]);
+    notice, ShowNotice, HideNotice, profileConflict, setProfileConflict,
+  }), [activeConversationId, currentResumeId, resumePanelOpen, rightPanelWidth, rightPanelExpanded, assistantView, developerView, notice, profileConflict, ShowNotice, HideNotice]);
 
   return <UiStoreContext.Provider value={value}>{children}</UiStoreContext.Provider>;
 }
