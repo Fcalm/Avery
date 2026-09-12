@@ -256,8 +256,9 @@ if (IsBrowserCompanionProcess()) {
   StartBrowserCompanion();
 } else {
   const cronRunnerLaunch = process.argv.includes('--cron-runner');
-  // Smoke 必须在申请单实例锁前切换隔离目录，否则会被正在运行的正式应用误判为第二实例并立即退出。
-  if (process.env.AVERY_DESKTOP_SMOKE === '1' && process.env.AVERY_SMOKE_USER_DATA) app.setPath('userData', resolve(process.env.AVERY_SMOKE_USER_DATA));
+  // Smoke 与 CDP 驱动的调试实例都必须在申请单实例锁前切换隔离目录：
+  // 一防被正在运行的正式应用误判为第二实例，二防调试写入落到用户真实工作区。
+  if (process.env.AVERY_SMOKE_USER_DATA) app.setPath('userData', resolve(process.env.AVERY_SMOKE_USER_DATA));
   const ownsSingleInstance = app.requestSingleInstanceLock();
   if (!ownsSingleInstance) {
     app.quit();
