@@ -5,7 +5,9 @@ import { App } from './app/App';
 import { UiStoreProvider } from './app/UiStore';
 import { queryClient } from './app/queryClient';
 import './styles/tokens.css';
+import './styles/phosphor.css';
 import './styles/global.css';
+import './styles/shell.css';
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

@@ -1,0 +1,85 @@
+/* Phosphor Icons 本地化：只打包随安装包分发的三个字重（Regular / Light / Fill），
+   源文件位于 public/fonts/phosphor，许可见同目录 LICENSE（MIT）。 */
+@font-face {
+  font-family: "Phosphor";
+  src: url("/fonts/phosphor/Phosphor-Regular.woff2") format("woff2");
+  font-weight: normal;
+  font-style: normal;
+  font-display: block;
+}
+@font-face {
+  font-family: "Phosphor-Light";
+  src: url("/fonts/phosphor/Phosphor-Light.woff2") format("woff2");
+  font-weight: normal;
+  font-style: normal;
+  font-display: block;
+}
+@font-face {
+  font-family: "Phosphor-Fill";
+  src: url("/fonts/phosphor/Phosphor-Fill.woff2") format("woff2");
+  font-weight: normal;
+  font-style: normal;
+  font-display: block;
+}
+
+.ph,
+.ph-light,
+.ph-fill {
+  font-family: "Phosphor";
+  speak: never;
+  font-style: normal;
+  font-weight: normal;
+  font-variant: normal;
+  text-transform: none;
+  line-height: 1;
+  -webkit-font-smoothing: antialiased;
+  display: inline-block;
+}
+.ph-light { font-family: "Phosphor-Light"; }
+.ph-fill { font-family: "Phosphor-Fill"; }
+
+/* 仅声明应用实际用到的字形；新增图标时在此追加对应码点即可。 */
+.ph-chats-circle::before { content: "\e17e"; }
+.ph-stack::before { content: "\e466"; }
+.ph-kanban::before { content: "\eb54"; }
+.ph-file-text::before { content: "\e23a"; }
+.ph-identification-card::before { content: "\e2c8"; }
+.ph-code::before { content: "\e1bc"; }
+.ph-plus::before { content: "\e3d4"; }
+.ph-gear-six::before { content: "\e272"; }
+.ph-coins::before { content: "\e78e"; }
+.ph-sign-out::before { content: "\e42a"; }
+.ph-sidebar-simple::before { content: "\ec24"; }
+.ph-caret-down::before { content: "\e136"; }
+.ph-caret-up::before { content: "\e13c"; }
+.ph-caret-right::before { content: "\e13a"; }
+.ph-dots-three::before { content: "\e1fe"; }
+.ph-pencil-simple::before { content: "\e3b4"; }
+.ph-trash::before { content: "\e4a6"; }
+.ph-magnifying-glass::before { content: "\e30c"; }
+.ph-tree-structure::before { content: "\e67c"; }
+.ph-minus::before { content: "\e32a"; }
+.ph-corners-out::before { content: "\e1d0"; }
+.ph-corners-in::before { content: "\e1ce"; }
+.ph-x::before { content: "\e4f6"; }
+.ph-paper-plane-right::before { content: "\e396"; }
+.ph-map-pin::before { content: "\e316"; }
+.ph-arrow-right::before { content: "\e06c"; }
+.ph-warning::before { content: "\e4e0"; }
+.ph-arrows-clockwise::before { content: "\e094"; }
+.ph-arrows-counter-clockwise::before { content: "\e096"; }
+.ph-circle-notch::before { content: "\eb44"; }
+.ph-microphone::before { content: "\e326"; }
+.ph-user-check::before { content: "\eafa"; }
+.ph-heart::before { content: "\e2a8"; }
+.ph-globe::before { content: "\e288"; }
+.ph-arrows-out-simple::before { content: "\e0a6"; }
+.ph-arrows-in-simple::before { content: "\e09e"; }
+.ph-moon::before { content: "\e330"; }
+.ph-sun::before { content: "\e472"; }
+.ph-check::before { content: "\e182"; }
+.ph-stop::before { content: "\e46c"; }
+.ph-sparkle::before { content: "\e6a2"; }
+.ph-push-pin::before { content: "\e3e2"; }
+.ph-shield-check::before { content: "\e40c"; }
+.ph-list-dashes::before { content: "\e2f4"; }
