@@ -34,10 +34,11 @@ const FallbackReasoningEfforts: ReasoningEffort[] = ['low', 'medium', 'high', 'x
 const ReasoningEffortLabels: Record<ReasoningEffort, string> = {
   low: '低', medium: '中', high: '高', xhigh: '超高', max: '最高',
 };
-const ConfirmationOptions: Array<{ id: ConfirmationMode; label: string; description: string; icon: IconName }> = [
-  { id: 'always_confirm', label: '始终确认', description: '执行任何外部修改前都征求同意', icon: 'user-check' },
-  { id: 'allow_low_risk', label: '允许低风险', description: '低风险操作自动执行，其他操作仍确认', icon: 'user-check' },
-  { id: 'fully_trusted', label: '完全信任', description: '在当前工具与数据授权范围内自动执行', icon: 'user-x' },
+// 权限等级文案与图标一比一取自原型；三个后端确认模式按自主程度递增映射到只读/可编辑/自动执行。
+const ConfirmationOptions: Array<{ id: ConfirmationMode; label: string; description: string; note: string; icon: IconName }> = [
+  { id: 'always_confirm', label: '只读', description: '只能读取你附加的文件，不会改动任何内容。', note: '只读：Avery 不会修改你的文件', icon: 'shield-check' },
+  { id: 'allow_low_risk', label: '可编辑', description: '可以新建和改写简历，动笔前会先给你看改动。', note: '可编辑：Avery 可以新建和修改文档', icon: 'pencil-simple' },
+  { id: 'fully_trusted', label: '自动执行', description: '可以联网检索招聘平台并直接执行，不再逐步确认。', note: '自动执行：Avery 会联网检索并直接执行操作', icon: 'robot' },
 ];
 /** 思考强度菜单的档位说明；强度越高推理越深，耗时与 token 消耗随之增加。 */
 const ReasoningEffortDescriptions: Record<ReasoningEffort, string> = {
@@ -65,11 +66,11 @@ function ResumePreview({ name, content }: { name: string; content: string }) {
 }
 type SessionUsageView = {
   percent: number; threshold: number; compressionCount: number; tokens: number; limit: number;
-  source: 'actual' | 'unavailable' | 'legacy_estimate' | 'loading'; promptTokens: number; completionTokens: number; totalTokens: number; reportedRequestCount: number; unreportedRequestCount: number;
+  source: 'actual' | 'unavailable' | 'legacy_estimate' | 'loading'; promptTokens: number; completionTokens: number; totalTokens: number; cachedInputTokens: number; reportedRequestCount: number; unreportedRequestCount: number;
 };
 const EmptyUsage: SessionUsageView = {
   percent: 0, threshold: 80, compressionCount: 0, tokens: 0, limit: 256000,
-  source: 'loading', promptTokens: 0, completionTokens: 0, totalTokens: 0, reportedRequestCount: 0, unreportedRequestCount: 0,
+  source: 'loading', promptTokens: 0, completionTokens: 0, totalTokens: 0, cachedInputTokens: 0, reportedRequestCount: 0, unreportedRequestCount: 0,
 };
 const ComposerCompactWidth = 640;
 
@@ -330,16 +331,21 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
     };
   }, [scrollToBottomRequest]);
 
-  /** 以输入栏的实际可用宽度切换紧凑控件，不依赖任一侧栏的拖拽方向或宽度。 */
+  /** 以输入栏的实际可用宽度切换紧凑控件，不依赖任一侧栏的拖拽方向或宽度。
+      轨迹视图会卸载输入栏：切回对话时必须重建观察并立即校正，否则卸载期间
+      宽度塌缩为 0 的那次采样会把按钮永久钉在紧凑态。宽度为 0 的采样一律忽略。 */
   useEffect(() => {
     const composerElement = composerRef.current;
     if (!composerElement) return undefined;
-    const UpdateComposerDensity = () => setIsComposerCompact(composerElement.clientWidth < ComposerCompactWidth);
+    const UpdateComposerDensity = () => {
+      const width = composerElement.clientWidth;
+      if (width > 0) setIsComposerCompact(width < ComposerCompactWidth);
+    };
     UpdateComposerDensity();
     const observer = new ResizeObserver(UpdateComposerDensity);
     observer.observe(composerElement);
     return () => observer.disconnect();
-  }, []);
+  }, [assistantView]);
 
   /** 原型输入框随内容自动增高，超过 150px 后内部滚动。 */
   useLayoutEffect(() => {
@@ -414,6 +420,7 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
         promptTokens: next.usage.promptTokens,
         completionTokens: next.usage.completionTokens,
         totalTokens: next.usage.totalTokens,
+        cachedInputTokens: next.usage.cachedInputTokens,
         reportedRequestCount: next.usage.reportedRequestCount,
         unreportedRequestCount: next.usage.unreportedRequestCount,
       });
@@ -910,9 +917,9 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
                 <input ref={inputRef} className="visually-hidden" type="file" multiple accept=".pdf,.doc,.docx,.txt,image/png,image/jpeg,image/gif,image/webp" onChange={HandleFiles} />
                 <button className="cmp-btn icon-only" type="button" aria-label="上传文件" title="上传文件" onClick={() => inputRef.current?.click()}><Icon name="paperclip" size={15} /></button>
                 <div className="menu-wrap">
-                  <button className="cmp-btn permission-button" type="button" aria-label={`确认权限：${CurrentConfirmation.label}`} aria-haspopup="true" aria-expanded={showPermission} onClick={() => setShowPermission((value) => !value)}><Icon name={permission === 'fully_trusted' ? 'user-x' : 'user-check'} size={15} /><span>{CurrentConfirmation.label}</span><Icon name="chevron-up" className="chev" size={10} /></button>
-                  {showPermission && <div className="menu pop" role="menu" aria-label="选择确认权限">
-                    <div className="menu-label">确认权限</div>
+                  <button className="cmp-btn permission-button" type="button" aria-label={`权限范围：${CurrentConfirmation.label}`} aria-haspopup="true" aria-expanded={showPermission} onClick={() => setShowPermission((value) => !value)}><Icon name={CurrentConfirmation.icon} size={15} /><span>{CurrentConfirmation.label}</span><Icon name="chevron-up" className="chev" size={10} /></button>
+                  {showPermission && <div className="menu pop" role="menu" aria-label="选择权限范围">
+                    <div className="menu-label">权限范围</div>
                     {ConfirmationOptions.map((item) => <button key={item.id} type="button" role="menuitemradio" aria-checked={item.id === permission} className={item.id === permission ? 'menu-item sel' : 'menu-item'} onClick={() => { if (item.id === 'fully_trusted') { setShowPermission(false); setShowFullyTrustedWarning(true); } else void ApplyConfirmationMode(item.id); }}>
                       <Icon name={item.icon} size={16} />
                       <span><span className="mt">{item.label}</span><span className="md">{item.description}</span></span>
@@ -953,14 +960,21 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
                       <circle className="track" cx="11" cy="11" r="8" pathLength="100" />
                       <circle className="val" cx="11" cy="11" r="8" pathLength="100" style={{ strokeDashoffset: 100 - usagePresentation.progress }} />
                     </svg>
-                    <span className="ctx-pct">{usage.source === 'actual' ? `${usage.percent}%` : '—'}</span>
+                    <span className="ctx-pct">{usage.tokens > 0 ? `${usage.percent}%` : '—'}</span>
                   </button>
                   <div className="ctx-pop" role="tooltip">
                     <div className="cp-h">上下文使用</div>
-                    <div className="cp-big"><span className="cp-pct">{usage.source === 'actual' ? `${usage.percent}%` : '—'}</span><span className="cp-tok">上下文窗口 {FormatTokenCount(usage.limit)} tokens</span></div>
+                    <div className="cp-big"><span className="cp-pct">{usage.tokens > 0 ? `${usage.percent}%` : '—'}</span><span className="cp-tok">{usage.tokens > 0 ? `${FormatTokenCount(usage.tokens)} / ${FormatTokenCount(usage.limit)} tokens` : `上限 ${FormatTokenCount(usage.limit)} tokens`}</span></div>
                     <div className="cp-rows">
-                      <div className="cp-row"><span>压缩阈值</span><b>{usage.threshold}%</b></div>
-                      <div className="cp-row dim"><span>累计请求</span><b>{usage.reportedRequestCount + usage.unreportedRequestCount} 次</b></div>
+                      <div className="cp-row"><span>累计请求</span><b>{usage.reportedRequestCount + usage.unreportedRequestCount} 次</b></div>
+                      <div className="cp-row dim"><span>剩余可用</span><b>{usage.tokens > 0 ? FormatTokenCount(Math.max(0, usage.limit - usage.tokens)) : '—'}</b></div>
+                    </div>
+                    <div className="cp-cache">
+                      <div className="cp-cache-h">
+                        <span><Icon name="lightning" size={13} />缓存命中</span>
+                        <b>{usage.promptTokens > 0 ? `${Math.round((usage.cachedInputTokens / usage.promptTokens) * 100)}%` : '—'}</b>
+                      </div>
+                      <div className="cp-cache-d">{usage.cachedInputTokens > 0 ? `最近一次请求 ${FormatTokenCount(usage.cachedInputTokens)} tokens 命中缓存` : '当前模型尚未返回缓存命中统计'}</div>
                     </div>
                     <div className="cp-note">{usagePresentation.title}</div>
                   </div>
@@ -997,14 +1011,14 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
           <div className="composer-foot">
             <span>Enter 发送</span><span className="kbd-hint">Shift + Enter</span><span>换行</span>
             <span className="sep" />
-            <span>{CurrentConfirmation.description}</span>
+            <span>{CurrentConfirmation.note}</span>
           </div>
         </div>}
       </div>
       {scenarioId === 'application' && isEmptyConversation && <QuickStart scenarioId={scenarioId} onUse={setComposer} />}
     </section>}
     <section ref={resumeSideRef} className={`resume-side ${resumePanelOpen ? 'open' : ''}`} aria-hidden={!resumePanelOpen} style={{ '--panel-width': `${panelWidth}px` } as CSSProperties}>{resumePanelOpen && <button className="resume-side-backdrop" aria-label="关闭简历栏" onClick={() => setResumePanelOpen(false)} />}<div className="resize-bar" onMouseDown={HandleResize} /><aside><div className="resume-paper">{editing ? <textarea value={resumeText} onChange={(event) => HandleEditChange(event.target.value)} /> : <ResumePreview name={resume?.name ?? '未命名简历'} content={resumeText} />}</div><div className="resume-bottom-bar"><div className="resume-switcher"><button className="resume-switcher-trigger" type="button" disabled={!resumes.length} aria-haspopup="menu" aria-expanded={showResumeMenu} title={resume?.name ?? '选择简历'} onClick={() => setShowResumeMenu((value) => !value)}><span>{TruncateResumeTitle(resume?.name ?? '选择简历')}</span><Icon name={showResumeMenu ? 'chevron-up' : 'chevron-down'} size={15} /></button>{showResumeMenu && <div className="resume-switcher-menu" role="menu" aria-label="切换简历">{resumes.map((item) => <button key={item.id} type="button" role="menuitem" className={item.id === currentResumeId ? 'selected' : ''} title={item.name} onClick={() => HandleSelectResume(item.id)}>{TruncateResumeTitle(item.name)}</button>)}</div>}</div><div className="resume-action-row"><Button onClick={editing ? HandleCancelEditing : () => void HandleStartEditing()}>{editing ? '取消' : '编辑'}</Button><Button disabled={!editing || !history.length} onClick={() => { const last = history.at(-1); if (last) { setResumeText(last); setHistory((current) => current.slice(0, -1)); } }}>撤销</Button><Button variant="primary" disabled={!editing} onClick={() => void HandleSaveResume()}>保存</Button></div></div></aside></section>
-    <Modal open={showFullyTrustedWarning} title="开启完全信任模式" onClose={() => setShowFullyTrustedWarning(false)}><p className="modal-copy">开启后，Agent 可在当前场景的工具白名单与数据授权范围内自动执行操作，不再逐项请求确认。此设置不会授予新的工具、文件或账号权限。</p><div className="modal-actions"><Button onClick={() => setShowFullyTrustedWarning(false)}>取消</Button><Button variant="primary" onClick={() => { setShowFullyTrustedWarning(false); void ApplyConfirmationMode('fully_trusted'); }}>我了解风险，继续</Button></div></Modal>
+    <Modal open={showFullyTrustedWarning} title="开启自动执行模式" onClose={() => setShowFullyTrustedWarning(false)}><p className="modal-copy">开启后，Agent 可在当前场景的工具白名单与数据授权范围内自动执行操作，不再逐项请求确认。此设置不会授予新的工具、文件或账号权限。</p><div className="modal-actions"><Button onClick={() => setShowFullyTrustedWarning(false)}>取消</Button><Button variant="primary" onClick={() => { setShowFullyTrustedWarning(false); void ApplyConfirmationMode('fully_trusted'); }}>我了解风险，继续</Button></div></Modal>
   </div>;
 }
 

@@ -94,3 +94,6 @@
 .ph-brain::before { content: "\e74e"; }
 .ph-gauge::before { content: "\e628"; }
 .ph-folder-simple::before { content: "\e25a"; }
+/* 权限等级与缓存命中（原型一比一） */
+.ph-robot::before { content: "\e762"; }
+.ph-lightning::before { content: "\e2de"; }
