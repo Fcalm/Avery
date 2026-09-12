@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState, type CSSProperties, type Reac
 import { MainRoutes } from './routes';
 import { useUiStore } from './UiStore';
 import { useConversations, useRenameConversation, useSetConversationArchived, useSetConversationPinned } from '../features/conversation/api/conversationQueries';
+import { GetAgentSessionScenes } from '../features/assistant/api/agentQueries';
 import { useSettingsStore } from '../features/settings/api/settingsQueries';
 import type { PageId } from '../types/domain';
 import { Button, Modal } from '../shared/components/UI';
@@ -63,6 +64,16 @@ function AppShell({ page, onNavigate, onRestartOnboarding, settingsTab, onReques
   const [balance, setBalance] = useState<Array<{ currency: string; totalBalance: string }> | null>(null);
   const [refreshingBalance, setRefreshingBalance] = useState(false);
   const [isMaximized, SetIsMaximized] = useState(false);
+
+  // 会话场景映射：原型以标题下文本标注场景；未记录场景的会话按“聊天”处理。
+  const [conversationScenes, SetConversationScenes] = useState<Record<string, 'default' | 'application'>>({});
+  const conversationIdsKey = conversations.map((item) => item.id).join(',');
+  useEffect(() => {
+    let cancelled = false;
+    GetAgentSessionScenes().then((scenes) => { if (!cancelled) SetConversationScenes(scenes); }).catch(() => undefined);
+    return () => { cancelled = true; };
+  }, [conversationIdsKey]);
+  const SceneLabel = (id: string) => (conversationScenes[id] === 'application' ? '工作' : '聊天');
 
   const appShellRef = useRef<HTMLDivElement>(null);
   const navRef = useRef<HTMLElement>(null);
@@ -324,7 +335,7 @@ function AppShell({ page, onNavigate, onRestartOnboarding, settingsTab, onReques
                 <div className="menu-sep" aria-hidden="true" />
                 {liveConversations.map((item) => <button key={item.id} type="button" role="menuitemradio" aria-checked={item.id === activeConversationId} className={`menu-item ${item.id === activeConversationId ? 'sel' : ''}`} title={item.title} onClick={() => { setActiveConversationId(item.id); SetShowCrumbMenu(false); onNavigate('assistant'); }}>
                   <Icon name={item.pinned ? 'pin' : 'assistant'} size={16} weight={item.pinned ? 'fill' : 'regular'} />
-                  <span><span className="mt">{item.title}</span></span>
+                  <span><span className="mt">{item.title}</span><span className="md">{SceneLabel(item.id)}</span></span>
                   <Icon name="check" size={14} className="tick" />
                 </button>)}
                 {!liveConversations.length && <div className="menu-label">还没有会话</div>}
@@ -413,7 +424,7 @@ function AppShell({ page, onNavigate, onRestartOnboarding, settingsTab, onReques
                     }} onBlur={CommitConversationRename} /> : <>
                       <button className={`thread-item ${item.pinned ? 'pinned' : ''} ${isCurrent ? 'active' : ''}`} type="button" title={item.title} onClick={() => { setActiveConversationId(item.id); onNavigate('assistant'); }}>
                         <Icon name={item.pinned ? 'pin' : 'assistant'} size={16} weight={item.pinned ? 'fill' : 'regular'} />
-                        <span className="ti-body"><span className="ti-title">{item.title}</span></span>
+                        <span className="ti-body"><span className="ti-title">{item.title}</span><span className="ti-meta">{SceneLabel(item.id)}</span></span>
                       </button>
                       <button className="ti-more" type="button" data-menu-trigger="row" aria-haspopup="menu" aria-label="更多操作" title="更多操作" onClick={(event) => OpenRowMenu(item.id, event.currentTarget)}><Icon name="more" size={14} /></button>
                     </>}

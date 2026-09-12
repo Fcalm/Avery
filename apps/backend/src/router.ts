@@ -69,6 +69,7 @@ export const MethodRoutes: Record<string, MethodRoute> = {
   'agent:set-trace-retention': { service: 'developer', method: 'SetTraceRetention' },
   'agent:reload-session': { service: 'agent', method: 'ReloadSession' },
   'agent:get-session-assistant-state': { service: 'agent', method: 'GetSessionAssistantState' },
+  'agent:get-session-scenes': { service: 'agent', method: 'GetSessionScenes' },
   'agent:bind-project-environment': { service: 'agent', method: 'BindProjectEnvironment' },
   'agent:clear-observability': { service: 'developer', method: 'ClearObservability' },
   'agent:select-project-directory': { service: 'desktop', method: 'SelectProjectDirectory' },

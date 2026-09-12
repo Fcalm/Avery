@@ -938,6 +938,11 @@ export class AgentHost {
     };
   }
 
+  /** 批量返回会话场景映射（只读）；数据与 GetSessionAssistantState 同源，随宿主状态快照持久化。 */
+  async GetSessionScenes(): Promise<Record<string, 'default' | 'application'>> {
+    return Object.fromEntries(this.sessionScenarios);
+  }
+
   /** 为旧版自定义观测模块保留兼容降级，但无论哪条路径都写入同一 Provider usage 事实。 */
   private RecordProviderUsageFact(requestId: string, fact: ProviderUsageFact): void {
     const observability = this.modules.observability as {

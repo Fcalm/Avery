@@ -97,3 +97,5 @@
 /* 权限等级与缓存命中（原型一比一） */
 .ph-robot::before { content: "\e762"; }
 .ph-lightning::before { content: "\e2de"; }
+/* 场景（工作） */
+.ph-briefcase::before { content: "\e0ee"; }

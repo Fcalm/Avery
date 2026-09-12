@@ -25,9 +25,10 @@ import { CreateSessionUsagePresentation } from '../usagePresentation';
 import { TraceViewer } from '../../developer/components/TraceViewer';
 import type { ChatMessage, PageId } from '../../../types/domain';
 
+// 场景文案与图标一比一取自原型；default/application 仍是后端真实场景 id，浏览器投递能力不变。
 const ScenarioOptions: Array<{ id: 'default' | 'application'; label: string; icon: IconName; description: string }> = [
-  { id: 'default', label: '默认场景', icon: 'assistant', description: '读写简历与档案，不执行岗位投递' },
-  { id: 'application', label: '浏览器投递', icon: 'applications', description: '使用独立持久化浏览器搜索与投递' },
+  { id: 'default', label: '聊天', icon: 'assistant', description: '日常问答和协作，像和同事对话一样。' },
+  { id: 'application', label: '工作', icon: 'briefcase', description: '围绕简历、职位和面试展开，输出更结构化。' },
 ];
 const FallbackDeepSeekModels = ['deepseek-v4-flash', 'deepseek-v4-pro', 'deepseek-v4-flash-vision-exp'];
 const FallbackReasoningEfforts: ReasoningEffort[] = ['low', 'medium', 'high', 'xhigh', 'max'];

@@ -95,6 +95,7 @@ export const platformClient = {
     ReloadSession: (sessionId: string) => CallBridge(() => RequireAgent().ReloadSession(sessionId)),
     SelectProjectDirectory: () => CallBridge(() => RequireAgent().SelectProjectDirectory()),
     GetSessionAssistantState: (sessionId: string) => CallBridge(() => RequireAgent().GetSessionAssistantState(sessionId)),
+    GetSessionScenes: () => CallBridge(() => RequireAgent().GetSessionScenes()),
     BindProjectEnvironment: (sessionId: string, projectId: string) => CallBridge(() => RequireAgent().BindProjectEnvironment(sessionId, projectId)),
     GetModuleConfiguration: () => CallBridge(() => RequireAgent().GetModuleConfiguration()),
     SelectModuleDirectory: () => CallBridge(() => RequireAgent().SelectModuleDirectory()),

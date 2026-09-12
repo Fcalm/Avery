@@ -145,6 +145,11 @@ export async function GetSessionAssistantState(sessionId: string): Promise<Agent
   return Unwrap(await platformClient.agent.GetSessionAssistantState(sessionId));
 }
 
+/** 批量读取会话场景映射，供会话列表按原型以文本标注场景；未记录的会话按默认场景处理。 */
+export async function GetAgentSessionScenes(): Promise<Record<string, 'default' | 'application'>> {
+  return Unwrap(await platformClient.agent.GetSessionScenes());
+}
+
 /** 把已选项目立即绑定到会话，切换会话后可恢复同一项目标签。 */
 export async function BindProjectEnvironment(sessionId: string, projectId: string) {
   return Unwrap(await platformClient.agent.BindProjectEnvironment(sessionId, projectId));

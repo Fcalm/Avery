@@ -47,6 +47,7 @@ const agentBridge: DesktopAgentBridge = {
   ReloadSession: (id) => invoke('agent:reload-session', id) as ReturnType<DesktopAgentBridge['ReloadSession']>,
   SelectProjectDirectory: () => invoke('agent:select-project-directory') as ReturnType<DesktopAgentBridge['SelectProjectDirectory']>,
   GetSessionAssistantState: (id) => invoke('agent:get-session-assistant-state', id) as ReturnType<DesktopAgentBridge['GetSessionAssistantState']>,
+  GetSessionScenes: () => invoke('agent:get-session-scenes') as ReturnType<DesktopAgentBridge['GetSessionScenes']>,
   BindProjectEnvironment: (sessionId, projectId) => invoke('agent:bind-project-environment', sessionId, projectId) as ReturnType<DesktopAgentBridge['BindProjectEnvironment']>,
   GetModuleConfiguration: () => invoke('agent:module-configuration') as ReturnType<DesktopAgentBridge['GetModuleConfiguration']>,
   SelectModuleDirectory: () => invoke('agent:select-module-directory') as ReturnType<DesktopAgentBridge['SelectModuleDirectory']>,

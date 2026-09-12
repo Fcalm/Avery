@@ -186,6 +186,8 @@ export interface DesktopAgentBridge {
   SelectProjectDirectory: () => Promise<{ projectId: string; name: string } | null>;
   /** 按会话读取 usage、项目环境、模型与确认权限；绝不暴露项目绝对路径或凭据。 */
   GetSessionAssistantState: (sessionId: string) => Promise<AgentSessionAssistantState>;
+  /** 批量读取会话场景映射；未记录场景的会话不在返回值中，渲染层按默认场景处理。 */
+  GetSessionScenes: () => Promise<Record<string, 'default' | 'application'>>;
   /** 将已由原生选择器授权的项目环境立即绑定到会话。 */
   BindProjectEnvironment: (sessionId: string, projectId: string) => Promise<AgentSessionAssistantState['project']>;
   GetModuleConfiguration: () => Promise<AgentModuleConfiguration>;
@@ -242,7 +244,7 @@ export const BridgeNamespaces = {
     'ConfirmBrowserAction', 'GetBrowserRuntimeStatus', 'GetCronBrowserAccess', 'RevokeCronBrowserAccess', 'ClearBrowserProfile',
     'AcquireResumeEditLock', 'ReleaseResumeEditLock', 'GetStatus',
     'GetObservability', 'GetTraceEvents', 'DeleteTraces', 'SetTraceRetention', 'ClearObservability',
-    'ReloadSession', 'SelectProjectDirectory', 'GetSessionAssistantState', 'BindProjectEnvironment',
+    'ReloadSession', 'SelectProjectDirectory', 'GetSessionAssistantState', 'BindProjectEnvironment', 'GetSessionScenes',
     'GetModuleConfiguration', 'SelectModuleDirectory', 'ResetModules', 'OnStream',
   ] as const,
   workspace: [
