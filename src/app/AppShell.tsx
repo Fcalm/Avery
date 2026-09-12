@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { MainRoutes } from './routes';
 import { useUiStore } from './UiStore';
 import { useConversations, useDeleteConversation, useRenameConversation } from '../features/conversation/api/conversationQueries';
@@ -12,9 +12,26 @@ import { ListEvalRuns } from '../features/developer/api/evaluationQueries';
 import { SettingsTabs, type SettingTab } from '../features/settings/pages/SettingsPage';
 import { ResolveActiveConversationAfterDeletion } from '../features/conversation/conversationDeletion';
 
-const MinSidebarWidth = 192;
-const MaxSidebarWidth = 320;
 const MinContentWidth = 800;
+
+type WindowControls = {
+  Minimize: () => Promise<boolean>;
+  ToggleMaximize: () => Promise<boolean>;
+  Close: () => Promise<boolean>;
+};
+
+type ThemeMode = 'light' | 'dark';
+
+/** 会话行"更多"菜单的固定定位信息：按触发按钮的位置计算， Escape 或点击外部关闭。 */
+type RowMenuPosition = { conversationId: string; left: number; top: number };
+
+/** 顶栏品牌标记：与原型一致的 A 字轮廓。 */
+const BrandMark = (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.4} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="M5.5 19.5 12 4.5l6.5 15" />
+    <path d="M8.6 13.4h6.8" />
+  </svg>
+);
 
 function FormatBalance(currency: string, total: string) {
   const number = Number(total);
@@ -22,29 +39,48 @@ function FormatBalance(currency: string, total: string) {
   return currency === 'CNY' ? `¥ ${amount}` : currency === 'USD' ? `$ ${amount}` : `${currency} ${amount}`;
 }
 
-function AppShell({ page, sidebarCollapsed, onNavigate, onRestartOnboarding, settingsTab, onRequestSettingsTab, children }: { page: PageId; sidebarCollapsed: boolean; onNavigate: (page: PageId) => void; onRestartOnboarding: () => void; settingsTab: SettingTab; onRequestSettingsTab: (tab: SettingTab) => void; children: ReactNode }) {
+function AppShell({ page, onNavigate, onRestartOnboarding, settingsTab, onRequestSettingsTab, children }: { page: PageId; onNavigate: (page: PageId) => void; onRestartOnboarding: () => void; settingsTab: SettingTab; onRequestSettingsTab: (tab: SettingTab) => void; children: ReactNode }) {
   const conversations = useConversations();
   const renameConversation = useRenameConversation({ onConflict: () => ShowNotice('会话已在其他窗口被修改，已刷新为最新版本'), onFailure: () => ShowNotice('会话重命名失败，请稍后重试。') });
   const deleteConversation = useDeleteConversation({ onFailure: () => ShowNotice('会话删除失败，请稍后重试。') });
   const { settings, setSettings, saveSettingsNow } = useSettingsStore();
   const { activeConversationId, setActiveConversationId, resumePanelOpen, setResumePanelOpen, rightPanelWidth, rightPanelExpanded, setRightPanelExpanded, assistantView, setAssistantView, ShowNotice } = useUiStore();
   const activeConversation = conversations.find((item) => item.id === activeConversationId);
-  const [renameConversationId, setRenameConversationId] = useState<string | null>(null);
-  const [renameTitle, setRenameTitle] = useState('');
-  const [deleteConversationId, setDeleteConversationId] = useState<string | null>(null);
-  const [showHeaderConversationMenu, setShowHeaderConversationMenu] = useState(false);
+
+  const [collapsed, SetCollapsed] = useState(false);
+  const [theme, SetTheme] = useState<ThemeMode>(() => (localStorage.getItem('avery-theme') === 'dark' ? 'dark' : 'light'));
+  const [showCrumbMenu, SetShowCrumbMenu] = useState(false);
+  const [userMenuPosition, SetUserMenuPosition] = useState<{ left: number; bottom: number } | null>(null);
+  const [rowMenu, SetRowMenu] = useState<RowMenuPosition | null>(null);
+  const [renamingConversationId, SetRenamingConversationId] = useState<string | null>(null);
+  const [renameTitle, SetRenameTitle] = useState('');
+  const [deleteConversationId, SetDeleteConversationId] = useState<string | null>(null);
+  const [searchOpen, SetSearchOpen] = useState(false);
+  const [searchQuery, SetSearchQuery] = useState('');
   const [balance, setBalance] = useState<Array<{ currency: string; totalBalance: string }> | null>(null);
   const [refreshingBalance, setRefreshingBalance] = useState(false);
+  const [isMaximized, SetIsMaximized] = useState(false);
+
   const appShellRef = useRef<HTMLDivElement>(null);
-  const activeConversationIdRef = useRef(activeConversationId);
-  const sidebarWidthRef = useRef(224);
+  const navRef = useRef<HTMLElement>(null);
+  const navIndicatorRef = useRef<HTMLDivElement>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  const renamingConversationIdRef = useRef<string | null>(null);
+  const activeConversationIdRef = useRef<string | null>(activeConversationId);
   activeConversationIdRef.current = activeConversationId;
+
+  const windowControls = (window as Window & { averyWindow?: WindowControls }).averyWindow;
   const minimumContentWidth = page === 'assistant' ? ASSISTANT_MAIN_MIN_WIDTH : MinContentWidth;
-  const sidebarRouteOrder: PageId[] = ['jobs', 'applications', 'resumes', 'profiles', 'developer'];
-  const sidebarRoutes = sidebarRouteOrder.flatMap((id) => {
+  // 原型导航顺序：对话在最前，其余工作区入口随后；开发者入口仅在开启后出现。
+  const navRouteOrder: PageId[] = ['assistant', 'jobs', 'applications', 'resumes', 'profiles', 'developer'];
+  const navRoutes = navRouteOrder.flatMap((id) => {
     const route = MainRoutes.find((item) => item.id === id);
     return route && (route.id !== 'developer' || settings.developerMode) ? [route] : [];
   });
+  const searchKeyword = searchQuery.trim().toLowerCase();
+  const visibleConversations = searchKeyword ? conversations.filter((item) => item.title.toLowerCase().includes(searchKeyword)) : conversations;
+  const crumbLeaf = page === 'assistant' ? (activeConversation?.title ?? '新对话') : page === 'settings' ? '设置' : MainRoutes.find((route) => route.id === page)?.label ?? '';
+  const balanceText = refreshingBalance && !balance ? '刷新中…' : balance?.map((item) => FormatBalance(item.currency, item.totalBalance)).join(' / ') ?? '未配置';
 
   const RefreshBalance = useCallback(async (manual = false) => {
     if (!IsDesktopAgentAvailable() || settings.provider !== 'DeepSeek') return;
@@ -66,41 +102,75 @@ function AppShell({ page, sidebarCollapsed, onNavigate, onRestartOnboarding, set
     return () => window.clearInterval(timer);
   }, [RefreshBalance]);
 
+  // 主题即时生效并持久化；默认浅色，切换入口在账户菜单。
   useEffect(() => {
-    const CloseHeaderConversationMenu = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setShowHeaderConversationMenu(false);
+    document.documentElement.dataset.theme = theme;
+    localStorage.setItem('avery-theme', theme);
+  }, [theme]);
+
+  // 菜单打开期间统一处理：Escape 关闭，点击触发器与浮层以外的区域关闭。
+  const anyMenuOpen = showCrumbMenu || userMenuPosition !== null || rowMenu !== null;
+  useEffect(() => {
+    if (!anyMenuOpen) return undefined;
+    const CloseOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') { SetShowCrumbMenu(false); SetUserMenuPosition(null); SetRowMenu(null); }
     };
-    window.addEventListener('keydown', CloseHeaderConversationMenu);
-    return () => window.removeEventListener('keydown', CloseHeaderConversationMenu);
+    const CloseOnOutsidePointer = (event: PointerEvent) => {
+      const target = event.target as Element | null;
+      if (target?.closest('[data-menu-trigger],[data-floating-menu]')) return;
+      SetShowCrumbMenu(false); SetUserMenuPosition(null); SetRowMenu(null);
+    };
+    window.addEventListener('keydown', CloseOnEscape);
+    document.addEventListener('pointerdown', CloseOnOutsidePointer);
+    return () => { window.removeEventListener('keydown', CloseOnEscape); document.removeEventListener('pointerdown', CloseOnOutsidePointer); };
+  }, [anyMenuOpen]);
+
+  // 原型同款 Ctrl K：聚焦侧栏"新建对话"，输入场景中不拦截。
+  useEffect(() => {
+    const HandleNewChatShortcut = (event: KeyboardEvent) => {
+      if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== 'k') return;
+      const target = event.target as HTMLElement | null;
+      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) return;
+      event.preventDefault();
+      setActiveConversationId(null);
+      onNavigate('assistant');
+    };
+    window.addEventListener('keydown', HandleNewChatShortcut);
+    return () => window.removeEventListener('keydown', HandleNewChatShortcut);
+  }, [onNavigate, setActiveConversationId]);
+
+  // 导航滑动指示器：测量当前项的位置，折叠动画结束后再校准一次。
+  const MoveNavIndicator = useCallback(() => {
+    const nav = navRef.current;
+    const indicator = navIndicatorRef.current;
+    if (!nav || !indicator) return;
+    const active = nav.querySelector<HTMLButtonElement>('.nav-item.is-active');
+    if (!active) { indicator.style.opacity = '0'; return; }
+    indicator.style.opacity = '1';
+    indicator.style.height = `${active.offsetHeight}px`;
+    indicator.style.transform = `translateY(${active.offsetTop}px)`;
   }, []);
 
   useEffect(() => {
-    if (!showHeaderConversationMenu) return undefined;
-    const CloseHeaderConversationMenuOnOutsidePointer = (event: PointerEvent) => {
-      const menu = document.querySelector('.letterhead-conversation');
-      if (!menu?.contains(event.target as Node)) setShowHeaderConversationMenu(false);
-    };
-    document.addEventListener('pointerdown', CloseHeaderConversationMenuOnOutsidePointer);
-    return () => document.removeEventListener('pointerdown', CloseHeaderConversationMenuOnOutsidePointer);
-  }, [showHeaderConversationMenu]);
-
-  useEffect(() => {
-    const KeepContentReadable = () => {
-      const shellWidth = appShellRef.current?.clientWidth ?? window.innerWidth;
-      const maximum = Math.min(MaxSidebarWidth, Math.max(MinSidebarWidth, shellWidth - minimumContentWidth));
-      const width = Math.min(sidebarWidthRef.current, maximum);
-      sidebarWidthRef.current = width;
-      appShellRef.current?.style.setProperty('--sidebar-width', `${width}px`);
-    };
-    KeepContentReadable();
-    window.addEventListener('resize', KeepContentReadable);
-    return () => window.removeEventListener('resize', KeepContentReadable);
-  }, [minimumContentWidth]);
+    MoveNavIndicator();
+    window.addEventListener('resize', MoveNavIndicator);
+    const timer = window.setTimeout(MoveNavIndicator, 420);
+    document.fonts?.ready.then(MoveNavIndicator).catch(() => undefined);
+    return () => { window.removeEventListener('resize', MoveNavIndicator); window.clearTimeout(timer); };
+  }, [MoveNavIndicator, page, collapsed, settings.developerMode]);
 
   function HandleNewConversation() {
     // 仅切换到未保存草稿；首次发送时由助手页创建实际会话，避免空会话进入历史列表。
     setActiveConversationId(null);
     onNavigate('assistant');
+  }
+
+  function HandleToggleTrace() {
+    setAssistantView(assistantView === 'chat' ? 'trace' : 'chat');
+  }
+
+  async function HandleToggleMaximize() {
+    SetIsMaximized(await windowControls?.ToggleMaximize() ?? false);
   }
 
   async function HandleDeveloperModeChange(enabled: boolean) {
@@ -140,18 +210,26 @@ function AppShell({ page, sidebarCollapsed, onNavigate, onRestartOnboarding, set
     }
     setRightPanelExpanded(!rightPanelExpanded);
   }
-  function BeginRenameConversation(id: string, title: string) { setRenameConversationId(id); setRenameTitle(title); }
-  function SaveConversationRename() {
+
+  function BeginRenameConversation(id: string, title: string) {
+    SetRowMenu(null);
+    renamingConversationIdRef.current = id;
+    SetRenamingConversationId(id);
+    SetRenameTitle(title);
+  }
+  function CommitConversationRename() {
+    const id = renamingConversationIdRef.current;
     const title = renameTitle.trim();
-    if (!renameConversationId || !title) return;
-    const expectedRevision = conversations.find((item) => item.id === renameConversationId)?.revision;
-    renameConversation.mutate({ id: renameConversationId, title, expectedRevision });
-    setRenameConversationId(null);
+    renamingConversationIdRef.current = null;
+    SetRenamingConversationId(null);
+    if (!id || !title || title === conversations.find((item) => item.id === id)?.title) return;
+    const expectedRevision = conversations.find((item) => item.id === id)?.revision;
+    renameConversation.mutate({ id, title, expectedRevision });
   }
   async function ConfirmDeleteConversation() {
     if (!deleteConversationId) return;
     const deletedId = deleteConversationId;
-    setDeleteConversationId(null);
+    SetDeleteConversationId(null);
     try {
       await deleteConversation.mutateAsync({ id: deletedId });
       const nextActiveId = ResolveActiveConversationAfterDeletion(activeConversationIdRef.current, deletedId);
@@ -161,70 +239,188 @@ function AppShell({ page, sidebarCollapsed, onNavigate, onRestartOnboarding, set
     }
   }
 
-  function StartSidebarResize(event: ReactPointerEvent<HTMLDivElement>) {
-    if (event.button !== 0 || sidebarCollapsed) return;
-    event.preventDefault();
-    const shell = appShellRef.current;
-    if (!shell) return;
-    const bounds = shell.getBoundingClientRect();
-    document.body.classList.add('is-resizing-sidebar');
-    const Resize = (moveEvent: PointerEvent) => {
-      const maximum = Math.min(MaxSidebarWidth, Math.max(MinSidebarWidth, shell.clientWidth - minimumContentWidth));
-      const width = Math.min(maximum, Math.max(MinSidebarWidth, moveEvent.clientX - bounds.left));
-      sidebarWidthRef.current = width;
-      shell.style.setProperty('--sidebar-width', `${width}px`);
-    };
-    const Stop = () => {
-      document.body.classList.remove('is-resizing-sidebar');
-      window.removeEventListener('pointermove', Resize);
-      window.removeEventListener('pointerup', Stop);
-      window.removeEventListener('pointercancel', Stop);
-    };
-    window.addEventListener('pointermove', Resize);
-    window.addEventListener('pointerup', Stop, { once: true });
-    window.addEventListener('pointercancel', Stop, { once: true });
+  /** 打开会话行"更多"菜单：菜单宽 186px，贴按钮右缘展开，空间不足时向上翻。 */
+  function OpenRowMenu(conversationId: string, trigger: HTMLButtonElement) {
+    const rect = trigger.getBoundingClientRect();
+    const width = 186;
+    const estimatedHeight = 104;
+    const sidebarLeft = appShellRef.current?.querySelector<HTMLElement>('.sidebar')?.getBoundingClientRect().left ?? 0;
+    const left = Math.max(sidebarLeft + 6, rect.right - width);
+    let top = rect.bottom + 6;
+    if (top + estimatedHeight > window.innerHeight - 10) top = rect.top - estimatedHeight;
+    SetRowMenu({ conversationId, left: Math.round(left), top: Math.round(Math.max(8, top)) });
+  }
+  function OpenUserMenu(trigger: HTMLButtonElement) {
+    if (userMenuPosition) { SetUserMenuPosition(null); return; }
+    const rect = trigger.getBoundingClientRect();
+    SetUserMenuPosition({ left: Math.round(rect.left), bottom: Math.round(window.innerHeight - rect.top + 7) });
+  }
+  function ToggleSearch() {
+    SetSearchOpen((open) => {
+      if (!open) window.setTimeout(() => searchInputRef.current?.focus(), 120);
+      else SetSearchQuery('');
+      return !open;
+    });
   }
 
   const rightPanelWidthToken = rightPanelExpanded ? 'min(720px, calc(100vw - var(--sidebar-width) - var(--space-7)))' : `${rightPanelWidth}px`;
-  return <div ref={appShellRef} className={`app-shell ${sidebarCollapsed ? 'is-sidebar-collapsed' : ''} ${page === 'assistant' && resumePanelOpen ? 'has-right-panel' : ''} ${page === 'assistant' && resumePanelOpen && rightPanelExpanded ? 'is-right-panel-expanded' : ''}`} style={{ '--main-content-min-width': `${minimumContentWidth}px`, '--right-panel-width': rightPanelWidthToken } as CSSProperties}>
-    <aside className="sidebar" aria-label="主导航">
-      <nav className={`sidebar-nav ${page === 'settings' ? 'settings-sidebar-nav' : ''}`} aria-label={page === 'settings' ? '设置导航' : '主导航'}>
-        {page === 'settings' ? <>
-          <button className="sidebar-new-chat sidebar-return-home" type="button" onClick={() => onNavigate('assistant')} title="返回主页面"><Icon name="assistant" size={17} /><span>返回主页面</span></button>
-          <div className="settings-sidebar-heading"><span>设置</span><small>应用偏好</small></div>
-          <div className="settings-sidebar-tabs" role="tablist" aria-label="设置分类">{SettingsTabs.map((item) => <button key={item.id} className={`nav-entry ${settingsTab === item.id ? 'is-active' : ''}`} type="button" role="tab" aria-selected={settingsTab === item.id} title={item.label} onClick={() => onRequestSettingsTab(item.id)}><span>{item.label}</span></button>)}</div>
-        </> : <>
-          <button className="sidebar-new-chat" type="button" onClick={HandleNewConversation} title="与 Avery 开启新聊天"><Icon name="plus" size={17} /><span>与 Avery 开启新聊天</span></button>
-          {sidebarRoutes.map((route) => <button key={route.id} className={`nav-entry ${page === route.id ? 'is-active' : ''}`} type="button" aria-current={page === route.id ? 'page' : undefined} title={route.label} onClick={() => onNavigate(route.id)}><i><Icon name={route.icon} /></i><span>{route.label}</span></button>)}
-          <div className={`assistant-nav ${page === 'assistant' ? 'is-active' : ''}`}>
-            <button className="nav-entry" type="button" aria-current={page === 'assistant' ? 'page' : undefined} title="求职助手" onClick={() => onNavigate('assistant')}><i><Icon name="assistant" /></i><span>求职助手</span></button>
-          </div>
-          <div className="conversation-nav" aria-label="历史会话">
-            {conversations.slice(0, 6).map((item) => <div key={item.id} className={`conversation-entry ${item.id === activeConversationId && page === 'assistant' ? 'is-current' : ''}`}><button type="button" onClick={() => { setActiveConversationId(item.id); onNavigate('assistant'); }}><span>{item.title}</span></button><div><button type="button" aria-label="重命名会话" title="重命名会话" onClick={() => BeginRenameConversation(item.id, item.title)}><Icon name="edit" size={15} /></button><button type="button" aria-label="删除会话" title="删除会话" onClick={() => setDeleteConversationId(item.id)}><Icon name="delete" size={15} /></button></div></div>)}
-          </div>
-        </>}
-      </nav>
-
-      <div className="sidebar-user">
-        <div className="user-menu-wrap">
-          <button className="sidebar-user-trigger" type="button"><span className="avatar">{settings.nickname.slice(0, 1)}</span><span><b>{settings.nickname}</b><small>账户与偏好</small></span><em><Icon name="more" size={16} /></em></button>
-          <div className="user-flyout" aria-label="账户菜单">
-            <button type="button" onClick={() => onNavigate('settings')}><span className="user-menu-item-label"><Icon name="settings" size={16} /><span>设置</span></span></button>
-            <label className="developer-toggle"><span className="user-menu-item-label"><Icon name="developer-mode" size={16} /><span>开发者模式</span></span><input className="switch-control" type="checkbox" role="switch" aria-label="开发者模式" checked={settings.developerMode} onChange={(event) => void HandleDeveloperModeChange(event.target.checked)} /></label>
-            <div className="balance-line"><span className="user-menu-item-label"><Icon name="balance" size={16} /><span>账户余额</span></span><div><b>{refreshingBalance && !balance ? '刷新中…' : balance?.map((item) => FormatBalance(item.currency, item.totalBalance)).join(' / ') ?? '未配置'}</b><button className="balance-refresh" type="button" onClick={() => void RefreshBalance(true)} disabled={refreshingBalance} aria-label="刷新余额" title="刷新余额"><Icon name="refresh" size={15} /></button></div></div>
-            <button className="sign-out-button" type="button" onClick={() => ShowNotice('退出功能将在 Electron 客户端接入后启用')}><span className="user-menu-item-label"><Icon name="logout" size={16} /><span>退出</span></span></button>
+  return <div ref={appShellRef} className={`app-shell ${collapsed ? 'is-collapsed' : ''} ${page === 'assistant' && resumePanelOpen ? 'has-right-panel' : ''} ${page === 'assistant' && resumePanelOpen && rightPanelExpanded ? 'is-right-panel-expanded' : ''}`} style={{ '--main-content-min-width': `${minimumContentWidth}px`, '--right-panel-width': rightPanelWidthToken } as CSSProperties}>
+    <header className="topbar">
+      <div className="tb-group">
+        <button className="icon-btn" type="button" aria-label={collapsed ? '展开侧栏' : '收起侧栏'} aria-pressed={!collapsed} title={collapsed ? '展开侧栏' : '收起侧栏'} onClick={() => SetCollapsed((value) => !value)}><Icon name="sidebar-expand" size={17} /></button>
+        <div className="brand">
+          <span className="brand-mark" aria-hidden="true">{BrandMark}</span>
+          <span className="brand-name">Avery</span>
+        </div>
+        <span className="tb-div" aria-hidden="true" />
+        <div className="crumb">
+          <span className="crumb-root">{page === 'assistant' ? '求职' : '工作区'}</span>
+          <Icon name="chevron-right" size={12} className="crumb-sep" />
+          <div className="menu-wrap">
+            <button className="crumb-btn" type="button" data-menu-trigger="crumb" aria-expanded={showCrumbMenu} aria-haspopup="menu" title="切换会话" onClick={() => SetShowCrumbMenu((value) => !value)}>
+              <b className="crumb-last">{crumbLeaf}</b>
+              <Icon name="chevron-down" size={12} className="chev" />
+            </button>
+            {showCrumbMenu && <div className="menu drop lg open" data-floating-menu role="menu" aria-label="快速切换会话">
+              <button className="menu-item plain" type="button" onClick={HandleNewConversation}><Icon name="plus" size={16} /><span className="mt">新建对话</span></button>
+              <div className="menu-sep" aria-hidden="true" />
+              {conversations.map((item) => <button key={item.id} type="button" role="menuitemradio" aria-checked={item.id === activeConversationId} className={`menu-item ${item.id === activeConversationId ? 'sel' : ''}`} title={item.title} onClick={() => { setActiveConversationId(item.id); SetShowCrumbMenu(false); onNavigate('assistant'); }}>
+                <Icon name="assistant" size={16} />
+                <span><span className="mt">{item.title}</span></span>
+                <Icon name="check" size={14} className="tick" />
+              </button>)}
+              {!conversations.length && <div className="menu-label">还没有会话</div>}
+            </div>}
           </div>
         </div>
-        <button className="restart-onboarding" type="button" onClick={onRestartOnboarding}>重新体验启动页</button>
       </div>
-      <div className="sidebar-resizer" aria-hidden="true" onPointerDown={StartSidebarResize} />
-    </aside>
-    <main className="main-frame">
-      {page === 'assistant' && <header className="letterhead"><div className="assistant-view-switcher" role="tablist" aria-label="求职助手视图"><button type="button" role="tab" aria-selected={assistantView === 'chat'} className={assistantView === 'chat' ? 'selected' : ''} aria-label="对话" title="对话" onClick={() => setAssistantView('chat')}><Icon name="assistant" size={16} /></button><button type="button" role="tab" aria-selected={assistantView === 'trace'} className={assistantView === 'trace' ? 'selected' : ''} aria-label="轨迹" title="轨迹" onClick={() => setAssistantView('trace')}><Icon name="trace" size={16} /></button></div><div className="letterhead-context letterhead-conversation"><button className="letterhead-conversation-button" type="button" aria-haspopup="menu" aria-expanded={showHeaderConversationMenu} title={activeConversation?.title ?? '选择会话'} onClick={() => setShowHeaderConversationMenu((value) => !value)}><span>{activeConversation?.title ?? '选择会话'}</span><Icon name={showHeaderConversationMenu ? 'chevron-up' : 'chevron-down'} size={15} /></button>{showHeaderConversationMenu && <div className="letterhead-conversation-menu" role="menu" aria-label="切换会话">{conversations.map((item) => <button key={item.id} type="button" role="menuitem" className={item.id === activeConversationId ? 'selected' : ''} title={item.title} onClick={() => { setActiveConversationId(item.id); setShowHeaderConversationMenu(false); onNavigate('assistant'); }}><span>{item.title}</span></button>)}</div>}</div><div className="letterhead-note"><button className="letterhead-panel-button" type="button" onClick={HandlePanelExpansion} aria-pressed={rightPanelExpanded} aria-label={rightPanelExpanded ? '缩小右侧面板' : '展开右侧面板'} title={rightPanelExpanded ? '缩小右侧面板' : '展开右侧面板'}><Icon name={rightPanelExpanded ? 'panel-shrink' : 'panel-expand'} size={17} /></button><button className="letterhead-resume-button" type="button" onClick={HandleResumePanel} aria-expanded={resumePanelOpen} aria-label={resumePanelOpen ? '隐藏侧边栏' : '打开右侧边栏'} title={resumePanelOpen ? '隐藏侧边栏' : '打开右侧边栏'}><Icon name={resumePanelOpen ? 'sidebar-collapse' : 'sidebar-expand'} size={17} /></button></div></header>}
-      <div className="page-container">{children}</div>
-    </main>
-    <Modal open={Boolean(renameConversationId)} title="重命名会话" onClose={() => setRenameConversationId(null)}><input value={renameTitle} maxLength={120} onChange={(event) => setRenameTitle(event.target.value)} autoFocus /><div className="modal-actions"><Button onClick={() => setRenameConversationId(null)}>取消</Button><Button variant="primary" onClick={SaveConversationRename}>保存</Button></div></Modal>
-    <Modal open={Boolean(deleteConversationId)} title="删除会话？" onClose={() => setDeleteConversationId(null)}><p className="modal-copy">会话及其本地消息将被删除，此操作不可撤销。</p><div className="modal-actions"><Button onClick={() => setDeleteConversationId(null)}>取消</Button><Button variant="danger" onClick={ConfirmDeleteConversation}>删除</Button></div></Modal>
+
+      <div className="tb-spacer" />
+
+      {page === 'assistant' && <div className="tb-actions">
+        <button className="tb-txt-btn" type="button" aria-pressed={assistantView === 'trace'} title={assistantView === 'trace' ? '返回对话' : '切换至对话轨迹'} onClick={HandleToggleTrace}><Icon name="trace" size={14} /><span>对话轨迹</span></button>
+        <button className="icon-btn" type="button" aria-pressed={rightPanelExpanded} aria-label={rightPanelExpanded ? '缩小右侧面板' : '展开右侧面板'} title={rightPanelExpanded ? '缩小右侧面板' : '展开右侧面板'} onClick={HandlePanelExpansion}><Icon name={rightPanelExpanded ? 'panel-shrink' : 'panel-expand'} size={17} /></button>
+        <button className="icon-btn flip" type="button" aria-expanded={resumePanelOpen} aria-label={resumePanelOpen ? '隐藏右侧边栏' : '打开右侧边栏'} title={resumePanelOpen ? '隐藏右侧边栏' : '打开右侧边栏'} onClick={HandleResumePanel}><Icon name="sidebar-expand" size={17} /></button>
+      </div>}
+      {page === 'assistant' && <span className="tb-div" aria-hidden="true" />}
+
+      <div className="tb-group win-ctl">
+        <button className="win-btn" type="button" aria-label="最小化" title="最小化" onClick={() => void windowControls?.Minimize()}><Icon name="window-minimize" size={15} /></button>
+        <button className="win-btn" type="button" aria-label={isMaximized ? '向下还原' : '最大化'} title={isMaximized ? '向下还原' : '最大化'} onClick={() => void HandleToggleMaximize()}><Icon name={isMaximized ? 'window-restore' : 'window-maximize'} size={15} /></button>
+        <button className="win-btn close" type="button" aria-label="关闭" title="关闭" onClick={() => void windowControls?.Close()}><Icon name="close" size={15} /></button>
+      </div>
+    </header>
+
+    <div className="app-body">
+      <aside className="sidebar" aria-label={page === 'settings' ? '设置导航' : '主导航'}>
+        {page === 'settings' ? <div className="sb-inner">
+          <button className="nav-item settings-return" type="button" onClick={() => onNavigate('assistant')} title="返回主页面"><Icon name="sidebar-expand" size={17} /><span>返回主页面</span></button>
+          <div className="sb-sec">
+            <div className="sb-sec-h"><span>设置</span><small>应用偏好</small></div>
+            <nav className="settings-tabs" role="tablist" aria-label="设置分类">
+              {SettingsTabs.map((item) => <button key={item.id} className={`nav-item ${settingsTab === item.id ? 'is-active' : ''}`} type="button" role="tab" aria-selected={settingsTab === item.id} title={item.label} onClick={() => onRequestSettingsTab(item.id)}><span>{item.label}</span></button>)}
+            </nav>
+          </div>
+        </div> : <div className="sb-inner">
+          <button className="sb-new-chat" type="button" onClick={HandleNewConversation} title="与 Avery 开启新聊天">
+            <Icon name="plus" size={15} />
+            <span>新建对话</span>
+            <span className="kbd">Ctrl K</span>
+          </button>
+
+          <div className="sb-scroll">
+            <nav className="nav" ref={navRef} aria-label="工作区">
+              <div className="nav-ind" ref={navIndicatorRef} aria-hidden="true" />
+              {navRoutes.map((route) => <button key={route.id} className={`nav-item ${page === route.id ? 'is-active' : ''}`} type="button" aria-current={page === route.id ? 'page' : undefined} title={route.label} onClick={() => onNavigate(route.id)}>
+                <Icon name={route.icon} size={17} />
+                <span>{route.label}</span>
+                {route.id === 'assistant' && conversations.length > 0 && <span className="count">{conversations.length}</span>}
+              </button>)}
+            </nav>
+
+            <div className="sb-sec" aria-label="历史会话">
+              <div className="sb-sec-h">
+                <span>最近</span>
+                <div className={`sb-search ${searchOpen ? 'open' : ''}`}>
+                  <input ref={searchInputRef} type="search" value={searchQuery} placeholder="搜索对话" aria-label="搜索近期对话" autoComplete="off" tabIndex={searchOpen ? 0 : -1} onChange={(event) => SetSearchQuery(event.target.value)} onKeyDown={(event) => { if (event.key === 'Escape') { SetSearchOpen(false); SetSearchQuery(''); } }} />
+                  <button className="sb-search-btn" type="button" aria-expanded={searchOpen} aria-label="搜索近期对话" title="搜索近期对话" onClick={ToggleSearch}><Icon name="search" size={13} /></button>
+                </div>
+              </div>
+              <div className="ti-list">
+                {visibleConversations.map((item) => {
+                  const isCurrent = item.id === activeConversationId && page === 'assistant';
+                  return <div key={item.id} className="ti-wrap" data-conversation-id={item.id}>
+                    {renamingConversationId === item.id ? <input className="ti-rename" value={renameTitle} maxLength={120} aria-label="重命名对话" autoFocus onFocus={(event) => event.currentTarget.select()} onChange={(event) => SetRenameTitle(event.target.value)} onKeyDown={(event) => {
+                      if (event.key === 'Enter') { event.preventDefault(); CommitConversationRename(); }
+                      else if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); renamingConversationIdRef.current = null; SetRenamingConversationId(null); }
+                    }} onBlur={CommitConversationRename} /> : <>
+                      <button className={`thread-item ${isCurrent ? 'active' : ''}`} type="button" title={item.title} onClick={() => { setActiveConversationId(item.id); onNavigate('assistant'); }}>
+                        <Icon name="assistant" size={16} />
+                        <span className="ti-body"><span className="ti-title">{item.title}</span></span>
+                      </button>
+                      <button className="ti-more" type="button" data-menu-trigger="row" aria-haspopup="menu" aria-label="更多操作" title="更多操作" onClick={(event) => OpenRowMenu(item.id, event.currentTarget)}><Icon name="more" size={14} /></button>
+                    </>}
+                  </div>;
+                })}
+                {!visibleConversations.length && <div className="ti-empty">{searchKeyword ? '没有匹配的对话' : '还没有会话'}</div>}
+              </div>
+            </div>
+          </div>
+
+          <div className="sb-foot">
+            <div className="uc-row">
+              <button className="user-card" type="button" data-menu-trigger="user" aria-expanded={userMenuPosition !== null} aria-haspopup="menu" title="账户" onClick={(event) => OpenUserMenu(event.currentTarget)}>
+                <span className="avatar" aria-hidden="true">{settings.nickname.slice(0, 1)}</span>
+                <span className="uc-body"><span className="uc-name">{settings.nickname}</span></span>
+                <Icon name="chevron-up" size={12} className="chev" />
+              </button>
+              <button className="icon-btn" type="button" aria-label="设置" title="设置" onClick={() => onNavigate('settings')}><Icon name="settings" size={17} /></button>
+            </div>
+          </div>
+        </div>}
+      </aside>
+      <main className="main-frame">
+        <div className="page-container">{children}</div>
+      </main>
+    </div>
+
+    {/* 会话行菜单固定定位渲染，避免被侧栏滚动裁剪 */}
+    {rowMenu && <div className="menu ti-menu open" data-floating-menu role="menu" aria-label="对话操作" style={{ left: rowMenu.left, top: rowMenu.top }}>
+      <button className="menu-item plain" type="button" onClick={() => BeginRenameConversation(rowMenu.conversationId, conversations.find((item) => item.id === rowMenu.conversationId)?.title ?? '')}>
+        <Icon name="edit" size={16} /><span className="mt">重命名</span>
+      </button>
+      <div className="menu-sep" aria-hidden="true" />
+      <button className="menu-item plain um-danger" type="button" onClick={() => { SetDeleteConversationId(rowMenu.conversationId); SetRowMenu(null); }}>
+        <Icon name="delete" size={16} /><span className="mt">删除</span>
+      </button>
+    </div>}
+
+    {/* 账户菜单锚定在用户卡上方，位于侧栏之外以免被裁剪 */}
+    {userMenuPosition && <div className="menu user-menu open" data-floating-menu role="menu" aria-label="账户" style={{ left: userMenuPosition.left, bottom: userMenuPosition.bottom }}>
+      <div className="um-balance">
+        <span className="l">账户余额</span>
+        <span className="v">{balanceText}</span>
+        <button className="balance-refresh" type="button" onClick={() => void RefreshBalance(true)} disabled={refreshingBalance} aria-label="刷新余额" title="刷新余额"><Icon name="refresh" size={14} /></button>
+      </div>
+      <div className="menu-sep" aria-hidden="true" />
+      <label className={`menu-item um-row ${settings.developerMode ? 'on' : ''}`}>
+        <Icon name="developer-mode" size={16} />
+        <span className="mt">开发者模式</span>
+        <span className="switch" aria-hidden="true"><span className="knob" /></span>
+        <input className="menu-switch-input" type="checkbox" role="switch" aria-label="开发者模式" checked={settings.developerMode} onChange={(event) => void HandleDeveloperModeChange(event.target.checked)} />
+      </label>
+      <label className={`menu-item um-row ${theme === 'dark' ? 'on' : ''}`}>
+        <Icon name={theme === 'dark' ? 'moon' : 'sun'} size={16} />
+        <span className="mt">深色模式</span>
+        <span className="switch" aria-hidden="true"><span className="knob" /></span>
+        <input className="menu-switch-input" type="checkbox" role="switch" aria-label="深色模式" checked={theme === 'dark'} onChange={(event) => SetTheme(event.target.checked ? 'dark' : 'light')} />
+      </label>
+      <button className="menu-item plain" type="button" onClick={onRestartOnboarding}><Icon name="recovery" size={16} /><span className="mt">重新体验启动页</span></button>
+      <div className="menu-sep" aria-hidden="true" />
+      <button className="menu-item plain um-danger" type="button" onClick={() => ShowNotice('退出功能将在 Electron 客户端接入后启用')}><Icon name="logout" size={16} /><span className="mt">退出登录</span></button>
+    </div>}
+
+    <Modal open={Boolean(deleteConversationId)} title="删除会话？" onClose={() => SetDeleteConversationId(null)}><p className="modal-copy">会话及其本地消息将被删除，此操作不可撤销。</p><div className="modal-actions"><Button onClick={() => SetDeleteConversationId(null)}>取消</Button><Button variant="danger" onClick={ConfirmDeleteConversation}>删除</Button></div></Modal>
   </div>;
 }
 

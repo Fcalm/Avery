@@ -17,37 +17,8 @@ import { BackendRecoveryGate, IsBackendRecoveryError } from './BackendRecoveryGa
 import { Icon } from '../shared/components/Icon';
 import type { PageId } from '../types/domain';
 
-type WindowControls = {
-  Minimize: () => Promise<boolean>;
-  ToggleMaximize: () => Promise<boolean>;
-  Close: () => Promise<boolean>;
-};
-
-function NativeTitlebar({ sidebarCollapsed, onToggleSidebar }: { sidebarCollapsed: boolean; onToggleSidebar: () => void }) {
-  const controls = (window as Window & { averyWindow?: WindowControls }).averyWindow;
-  const [isMaximized, setIsMaximized] = useState(false);
-  async function ToggleMaximize() {
-    setIsMaximized(await controls?.ToggleMaximize() ?? false);
-  }
-  return <div className="native-titlebar">
-    <div className="titlebar-brand">
-      <button className="titlebar-brand-toggle" type="button" aria-label={sidebarCollapsed ? '展开导航栏' : '隐藏导航栏'} aria-pressed={!sidebarCollapsed} title={sidebarCollapsed ? '展开导航栏' : '隐藏导航栏'} onClick={onToggleSidebar}>
-        <img src="./assets/avery-guiding-elf-icon-v2.png" alt="" />
-        <span className="titlebar-brand-toggle-icon" aria-hidden="true"><Icon name={sidebarCollapsed ? 'sidebar-expand' : 'sidebar-collapse'} size={18} /></span>
-      </button>
-      <span className="titlebar-brand-wordmark">Avery</span>
-    </div>
-    {controls && <div className="window-controls" aria-label="窗口控制">
-      <button className="window-control window-control-minimize" type="button" aria-label="最小化" onClick={() => void controls.Minimize()}><Icon name="window-minimize" size={14} /></button>
-      <button className="window-control window-control-maximize" type="button" aria-label="最大化或还原" onClick={() => void ToggleMaximize()}><Icon name={isMaximized ? 'window-restore' : 'window-maximize'} size={14} /></button>
-      <button className="window-control window-control-close" type="button" aria-label="关闭窗口" onClick={() => void controls.Close()}><Icon name="close" size={14} /></button>
-    </div>}
-  </div>;
-}
-
 function App() {
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  return <UiStoreProvider><NativeTitlebar sidebarCollapsed={sidebarCollapsed} onToggleSidebar={() => setSidebarCollapsed((value) => !value)} /><AppContent sidebarCollapsed={sidebarCollapsed} /></UiStoreProvider>;
+  return <UiStoreProvider><AppContent /></UiStoreProvider>;
 }
 
 /** 应用启动阶段的加载占位，替代白屏。 */
@@ -60,7 +31,7 @@ function ErrorScreen({ onRetry }: { onRetry: () => void }) {
   return <div className="app-screen"><EmptyState className="app-state app-state-error" role="alert" ariaLive="assertive" icon={<Icon name="error" size={24} />} title="本地数据加载失败" description="无法读取工作空间数据。请确认磁盘可访问后重新加载。" action={<Button variant="primary" onClick={onRetry}>重新加载</Button>} /></div>;
 }
 
-function AppContent({ sidebarCollapsed }: { sidebarCollapsed: boolean }) {
+function AppContent() {
   const workspace = useWorkspaceData();
   const { settings, setSettings } = useSettingsStore();
   const { profileConflict, setProfileConflict, notice, ShowNotice } = useUiStore();
@@ -101,7 +72,7 @@ function AppContent({ sidebarCollapsed }: { sidebarCollapsed: boolean }) {
   if (workspace.isLoading || !workspace.data) return <LoadingScreen />;
   if (!settings.onboardingCompleted) return <OnboardingPage onComplete={() => setSettings((current) => ({ ...current, onboardingCompleted: true }))} />;
   return <>
-    <AppShell page={page} sidebarCollapsed={sidebarCollapsed} onNavigate={setPage} onRestartOnboarding={() => setSettings((current) => ({ ...current, onboardingCompleted: false }))} settingsTab={settingsTab} onRequestSettingsTab={RequestSettingsTab}>
+    <AppShell page={page} onNavigate={setPage} onRestartOnboarding={() => setSettings((current) => ({ ...current, onboardingCompleted: false }))} settingsTab={settingsTab} onRequestSettingsTab={RequestSettingsTab}>
       {/* 在途 Agent 依赖 Renderer 流订阅写回消息终态；导航时隐藏而非卸载，避免遗漏流事件。 */}
       <section className="assistant-page-presence" hidden={page !== 'assistant'}><AssistantPage onNavigate={setPage} /></section>
       {page === 'jobs' && <JobsPage />}{page === 'applications' && <ApplicationsPage />}{page === 'resumes' && <ResumesPage onGoAssistant={() => setPage('assistant')} />}{page === 'profiles' && <ProfilesPage />}{page === 'settings' && <SettingsPage onNavigateDeveloper={() => setPage('developer')} tab={settingsTab} requestedTab={requestedSettingsTab} tabRequestVersion={settingsTabRequestVersion} onTabChange={setSettingsTab} />}{page === 'developer' && <DeveloperPage />}
