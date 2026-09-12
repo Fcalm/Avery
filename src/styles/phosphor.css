@@ -83,3 +83,4 @@
 .ph-push-pin::before { content: "\e3e2"; }
 .ph-shield-check::before { content: "\e40c"; }
 .ph-list-dashes::before { content: "\e2f4"; }
+.ph-archive::before { content: "\e00c"; }

@@ -191,7 +191,7 @@ async function runInstalledVisualScenario(outputDirectory: string): Promise<Reco
   const ready = await window.webContents.executeJavaScript(`new Promise((resolve)=>{const end=Date.now()+5000;const wait=()=>document.querySelector('nav button')?resolve(true):Date.now()>=end?resolve(false):setTimeout(wait,50);wait();})`, true);
   if (ready !== true) return { rendererNavigationReady: false, consoleErrors, pages: [], passed: false };
 
-  const pageLabels = ['求职助手', '岗位库', '投递管理', '简历库', '档案库', '开发者工具'];
+  const pageLabels = ['对话', '岗位', '简历', '投递记录', '档案', '开发者工具'];
   const pages: Array<Record<string, unknown>> = [];
   // Windows 上隐藏或尚未获得可绘制表面的窗口会让 capturePage 抛出 UnknownVizError。
   window.show();
@@ -223,7 +223,7 @@ async function runInstalledVisualScenario(outputDirectory: string): Promise<Reco
         };
       })()`, true) as Record<string, unknown>;
       const image = await window.webContents.capturePage();
-      const safeLabel = label === '求职助手' ? 'assistant' : label === '岗位库' ? 'jobs' : label === '投递管理' ? 'applications' : label === '简历库' ? 'resumes' : label === '档案库' ? 'profiles' : 'developer';
+      const safeLabel = label === '对话' ? 'assistant' : label === '岗位' ? 'jobs' : label === '投递记录' ? 'applications' : label === '简历' ? 'resumes' : label === '档案' ? 'profiles' : 'developer';
       writeFileSync(join(outputDirectory, `${safeLabel}-${width}x${height}.png`), image.toPNG());
       pages.push({ width, height, ...metrics });
     }
@@ -231,7 +231,7 @@ async function runInstalledVisualScenario(outputDirectory: string): Promise<Reco
 
   window.show();
   window.focus();
-  const keyboardTargetFocused = await window.webContents.executeJavaScript(`(() => { const button = document.querySelector('button[title="岗位库"]'); button?.focus(); return document.activeElement === button; })()`, true);
+  const keyboardTargetFocused = await window.webContents.executeJavaScript(`(() => { const button = document.querySelector('button[title="岗位"]'); button?.focus(); return document.activeElement === button; })()`, true);
   window.webContents.debugger.attach('1.3');
   try {
     await window.webContents.debugger.sendCommand('Input.dispatchKeyEvent', { type: 'rawKeyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 });
@@ -240,7 +240,7 @@ async function runInstalledVisualScenario(outputDirectory: string): Promise<Reco
   } finally {
     if (window.webContents.debugger.isAttached()) window.webContents.debugger.detach();
   }
-  const keyboardNavigation = await window.webContents.executeJavaScript(`new Promise((resolve)=>{const end=Date.now()+1000;const wait=()=>document.querySelector('button[title="岗位库"]')?.getAttribute('aria-current')==='page'?resolve(true):Date.now()>=end?resolve(false):setTimeout(wait,25);wait();})`, true);
+  const keyboardNavigation = await window.webContents.executeJavaScript(`new Promise((resolve)=>{const end=Date.now()+1000;const wait=()=>document.querySelector('button[title="岗位"]')?.getAttribute('aria-current')==='page'?resolve(true):Date.now()>=end?resolve(false):setTimeout(wait,25);wait();})`, true);
   await callBackend('workspace:save-settings', { ...originalSettings, developerMode: false, onboardingCompleted: true });
   await ReloadRenderer();
   const hiddenWhenDisabled = await window.webContents.executeJavaScript(`new Promise((resolve)=>{const end=Date.now()+5000;const wait=()=>{const hidden=![...document.querySelectorAll('button[title]')].some((item)=>item.getAttribute('title')==='开发者工具');hidden?resolve(true):Date.now()>=end?resolve(false):setTimeout(wait,25)};wait();})`, true);

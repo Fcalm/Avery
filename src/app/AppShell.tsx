@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { MainRoutes } from './routes';
 import { useUiStore } from './UiStore';
-import { useConversations, useDeleteConversation, useRenameConversation } from '../features/conversation/api/conversationQueries';
+import { useConversations, useRenameConversation, useSetConversationArchived, useSetConversationPinned } from '../features/conversation/api/conversationQueries';
 import { useSettingsStore } from '../features/settings/api/settingsQueries';
 import type { PageId } from '../types/domain';
 import { Button, Modal } from '../shared/components/UI';
@@ -10,7 +10,6 @@ import { GetAgentBalance, IsDesktopAgentAvailable } from '../features/assistant/
 import { ASSISTANT_MAIN_MIN_WIDTH } from '../shared/layoutConstants';
 import { ListEvalRuns } from '../features/developer/api/evaluationQueries';
 import { SettingsTabs, type SettingTab } from '../features/settings/pages/SettingsPage';
-import { ResolveActiveConversationAfterDeletion } from '../features/conversation/conversationDeletion';
 
 const MinContentWidth = 800;
 
@@ -24,6 +23,9 @@ type ThemeMode = 'light' | 'dark';
 
 /** 会话行"更多"菜单的固定定位信息：按触发按钮的位置计算， Escape 或点击外部关闭。 */
 type RowMenuPosition = { conversationId: string; left: number; top: number };
+
+/** 待归档会话：确认弹窗标题里需要会话名。 */
+type ArchiveTarget = { id: string; title: string };
 
 /** 顶栏品牌标记：与原型一致的 A 字轮廓。 */
 const BrandMark = (
@@ -42,7 +44,8 @@ function FormatBalance(currency: string, total: string) {
 function AppShell({ page, onNavigate, onRestartOnboarding, settingsTab, onRequestSettingsTab, children }: { page: PageId; onNavigate: (page: PageId) => void; onRestartOnboarding: () => void; settingsTab: SettingTab; onRequestSettingsTab: (tab: SettingTab) => void; children: ReactNode }) {
   const conversations = useConversations();
   const renameConversation = useRenameConversation({ onConflict: () => ShowNotice('会话已在其他窗口被修改，已刷新为最新版本'), onFailure: () => ShowNotice('会话重命名失败，请稍后重试。') });
-  const deleteConversation = useDeleteConversation({ onFailure: () => ShowNotice('会话删除失败，请稍后重试。') });
+  const pinConversation = useSetConversationPinned({ onConflict: () => ShowNotice('会话已在其他窗口被修改，已刷新为最新版本'), onFailure: () => ShowNotice('会话置顶失败，请稍后重试。') });
+  const archiveConversation = useSetConversationArchived({ onConflict: () => ShowNotice('会话已在其他窗口被修改，已刷新为最新版本'), onFailure: () => ShowNotice('会话归档失败，请稍后重试。') });
   const { settings, setSettings, saveSettingsNow } = useSettingsStore();
   const { activeConversationId, setActiveConversationId, resumePanelOpen, setResumePanelOpen, rightPanelWidth, rightPanelExpanded, setRightPanelExpanded, assistantView, setAssistantView, ShowNotice } = useUiStore();
   const activeConversation = conversations.find((item) => item.id === activeConversationId);
@@ -54,7 +57,7 @@ function AppShell({ page, onNavigate, onRestartOnboarding, settingsTab, onReques
   const [rowMenu, SetRowMenu] = useState<RowMenuPosition | null>(null);
   const [renamingConversationId, SetRenamingConversationId] = useState<string | null>(null);
   const [renameTitle, SetRenameTitle] = useState('');
-  const [deleteConversationId, SetDeleteConversationId] = useState<string | null>(null);
+  const [archiveTarget, SetArchiveTarget] = useState<ArchiveTarget | null>(null);
   const [searchOpen, SetSearchOpen] = useState(false);
   const [searchQuery, SetSearchQuery] = useState('');
   const [balance, setBalance] = useState<Array<{ currency: string; totalBalance: string }> | null>(null);
@@ -71,14 +74,16 @@ function AppShell({ page, onNavigate, onRestartOnboarding, settingsTab, onReques
 
   const windowControls = (window as Window & { averyWindow?: WindowControls }).averyWindow;
   const minimumContentWidth = page === 'assistant' ? ASSISTANT_MAIN_MIN_WIDTH : MinContentWidth;
-  // 原型导航顺序：对话在最前，其余工作区入口随后；开发者入口仅在开启后出现。
-  const navRouteOrder: PageId[] = ['assistant', 'jobs', 'applications', 'resumes', 'profiles', 'developer'];
+  // 原型导航顺序与命名：对话、岗位、简历、投递记录、档案；开发者入口仅在开启后出现。
+  const navRouteOrder: PageId[] = ['assistant', 'jobs', 'resumes', 'applications', 'profiles', 'developer'];
   const navRoutes = navRouteOrder.flatMap((id) => {
     const route = MainRoutes.find((item) => item.id === id);
     return route && (route.id !== 'developer' || settings.developerMode) ? [route] : [];
   });
+  // "最近"与会话切换菜单只展示未归档会话；置顶会话排最前，组内保持最近使用顺序（排序稳定）。
+  const liveConversations = conversations.filter((item) => !(item.archived ?? false)).slice().sort((a, b) => Number(b.pinned ?? false) - Number(a.pinned ?? false));
   const searchKeyword = searchQuery.trim().toLowerCase();
-  const visibleConversations = searchKeyword ? conversations.filter((item) => item.title.toLowerCase().includes(searchKeyword)) : conversations;
+  const visibleConversations = searchKeyword ? liveConversations.filter((item) => item.title.toLowerCase().includes(searchKeyword)) : liveConversations;
   const crumbLeaf = page === 'assistant' ? (activeConversation?.title ?? '新对话') : page === 'settings' ? '设置' : MainRoutes.find((route) => route.id === page)?.label ?? '';
   const balanceText = refreshingBalance && !balance ? '刷新中…' : balance?.map((item) => FormatBalance(item.currency, item.totalBalance)).join(' / ') ?? '未配置';
 
@@ -226,16 +231,43 @@ function AppShell({ page, onNavigate, onRestartOnboarding, settingsTab, onReques
     const expectedRevision = conversations.find((item) => item.id === id)?.revision;
     renameConversation.mutate({ id, title, expectedRevision });
   }
-  async function ConfirmDeleteConversation() {
-    if (!deleteConversationId) return;
-    const deletedId = deleteConversationId;
-    SetDeleteConversationId(null);
+  function HandleToggleConversationPin(id: string) {
+    const conversation = conversations.find((item) => item.id === id);
+    if (!conversation) return;
+    const pinned = !(conversation.pinned ?? false);
+    SetRowMenu(null);
+    pinConversation.mutate({ id, pinned, expectedRevision: conversation.revision }, {
+      onSuccess: () => ShowNotice(pinned ? `已置顶「${conversation.title}」` : `已取消置顶「${conversation.title}」`),
+    });
+  }
+  async function ConfirmArchiveConversation() {
+    if (!archiveTarget) return;
+    const { id, title } = archiveTarget;
+    const wasActive = activeConversationIdRef.current === id;
+    SetArchiveTarget(null);
     try {
-      await deleteConversation.mutateAsync({ id: deletedId });
-      const nextActiveId = ResolveActiveConversationAfterDeletion(activeConversationIdRef.current, deletedId);
-      if (nextActiveId !== activeConversationIdRef.current) setActiveConversationId(nextActiveId);
+      await archiveConversation.mutateAsync({ id, archived: true });
+      // 归档当前会话时切换到下一个未归档会话，避免停留在已从"最近"移出的会话上。
+      if (wasActive) {
+        const next = conversations.find((item) => item.id !== id && !(item.archived ?? false));
+        setActiveConversationId(next?.id ?? null);
+      }
+      ShowNotice(`已归档「${title}」`, 'success', {
+        duration: 5200,
+        action: {
+          label: '撤回',
+          run: () => {
+            archiveConversation.mutate({ id, archived: false }, {
+              onSuccess: () => {
+                if (wasActive) setActiveConversationId(id);
+                ShowNotice(`已恢复「${title}」`);
+              },
+            });
+          },
+        },
+      });
     } catch {
-      // 失败提示由统一 mutation 处理；删除失败时保留当前会话及其全部状态。
+      // 失败提示由统一 mutation 处理；归档失败时会话保持原状。
     }
   }
 
@@ -243,7 +275,7 @@ function AppShell({ page, onNavigate, onRestartOnboarding, settingsTab, onReques
   function OpenRowMenu(conversationId: string, trigger: HTMLButtonElement) {
     const rect = trigger.getBoundingClientRect();
     const width = 186;
-    const estimatedHeight = 104;
+    const estimatedHeight = 150;
     const sidebarLeft = appShellRef.current?.querySelector<HTMLElement>('.sidebar')?.getBoundingClientRect().left ?? 0;
     const left = Math.max(sidebarLeft + 6, rect.right - width);
     let top = rect.bottom + 6;
@@ -284,12 +316,12 @@ function AppShell({ page, onNavigate, onRestartOnboarding, settingsTab, onReques
             {showCrumbMenu && <div className="menu drop lg open" data-floating-menu role="menu" aria-label="快速切换会话">
               <button className="menu-item plain" type="button" onClick={HandleNewConversation}><Icon name="plus" size={16} /><span className="mt">新建对话</span></button>
               <div className="menu-sep" aria-hidden="true" />
-              {conversations.map((item) => <button key={item.id} type="button" role="menuitemradio" aria-checked={item.id === activeConversationId} className={`menu-item ${item.id === activeConversationId ? 'sel' : ''}`} title={item.title} onClick={() => { setActiveConversationId(item.id); SetShowCrumbMenu(false); onNavigate('assistant'); }}>
-                <Icon name="assistant" size={16} />
+              {liveConversations.map((item) => <button key={item.id} type="button" role="menuitemradio" aria-checked={item.id === activeConversationId} className={`menu-item ${item.id === activeConversationId ? 'sel' : ''}`} title={item.title} onClick={() => { setActiveConversationId(item.id); SetShowCrumbMenu(false); onNavigate('assistant'); }}>
+                <Icon name={item.pinned ? 'pin' : 'assistant'} size={16} weight={item.pinned ? 'fill' : 'regular'} />
                 <span><span className="mt">{item.title}</span></span>
                 <Icon name="check" size={14} className="tick" />
               </button>)}
-              {!conversations.length && <div className="menu-label">还没有会话</div>}
+              {!liveConversations.length && <div className="menu-label">还没有会话</div>}
             </div>}
           </div>
         </div>
@@ -298,7 +330,8 @@ function AppShell({ page, onNavigate, onRestartOnboarding, settingsTab, onReques
       <div className="tb-spacer" />
 
       {page === 'assistant' && <div className="tb-actions">
-        <button className="tb-txt-btn" type="button" aria-pressed={assistantView === 'trace'} title={assistantView === 'trace' ? '返回对话' : '切换至对话轨迹'} onClick={HandleToggleTrace}><Icon name="trace" size={14} /><span>对话轨迹</span></button>
+        {/* 按钮声明去向：轨迹视图下显示"对话"引导返回，图标随目标切换 */}
+        <button className="tb-txt-btn" type="button" aria-pressed={assistantView === 'trace'} title={assistantView === 'trace' ? '切换至对话' : '切换至对话轨迹'} onClick={HandleToggleTrace}><Icon name={assistantView === 'trace' ? 'assistant' : 'trace'} size={14} /><span>{assistantView === 'trace' ? '对话' : '对话轨迹'}</span></button>
         <button className="icon-btn" type="button" aria-pressed={rightPanelExpanded} aria-label={rightPanelExpanded ? '缩小右侧面板' : '展开右侧面板'} title={rightPanelExpanded ? '缩小右侧面板' : '展开右侧面板'} onClick={HandlePanelExpansion}><Icon name={rightPanelExpanded ? 'panel-shrink' : 'panel-expand'} size={17} /></button>
         <button className="icon-btn flip" type="button" aria-expanded={resumePanelOpen} aria-label={resumePanelOpen ? '隐藏右侧边栏' : '打开右侧边栏'} title={resumePanelOpen ? '隐藏右侧边栏' : '打开右侧边栏'} onClick={HandleResumePanel}><Icon name="sidebar-expand" size={17} /></button>
       </div>}
@@ -334,7 +367,7 @@ function AppShell({ page, onNavigate, onRestartOnboarding, settingsTab, onReques
               {navRoutes.map((route) => <button key={route.id} className={`nav-item ${page === route.id ? 'is-active' : ''}`} type="button" aria-current={page === route.id ? 'page' : undefined} title={route.label} onClick={() => onNavigate(route.id)}>
                 <Icon name={route.icon} size={17} />
                 <span>{route.label}</span>
-                {route.id === 'assistant' && conversations.length > 0 && <span className="count">{conversations.length}</span>}
+                {route.id === 'assistant' && liveConversations.length > 0 && <span className="count">{liveConversations.length}</span>}
               </button>)}
             </nav>
 
@@ -354,8 +387,8 @@ function AppShell({ page, onNavigate, onRestartOnboarding, settingsTab, onReques
                       if (event.key === 'Enter') { event.preventDefault(); CommitConversationRename(); }
                       else if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); renamingConversationIdRef.current = null; SetRenamingConversationId(null); }
                     }} onBlur={CommitConversationRename} /> : <>
-                      <button className={`thread-item ${isCurrent ? 'active' : ''}`} type="button" title={item.title} onClick={() => { setActiveConversationId(item.id); onNavigate('assistant'); }}>
-                        <Icon name="assistant" size={16} />
+                      <button className={`thread-item ${item.pinned ? 'pinned' : ''} ${isCurrent ? 'active' : ''}`} type="button" title={item.title} onClick={() => { setActiveConversationId(item.id); onNavigate('assistant'); }}>
+                        <Icon name={item.pinned ? 'pin' : 'assistant'} size={16} weight={item.pinned ? 'fill' : 'regular'} />
                         <span className="ti-body"><span className="ti-title">{item.title}</span></span>
                       </button>
                       <button className="ti-more" type="button" data-menu-trigger="row" aria-haspopup="menu" aria-label="更多操作" title="更多操作" onClick={(event) => OpenRowMenu(item.id, event.currentTarget)}><Icon name="more" size={14} /></button>
@@ -384,16 +417,24 @@ function AppShell({ page, onNavigate, onRestartOnboarding, settingsTab, onReques
       </main>
     </div>
 
-    {/* 会话行菜单固定定位渲染，避免被侧栏滚动裁剪 */}
-    {rowMenu && <div className="menu ti-menu open" data-floating-menu role="menu" aria-label="对话操作" style={{ left: rowMenu.left, top: rowMenu.top }}>
-      <button className="menu-item plain" type="button" onClick={() => BeginRenameConversation(rowMenu.conversationId, conversations.find((item) => item.id === rowMenu.conversationId)?.title ?? '')}>
-        <Icon name="edit" size={16} /><span className="mt">重命名</span>
-      </button>
-      <div className="menu-sep" aria-hidden="true" />
-      <button className="menu-item plain um-danger" type="button" onClick={() => { SetDeleteConversationId(rowMenu.conversationId); SetRowMenu(null); }}>
-        <Icon name="delete" size={16} /><span className="mt">删除</span>
-      </button>
-    </div>}
+    {/* 会话行菜单固定定位渲染，避免被侧栏滚动裁剪；置顶项按当前状态切换文案 */}
+    {rowMenu && (() => {
+      const target = conversations.find((item) => item.id === rowMenu.conversationId);
+      if (!target) return null;
+      const pinned = target.pinned ?? false;
+      return <div className="menu ti-menu open" data-floating-menu role="menu" aria-label="对话操作" style={{ left: rowMenu.left, top: rowMenu.top }}>
+        <button className="menu-item plain" type="button" onClick={() => HandleToggleConversationPin(target.id)}>
+          <Icon name="pin" size={16} weight={pinned ? 'fill' : 'regular'} /><span className="mt">{pinned ? '取消置顶' : '置顶'}</span>
+        </button>
+        <button className="menu-item plain" type="button" onClick={() => BeginRenameConversation(target.id, target.title)}>
+          <Icon name="edit" size={16} /><span className="mt">重命名</span>
+        </button>
+        <div className="menu-sep" aria-hidden="true" />
+        <button className="menu-item plain" type="button" onClick={() => { SetArchiveTarget({ id: target.id, title: target.title }); SetRowMenu(null); }}>
+          <Icon name="archive" size={16} /><span className="mt">归档</span>
+        </button>
+      </div>;
+    })()}
 
     {/* 账户菜单锚定在用户卡上方，位于侧栏之外以免被裁剪 */}
     {userMenuPosition && <div className="menu user-menu open" data-floating-menu role="menu" aria-label="账户" style={{ left: userMenuPosition.left, bottom: userMenuPosition.bottom }}>
@@ -420,7 +461,7 @@ function AppShell({ page, onNavigate, onRestartOnboarding, settingsTab, onReques
       <button className="menu-item plain um-danger" type="button" onClick={() => ShowNotice('退出功能将在 Electron 客户端接入后启用')}><Icon name="logout" size={16} /><span className="mt">退出登录</span></button>
     </div>}
 
-    <Modal open={Boolean(deleteConversationId)} title="删除会话？" onClose={() => SetDeleteConversationId(null)}><p className="modal-copy">会话及其本地消息将被删除，此操作不可撤销。</p><div className="modal-actions"><Button onClick={() => SetDeleteConversationId(null)}>取消</Button><Button variant="danger" onClick={ConfirmDeleteConversation}>删除</Button></div></Modal>
+    <Modal open={Boolean(archiveTarget)} title="归档这个对话？" onClose={() => SetArchiveTarget(null)}><p className="modal-copy">归档后，「{archiveTarget?.title}」会从"最近"里移出；会话与消息仍保留在本机，通知里可立即撤回。</p><div className="modal-actions"><Button onClick={() => SetArchiveTarget(null)}>取消</Button><Button variant="primary" onClick={() => void ConfirmArchiveConversation()}>归档</Button></div></Modal>
   </div>;
 }
 

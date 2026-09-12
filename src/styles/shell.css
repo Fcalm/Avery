@@ -220,6 +220,8 @@ button { background: none; border: 0; }
 .thread-item:hover { background: var(--surface-2); }
 .thread-item.active { background: var(--surface-2); }
 .thread-item.active i { color: var(--accent); }
+/* 置顶会话的图钉是唯一的 fill 字重图标，颜色随主色 */
+.thread-item.pinned i { color: var(--accent); }
 .thread-item.active::before {
   content: ""; position: absolute; left: 0; top: 50%; transform: translateY(-50%);
   width: 2px; height: 18px; border-radius: 2px; background: var(--accent);
@@ -323,7 +325,7 @@ button { background: none; border: 0; }
 .menu-item.um-row.on .switch { background: var(--accent); }
 .menu-item.um-row.on .switch .knob { transform: translateX(14px); }
 .menu-switch-input { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
-.menu-item.um-row:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* 开关行不画 focus-within 描边：鼠标点击后不留绿色描边，键盘可见性交给全局 :focus-visible。 */
 
 /* ------------------------------------------------------------- 折叠态侧栏 */
 .app-shell.is-collapsed .sb-inner { padding-left: 8px; padding-right: 8px; }
@@ -347,3 +349,17 @@ button { background: none; border: 0; }
   }
   .thread-item.active::before { animation: none; }
 }
+
+/* ---------------------------------------------------------------- Toast */
+/* 通知位置跟随新顶栏高度；撤回动作与进度条时长由 --toast-duration 内联控制。 */
+/* 通知背景为固定的浅色底（成功/错误/警示三色），正文固定深色以兼容深色主题。 */
+.app-toast { top: calc(var(--titlebar-height) + var(--space-4)); color: #18181b; }
+.app-toast::after { animation-duration: var(--toast-duration, 3.2s); }
+.app-toast-action {
+  display: inline-flex; align-items: center; gap: 4px; flex: none;
+  margin-left: var(--space-2); border-radius: var(--r-pill); padding: 2px 10px;
+  color: var(--toast-color); border: 1px solid color-mix(in srgb, var(--toast-color) 35%, transparent);
+  font-size: 12px; font-weight: 550;
+  transition: background-color .16s var(--ease);
+}
+.app-toast-action:hover { background: color-mix(in srgb, var(--toast-color) 12%, transparent); }
