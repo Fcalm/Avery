@@ -30,6 +30,9 @@ interface UiStoreValue {
   HideNotice: () => void;
   profileConflict: boolean;
   setProfileConflict: (open: boolean) => void;
+  /** 跨页输入框预填：简历页「让Avery保存简历」写入，助手页消费后立即置空，避免再次进入时重复填入。 */
+  composerSeed: string | null;
+  setComposerSeed: (text: string | null) => void;
 }
 
 const UiStoreContext = createContext<UiStoreValue | null>(null);
@@ -44,6 +47,7 @@ function UiStoreProvider({ children }: { children: ReactNode }) {
   const noticeTimerRef = useRef<number | null>(null);
   const noticeIdRef = useRef(0);
   const [profileConflict, setProfileConflict] = useState(false);
+  const [composerSeed, setComposerSeed] = useState<string | null>(null);
 
   useEffect(() => () => {
     if (noticeTimerRef.current !== null) window.clearTimeout(noticeTimerRef.current);
@@ -69,7 +73,8 @@ function UiStoreProvider({ children }: { children: ReactNode }) {
     assistantView, setAssistantView,
     developerView, setDeveloperView,
     notice, ShowNotice, HideNotice, profileConflict, setProfileConflict,
-  }), [activeConversationId, currentResumeId, resumePanelOpen, assistantView, developerView, notice, profileConflict, ShowNotice, HideNotice]);
+    composerSeed, setComposerSeed,
+  }), [activeConversationId, currentResumeId, resumePanelOpen, assistantView, developerView, notice, profileConflict, composerSeed, ShowNotice, HideNotice]);
 
   return <UiStoreContext.Provider value={value}>{children}</UiStoreContext.Provider>;
 }

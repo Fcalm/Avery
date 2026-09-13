@@ -1,100 +1,104 @@
-import { useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { CreateResumeDocumentMarkup } from '@avery/contracts';
 import { useUiStore } from '../../../app/UiStore';
-import { useDeleteResume, useDeleteResumeRevision, useRenameResume, useResumes, useRestoreResumeRevision, LoadResumeRevision, LoadResumeRevisions, ExportResumeFile } from '../../../features/resume/api/resumeQueries';
-import { AcquireResumeEditLock, ReleaseResumeEditLock } from '../../assistant/api/agentQueries';
-import { Button, Drawer, EmptyState, FormField, Modal } from '../../../shared/components/UI';
+import { useResumes, ExportResumeFile } from '../../../features/resume/api/resumeQueries';
 import { Icon } from '../../../shared/components/Icon';
 import { FormatTime } from '../../../shared/utils/format';
 import type { Resume } from '../../../types/domain';
 
-interface ResumeRevisionRow {
-  id: string;
-  revision: number;
-  source: string;
-  createdAt: number;
-  isCurrent: boolean;
-}
-
-interface ResumeRevisionPreview extends ResumeRevisionRow {
-  document: Resume;
+/** 行描述与抽屉 meta 共用：有目标岗位写「针对 X 定制」，否则为通用版本。 */
+function ResumeTargetText(resume: Resume): string {
+  return resume.targetRoles.length ? `针对 ${resume.targetRoles.join('、')} 定制` : '通用版本，没有指定职位';
 }
 
 function ResumesPage({ onGoAssistant }: { onGoAssistant: () => void }) {
-  const { ShowNotice, currentResumeId, setCurrentResumeId } = useUiStore();
+  const { ShowNotice, setActiveConversationId, setAssistantView, currentResumeId, setCurrentResumeId, setComposerSeed } = useUiStore();
   const resumes = useResumes();
-  const renameResume = useRenameResume({ onConflict: () => ShowNotice('简历已在其他窗口被修改，已刷新为最新版本'), onFailure: () => ShowNotice('简历重命名失败，请稍后重试。') });
-  const deleteResume = useDeleteResume({ onFailure: () => ShowNotice('简历删除失败，请稍后重试。') });
-  const restoreResumeRevision = useRestoreResumeRevision({ onConflict: () => ShowNotice('简历已被其他操作修改，已刷新为最新版本'), onFailure: () => ShowNotice('还原简历版本失败，请稍后重试。') });
-  const deleteResumeRevision = useDeleteResumeRevision({ onFailure: () => ShowNotice('删除历史版本失败，请稍后重试。') });
-  const [editing, setEditing] = useState<Resume | null>(null);
-  const [drawerOpen, setDrawerOpen] = useState(false);
-  const [deleteTarget, setDeleteTarget] = useState<Resume | null>(null);
-  const [rename, setRename] = useState('');
-  const [revisions, setRevisions] = useState<ResumeRevisionRow[]>([]);
-  const [revisionPreview, setRevisionPreview] = useState<ResumeRevisionPreview | null>(null);
-  const [restoreTarget, setRestoreTarget] = useState<ResumeRevisionRow | null>(null);
-  const [deleteRevisionTarget, setDeleteRevisionTarget] = useState<ResumeRevisionRow | null>(null);
-  async function RefreshRevisions(resumeId: string) {
-    try { setRevisions((await LoadResumeRevisions(resumeId)) as ResumeRevisionRow[]); } catch { setRevisions([]); }
+  const [drawerResume, SetDrawerResume] = useState<Resume | null>(null);
+  const drawerRef = useRef<HTMLElement>(null);
+
+  // 抽屉打开期间 Escape 关闭、初始焦点落在关闭按钮（原型 showDrawer 聚焦 dwClose）。
+  useEffect(() => {
+    if (!drawerResume) return undefined;
+    const CloseOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') { event.preventDefault(); SetDrawerResume(null); }
+    };
+    document.addEventListener('keydown', CloseOnEscape);
+    drawerRef.current?.focus();
+    return () => document.removeEventListener('keydown', CloseOnEscape);
+  }, [drawerResume]);
+
+  // 原型简历视图：最近修改的版本排最前（v8 → v6）。
+  const sortedResumes = useMemo(() => [...resumes].sort((left, right) => (right.updatedAt ?? 0) - (left.updatedAt ?? 0)), [resumes]);
+
+  /** 「让Avery保存简历」：切到新建会话草稿态并预填输入框；首次发送时才由助手页创建实际会话，与侧栏「新建对话」一致。 */
+  function SaveViaAvery() {
+    setComposerSeed('帮我把这份简历保存到简历库');
+    setActiveConversationId(null);
+    setAssistantView('chat');
+    onGoAssistant();
   }
-  async function OpenResume(resume: Resume) {
-    setEditing(resume); setRename(resume.name); setRevisionPreview(null); setDrawerOpen(true);
-    await RefreshRevisions(resume.id);
+  function SetCurrentResume(resume: Resume) {
+    setCurrentResumeId(resume.id);
+    SetDrawerResume(null);
+    ShowNotice('已设为当前版本');
   }
-  async function PreviewRevision(revision: ResumeRevisionRow) {
-    if (!editing) return;
-    try { setRevisionPreview(await LoadResumeRevision(editing.id, revision.id) as ResumeRevisionPreview); }
-    catch (error) { ShowNotice(error instanceof Error ? error.message : '读取历史版本失败'); }
-  }
-  async function ConfirmRestoreRevision() {
-    if (!editing || !restoreTarget) return;
-    const lock = await AcquireResumeEditLock(editing.id);
-    if (!lock.acquired) { ShowNotice(lock.reason ?? '简历正被占用，暂时无法还原'); return; }
+  async function DownloadPdf() {
+    if (!drawerResume) return;
     try {
-      const result = await restoreResumeRevision.mutateAsync({ resumeId: editing.id, revisionId: restoreTarget.id, expectedRevision: editing.revision });
-      setEditing(result.resume); setRename(result.resume.name); setRevisionPreview(null); setRestoreTarget(null);
-      await RefreshRevisions(result.id);
-      ShowNotice(`已从 v${result.restoredFromRevision} 创建当前 v${result.revision}`);
-    } catch {
-      // Mutation 已按冲突和普通失败给出提示；锁仍必须在 finally 中释放。
-    } finally { await ReleaseResumeEditLock(editing.id); }
-  }
-  async function ConfirmDeleteRevision() {
-    if (!editing || !deleteRevisionTarget) return;
-    try {
-      await deleteResumeRevision.mutateAsync({ resumeId: editing.id, revisionId: deleteRevisionTarget.id });
-      if (revisionPreview?.id === deleteRevisionTarget.id) setRevisionPreview(null);
-      setDeleteRevisionTarget(null);
-      await RefreshRevisions(editing.id);
-      ShowNotice('历史版本已删除');
-    } catch {
-      // Mutation 已给出失败提示。
-    }
-  }
-  function SaveRename() {
-    if (!editing || !rename.trim()) return;
-    const expectedRevision = resumes.find((item) => item.id === editing.id)?.revision;
-    renameResume.mutate({ id: editing.id, name: rename.trim(), expectedRevision });
-    setEditing((current) => current ? { ...current, name: rename.trim() } : null);
-    ShowNotice('简历名称已保存');
-  }
-  async function ExportResume(format: 'html' | 'pdf' | 'docx' | 'png') {
-    if (!editing) return;
-    try {
-      const result = await ExportResumeFile(editing, format);
+      const result = await ExportResumeFile(drawerResume, 'pdf');
       ShowNotice(`已导出 ${result.fileName} 到工作空间 exports 文件夹`);
     } catch (error) { ShowNotice(error instanceof Error ? error.message : '简历导出失败'); }
   }
-  function ConfirmDeleteResume() { if (!deleteTarget) return; deleteResume.mutate({ id: deleteTarget.id }); setDeleteTarget(null); setDrawerOpen(false); ShowNotice('简历已删除'); }
-  const currentResume = resumes.find((resume) => resume.id === currentResumeId);
-  return <div className="standard-page resumes-page"><section className="resumes-reference-overview"><header className="resumes-reference-heading"><div><h1>简历库</h1><p>保留每一份针对目标岗位定制的简历版本。</p></div><div className="resumes-reference-stats" aria-label="简历数据概览"><span><b>{resumes.length}</b><small>全部简历</small></span><span><b>{currentResume ? 1 : 0}</b><small>当前使用</small></span></div><Button variant="primary" onClick={onGoAssistant}><Icon name="assistant" size={16} />让 Agent 起草</Button></header></section><section className="paper-block resumes-content-card"><header className="content-card-heading"><div><h2>简历版本</h2><p>{currentResume ? `当前使用：${currentResume.name}` : '选择一份简历作为当前版本。'}</p></div></header>
-    {resumes.length === 0 ? <EmptyState icon={<Icon name="resumes" size={24} />} title="还没有保存的简历" description="从求职助手开始，整理一份可继续编辑的简历。" action={<Button variant="primary" onClick={onGoAssistant}><Icon name="assistant" size={16} />让 Agent 起草</Button>} /> : <section className="resume-grid">{resumes.map((resume) => <article className={`resume-card ${resume.id === currentResumeId ? 'current' : ''}`} key={resume.id} onClick={() => OpenResume(resume)}><div className="resume-card-paper"><div className="resume-card-top"><Icon name="resumes" size={20} />{resume.id === currentResumeId && <small>当前使用</small>}</div><h2>{resume.name}</h2><p>{resume.summary}</p><div>{resume.targetRoles.slice(0, 3).map((role) => <span key={role}>{role}</span>)}</div></div><footer><span>更新于 {FormatTime(resume.updatedAt)}</span>{resume.id === currentResumeId ? <span className="resume-current-note">正在用于助手</span> : <button type="button" onClick={(event) => { event.stopPropagation(); setCurrentResumeId(resume.id); ShowNotice('已设为当前简历'); }}>设为当前</button>}</footer></article>)}</section>}
-  </section>
-    <Drawer open={drawerOpen} title="简历详情" onClose={() => { setDrawerOpen(false); setRevisionPreview(null); }}>{editing && <div className="drawer-form"><FormField label="简历名称"><input disabled={Boolean(revisionPreview)} value={rename} onChange={(event) => setRename(event.target.value)} /></FormField><Button disabled={Boolean(revisionPreview)} onClick={SaveRename}>保存名称</Button>{revisionPreview && <p className="resume-current-note">正在查看 v{revisionPreview.revision}（只读历史版本）</p>}<div className="resume-detail-preview"><div className="resume-html-preview" dangerouslySetInnerHTML={{ __html: CreateResumeDocumentMarkup(revisionPreview?.document ?? editing) }} /></div><section className="resume-version-list"><header><b>版本历史</b><small>保留当前版本和最近两份历史版本；历史版本仅可查看、还原或删除。</small></header>{revisions.length ? revisions.map((revision) => <div key={revision.id}><span>v{revision.revision} · {revision.isCurrent ? '当前版本' : revision.source} · {FormatTime(revision.createdAt)}</span><div><Button variant="quiet" onClick={() => void PreviewRevision(revision)}>查看</Button>{!revision.isCurrent && <><Button variant="quiet" onClick={() => setRestoreTarget(revision)}>还原</Button><Button variant="danger" onClick={() => setDeleteRevisionTarget(revision)}>删除</Button></>}</div></div>) : <p>暂无可管理的历史版本。</p>}</section><div className="export-box"><span>导出文件</span><div><Button onClick={() => void ExportResume('html')}>HTML</Button><Button variant="primary" onClick={() => void ExportResume('pdf')}>PDF</Button></div></div><div className="drawer-actions"><Button variant="danger" onClick={() => setDeleteTarget(editing)}>删除简历</Button><span /><Button variant="primary" onClick={() => { setCurrentResumeId(editing.id); ShowNotice('已设为当前简历'); }}>设为当前</Button></div></div>}</Drawer>
-    <Modal open={Boolean(deleteTarget)} title="删除这份简历？" onClose={() => setDeleteTarget(null)}><p className="modal-copy">删除后无法恢复，也不会保留导出文件。</p><div className="modal-actions"><Button onClick={() => setDeleteTarget(null)}>取消</Button><Button variant="danger" onClick={ConfirmDeleteResume}>确认删除</Button></div></Modal>
-    <Modal open={Boolean(restoreTarget)} title="还原历史版本？" onClose={() => setRestoreTarget(null)}><p className="modal-copy">将从 v{restoreTarget?.revision} 创建新的当前版本；不会降低版本号。</p><div className="modal-actions"><Button onClick={() => setRestoreTarget(null)}>取消</Button><Button variant="primary" onClick={() => void ConfirmRestoreRevision()}>确认还原</Button></div></Modal>
-    <Modal open={Boolean(deleteRevisionTarget)} title="删除历史版本？" onClose={() => setDeleteRevisionTarget(null)}><p className="modal-copy">将永久删除 v{deleteRevisionTarget?.revision}，无法恢复。</p><div className="modal-actions"><Button onClick={() => setDeleteRevisionTarget(null)}>取消</Button><Button variant="danger" onClick={() => void ConfirmDeleteRevision()}>确认删除</Button></div></Modal>
+
+  return <div className="resumes-view">
+    <div className="view-h">
+      <div><h1>简历</h1><p>每一版各自针对一个职位。点开任意一版可以看到完整内容，以及这一版改了什么。</p></div>
+      <div className="vh-act"><button className="ghost-btn" type="button" onClick={SaveViaAvery}><Icon name="assistant" size={14} />让Avery保存简历</button></div>
+    </div>
+    {sortedResumes.map((resume) => {
+      const isCurrent = resume.id === currentResumeId;
+      const edited = FormatTime(resume.updatedAt);
+      return <button className="vrow clickable" type="button" key={resume.id} onClick={() => SetDrawerResume(resume)}>
+        <span className="vrow-main">
+          <span className="vrow-t">{resume.name}</span>
+          <span className="vrow-d">{ResumeTargetText(resume)}。{edited ? `${edited} 修改。` : ''}</span>
+        </span>
+        {/* 原型标签形态：目标岗位标签在当前版本上加主色，「当前」标签保持中性灰。 */}
+        <span className={`tag${isCurrent ? ' accent' : ''}`}>{resume.targetRoles[0] ?? '通用'}</span>
+        {isCurrent && <span className="tag">当前</span>}
+        <Icon name="chevron-right" className="vrow-go" size={13} />
+      </button>;
+    })}
+    {!sortedResumes.length && <div className="resumes-view-empty">还没有简历。点右上角「让Avery保存简历」，Avery 会在新对话里帮你把简历存进简历库。</div>}
+
+    {/* 抽屉经 portal 挂到 body：脱离玻璃背景子树，遮罩与虚化才能盖住整个应用窗口（与档案、投递抽屉一致）。 */}
+    {drawerResume && createPortal(<div className="dw-layer" role="presentation">
+      <div className="dw-scrim" onClick={() => SetDrawerResume(null)} />
+      <aside className="dw-drawer" role="dialog" aria-modal="true" aria-labelledby="resume-drawer-title" tabIndex={-1} ref={drawerRef}>
+        <div className="dw-head">
+          <div className="dw-head-main">
+            <div className="dw-title" id="resume-drawer-title">{drawerResume.name}</div>
+            <div className="dw-meta">
+              <span>{drawerResume.targetRoles.length ? `针对 ${drawerResume.targetRoles.join('、')}` : '通用版本'}</span>
+              {Boolean(drawerResume.updatedAt) && <span>{FormatTime(drawerResume.updatedAt)} 修改</span>}
+            </div>
+          </div>
+          <button className="icon-btn" type="button" aria-label="关闭详情" title="关闭详情" autoFocus onClick={() => SetDrawerResume(null)}><Icon name="close" size={16} /></button>
+        </div>
+        <div className="dw-body">
+          {/* 简历正文沿用现有渲染模板（CreateResumeDocumentMarkup），抽屉只提供原型同款的阅读容器。 */}
+          <div className="resume-html-preview" dangerouslySetInnerHTML={{ __html: CreateResumeDocumentMarkup(drawerResume) }} />
+        </div>
+        <div className="dw-foot">
+          <button className="ghost-btn" type="button" onClick={() => void DownloadPdf()}><Icon name="download-simple" size={14} />下载 PDF</button>
+          <button className="btn-accent" type="button" disabled={drawerResume.id === currentResumeId} onClick={() => SetCurrentResume(drawerResume)}>
+            <Icon name="check-circle" size={14} />{drawerResume.id === currentResumeId ? '已是当前版本' : '设为当前版本'}
+          </button>
+        </div>
+      </aside>
+    </div>, document.body)}
   </div>;
 }
 

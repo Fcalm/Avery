@@ -149,7 +149,7 @@ function WriteConversationComposerStates(states: Record<string, StoredConversati
 }
 
 function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
-  const { activeConversationId, setActiveConversationId, currentResumeId, setCurrentResumeId, resumePanelOpen, assistantView, ShowNotice } = useUiStore();
+  const { activeConversationId, setActiveConversationId, currentResumeId, setCurrentResumeId, resumePanelOpen, assistantView, ShowNotice, composerSeed, setComposerSeed } = useUiStore();
   const conversations = useConversations();
   const resumes = useResumes();
   const settings = useSettings();
@@ -448,6 +448,14 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
     setIsTaskActive(false);
     enteredConversationRef.current = null;
   }, [activeConversationId]);
+
+  /** 简历页「让Avery保存简历」预填输入框：必须置于上方新建页清空 effect 之后，保证预填不被清空覆盖；消费一次立即失效。 */
+  useEffect(() => {
+    if (composerSeed === null) return;
+    setComposer(composerSeed);
+    setComposerSeed(null);
+    composerTextareaRef.current?.focus();
+  }, [composerSeed, setComposerSeed]);
 
   /** 会话切换、页面重进和设置更新时优先恢复会话选择；没有缓存的旧会话才使用安全默认值。 */
   useEffect(() => {
