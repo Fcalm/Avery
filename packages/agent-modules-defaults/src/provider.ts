@@ -14,7 +14,9 @@ export const GlmFlashModel = 'glm-5.3-flash';
 const DefaultDeepSeekModels = ['deepseek-v4-flash', 'deepseek-v4-pro', 'deepseek-v4-flash-vision-exp'];
 const DeepSeekMaximumRequestBytes = 48 * 1024 * 1024;
 export const DefaultContextLimit = 256_000;
-const MaximumConfigurableContextLimit = 2_000_000;
+/** 自定义上下文限制的允许区间：与模型配置弹窗一致，用户新填写的值必须落在区间内。 */
+const MinimumConfigurableContextLimit = 128_000;
+const MaximumConfigurableContextLimit = 1_000_000;
 /** DeepSeek /models 不返回上下文元数据，已知官方模型能力必须由 Provider 维护。 */
 const DeepSeekModelContextLimits: Readonly<Record<string, number>> = {
   'deepseek-v4-flash': 1_000_000,
@@ -58,14 +60,21 @@ function ResolveModelMaximum(provider: SupportedProvider, model: string): number
   return undefined;
 }
 
-/** 统一解析自动/自定义限制；自动值永不超过模型上限，自定义值超过已知上限时显式拒绝。 */
-export function ResolveContextLimit(input: { mode: ContextLimitMode; value?: unknown; modelMaximum?: number }): number {
+/**
+ * 统一解析自动/自定义限制；自动值永不超过模型上限，自定义值超过已知上限时显式拒绝。
+ * 数值可带 K/M 后缀：界面按 256K、1M 这样的可读形式下发。
+ * allowStoredValue 用于读取已保存配置：旧版本允许的区间更宽，历史值即使落在新区间之外也保留，
+ * 否则用户一进入会话就会被默认值悄悄替换；新填写的值仍按区间校验。
+ */
+export function ResolveContextLimit(input: { mode: ContextLimitMode; value?: unknown; modelMaximum?: number; allowStoredValue?: boolean }): number {
   if (input.mode === 'default') return Math.min(DefaultContextLimit, input.modelMaximum ?? DefaultContextLimit);
   const raw = String(input.value ?? '').trim();
-  const matched = raw.match(/^(\d+)\s*([kK])?$/);
-  const limit = matched ? Number(matched[1]) * (matched[2] ? 1000 : 1) : Number.NaN;
-  if (!Number.isSafeInteger(limit) || limit < 8_000 || limit > MaximumConfigurableContextLimit) {
-    throw new Error('上下文限制需为 8K–2000K，可填写 256K 或 256000。');
+  const matched = raw.match(/^(\d+)\s*([kKmM])?$/);
+  const unit = matched?.[2]?.toLowerCase() ?? '';
+  const limit = matched ? Number(matched[1]) * (unit === 'k' ? 1_000 : unit === 'm' ? 1_000_000 : 1) : Number.NaN;
+  const outOfRange = limit < MinimumConfigurableContextLimit || limit > MaximumConfigurableContextLimit;
+  if (!Number.isSafeInteger(limit) || (outOfRange && input.allowStoredValue !== true)) {
+    throw new Error('上下文限制需为 128000–1000000，可填写 128000、128K 或 1M。');
   }
   if (input.modelMaximum !== undefined && limit > input.modelMaximum) {
     throw new Error(`自定义上下文限制不能超过当前模型的 ${input.modelMaximum.toLocaleString()} token 上限。`);
@@ -190,7 +199,8 @@ export function CreateProviderModule(ports: AgentDefaultPorts): ModelProviderMod
           const modelMaximum = ResolveModelMaximum(provider, model);
           let contextLimit: number;
           try {
-            contextLimit = ResolveContextLimit({ mode: contextLimitMode, value: storedConfig.contextLimit, modelMaximum });
+            // 已保存的值按 allowStoredValue 读取：旧版本配置的区间可能更宽，不能被默认值顶掉。
+            contextLimit = ResolveContextLimit({ mode: contextLimitMode, value: storedConfig.contextLimit, modelMaximum, allowStoredValue: true });
           } catch {
             contextLimit = ResolveContextLimit({ mode: 'default', modelMaximum });
           }

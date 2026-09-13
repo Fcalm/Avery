@@ -148,7 +148,20 @@ describe('agent-modules-defaults', () => {
     await expect(provider.Configure({
       provider: 'DeepSeek', model: 'deepseek-v4-flash', apiKey: 'test-key', thinkingEnabled: false,
       contextLimitMode: 'custom', contextLength: '1001K', compressionThreshold: 80,
-    })).rejects.toThrow(/不能超过当前模型/);
+    })).rejects.toThrow(/需为 128000–1000000/);
+    await expect(provider.Configure({
+      provider: 'DeepSeek', model: 'deepseek-v4-flash', apiKey: 'test-key', thinkingEnabled: false,
+      contextLimitMode: 'custom', contextLength: '64K', compressionThreshold: 80,
+    })).rejects.toThrow(/需为 128000–1000000/);
+    // M 后缀与区间上限一致，必须和 K、纯数字一样可用
+    await expect(provider.Configure({
+      provider: 'DeepSeek', model: 'deepseek-v4-flash', apiKey: 'test-key', thinkingEnabled: false,
+      contextLimitMode: 'custom', contextLength: '1M', compressionThreshold: 80,
+    })).resolves.toMatchObject({ configured: true });
+    expect(provider.GetRuntimeLimits().contextLimit).toBe(1_000_000);
+    // 模型上限低于区间上限时，仍按模型能力拒绝
+    const { ResolveContextLimit } = await import('../../../packages/agent-modules-defaults/src/provider');
+    expect(() => ResolveContextLimit({ mode: 'custom', value: '200000', modelMaximum: 128_000 })).toThrow(/不能超过当前模型/);
   });
 
   it('旧 DeepSeek 64K 配置迁移为自动 256K，旧自定义 Provider 保留原限制', async () => {
@@ -164,6 +177,7 @@ describe('agent-modules-defaults', () => {
     await legacyCustom.GetStatus();
 
     expect(legacyDeepSeek.GetRuntimeLimits().contextLimit).toBe(256_000);
+    // 96K 已落在新区间之外，但它是用户保存过的值：读取时保留，等用户下次编辑再按新区间提示修正
     expect(legacyCustom.GetRuntimeLimits().contextLimit).toBe(96_000);
   });
 
