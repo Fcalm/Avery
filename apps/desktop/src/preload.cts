@@ -94,7 +94,9 @@ const workspaceBridge: WorkspaceBridge = {
   ExportRecoveryDiagnostic: (options) => invokeWorkspaceWrite('workspace:export-recovery-diagnostic', [], options) as ReturnType<WorkspaceBridge['ExportRecoveryDiagnostic']>,
   CreateBackup: (options) => invokeWorkspaceWrite('workspace:create-backup', [], options) as ReturnType<WorkspaceBridge['CreateBackup']>,
   GetResumeRevisions: (id) => invoke('workspace:get-resume-revisions', id) as ReturnType<WorkspaceBridge['GetResumeRevisions']>,
-  SetResumeRevisionPinned: (id, pinned, options) => invokeWorkspaceWrite('workspace:set-resume-revision-pinned', [id, pinned], options) as ReturnType<WorkspaceBridge['SetResumeRevisionPinned']>,
+  GetResumeRevision: (resumeId, revisionId) => invoke('workspace:get-resume-revision', resumeId, revisionId) as ReturnType<WorkspaceBridge['GetResumeRevision']>,
+  RestoreResumeRevision: (resumeId, revisionId, revision, options) => invokeWorkspaceWrite('workspace:resume-revisions-restore', [resumeId, revisionId, revision], options) as ReturnType<WorkspaceBridge['RestoreResumeRevision']>,
+  DeleteResumeRevision: (resumeId, revisionId, options) => invokeWorkspaceWrite('workspace:resume-revisions-delete', [resumeId, revisionId], options) as ReturnType<WorkspaceBridge['DeleteResumeRevision']>,
   ExportResume: (resume, format) => invoke('workspace:export-resume', resume, format) as ReturnType<WorkspaceBridge['ExportResume']>,
   Migrate: () => invoke('workspace:migrate') as ReturnType<WorkspaceBridge['Migrate']>,
 };

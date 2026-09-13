@@ -20,7 +20,7 @@ export const MaxCommandPayloadBytes = 10 * 1024 * 1024;
 /** 只读命令通道集合：工作空间迁移期间仍放行，保证 UI 能读到当前数据。 */
 export const ReadOnlyChannels = new Set<string>([
   'workspace:status', 'workspace:get-view-model', 'workspace:get-settings',
-  'workspace:get-profiles', 'workspace:get-resume-revisions',
+  'workspace:get-profiles', 'workspace:get-resume-revisions', 'workspace:get-resume-revision',
   'workspace:recovery-status',
   'workspace:database-recovery-status',
   'agent:status', 'agent:observability', 'agent:trace-events', 'agent:test-connection', 'agent:get-balance', 'agent:get-models', 'agent:get-provider-catalog', 'agent:get-session-assistant-state', 'agent:browser-runtime-status', 'agent:cron-browser-access', 'cron:status',
@@ -126,7 +126,9 @@ export const MethodRoutes: Record<string, MethodRoute> = {
   'workspace:export-recovery-diagnostic': { service: 'workspace', method: 'ExportRecoveryDiagnostic' },
   'workspace:create-backup': { service: 'workspace', method: 'CreateBackup' },
   'workspace:get-resume-revisions': { service: 'resumes', method: 'GetResumeRevisions' },
-  'workspace:set-resume-revision-pinned': { service: 'resumes', method: 'SetResumeRevisionPinned' },
+  'workspace:get-resume-revision': { service: 'resumes', method: 'GetResumeRevision' },
+  'workspace:resume-revisions-restore': { service: 'resumes', method: 'RestoreResumeRevision' },
+  'workspace:resume-revisions-delete': { service: 'resumes', method: 'DeleteResumeRevision' },
   'workspace:export-resume': { service: 'desktop', method: 'ExportResume' },
 };
 
@@ -177,7 +179,8 @@ const WriteArgsSchemas: Record<string, z.ZodTuple> = {
   'workspace:applications-move-status': z.tuple([EntityId, z.string().min(1).max(50), Revision]),
   'workspace:applications-delete': z.tuple([EntityId]),
   'workspace:profiles-save': z.tuple([ProfileItemsSchema, z.boolean().optional()]),
-  'workspace:set-resume-revision-pinned': z.tuple([EntityId, z.boolean()]),
+  'workspace:resume-revisions-restore': z.tuple([EntityId, EntityId, Revision]),
+  'workspace:resume-revisions-delete': z.tuple([EntityId, EntityId]),
   'workspace:import-attachment': z.tuple([z.string().max(1000), z.string().max(100).optional()]),
   'workspace:cleanup-attachments': z.tuple([]),
   'workspace:recover-operations': z.tuple([]),

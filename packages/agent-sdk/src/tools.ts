@@ -150,11 +150,11 @@ export interface CronTaskPort {
   Delete(cronTaskId: string): Promise<unknown>;
 }
 
-/** 岗位与投递跟踪端口：岗位可独立保存；投递记录仍必须关联本次使用的简历。 */
+/** 岗位与投递跟踪端口：岗位可独立保存；投递会将受宿主读取的简历快照冻结为凭证。 */
 export interface ApplicationTrackingPort {
   Read(input?: { company?: string; title?: string; url?: string }): Promise<{ jobs: unknown[]; applications: unknown[]; truncated?: boolean }>;
   SaveJob(input: Record<string, unknown>): Promise<unknown>;
-  Update(input: Record<string, unknown>): Promise<unknown>;
+  Update(input: Record<string, unknown> & { resumeEvidence: ResumeSnapshot }): Promise<unknown>;
 }
 
 export type BrowserToolName =

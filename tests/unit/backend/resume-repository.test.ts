@@ -31,4 +31,30 @@ describe('ResumeRepository revision', () => {
       code: 'REVISION_CONFLICT', entityType: 'resume', entityId: 'resume-1', expectedRevision: 1, actualRevision: 2,
     });
   });
+
+  it('只保留当前与两份历史，并将还原写为新的递增版本', () => {
+    const repository = createRepository();
+    repository.Upsert({ id: 'resume-1', name: '简历', content: '第一版' });
+    repository.Upsert({ id: 'resume-1', name: '简历', content: '第二版' }, 1);
+    repository.Upsert({ id: 'resume-1', name: '简历', content: '第三版' }, 2);
+    repository.Upsert({ id: 'resume-1', name: '简历', content: '第四版' }, 3);
+
+    const beforeRestore = repository.GetRevisions('resume-1');
+    expect(beforeRestore.map((item) => item.revision)).toEqual([4, 3, 2]);
+    expect(beforeRestore[0]).toMatchObject({ isCurrent: true });
+    const second = beforeRestore.find((item) => item.revision === 2);
+    expect(repository.GetRevision('resume-1', second.id)).toMatchObject({ isCurrent: false, document: { content: '第二版', revision: 2 } });
+
+    const restored = repository.RestoreRevision('resume-1', second.id, 4);
+    expect(restored).toMatchObject({ id: 'resume-1', revision: 5, restoredFromRevision: 2, resume: { content: '第二版', revision: 5 } });
+    const afterRestore = repository.GetRevisions('resume-1');
+    expect(afterRestore.map((item) => item.revision)).toEqual([5, 4, 3]);
+    expect(afterRestore[0]).toMatchObject({ isCurrent: true, source: 'restore' });
+
+    const history = afterRestore.find((item) => item.revision === 4);
+    expect(repository.DeleteRevision('resume-1', history.id)).toEqual({ id: history.id });
+    expect(repository.GetRevisions('resume-1').map((item) => item.revision)).toEqual([5, 3]);
+    const current = repository.GetRevisions('resume-1')[0];
+    expect(() => repository.DeleteRevision('resume-1', current.id)).toThrow('current resume revision');
+  });
 });

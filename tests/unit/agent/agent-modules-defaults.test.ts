@@ -490,7 +490,9 @@ describe('agent-modules-defaults', () => {
     }, context);
 
     expect(JSON.parse(result.content)).toMatchObject({ ok: true });
-    expect(update).toHaveBeenCalledWith(expect.objectContaining({ resumeId: 'resume-1', status: 'applied' }));
+    expect(update).toHaveBeenCalledWith(expect.objectContaining({
+      resumeId: 'resume-1', status: 'applied', resumeEvidence: expect.objectContaining({ id: 'resume-1', revision: 4, content: '正文' }),
+    }));
   });
 
   it('统一门禁发现简历 revision 变化后清除绑定并拒绝写入', async () => {

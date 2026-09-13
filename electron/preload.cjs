@@ -87,7 +87,9 @@ const workspaceBridge = {
     ExportRecoveryDiagnostic: (options) => invokeWorkspaceWrite('workspace:export-recovery-diagnostic', [], options),
     CreateBackup: (options) => invokeWorkspaceWrite('workspace:create-backup', [], options),
     GetResumeRevisions: (id) => invoke('workspace:get-resume-revisions', id),
-    SetResumeRevisionPinned: (id, pinned, options) => invokeWorkspaceWrite('workspace:set-resume-revision-pinned', [id, pinned], options),
+    GetResumeRevision: (resumeId, revisionId) => invoke('workspace:get-resume-revision', resumeId, revisionId),
+    RestoreResumeRevision: (resumeId, revisionId, revision, options) => invokeWorkspaceWrite('workspace:resume-revisions-restore', [resumeId, revisionId, revision], options),
+    DeleteResumeRevision: (resumeId, revisionId, options) => invokeWorkspaceWrite('workspace:resume-revisions-delete', [resumeId, revisionId], options),
     ExportResume: (resume, format) => invoke('workspace:export-resume', resume, format),
     Migrate: () => invoke('workspace:migrate'),
 };

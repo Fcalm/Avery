@@ -1,5 +1,6 @@
 import { platformClient, Unwrap } from '../../../shared/platform/platformClient';
 import type { Resume } from '../../../types/domain';
+import type { ResumeRevisionDocumentDto } from '@avery/contracts';
 import { useWorkspaceData } from '../../workspace/api/useWorkspaceData';
 import { useWorkspaceMutation, type WorkspaceMutationHandlers } from '../../workspace/api/mutationHelper';
 
@@ -50,9 +51,31 @@ export async function LoadResumeRevisions(resumeId: string) {
   return result.ok ? result.data : [];
 }
 
-/** 标记或取消标记重要简历版本；失败抛统一业务错误。 */
-export async function SetResumeRevisionPinned(revisionId: string, pinned: boolean) {
-  return Unwrap(await platformClient.workspace.SetResumeRevisionPinned(revisionId, pinned));
+/** 读取简历历史版本的只读正文。 */
+export async function LoadResumeRevision(resumeId: string, revisionId: string): Promise<ResumeRevisionDocumentDto> {
+  return Unwrap(await platformClient.workspace.GetResumeRevision(resumeId, revisionId));
+}
+
+/** 还原历史版本；服务端生成新的递增 revision，并同步替换简历聚合缓存。 */
+export function useRestoreResumeRevision(handlers?: WorkspaceMutationHandlers) {
+  return useWorkspaceMutation<{ resumeId: string; revisionId: string; expectedRevision?: number }, { id: string; revision: number; restoredFromRevision: number; resume: Resume }>({
+    mutationFn: ({ resumeId, revisionId, expectedRevision }, options) => Unwrap(platformClient.workspace.RestoreResumeRevision(resumeId, revisionId, expectedRevision, options)),
+    applyServer: (data, _vars, result) => ({
+      ...data,
+      resumes: data.resumes.map((item) => item.id === result.id ? result.resume : item),
+    }),
+    conflictCode: 'REVISION_CONFLICT',
+    ...handlers,
+  });
+}
+
+/** 删除历史版本；当前版本由后端保护，删除不会改变简历聚合缓存。 */
+export function useDeleteResumeRevision(handlers?: WorkspaceMutationHandlers) {
+  return useWorkspaceMutation<{ resumeId: string; revisionId: string }, { id: string }>({
+    mutationFn: ({ resumeId, revisionId }, options) => Unwrap(platformClient.workspace.DeleteResumeRevision(resumeId, revisionId, options)),
+    applyServer: (data) => data,
+    ...handlers,
+  });
 }
 
 /** 导出简历文件到工作空间 exports；失败抛统一业务错误。 */

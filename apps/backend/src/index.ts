@@ -152,7 +152,7 @@ async function Bootstrap(): Promise<void> {
       return result;
     },
   };
-  const resumes = Facade(['UpsertResume', 'RenameResume', 'DeleteResume', 'GetResumeRevisions', 'SetResumeRevisionPinned']);
+  const resumes = Facade(['UpsertResume', 'RenameResume', 'DeleteResume', 'GetResumeRevisions', 'GetResumeRevision', 'RestoreResumeRevision', 'DeleteResumeRevision']);
   const jobs = Facade(['UpsertJob', 'SetJobFavorite', 'DeleteJob']);
   const applications = Facade(['UpsertApplication', 'MoveApplicationStatus', 'DeleteApplication']);
   const profiles = Facade(['GetProfiles', 'SaveProfiles', 'ReloadProfiles']);

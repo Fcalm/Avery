@@ -82,14 +82,18 @@ export interface ProfileItemDto {
   updatedAt?: number;
 }
 
-/** 简历版本 DTO：返回不可变版本快照与留存标记。 */
+/** 简历版本 DTO：当前版本与最多两份只读历史版本的元数据。 */
 export interface ResumeRevisionDto {
   id: string;
   revision: number;
   source: 'user' | 'agent' | 'restore' | 'import';
-  isPinned: boolean;
-  isProtected: boolean;
   createdAt: number;
+  isCurrent: boolean;
+}
+
+/** 简历历史版本的只读正文；历史版本只能预览、导出或恢复，不能直接编辑。 */
+export interface ResumeRevisionDocumentDto extends ResumeRevisionDto {
+  document: ResumeDto;
 }
 
 /** 非敏感设置 DTO；API Key 只经 Agent IPC 加密保存，不进入本对象。 */

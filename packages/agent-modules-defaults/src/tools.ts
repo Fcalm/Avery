@@ -1040,7 +1040,8 @@ export function CreateToolsModule(ports: AgentDefaultPorts): ToolsModule {
     const previous = await GetLedger(context).FindByIdempotencyKey(idempotencyKey);
     if (previous?.status === 'succeeded') return CreateToolResult(callId, { ok: true, replayed: true }, { receipt: previous.receipt });
     const ledgerEntry = await StartLedger(context, 'UpdateApplicationStatus', args, idempotencyKey);
-    const result = await tracking.Update({ ...args, resumeId: context.boundResume!.id });
+    // 投递凭证仅由宿主已读取的绑定快照构造，模型参数不能伪造简历正文、版本或哈希。
+    const result = await tracking.Update({ ...args, resumeId: context.boundResume!.id, resumeEvidence: { ...context.boundResume! } });
     const receipt: ToolReceipt = { receiptId: `receipt-${randomUUID()}`, toolDefinitionId: 'UpdateApplicationStatus', resourceIds: [`applications:${String(args.applicationId)}`, `jobs:${String(args.jobId)}`], idempotencyKey };
     await FinishLedger(context, ledgerEntry, 'succeeded', { receipt });
     return CreateToolResult(callId, { ok: true, result }, { receipt });

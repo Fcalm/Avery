@@ -1,4 +1,4 @@
-/** 简历及其版本的应用服务：封装简历 Repository，提供创建、编辑、重命名、删除与版本留存管理。 */
+/** 简历及其版本的应用服务：封装简历 Repository，提供创建、编辑、重命名、删除与三版本管理。 */
 export class ResumeService {
   private repository: any;
 
@@ -26,13 +26,23 @@ export class ResumeService {
     return this.repository.Delete(id);
   }
 
-  /** 返回一份简历的版本历史。 */
+  /** 返回当前版本与最多两份历史版本。 */
   GetRevisions(resumeId: string): any {
     return this.repository.GetRevisions(resumeId);
   }
 
-  /** 标记或取消标记重要简历版本。 */
-  SetRevisionPinned(revisionId: string, pinned: boolean): any {
-    return this.repository.SetRevisionPinned(revisionId, pinned);
+  /** 读取指定版本的只读正文。 */
+  GetRevision(resumeId: string, revisionId: string): any {
+    return this.repository.GetRevision(resumeId, revisionId);
+  }
+
+  /** 将历史版本还原为新的当前版本；透传期望版本以复用既有并发保护。 */
+  RestoreRevision(resumeId: string, revisionId: string, expectedRevision?: number): any {
+    return this.repository.RestoreRevision(resumeId, revisionId, expectedRevision);
+  }
+
+  /** 删除一份历史版本；Repository 拒绝删除当前版本。 */
+  DeleteRevision(resumeId: string, revisionId: string): any {
+    return this.repository.DeleteRevision(resumeId, revisionId);
   }
 }

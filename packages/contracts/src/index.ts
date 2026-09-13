@@ -14,7 +14,7 @@ export {
 } from './write-schemas';
 export type {
   ApplicationDto, AttachmentDto, ChatMessageDto, ChatMessageInput, ConversationDto, JobDto,
-  ProfileItemDto, ResumeDto, ResumeRevisionDto, SettingsDto, WorkspaceStatusDto, WorkspaceViewModel,
+  ProfileItemDto, ResumeDto, ResumeRevisionDocumentDto, ResumeRevisionDto, SettingsDto, WorkspaceStatusDto, WorkspaceViewModel,
 } from './dto';
 export {
   ApplicationStatusValues, ChannelValues, JobSeekingTypeValues, JobScoreValues, ProfileCategoryValues,

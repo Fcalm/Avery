@@ -1,6 +1,6 @@
 import type {
   ApplicationDto, AttachmentDto, ChatMessageInput, ConversationDto, JobDto, ProfileItemDto,
-  ResumeDto, ResumeRevisionDto, SettingsDto, WorkspaceStatusDto, WorkspaceViewModel,
+  ResumeDto, ResumeRevisionDocumentDto, ResumeRevisionDto, SettingsDto, WorkspaceStatusDto, WorkspaceViewModel,
 } from './dto';
 import type { WriteCommandOptions } from './envelope';
 import type { DesktopEvaluationBridge } from './evaluation';
@@ -232,7 +232,9 @@ export interface WorkspaceBridge {
   ExportRecoveryDiagnostic: (options?: WriteCommandOptions) => Promise<{ exported: boolean; fileName: string }>;
   CreateBackup: (options?: WriteCommandOptions) => Promise<{ created: boolean; timestamp: number; retainedCount: number }>;
   GetResumeRevisions: (resumeId: string) => Promise<ResumeRevisionDto[]>;
-  SetResumeRevisionPinned: (revisionId: string, pinned: boolean, options?: WriteCommandOptions) => Promise<{ id: string; isPinned: boolean }>;
+  GetResumeRevision: (resumeId: string, revisionId: string) => Promise<ResumeRevisionDocumentDto>;
+  RestoreResumeRevision: (resumeId: string, revisionId: string, expectedRevision?: number, options?: WriteCommandOptions) => Promise<{ id: string; revision: number; restoredFromRevision: number; resume: ResumeDto }>;
+  DeleteResumeRevision: (resumeId: string, revisionId: string, options?: WriteCommandOptions) => Promise<{ id: string }>;
   ExportResume: (resume: { name: string; summary: string; content: string }, format: 'html' | 'pdf' | 'docx' | 'png') => Promise<{ fileName: string; exported: boolean }>;
   Migrate: () => Promise<WorkspaceStatusDto & { migration: unknown }>;
 }
@@ -254,7 +256,7 @@ export const BridgeNamespaces = {
     'DeleteResume', 'UpsertJob', 'SetJobFavorite', 'DeleteJob', 'UpsertApplication',
     'MoveApplicationStatus', 'DeleteApplication', 'GetProfiles', 'SaveProfiles', 'ReloadProfiles',
     'ImportAttachment', 'CleanupAttachments', 'GetRecoveryStatus', 'RecoverOperations', 'GetDatabaseRecoveryStatus',
-    'RestoreLatestBackup', 'RestoreBackup', 'ExportRecoveryDiagnostic', 'CreateBackup', 'GetResumeRevisions', 'SetResumeRevisionPinned',
+    'RestoreLatestBackup', 'RestoreBackup', 'ExportRecoveryDiagnostic', 'CreateBackup', 'GetResumeRevisions', 'GetResumeRevision', 'RestoreResumeRevision', 'DeleteResumeRevision',
     'ExportResume', 'Migrate',
   ] as const,
   evaluation: [

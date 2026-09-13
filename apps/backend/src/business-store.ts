@@ -275,8 +275,12 @@ export class BusinessStore {
   DeleteResume(id: string): any { return this.resumeService.Delete(id); }
   /** 返回一份简历的版本历史。 */
   GetResumeRevisions(resumeId: string): any { return this.resumeService.GetRevisions(resumeId); }
-  /** 标记或取消标记重要简历版本。 */
-  SetResumeRevisionPinned(revisionId: string, pinned: boolean): any { return this.resumeService.SetRevisionPinned(revisionId, pinned); }
+  /** 读取历史版本正文；版本正文仅用于预览、导出与恢复。 */
+  GetResumeRevision(resumeId: string, revisionId: string): any { return this.resumeService.GetRevision(resumeId, revisionId); }
+  /** 从历史版本生成新的当前版本，沿用现有简历 revision 冲突校验。 */
+  RestoreResumeRevision(resumeId: string, revisionId: string, expectedRevision?: number): any { return this.resumeService.RestoreRevision(resumeId, revisionId, expectedRevision); }
+  /** 删除历史版本；当前版本由 Repository 强制保护。 */
+  DeleteResumeRevision(resumeId: string, revisionId: string): any { return this.resumeService.DeleteRevision(resumeId, revisionId); }
   /** 创建或编辑岗位；透传期望版本供外部修改冲突检测。 */
   UpsertJob(job: any, expectedRevision?: number): any { return this.jobService.Upsert(job, expectedRevision); }
   /** 切换岗位收藏状态；透传期望版本供外部修改冲突检测。 */
@@ -314,6 +318,10 @@ export class BusinessStore {
   /** Agent 投递状态写入：岗位和投递在同一数据库事务中更新，避免只保存其中一半。 */
   UpdateApplicationTracking(input: any): any {
     if (!input || typeof input !== 'object') throw new Error('Application tracking input is invalid.');
+    const evidenceSnapshot = input.resumeEvidence;
+    if (input.status === 'applied' && (!evidenceSnapshot || typeof evidenceSnapshot !== 'object' || evidenceSnapshot.id !== input.resumeId)) {
+      throw new Error('A verified application requires the bound resume evidence.');
+    }
     const run = this.db.transaction(() => {
       const job = {
         id: input.jobId, company: input.company, title: input.title, city: input.city ?? '', experience: input.experience ?? '',
@@ -327,7 +335,17 @@ export class BusinessStore {
         ...(existingApplication ?? {}), id: input.applicationId, jobId: input.jobId, resumeId: input.resumeId,
         status: input.status, note: input.note ?? existingApplication?.note ?? '', ...(input.appliedAt ? { appliedAt: input.appliedAt } : {}),
       }, existingApplication?.revision);
-      return { jobId: savedJob.id, applicationId: savedApplication.id, jobRevision: savedJob.revision, applicationRevision: savedApplication.revision, status: input.status };
+      const evidence = input.status === 'applied'
+        ? this.applications.RecordResumeEvidence(input.applicationId, {
+          resumeId: input.resumeId,
+          revision: evidenceSnapshot.revision,
+          document: evidenceSnapshot,
+        })
+        : null;
+      return {
+        jobId: savedJob.id, applicationId: savedApplication.id, jobRevision: savedJob.revision, applicationRevision: savedApplication.revision, status: input.status,
+        ...(evidence ? { resumeEvidence: evidence } : {}),
+      };
     });
     return run();
   }
