@@ -1080,20 +1080,24 @@ button { background: none; border: 0; }
 }
 
 /* ------------------------------------------------------------ 条件选择面板 */
-/* 8 个条件按 4 列排布，采集按钮独占一行右对齐；窄窗口退化为 3 列。 */
-.job-view .cond { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; align-items: end; margin-top: 18px; }
+/* 8 项条件 + 采集按钮共 10 个格子：关键词占两列，5 列正好排满两行，按钮落在第二行末尾。 */
+.job-view .cond { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; align-items: end; margin-top: 18px; }
+.job-view .cond > .field:first-child { grid-column: span 2; }
 .job-view .cond .field { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
 .job-view .cond .field > span { padding-left: 1px; color: var(--text-3); font-size: 11px; font-weight: 600; letter-spacing: .05em; }
-.job-view .cond .field input {
-  height: 32px; min-width: 0; border: 1px solid var(--border-2); border-radius: var(--r-control);
-  padding: 0 10px; background: var(--panel); color: var(--text); font-size: 12.5px;
+/* 输入框与下拉触发器共用同一组盒模型数值，两者高度不会因各自的默认内边距与行高产生差异。 */
+.job-view .cond .field :is(input, .custom-select-trigger) {
+  width: 100%; height: 32px; min-height: 32px; min-width: 0; box-sizing: border-box;
+  border: 1px solid var(--border-2); border-radius: var(--r-control);
+  padding: 0 10px; color: var(--text); background: var(--panel);
+  font-family: inherit; font-size: 12.5px; line-height: 1;
   transition: border-color .18s var(--ease), box-shadow .18s var(--ease);
 }
-.job-view .cond .field input:focus { outline: 0; border-color: var(--accent); box-shadow: var(--focus-ring); }
+.job-view .cond .field .custom-select-trigger { justify-content: space-between; gap: 8px; }
+.job-view .cond .field :is(input, .custom-select-trigger):focus { outline: 0; border-color: var(--accent); box-shadow: var(--focus-ring); }
 .job-view .cond .field input::placeholder { color: var(--text-3); }
 .job-view .cond .custom-select { width: 100%; }
-.job-view .cond .custom-select-trigger { height: 32px; min-height: 32px; font-size: 12.5px; }
-.job-view .cond-go { grid-column: 1 / -1; justify-self: end; height: 32px; white-space: nowrap; }
+.job-view .cond-go { justify-self: end; height: 32px; white-space: nowrap; }
 
 /* ------------------------------------------------------------- 列表 + 详情 */
 .jlib { display: grid; grid-template-columns: minmax(300px, 1fr) minmax(340px, 1.15fr); gap: 14px; margin-top: 14px; align-items: start; }
@@ -1157,28 +1161,38 @@ button { background: none; border: 0; }
 .job-view .kv-r { display: flex; align-items: center; justify-content: space-between; gap: 12px; color: var(--text-2); font-size: 12.5px; }
 .job-view .kv-r > span { flex: none; }
 .job-view .kv-r b { min-width: 0; color: var(--text); font-weight: 550; text-align: right; overflow-wrap: anywhere; }
-/* 岗位链接：应用不允许在窗口内跳转外部站点，因此只提供只读文本与复制入口。 */
-.job-view .kv-link { display: inline-flex; align-items: center; gap: 6px; max-width: 300px; }
-.job-view .kv-link > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.job-view .kv-link button { display: grid; width: 24px; height: 24px; flex: none; place-items: center; border: 0; border-radius: var(--radius-mark); padding: 0; color: var(--text-3); background: transparent; cursor: pointer; }
-.job-view .kv-link button:hover { color: var(--accent); background: var(--surface-2); }
+/* 岗位链接与 JD 正文由详情面板和抽屉阅读态共用（.sec / .kv 在两个作用域下已有等价规则），
+   因此不限定单一作用域；类名只服务岗位阅读态。 */
+.kv-link { display: inline-flex; align-items: center; gap: 6px; max-width: 300px; }
+.kv-link > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kv-link button { display: grid; width: 24px; height: 24px; flex: none; place-items: center; border: 0; border-radius: var(--radius-mark); padding: 0; color: var(--text-3); background: transparent; cursor: pointer; }
+.kv-link button:hover { color: var(--accent); background: var(--surface-2); }
 .jd-body { padding-top: 13px; }
 .jd-text { color: var(--text-2); font-size: 13px; line-height: 1.7; white-space: pre-wrap; }
 .jd-none { color: var(--text-3); font-size: 12.5px; }
+/* 岗位 JD 是整段正文，抽屉比默认 500px 略宽以保证行宽可读。 */
+.dw-drawer.is-job { width: min(560px, 92vw); }
 
-@media (max-width: 1080px){
+@media (max-width: 1180px){
+  /* 3 列时关键词不再占两列：9 个格子正好排满三行，按钮落在末行末列。 */
   .job-view .cond { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .job-view .cond > .field:first-child { grid-column: span 1; }
 }
 @media (max-width: 860px){
   .jlib { grid-template-columns: 1fr; }
+  /* 2 列时关键词独占一行：9 个格子正好排满五行。 */
+  .job-view .cond { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .job-view .cond > .field:first-child { grid-column: span 2; }
 }
 @media (max-width: 619px){
   .job-view.standard-page { padding: 25px 17px; }
   .job-view .view-h { align-items: stretch; flex-direction: column; }
   .job-view .view-h .vh-act { margin-left: 0; }
   .job-view .cond { grid-template-columns: 1fr; }
+  .job-view .cond > .field:first-child { grid-column: span 1; }
+  .job-view .cond-go { justify-self: stretch; }
   .jrows { max-height: none; }
   .job-view .kv-r { align-items: flex-start; flex-direction: column; gap: 3px; }
   .job-view .kv-r b { text-align: left; }
-  .job-view .kv-link { max-width: 100%; }
+  .kv-link { max-width: 100%; }
 }

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useUiStore } from '../../../app/UiStore';
-import { Button, Drawer, FormField, Modal, Select } from '../../../shared/components/UI';
+import { Button, FormField, Modal, Select } from '../../../shared/components/UI';
 import { Icon } from '../../../shared/components/Icon';
 import { ChannelLabel, FormatDateTime, FormatRelativeTime, FromDateTimeLocalValue, JobSeekingTypeLabel, ToDateTimeLocalValue } from '../../../shared/utils/format';
 import { CreateEntityId } from '../../workspace/api/workspaceData';
@@ -15,6 +16,8 @@ type SortMode = 'posted' | 'score';
 
 /** 表单只承载用户可编辑字段；createdAt 由后端 created_at 投影，不参与写回。 */
 type JobForm = Pick<Job, 'company' | 'title' | 'city' | 'salary' | 'experience' | 'jobSeekingType' | 'channel' | 'url' | 'jd' | 'deadline'>;
+/** 抽屉两种形态：阅读态只渲染字段，编辑态才出现输入框；新建岗位没有阅读态。 */
+type JobDrawer = { mode: 'view'; job: Job } | { mode: 'edit'; job: Job | null };
 
 const BlankJob: JobForm = {
   company: '', title: '', city: '', salary: '', experience: '',
@@ -32,6 +35,37 @@ const SortOptions: Array<{ value: SortMode; label: string }> = [
   { value: 'score', label: '按岗位分数' },
 ];
 
+/** 应用不允许在窗口内跳转外部站点，因此岗位链接只提供只读文本与复制入口。 */
+function JobUrlLink({ url, onCopy }: { url: string; onCopy: (url: string) => void }) {
+  return <span className="kv-link">
+    <span title={url}>{url}</span>
+    <button type="button" aria-label="复制岗位链接" title="复制岗位链接" onClick={() => onCopy(url)}><Icon name="copy" size={13} /></button>
+  </span>;
+}
+
+/** 岗位阅读态：详情面板与抽屉阅读态共用同一份字段顺序与排版，避免两处漂移。 */
+function JobReadView({ job, onCopyUrl }: { job: Job; onCopyUrl: (url: string) => void }) {
+  return <>
+    <section className="sec">
+      <div className="sec-h">基本信息</div>
+      <div className="kv">
+        <div className="kv-r"><span>薪资</span><b>{job.salary || '面议'}</b></div>
+        <div className="kv-r"><span>城市</span><b>{job.city || '不限'}</b></div>
+        <div className="kv-r"><span>渠道</span><b>{ChannelLabel[job.channel]}</b></div>
+        <div className="kv-r"><span>求职类型</span><b>{JobSeekingTypeLabel[job.jobSeekingType]}</b></div>
+        <div className="kv-r"><span>工作经验</span><b>{job.experience || '不限'}</b></div>
+        <div className="kv-r"><span>采集时间</span><b title={FormatDateTime(job.createdAt)}>{FormatRelativeTime(job.createdAt) || '—'}</b></div>
+        <div className="kv-r"><span>岗位链接</span><b>{job.url ? <JobUrlLink url={job.url} onCopy={onCopyUrl} /> : '未填写'}</b></div>
+        <div className="kv-r"><span>截止时间</span><b>{job.deadline ? FormatDateTime(job.deadline) : '长期有效'}</b></div>
+      </div>
+    </section>
+    <section className="sec">
+      <div className="sec-h">职位 JD</div>
+      <div className="jd-body">{job.jd ? <div className="jd-text">{job.jd}</div> : <div className="jd-none">暂未保存岗位描述。</div>}</div>
+    </section>
+  </>;
+}
+
 function JobsPage({ onGoAssistant }: { onGoAssistant: () => void }) {
   const { ShowNotice, setComposerSeed, setActiveConversationId, setAssistantView } = useUiStore();
   const jobs = useJobs();
@@ -45,11 +79,11 @@ function JobsPage({ onGoAssistant }: { onGoAssistant: () => void }) {
   const [favoriteOnly, setFavoriteOnly] = useState(false);
   const [filterOpen, setFilterOpen] = useState(false);
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
-  const [drawerOpen, setDrawerOpen] = useState(false);
-  const [editingJob, setEditingJob] = useState<Job | null>(null);
+  const [drawer, setDrawer] = useState<JobDrawer | null>(null);
   const [form, setForm] = useState<JobForm>(BlankJob);
   const [deleteTarget, setDeleteTarget] = useState<Job | null>(null);
   const filterRef = useRef<HTMLDivElement>(null);
+  const drawerRef = useRef<HTMLElement>(null);
 
   /** 条件选择只写入应用内缓存：它决定采集口径，不是岗位事实，因此不进入业务数据库。 */
   useEffect(() => { SaveJobConditions(conditions); }, [conditions]);
@@ -62,6 +96,14 @@ function JobsPage({ onGoAssistant }: { onGoAssistant: () => void }) {
     document.addEventListener('pointerdown', CloseOnOutsidePointer);
     return () => document.removeEventListener('pointerdown', CloseOnOutsidePointer);
   }, [filterOpen]);
+
+  // 抽屉打开期间 Escape 关闭；初始焦点落在关闭按钮，与简历/档案抽屉一致。
+  useEffect(() => {
+    if (!drawer) return undefined;
+    function OnKeyDown(event: KeyboardEvent) { if (event.key === 'Escape') setDrawer(null); }
+    document.addEventListener('keydown', OnKeyDown);
+    return () => document.removeEventListener('keydown', OnKeyDown);
+  }, [drawer]);
 
   const filtered = useMemo(() => {
     const keyword = query.trim().toLocaleLowerCase();
@@ -79,19 +121,30 @@ function JobsPage({ onGoAssistant }: { onGoAssistant: () => void }) {
 
   useEffect(() => { if (!selectedJobId || !filtered.some((job) => job.id === selectedJobId)) setSelectedJobId(filtered[0]?.id ?? null); }, [filtered, selectedJobId]);
 
-  function OpenNew() { setEditingJob(null); setForm(BlankJob); setDrawerOpen(true); }
-  function OpenEdit(job: Job) { setEditingJob(job); setForm(ToForm(job)); setDrawerOpen(true); }
+  const activeSort = SortOptions.find((option) => option.value === sortMode) ?? SortOptions[0];
+  const editingJob = drawer?.mode === 'edit' ? drawer.job : null;
+
+  function OpenNew() { setForm(BlankJob); setDrawer({ mode: 'edit', job: null }); }
+  function OpenDetail(job: Job) { setDrawer({ mode: 'view', job }); }
+  function StartEditing() {
+    const job = drawer?.mode === 'view' ? drawer.job : null;
+    setForm(job ? ToForm(job) : BlankJob);
+    setDrawer({ mode: 'edit', job });
+  }
   function SaveJob() {
     if (!form.company || !form.title || !form.city || !form.experience || !form.jd) { ShowNotice('请填写公司、岗位、城市、经验要求和完整 JD'); return; }
     if (editingJob) upsertJob.mutate({ job: { ...form, id: editingJob.id, favorite: editingJob.favorite, matchScore: editingJob.matchScore }, expectedRevision: editingJob.revision });
     else upsertJob.mutate({ job: { ...form, id: CreateEntityId('job'), favorite: false } });
-    setDrawerOpen(false); ShowNotice(editingJob ? '岗位信息已更新' : '已新增岗位');
+    setDrawer(null); ShowNotice(editingJob ? '岗位信息已更新' : '已新增岗位');
   }
-  function ConfirmRemoveJob() { if (!deleteTarget) return; deleteJob.mutate({ id: deleteTarget.id }); setDeleteTarget(null); setDrawerOpen(false); ShowNotice('岗位已删除'); }
+  function ConfirmRemoveJob() {
+    if (!deleteTarget) return;
+    deleteJob.mutate({ id: deleteTarget.id });
+    setDeleteTarget(null); setDrawer(null); ShowNotice('岗位已删除');
+  }
   function ToggleFavorite(job: Job) { setJobFavorite.mutate({ id: job.id, favorite: !job.favorite, expectedRevision: job.revision }); }
-  function CopyJobUrl(job: Job) {
-    if (!job.url) return;
-    void navigator.clipboard?.writeText(job.url).then(() => ShowNotice('岗位链接已复制')).catch(() => ShowNotice('岗位链接复制失败，请手动选择复制'));
+  function CopyJobUrl(url: string) {
+    void navigator.clipboard?.writeText(url).then(() => ShowNotice('岗位链接已复制')).catch(() => ShowNotice('岗位链接复制失败，请手动选择复制'));
   }
   /** 采集入口与原型一致：把条件整理成指令预填到助手输入框，由用户确认后发送。 */
   function CollectViaAvery() {
@@ -100,8 +153,6 @@ function JobsPage({ onGoAssistant }: { onGoAssistant: () => void }) {
     setAssistantView('chat');
     onGoAssistant();
   }
-
-  const activeSort = SortOptions.find((option) => option.value === sortMode) ?? SortOptions[0];
 
   return <div className="standard-page job-view">
     <div className="view-h">
@@ -176,58 +227,65 @@ function JobsPage({ onGoAssistant }: { onGoAssistant: () => void }) {
               <button className={`ghost-btn${selectedJob.favorite ? ' on' : ''}`} type="button" aria-pressed={selectedJob.favorite} onClick={() => ToggleFavorite(selectedJob)}>
                 <Icon name="heart" size={14} />{selectedJob.favorite ? '已收藏' : '收藏'}
               </button>
-              <button className="ghost-btn" type="button" onClick={() => OpenEdit(selectedJob)}><Icon name="edit" size={14} />编辑</button>
+              <button className="ghost-btn" type="button" onClick={() => OpenDetail(selectedJob)}><Icon name="info" size={14} />详情</button>
             </div>
           </div>
-          <div className="sec">
-            <div className="sec-h">基本信息</div>
-            <div className="kv">
-              <div className="kv-r"><span>薪资</span><b>{selectedJob.salary || '面议'}</b></div>
-              <div className="kv-r"><span>城市</span><b>{selectedJob.city || '不限'}</b></div>
-              <div className="kv-r"><span>渠道</span><b>{ChannelLabel[selectedJob.channel]}</b></div>
-              <div className="kv-r"><span>求职类型</span><b>{JobSeekingTypeLabel[selectedJob.jobSeekingType]}</b></div>
-              <div className="kv-r"><span>工作经验</span><b>{selectedJob.experience || '不限'}</b></div>
-              <div className="kv-r"><span>采集时间</span><b title={FormatDateTime(selectedJob.createdAt)}>{FormatRelativeTime(selectedJob.createdAt) || '—'}</b></div>
-              <div className="kv-r"><span>岗位链接</span><b>{selectedJob.url
-                ? <span className="kv-link"><span title={selectedJob.url}>{selectedJob.url}</span><button type="button" aria-label="复制岗位链接" title="复制岗位链接" onClick={() => CopyJobUrl(selectedJob)}><Icon name="copy" size={13} /></button></span>
-                : '未填写'}</b></div>
-              <div className="kv-r"><span>截止时间</span><b>{selectedJob.deadline ? FormatDateTime(selectedJob.deadline) : '长期有效'}</b></div>
-            </div>
-          </div>
-          <div className="sec">
-            <div className="sec-h">职位 JD</div>
-            <div className="jd-body">{selectedJob.jd ? <div className="jd-text">{selectedJob.jd}</div> : <div className="jd-none">暂未保存岗位描述。</div>}</div>
-          </div>
+          <JobReadView job={selectedJob} onCopyUrl={CopyJobUrl} />
         </> : <div className="jd-empty">从左边选一个岗位，这里会显示它的完整信息。</div>}
       </section>
     </div>
 
-    <Drawer open={drawerOpen} title={editingJob ? '编辑岗位信息' : '手动添加岗位'} onClose={() => setDrawerOpen(false)}>
-      <div className="drawer-form">
-        <div className="form-two-col">
-          <FormField label="公司 *"><input value={form.company} onChange={(event) => setForm({ ...form, company: event.target.value })} /></FormField>
-          <FormField label="岗位名称 *"><input value={form.title} onChange={(event) => setForm({ ...form, title: event.target.value })} /></FormField>
-          <FormField label="城市 *"><input value={form.city} onChange={(event) => setForm({ ...form, city: event.target.value })} /></FormField>
-          <FormField label="薪资"><input value={form.salary ?? ''} onChange={(event) => setForm({ ...form, salary: event.target.value })} /></FormField>
-          <FormField label="经验要求 *"><input value={form.experience} onChange={(event) => setForm({ ...form, experience: event.target.value })} /></FormField>
-          <FormField label="渠道"><Select value={form.channel} ariaLabel="渠道" onChange={(channel) => setForm({ ...form, channel: channel as Channel })} options={ChannelOptions.map((item) => ({ value: item, label: ChannelLabel[item] }))} /></FormField>
+    {/* 抽屉经 portal 挂到 body：玻璃背景等祖先带动画/滤镜时 fixed 会退化为相对祖先定位，
+        只有脱离该子树才能像简历/档案抽屉一样让遮罩与虚化盖住整个应用窗口。 */}
+    {drawer && createPortal(<div className="dw-layer" role="presentation">
+      <div className="dw-scrim" onClick={() => setDrawer(null)} />
+      <aside className="dw-drawer is-job" role="dialog" aria-modal="true" aria-labelledby="job-drawer-title" tabIndex={-1} ref={drawerRef}>
+        <div className="dw-head">
+          <div className="dw-head-main">
+            <div className="dw-title" id="job-drawer-title">{drawer.mode === 'view' ? drawer.job.title : editingJob ? '编辑岗位信息' : '手动添加岗位'}</div>
+            <div className="dw-meta">
+              {drawer.mode === 'view' ? <>
+                <span>{drawer.job.company}</span>
+                <span>{ChannelLabel[drawer.job.channel]}</span>
+                {Boolean(drawer.job.createdAt) && <span>{FormatRelativeTime(drawer.job.createdAt)}采集</span>}
+              </> : <span>{editingJob ? '修改后尚未保存' : '尚未保存'}</span>}
+            </div>
+          </div>
+          <button className="icon-btn" type="button" aria-label="关闭详情" title="关闭详情" autoFocus onClick={() => setDrawer(null)}><Icon name="close" size={16} /></button>
         </div>
-        <FormField label="求职类型">
-          <div className="segmented">{JobSeekingTypeOptions.map((item) => <button key={item} type="button" className={form.jobSeekingType === item ? 'selected' : ''} onClick={() => setForm({ ...form, jobSeekingType: item })}>{JobSeekingTypeLabel[item]}</button>)}</div>
-        </FormField>
-        <FormField label="岗位链接"><input value={form.url ?? ''} onChange={(event) => setForm({ ...form, url: event.target.value })} placeholder="https://" /></FormField>
-        <FormField label="截止时间" hint="到期后岗位会自动从岗位库删除；留空表示长期有效。">
-          <input type="datetime-local" value={ToDateTimeLocalValue(form.deadline)} onChange={(event) => setForm({ ...form, deadline: FromDateTimeLocalValue(event.target.value) })} />
-        </FormField>
-        <FormField label="完整 JD *"><textarea value={form.jd} onChange={(event) => setForm({ ...form, jd: event.target.value })} rows={8} /></FormField>
-        <div className="drawer-actions">
-          {editingJob && <Button variant="danger" onClick={() => setDeleteTarget(editingJob)}>删除</Button>}
-          <span />
-          <Button onClick={() => setDrawerOpen(false)}>取消</Button>
-          <Button variant="primary" onClick={SaveJob}>保存岗位</Button>
+        <div className="dw-body">
+          {drawer.mode === 'view' ? <JobReadView job={drawer.job} onCopyUrl={CopyJobUrl} /> : <div className="drawer-form">
+            <div className="form-two-col">
+              <FormField label="公司 *"><input value={form.company} onChange={(event) => setForm({ ...form, company: event.target.value })} /></FormField>
+              <FormField label="岗位名称 *"><input value={form.title} onChange={(event) => setForm({ ...form, title: event.target.value })} /></FormField>
+              <FormField label="城市 *"><input value={form.city} onChange={(event) => setForm({ ...form, city: event.target.value })} /></FormField>
+              <FormField label="薪资"><input value={form.salary ?? ''} onChange={(event) => setForm({ ...form, salary: event.target.value })} /></FormField>
+              <FormField label="经验要求 *"><input value={form.experience} onChange={(event) => setForm({ ...form, experience: event.target.value })} /></FormField>
+              <FormField label="渠道"><Select value={form.channel} ariaLabel="渠道" onChange={(channel) => setForm({ ...form, channel: channel as Channel })} options={ChannelOptions.map((item) => ({ value: item, label: ChannelLabel[item] }))} /></FormField>
+            </div>
+            <FormField label="求职类型">
+              <div className="segmented">{JobSeekingTypeOptions.map((item) => <button key={item} type="button" className={form.jobSeekingType === item ? 'selected' : ''} onClick={() => setForm({ ...form, jobSeekingType: item })}>{JobSeekingTypeLabel[item]}</button>)}</div>
+            </FormField>
+            <FormField label="岗位链接"><input value={form.url ?? ''} onChange={(event) => setForm({ ...form, url: event.target.value })} placeholder="https://" /></FormField>
+            <FormField label="截止时间" hint="到期后岗位会自动从岗位库删除；留空表示长期有效。">
+              <input type="datetime-local" value={ToDateTimeLocalValue(form.deadline)} onChange={(event) => setForm({ ...form, deadline: FromDateTimeLocalValue(event.target.value) })} />
+            </FormField>
+            <FormField label="完整 JD *"><textarea value={form.jd} onChange={(event) => setForm({ ...form, jd: event.target.value })} rows={8} /></FormField>
+          </div>}
         </div>
-      </div>
-    </Drawer>
+        <div className="dw-foot">
+          {drawer.mode === 'view' ? <>
+            <button className="ghost-btn" type="button" disabled={!drawer.job.url} onClick={() => drawer.job.url && CopyJobUrl(drawer.job.url)}><Icon name="copy" size={14} />复制链接</button>
+            <button className="ghost-btn is-danger" type="button" onClick={() => setDeleteTarget(drawer.job)}><Icon name="delete" size={14} />删除</button>
+            <button className="btn-accent" type="button" onClick={StartEditing}><Icon name="pencil-simple" size={14} />编辑</button>
+          </> : <>
+            {editingJob && <button className="ghost-btn is-danger" type="button" onClick={() => setDeleteTarget(editingJob)}><Icon name="delete" size={14} />删除</button>}
+            <button className="ghost-btn" type="button" onClick={() => setDrawer(null)}>取消</button>
+            <button className="btn-accent" type="button" onClick={SaveJob}><Icon name="check-circle" size={14} />保存岗位</button>
+          </>}
+        </div>
+      </aside>
+    </div>, document.body)}
 
     <Modal open={Boolean(deleteTarget)} title="删除这份岗位？" onClose={() => setDeleteTarget(null)}>
       <p className="modal-copy">删除后岗位将从岗位库移除，此操作不可撤销。</p>
