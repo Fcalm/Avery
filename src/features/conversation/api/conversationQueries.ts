@@ -12,16 +12,17 @@ export function useConversations() {
   return data?.conversations ?? [];
 }
 
-/** 新建会话；返回应用层 ID 供页面立即设为当前会话，写回后端确认的记录。 */
+/** 新建会话；返回应用层 ID 供页面立即设为当前会话，写回后端确认的记录。
+ * environment 携带创建时选择的场景与项目空间（此后不可变），落库后供侧栏场景标注与项目分组使用。 */
 export function useCreateConversation(handlers?: WorkspaceMutationHandlers) {
-  const mutation = useWorkspaceMutation<{ id: string; title: string }, ConversationDto>({
-    mutationFn: ({ id, title }, options) => Unwrap(platformClient.workspace.CreateConversation({ id, title }, options)),
+  const mutation = useWorkspaceMutation<{ id: string; title: string; scenarioId?: 'default' | 'application'; projectId?: string; projectName?: string }, ConversationDto>({
+    mutationFn: ({ id, title, scenarioId, projectId, projectName }, options) => Unwrap(platformClient.workspace.CreateConversation({ id, title, scenarioId, projectId, projectName }, options)),
     applyServer: (data, _vars, result) => ({ ...data, conversations: [result, ...data.conversations] }),
     ...handlers,
   });
-  return useCallback(async (title: string) => {
+  return useCallback(async (title: string, environment?: { scenarioId: 'default' | 'application'; projectId?: string; projectName?: string }) => {
     const id = CreateEntityId('conversation');
-    await mutation.mutateAsync({ id, title });
+    await mutation.mutateAsync({ id, title, scenarioId: environment?.scenarioId, projectId: environment?.projectId, projectName: environment?.projectName });
     return id;
   }, [mutation]);
 }

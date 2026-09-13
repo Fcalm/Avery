@@ -202,7 +202,7 @@ export interface WorkspaceBridge {
   GetViewModel: () => Promise<WorkspaceViewModel>;
   GetSettings: () => Promise<Partial<SettingsDto>>;
   SaveSettings: (settings: Partial<SettingsDto>, options?: WriteCommandOptions) => Promise<{ saved: boolean }>;
-  CreateConversation: (conversation: { id: string; title: string }, options?: WriteCommandOptions) => Promise<ConversationDto>;
+  CreateConversation: (conversation: { id: string; title: string; scenarioId?: 'default' | 'application'; projectId?: string; projectName?: string }, options?: WriteCommandOptions) => Promise<ConversationDto>;
   SetConversationPinned: (id: string, pinned: boolean, expectedRevision?: number, options?: WriteCommandOptions) => Promise<{ id: string; pinned: boolean; revision: number }>;
   SetConversationArchived: (id: string, archived: boolean, expectedRevision?: number, options?: WriteCommandOptions) => Promise<{ id: string; archived: boolean; revision: number }>;
   RenameConversation: (id: string, title: string, expectedRevision?: number, options?: WriteCommandOptions) => Promise<{ id: string; title: string; revision: number }>;

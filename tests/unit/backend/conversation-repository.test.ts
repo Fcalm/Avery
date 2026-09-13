@@ -9,7 +9,7 @@ function CreateRepository() {
   const db = new Database(':memory:');
   db.pragma('foreign_keys = ON');
   db.exec(`
-    CREATE TABLE conversations(id TEXT PRIMARY KEY, title TEXT NOT NULL, revision INTEGER NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, last_used_at INTEGER NOT NULL);
+    CREATE TABLE conversations(id TEXT PRIMARY KEY, title TEXT NOT NULL, scenario_id TEXT NOT NULL DEFAULT 'resume-copilot', environment_id TEXT, environment_root_path TEXT, environment_real_path TEXT, environment_status TEXT NOT NULL DEFAULT 'none', environment_bound_at INTEGER, environment_name TEXT, session_snapshot_json TEXT, tool_array_snapshot_json TEXT NOT NULL DEFAULT '[]', revision INTEGER NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, last_used_at INTEGER NOT NULL, pinned INTEGER NOT NULL DEFAULT 0, archived INTEGER NOT NULL DEFAULT 0);
     CREATE TABLE conversation_messages(id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE, role TEXT NOT NULL, content TEXT NOT NULL, reasoning_content TEXT, status TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
     CREATE TABLE cron_tasks(id TEXT PRIMARY KEY);
     CREATE TABLE cron_runs(id TEXT PRIMARY KEY, cron_task_id TEXT NOT NULL REFERENCES cron_tasks(id), conversation_id TEXT REFERENCES conversations(id));
@@ -20,6 +20,26 @@ function CreateRepository() {
     repository: new ConversationRepository({ db, attachmentLifecycle: { RemoveConversationLinks: () => undefined, ReplaceLinks: () => undefined, RemoveLinks: () => undefined } }),
   };
 }
+
+describe('ConversationRepository 创建', () => {
+  it('创建会话时定格场景与项目空间，列表读取返回同一快照', () => {
+    const { db, repository } = CreateRepository();
+    repository.Create({ id: 'conversation-1', title: '投递会话', scenarioId: 'application', projectId: 'project-1', projectName: 'resume-html-pdf' });
+    repository.Create({ id: 'conversation-2', title: '普通聊天' });
+
+    const conversations = repository.ListAll();
+    expect(conversations.find((item: any) => item.id === 'conversation-1')).toMatchObject({ scenarioId: 'application', projectId: 'project-1', projectName: 'resume-html-pdf' });
+    expect(conversations.find((item: any) => item.id === 'conversation-2')).toMatchObject({ scenarioId: 'default', projectId: null, projectName: null });
+    db.close();
+  });
+
+  it('项目空间只传 id 或只传名称时拒绝创建，场景值非法时拒绝创建', () => {
+    const { db, repository } = CreateRepository();
+    expect(() => repository.Create({ id: 'conversation-3', title: '半配置', projectId: 'project-1' })).toThrow('project environment is invalid');
+    expect(() => repository.Create({ id: 'conversation-4', title: '坏场景', scenarioId: 'resume-copilot' as unknown as 'default' })).toThrow('scenario is invalid');
+    db.close();
+  });
+});
 
 describe('ConversationRepository 删除', () => {
   it('删除定时任务创建的对话时保留运行历史并清空关联', () => {

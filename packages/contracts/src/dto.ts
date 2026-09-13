@@ -21,7 +21,8 @@ export interface ChatMessageInput {
   attachments?: Array<{ name: string; path: string }>;
 }
 
-/** 会话 DTO：含 revision 供外部修改冲突校验；pinned/archived 仅控制"最近"列表的排序与可见性。 */
+/** 会话 DTO：含 revision 供外部修改冲突校验；pinned/archived 仅控制"最近"列表的排序与可见性。
+ * scenarioId/projectId/projectName 在创建时定格（场景与项目绑定此后不可变），是侧栏场景标注与项目分组的数据源；旧会话缺省按聊天/未分组处理。 */
 export interface ConversationDto {
   id: string;
   title: string;
@@ -29,6 +30,9 @@ export interface ConversationDto {
   updatedAt?: number;
   pinned?: boolean;
   archived?: boolean;
+  scenarioId?: 'default' | 'application';
+  projectId?: string | null;
+  projectName?: string | null;
   messages: ChatMessageDto[];
 }
 

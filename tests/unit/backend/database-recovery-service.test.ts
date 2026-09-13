@@ -33,7 +33,8 @@ describe('ValidateRecoverySet', () => {
     ];
     const insert = db.prepare('INSERT INTO schema_migrations(version, checksum) VALUES(?, ?)');
     seeds.forEach((seed, index) => insert.run(index + 1, createHash('sha256').update(seed).digest('hex')));
-    db.prepare("INSERT INTO workspace_meta(id, schema_version) VALUES('workspace', 12)").run();
+    // schema_version 必须大于当前 manifest 的最新版本（v12）才会触发"未来 Schema"拒绝。
+    db.prepare("INSERT INTO workspace_meta(id, schema_version) VALUES('workspace', 13)").run();
     db.close();
 
     expect(() => ValidateRecoverySet(databasePath, join(directory, 'profile.json'))).toThrow('schema version is unsupported');

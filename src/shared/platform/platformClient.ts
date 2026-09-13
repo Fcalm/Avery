@@ -107,7 +107,7 @@ export const platformClient = {
     GetViewModel: () => CallBridge(() => RequireWorkspace().GetViewModel()),
     GetSettings: () => CallBridge(() => RequireWorkspace().GetSettings()),
     SaveSettings: (settings: Partial<SettingsDto>, options?: WriteCommandOptions) => CallBridge(() => RequireWorkspace().SaveSettings(settings, ResolveWriteOptions(options))),
-    CreateConversation: (conversation: { id: string; title: string }, options?: WriteCommandOptions) => CallBridge(() => RequireWorkspace().CreateConversation(conversation, ResolveWriteOptions(options))),
+    CreateConversation: (conversation: { id: string; title: string; scenarioId?: 'default' | 'application'; projectId?: string; projectName?: string }, options?: WriteCommandOptions) => CallBridge(() => RequireWorkspace().CreateConversation(conversation, ResolveWriteOptions(options))),
     RenameConversation: (id: string, title: string, expectedRevision?: number, options?: WriteCommandOptions) => CallBridge(() => RequireWorkspace().RenameConversation(id, title, expectedRevision, ResolveWriteOptions(options))),
     SetConversationPinned: (id: string, pinned: boolean, expectedRevision?: number, options?: WriteCommandOptions) => CallBridge(() => RequireWorkspace().SetConversationPinned(id, pinned, expectedRevision, ResolveWriteOptions(options))),
     SetConversationArchived: (id: string, archived: boolean, expectedRevision?: number, options?: WriteCommandOptions) => CallBridge(() => RequireWorkspace().SetConversationArchived(id, archived, expectedRevision, ResolveWriteOptions(options))),

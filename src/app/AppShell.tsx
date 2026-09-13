@@ -4,7 +4,7 @@ import { useUiStore } from './UiStore';
 import { useConversations, useRenameConversation, useSetConversationArchived, useSetConversationPinned } from '../features/conversation/api/conversationQueries';
 import { GetAgentSessionScenes } from '../features/assistant/api/agentQueries';
 import { useSettingsStore } from '../features/settings/api/settingsQueries';
-import type { PageId } from '../types/domain';
+import type { Conversation, PageId } from '../types/domain';
 import { Button, Modal } from '../shared/components/UI';
 import { Icon } from '../shared/components/Icon';
 import { GetAgentBalance, IsDesktopAgentAvailable } from '../features/assistant/api/agentQueries';
@@ -24,6 +24,29 @@ type ThemeMode = 'light' | 'dark';
 
 /** 会话行"更多"菜单的固定定位信息：按触发按钮的位置计算， Escape 或点击外部关闭。 */
 type RowMenuPosition = { conversationId: string; left: number; top: number };
+
+/** 项目空间分组"更多"菜单：count 用于删除确认文案。 */
+type GroupMenuPosition = { projectId: string; name: string; count: number; left: number; top: number };
+
+/** 项目空间分组：按创建时定格的 projectId 聚合，展示名支持本地别名。 */
+type ProjectGroup = { projectId: string; name: string; items: Conversation[] };
+
+/** 分组展示偏好只存本机：别名是侧栏显示名，移除分组只是把板块从侧栏收起，都不改会话的项目绑定。 */
+const GroupAliasesKey = 'avery-project-group-aliases';
+const RemovedGroupsKey = 'avery-project-group-removed';
+
+function LoadLocalMap(key: string): Record<string, string> {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(key) ?? 'null');
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? Object.fromEntries(Object.entries(parsed).filter((entry): entry is [string, string] => typeof entry[1] === 'string'))
+      : {};
+  } catch { return {}; }
+}
+
+function SaveLocalMap(key: string, value: Record<string, string>): void {
+  try { localStorage.setItem(key, JSON.stringify(value)); } catch { /* 存储不可用时偏好仅本次会话生效 */ }
+}
 
 /** 待归档会话：确认弹窗标题里需要会话名。 */
 type ArchiveTarget = { id: string; title: string };
@@ -65,15 +88,26 @@ function AppShell({ page, onNavigate, onRestartOnboarding, settingsTab, onReques
   const [refreshingBalance, setRefreshingBalance] = useState(false);
   const [isMaximized, SetIsMaximized] = useState(false);
 
-  // 会话场景映射：原型以标题下文本标注场景；未记录场景的会话按“聊天”处理。
-  const [conversationScenes, SetConversationScenes] = useState<Record<string, 'default' | 'application'>>({});
+  // 场景标注以创建时落库的 scenarioId 为准（快照与 Agent 冻结语义一致，无运行态竞态）；
+  // 本功能上线前的旧会话缺失元数据时，回退读取 Agent 运行态场景映射，避免旧工作会话被误标为聊天。
+  const [legacyScenes, SetLegacyScenes] = useState<Record<string, 'default' | 'application'>>({});
   const conversationIdsKey = conversations.map((item) => item.id).join(',');
+  const hasLegacyConversations = conversations.some((item) => item.scenarioId === undefined);
   useEffect(() => {
+    if (!hasLegacyConversations) return undefined;
     let cancelled = false;
-    GetAgentSessionScenes().then((scenes) => { if (!cancelled) SetConversationScenes(scenes); }).catch(() => undefined);
+    GetAgentSessionScenes().then((scenes) => { if (!cancelled) SetLegacyScenes(scenes); }).catch(() => undefined);
     return () => { cancelled = true; };
-  }, [conversationIdsKey]);
-  const SceneLabel = (id: string) => (conversationScenes[id] === 'application' ? '工作' : '聊天');
+  }, [hasLegacyConversations, conversationIdsKey]);
+  const SceneOf = (item: Conversation) => ((item.scenarioId ?? legacyScenes[item.id]) === 'application' ? '工作' : '聊天');
+
+  // 项目空间分组的本机展示偏好：别名与已移除分组。
+  const [groupAliases, SetGroupAliases] = useState<Record<string, string>>(() => LoadLocalMap(GroupAliasesKey));
+  const [removedGroups, SetRemovedGroups] = useState<Record<string, string>>(() => LoadLocalMap(RemovedGroupsKey));
+  const [groupMenu, SetGroupMenu] = useState<GroupMenuPosition | null>(null);
+  const [renameGroupTarget, SetRenameGroupTarget] = useState<{ projectId: string; name: string } | null>(null);
+  const [renameGroupValue, SetRenameGroupValue] = useState('');
+  const [removeGroupTarget, SetRemoveGroupTarget] = useState<{ projectId: string; name: string; count: number } | null>(null);
 
   const appShellRef = useRef<HTMLDivElement>(null);
   const navRef = useRef<HTMLElement>(null);
@@ -95,6 +129,20 @@ function AppShell({ page, onNavigate, onRestartOnboarding, settingsTab, onReques
   const liveConversations = conversations.filter((item) => !(item.archived ?? false)).slice().sort((a, b) => Number(b.pinned ?? false) - Number(a.pinned ?? false));
   const searchKeyword = searchQuery.trim().toLowerCase();
   const visibleConversations = searchKeyword ? liveConversations.filter((item) => item.title.toLowerCase().includes(searchKeyword)) : liveConversations;
+  // 项目空间分组：按创建时定格的 projectId 聚合，组序跟随组内最近使用时间，组内保持「最近」的置顶优先顺序；
+  // 被用户移除的分组（本机偏好）不再成组，其会话回到未分组区。
+  const conversationGroups: ProjectGroup[] = (() => {
+    const groups = new Map<string, ProjectGroup>();
+    for (const item of visibleConversations) {
+      if (!item.projectId || removedGroups[item.projectId]) continue;
+      const group = groups.get(item.projectId);
+      if (group) group.items.push(item);
+      else groups.set(item.projectId, { projectId: item.projectId, name: groupAliases[item.projectId] ?? item.projectName ?? item.projectId, items: [item] });
+    }
+    return [...groups.values()].sort((left, right) => Math.max(...right.items.map((item) => item.updatedAt ?? 0)) - Math.max(...left.items.map((item) => item.updatedAt ?? 0)));
+  })();
+  const groupedConversationIds = new Set(conversationGroups.flatMap((group) => group.items.map((item) => item.id)));
+  const ungroupedConversations = visibleConversations.filter((item) => !groupedConversationIds.has(item.id));
   const crumbLeaf = page === 'assistant' ? (activeConversation?.title ?? '新对话') : MainRoutes.find((route) => route.id === page)?.label ?? '';
   const balanceText = refreshingBalance && !balance ? '刷新中…' : balance?.map((item) => FormatBalance(item.currency, item.totalBalance)).join(' / ') ?? '未配置';
 
@@ -125,16 +173,16 @@ function AppShell({ page, onNavigate, onRestartOnboarding, settingsTab, onReques
   }, [theme]);
 
   // 菜单打开期间统一处理：Escape 关闭，点击触发器与浮层以外的区域关闭。
-  const anyMenuOpen = showCrumbMenu || userMenuPosition !== null || rowMenu !== null;
+  const anyMenuOpen = showCrumbMenu || userMenuPosition !== null || rowMenu !== null || groupMenu !== null;
   useEffect(() => {
     if (!anyMenuOpen) return undefined;
     const CloseOnEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') { SetShowCrumbMenu(false); SetUserMenuPosition(null); SetRowMenu(null); }
+      if (event.key === 'Escape') { SetShowCrumbMenu(false); SetUserMenuPosition(null); SetRowMenu(null); SetGroupMenu(null); }
     };
     const CloseOnOutsidePointer = (event: PointerEvent) => {
       const target = event.target as Element | null;
       if (target?.closest('[data-menu-trigger],[data-floating-menu]')) return;
-      SetShowCrumbMenu(false); SetUserMenuPosition(null); SetRowMenu(null);
+      SetShowCrumbMenu(false); SetUserMenuPosition(null); SetRowMenu(null); SetGroupMenu(null);
     };
     window.addEventListener('keydown', CloseOnEscape);
     document.addEventListener('pointerdown', CloseOnOutsidePointer);
@@ -287,6 +335,48 @@ function AppShell({ page, onNavigate, onRestartOnboarding, settingsTab, onReques
     if (top + estimatedHeight > window.innerHeight - 10) top = rect.top - estimatedHeight;
     SetRowMenu({ conversationId, left: Math.round(left), top: Math.round(Math.max(8, top)) });
   }
+  /** 打开项目空间分组"更多"菜单：与行菜单同款定位（宽 186px、贴按钮右缘、空间不足向上翻）。 */
+  function OpenGroupMenu(projectId: string, name: string, count: number, trigger: HTMLButtonElement) {
+    const rect = trigger.getBoundingClientRect();
+    const width = 186;
+    const estimatedHeight = 96;
+    const sidebarLeft = appShellRef.current?.querySelector<HTMLElement>('.sidebar')?.getBoundingClientRect().left ?? 0;
+    const left = Math.max(sidebarLeft + 6, rect.right - width);
+    let top = rect.bottom + 6;
+    if (top + estimatedHeight > window.innerHeight - 10) top = rect.top - estimatedHeight;
+    SetGroupMenu({ projectId, name, count, left: Math.round(left), top: Math.round(Math.max(8, top)) });
+  }
+  function BeginRenameGroup(projectId: string, name: string) {
+    SetGroupMenu(null);
+    SetRenameGroupValue(groupAliases[projectId] ?? name);
+    SetRenameGroupTarget({ projectId, name });
+  }
+  /** 保存分组别名：留空或与原名相同即移除别名；仅影响侧栏显示名，不改磁盘目录与会话绑定。 */
+  function CommitGroupRename() {
+    const target = renameGroupTarget;
+    SetRenameGroupTarget(null);
+    if (!target) return;
+    const alias = renameGroupValue.trim().slice(0, 200);
+    const next = { ...groupAliases };
+    if (!alias || alias === target.name) {
+      if (!next[target.projectId]) return;
+      delete next[target.projectId];
+    } else {
+      next[target.projectId] = alias;
+    }
+    SetGroupAliases(next);
+    SaveLocalMap(GroupAliasesKey, next);
+  }
+  /** 删除分组只是把板块从侧栏收起：组内对话回到「最近」，会话数据与项目空间绑定保持不变。 */
+  function ConfirmRemoveGroup() {
+    const target = removeGroupTarget;
+    SetRemoveGroupTarget(null);
+    if (!target) return;
+    const next = { ...removedGroups, [target.projectId]: target.name };
+    SetRemovedGroups(next);
+    SaveLocalMap(RemovedGroupsKey, next);
+    ShowNotice(`已移除分组「${target.name}」，组内对话回到「最近」`);
+  }
   function OpenUserMenu(trigger: HTMLButtonElement) {
     if (userMenuPosition) { SetUserMenuPosition(null); return; }
     const rect = trigger.getBoundingClientRect();
@@ -298,6 +388,23 @@ function AppShell({ page, onNavigate, onRestartOnboarding, settingsTab, onReques
       else SetSearchQuery('');
       return !open;
     });
+  }
+
+  /** 会话行（阅读态/行内重命名态）：分组内与未分组区共用；图标随置顶与场景切换。 */
+  function RenderConversationRow(item: Conversation) {
+    const isCurrent = item.id === activeConversationId && page === 'assistant';
+    return <div key={item.id} className="ti-wrap" data-conversation-id={item.id}>
+      {renamingConversationId === item.id ? <input className="ti-rename" value={renameTitle} maxLength={120} aria-label="重命名对话" autoFocus onFocus={(event) => event.currentTarget.select()} onChange={(event) => SetRenameTitle(event.target.value)} onKeyDown={(event) => {
+        if (event.key === 'Enter') { event.preventDefault(); CommitConversationRename(); }
+        else if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); renamingConversationIdRef.current = null; SetRenamingConversationId(null); }
+      }} onBlur={CommitConversationRename} /> : <>
+        <button className={`thread-item ${item.pinned ? 'pinned' : ''} ${isCurrent ? 'active' : ''}`} type="button" title={item.title} onClick={() => { setActiveConversationId(item.id); onNavigate('assistant'); }}>
+          <Icon name={item.pinned ? 'pin' : item.scenarioId === 'application' ? 'briefcase' : 'assistant'} size={16} weight={item.pinned ? 'fill' : 'regular'} />
+          <span className="ti-body"><span className="ti-title">{item.title}</span><span className="ti-meta">{SceneOf(item)}</span></span>
+        </button>
+        <button className="ti-more" type="button" data-menu-trigger="row" aria-haspopup="menu" aria-label="更多操作" title="更多操作" onClick={(event) => OpenRowMenu(item.id, event.currentTarget)}><Icon name="more" size={14} /></button>
+      </>}
+    </div>;
   }
 
   return <div ref={appShellRef} className={`app-shell ${collapsed ? 'is-collapsed' : ''}`} style={{ '--main-content-min-width': `${minimumContentWidth}px` } as CSSProperties}>
@@ -327,7 +434,7 @@ function AppShell({ page, onNavigate, onRestartOnboarding, settingsTab, onReques
                 <div className="menu-sep" aria-hidden="true" />
                 {liveConversations.map((item) => <button key={item.id} type="button" role="menuitemradio" aria-checked={item.id === activeConversationId} className={`menu-item ${item.id === activeConversationId ? 'sel' : ''}`} title={item.title} onClick={() => { setActiveConversationId(item.id); SetShowCrumbMenu(false); onNavigate('assistant'); }}>
                   <Icon name={item.pinned ? 'pin' : 'assistant'} size={16} weight={item.pinned ? 'fill' : 'regular'} />
-                  <span><span className="mt">{item.title}</span><span className="md">{SceneLabel(item.id)}</span></span>
+                  <span><span className="mt">{item.title}</span><span className="md">{SceneOf(item)}</span></span>
                   <Icon name="check" size={14} className="tick" />
                 </button>)}
                 {!liveConversations.length && <div className="menu-label">还没有会话</div>}
@@ -407,21 +514,16 @@ function AppShell({ page, onNavigate, onRestartOnboarding, settingsTab, onReques
                 </div>
               </div>
               <div className="ti-list">
-                {visibleConversations.map((item) => {
-                  const isCurrent = item.id === activeConversationId && page === 'assistant';
-                  return <div key={item.id} className="ti-wrap" data-conversation-id={item.id}>
-                    {renamingConversationId === item.id ? <input className="ti-rename" value={renameTitle} maxLength={120} aria-label="重命名对话" autoFocus onFocus={(event) => event.currentTarget.select()} onChange={(event) => SetRenameTitle(event.target.value)} onKeyDown={(event) => {
-                      if (event.key === 'Enter') { event.preventDefault(); CommitConversationRename(); }
-                      else if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); renamingConversationIdRef.current = null; SetRenamingConversationId(null); }
-                    }} onBlur={CommitConversationRename} /> : <>
-                      <button className={`thread-item ${item.pinned ? 'pinned' : ''} ${isCurrent ? 'active' : ''}`} type="button" title={item.title} onClick={() => { setActiveConversationId(item.id); onNavigate('assistant'); }}>
-                        <Icon name={item.pinned ? 'pin' : 'assistant'} size={16} weight={item.pinned ? 'fill' : 'regular'} />
-                        <span className="ti-body"><span className="ti-title">{item.title}</span><span className="ti-meta">{SceneLabel(item.id)}</span></span>
-                      </button>
-                      <button className="ti-more" type="button" data-menu-trigger="row" aria-haspopup="menu" aria-label="更多操作" title="更多操作" onClick={(event) => OpenRowMenu(item.id, event.currentTarget)}><Icon name="more" size={14} /></button>
-                    </>}
-                  </div>;
-                })}
+                {/* 项目空间分组板块：组头（文件夹 + 分组名 + 更多）+ 组内会话行；未绑定项目的会话保持在「最近」平铺区。 */}
+                {conversationGroups.map((group) => <div className="ti-group" key={group.projectId}>
+                  <div className="ti-group-h">
+                    <Icon name="folder-simple" size={14} />
+                    <span className="ti-group-name" title={group.name}>{group.name}</span>
+                    <button className="ti-group-more" type="button" data-menu-trigger="group" aria-haspopup="menu" aria-expanded={groupMenu?.projectId === group.projectId} aria-label={`管理分组 ${group.name}`} title="更多" onClick={(event) => OpenGroupMenu(group.projectId, group.name, group.items.length, event.currentTarget)}><Icon name="more" size={13} /></button>
+                  </div>
+                  {group.items.map((item) => RenderConversationRow(item))}
+                </div>)}
+                {ungroupedConversations.map((item) => RenderConversationRow(item))}
                 {!visibleConversations.length && <div className="ti-empty">{searchKeyword ? '没有匹配的对话' : '还没有会话'}</div>}
               </div>
             </div>
@@ -463,6 +565,16 @@ function AppShell({ page, onNavigate, onRestartOnboarding, settingsTab, onReques
       </div>;
     })()}
 
+    {/* 分组"更多"菜单：重命名改侧栏显示别名，删除仅把板块收起（组内对话回到「最近」） */}
+    {groupMenu && <div className="menu ti-menu open" data-floating-menu role="menu" aria-label="分组操作" style={{ left: groupMenu.left, top: groupMenu.top }}>
+      <button className="menu-item plain" type="button" onClick={() => BeginRenameGroup(groupMenu.projectId, groupMenu.name)}>
+        <Icon name="edit" size={16} /><span className="mt">重命名</span>
+      </button>
+      <button className="menu-item plain" type="button" onClick={() => { SetRemoveGroupTarget({ projectId: groupMenu.projectId, name: groupMenu.name, count: groupMenu.count }); SetGroupMenu(null); }}>
+        <Icon name="delete" size={16} /><span className="mt">删除</span>
+      </button>
+    </div>}
+
     {/* 账户菜单锚定在用户卡上方，位于侧栏之外以免被裁剪 */}
     {userMenuPosition && <div className="menu user-menu open" data-floating-menu role="menu" aria-label="账户" style={{ left: userMenuPosition.left, bottom: userMenuPosition.bottom }}>
       <div className="um-balance">
@@ -489,6 +601,15 @@ function AppShell({ page, onNavigate, onRestartOnboarding, settingsTab, onReques
     </div>}
 
     <Modal open={Boolean(archiveTarget)} title="归档这个对话？" onClose={() => SetArchiveTarget(null)}><p className="modal-copy">归档后，「{archiveTarget?.title}」会从"最近"里移出；会话与消息仍保留在本机，通知里可立即撤回。</p><div className="modal-actions"><Button onClick={() => SetArchiveTarget(null)}>取消</Button><Button variant="primary" onClick={() => void ConfirmArchiveConversation()}>归档</Button></div></Modal>
+    <Modal open={Boolean(renameGroupTarget)} title="重命名分组" onClose={() => SetRenameGroupTarget(null)}>
+      <input className="modal-input" value={renameGroupValue} maxLength={200} aria-label="分组名称" autoFocus onFocus={(event) => event.currentTarget.select()} onChange={(event) => SetRenameGroupValue(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); CommitGroupRename(); } }} />
+      <p className="modal-copy">只改侧栏里的分组显示名，不会改动磁盘上的项目目录名称。</p>
+      <div className="modal-actions"><Button onClick={() => SetRenameGroupTarget(null)}>取消</Button><Button variant="primary" onClick={CommitGroupRename}>保存</Button></div>
+    </Modal>
+    <Modal open={Boolean(removeGroupTarget)} title="删除这个分组？" onClose={() => SetRemoveGroupTarget(null)}>
+      <p className="modal-copy">「{removeGroupTarget?.name}」下的 {removeGroupTarget?.count} 个对话会回到「最近」列表；对话与消息保留，项目空间绑定不受影响。</p>
+      <div className="modal-actions"><Button onClick={() => SetRemoveGroupTarget(null)}>取消</Button><Button variant="danger" onClick={ConfirmRemoveGroup}>删除分组</Button></div>
+    </Modal>
   </div>;
 }
 

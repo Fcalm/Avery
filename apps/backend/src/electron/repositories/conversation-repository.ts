@@ -10,9 +10,10 @@ export class ConversationRepository {
     this.attachmentLifecycle = attachmentLifecycle;
   }
 
-  /** 读取全部会话与其消息，供页面启动时组装会话侧 ViewModel；时间为 UTC epoch 毫秒，revision 供外部冲突校验。 */
+  /** 读取全部会话与其消息，供页面启动时组装会话侧 ViewModel；时间为 UTC epoch 毫秒，revision 供外部冲突校验。
+   * scenario_id 历史遗留默认值是 'resume-copilot'，读取时统一归一为 'default'，前端无需感知旧值。 */
   ListAll(): any[] {
-    const conversations = this.db.prepare('SELECT id, title, revision, updated_at, pinned, archived FROM conversations ORDER BY last_used_at DESC').all();
+    const conversations = this.db.prepare('SELECT id, title, revision, updated_at, pinned, archived, scenario_id, environment_id, environment_name FROM conversations ORDER BY last_used_at DESC').all();
     return conversations.map((conversation: any) => ({
       id: conversation.id,
       title: conversation.title,
@@ -20,6 +21,9 @@ export class ConversationRepository {
       updatedAt: conversation.updated_at,
       pinned: conversation.pinned === 1,
       archived: conversation.archived === 1,
+      scenarioId: conversation.scenario_id === 'application' ? 'application' : 'default',
+      projectId: conversation.environment_id ?? null,
+      projectName: conversation.environment_name ?? null,
       messages: this.db.prepare('SELECT id, role, content, reasoning_content, created_at FROM conversation_messages WHERE conversation_id = ? ORDER BY created_at').all(conversation.id).map((message: any) => ({
         id: message.id,
         role: message.role,
@@ -33,15 +37,22 @@ export class ConversationRepository {
     }));
   }
 
-  /** 新建会话；调用方提供应用层生成的 ID，保证 Agent 会话与页面引用一致。 */
-  Create({ id, title }: { id: string; title: string }): any {
+  /** 新建会话；调用方提供应用层生成的 ID，保证 Agent 会话与页面引用一致。
+   * 场景与项目空间在创建时定格：Agent 快照一旦生成场景即被冻结，项目目录绑定后不可更换，
+   * 侧栏的场景标注与项目分组因此以创建快照为准，避免读取运行态产生的竞态。 */
+  Create({ id, title, scenarioId = 'default', projectId, projectName }: { id: string; title: string; scenarioId?: 'default' | 'application'; projectId?: string; projectName?: string }): any {
     if (typeof id !== 'string' || id.length === 0 || id.length > 200) throw new Error('Conversation id is invalid.');
     if (typeof title !== 'string' || title.length === 0 || title.length > 300) throw new Error('Conversation title is invalid.');
+    if (scenarioId !== 'default' && scenarioId !== 'application') throw new Error('Conversation scenario is invalid.');
+    if (projectId !== undefined && (typeof projectId !== 'string' || projectId.length === 0 || projectId.length > 200)) throw new Error('Conversation project id is invalid.');
+    if (projectName !== undefined && (typeof projectName !== 'string' || projectName.length === 0 || projectName.length > 200)) throw new Error('Conversation project name is invalid.');
+    // 项目分组以 projectId 为键，只有 half 配置（只有 id 或只有名称）无法稳定分组，直接拒绝。
+    if (Boolean(projectId) !== Boolean(projectName)) throw new Error('Conversation project environment is invalid.');
     const now = GetNow();
-    this.db.prepare('INSERT INTO conversations(id, title, revision, created_at, updated_at, last_used_at) VALUES(?, ?, 1, ?, ?, ?)')
-      .run(id, title, now, now, now);
+    this.db.prepare('INSERT INTO conversations(id, title, scenario_id, environment_id, environment_name, revision, created_at, updated_at, last_used_at) VALUES(?, ?, ?, ?, ?, 1, ?, ?, ?)')
+      .run(id, title, scenarioId, projectId ?? null, projectName ?? null, now, now, now);
     WriteAudit(this.db, 'user', 'create', 'conversation', id, {});
-    return { id, title, revision: 1, updatedAt: now, messages: [] };
+    return { id, title, scenarioId, projectId: projectId ?? null, projectName: projectName ?? null, revision: 1, updatedAt: now, messages: [] };
   }
 
   /** 重命名会话；校验期望版本并刷新其最近使用时间。 */

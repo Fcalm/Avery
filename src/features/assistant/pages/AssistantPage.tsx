@@ -629,7 +629,12 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
     let targetId = activeConversationId;
     if (!targetId) {
       try {
-        targetId = await createConversation(text.slice(0, 18) || '新的求职会话');
+        // 场景与项目空间随会话创建定格落库：侧栏场景标注与项目分组以这条快照为准，
+        // 避免读取 Agent 运行态导致的竞态（此前新会话列表恒显示“聊天”）。
+        targetId = await createConversation(text.slice(0, 18) || '新的求职会话', {
+          scenarioId,
+          ...(projectEnvironment?.projectId ? { projectId: projectEnvironment.projectId, projectName: projectEnvironment.name } : {}),
+        });
         enteredConversationRef.current = targetId;
       } catch {
         // 会话创建失败通知已由 mutation onFailure 展示；中止本轮发送。
