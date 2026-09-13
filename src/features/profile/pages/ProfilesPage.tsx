@@ -52,7 +52,8 @@ function ProfileTemplateForm({
           };
           return <label className={`application-profile-field ${field.multiline ? 'is-multiline' : ''}`} htmlFor={fieldId} key={fieldId}>
             <span>{!field.required && <i className="profile-field-optional" aria-hidden="true">*</i>}{field.label}：</span>
-            {field.options ? <select {...common}><option value="">请选择</option>{field.options.map((option) => <option value={option} key={option}>{option}</option>)}</select> : field.multiline ? <textarea rows={3} {...common} /> : <input {...common} />}
+            {/* 下拉选项统一走共享 Select 的自定义浮层，避免原生 select 的系统菜单破坏视觉一致性。 */}
+            {field.options ? <Select value={fieldValue} ariaLabel={field.label} options={[{ value: '', label: '请选择' }, ...field.options.map((option) => ({ value: option, label: option }))]} onChange={(value) => onFieldChange(section.title, field.label, value)} /> : field.multiline ? <textarea rows={3} {...common} /> : <input {...common} />}
           </label>;
         })}
       </div>
