@@ -16,8 +16,6 @@ type SortMode = 'posted' | 'score';
 
 /** 表单只承载用户可编辑字段；createdAt 由后端 created_at 投影，不参与写回。 */
 type JobForm = Pick<Job, 'company' | 'title' | 'city' | 'salary' | 'experience' | 'jobSeekingType' | 'channel' | 'url' | 'jd' | 'deadline'>;
-/** 抽屉两种形态：阅读态只渲染字段，编辑态才出现输入框；新建岗位没有阅读态。 */
-type JobDrawer = { mode: 'view'; job: Job } | { mode: 'edit'; job: Job | null };
 
 const BlankJob: JobForm = {
   company: '', title: '', city: '', salary: '', experience: '',
@@ -79,7 +77,8 @@ function JobsPage({ onGoAssistant }: { onGoAssistant: () => void }) {
   const [favoriteOnly, setFavoriteOnly] = useState(false);
   const [filterOpen, setFilterOpen] = useState(false);
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
-  const [drawer, setDrawer] = useState<JobDrawer | null>(null);
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [editingJob, setEditingJob] = useState<Job | null>(null);
   const [form, setForm] = useState<JobForm>(BlankJob);
   const [deleteTarget, setDeleteTarget] = useState<Job | null>(null);
   const filterRef = useRef<HTMLDivElement>(null);
@@ -99,11 +98,11 @@ function JobsPage({ onGoAssistant }: { onGoAssistant: () => void }) {
 
   // 抽屉打开期间 Escape 关闭；初始焦点落在关闭按钮，与简历/档案抽屉一致。
   useEffect(() => {
-    if (!drawer) return undefined;
-    function OnKeyDown(event: KeyboardEvent) { if (event.key === 'Escape') setDrawer(null); }
+    if (!drawerOpen) return undefined;
+    function OnKeyDown(event: KeyboardEvent) { if (event.key === 'Escape') setDrawerOpen(false); }
     document.addEventListener('keydown', OnKeyDown);
     return () => document.removeEventListener('keydown', OnKeyDown);
-  }, [drawer]);
+  }, [drawerOpen]);
 
   const filtered = useMemo(() => {
     const keyword = query.trim().toLocaleLowerCase();
@@ -122,25 +121,19 @@ function JobsPage({ onGoAssistant }: { onGoAssistant: () => void }) {
   useEffect(() => { if (!selectedJobId || !filtered.some((job) => job.id === selectedJobId)) setSelectedJobId(filtered[0]?.id ?? null); }, [filtered, selectedJobId]);
 
   const activeSort = SortOptions.find((option) => option.value === sortMode) ?? SortOptions[0];
-  const editingJob = drawer?.mode === 'edit' ? drawer.job : null;
 
-  function OpenNew() { setForm(BlankJob); setDrawer({ mode: 'edit', job: null }); }
-  function OpenDetail(job: Job) { setDrawer({ mode: 'view', job }); }
-  function StartEditing() {
-    const job = drawer?.mode === 'view' ? drawer.job : null;
-    setForm(job ? ToForm(job) : BlankJob);
-    setDrawer({ mode: 'edit', job });
-  }
+  function OpenNew() { setEditingJob(null); setForm(BlankJob); setDrawerOpen(true); }
+  function OpenEdit(job: Job) { setEditingJob(job); setForm(ToForm(job)); setDrawerOpen(true); }
   function SaveJob() {
     if (!form.company || !form.title || !form.city || !form.experience || !form.jd) { ShowNotice('请填写公司、岗位、城市、经验要求和完整 JD'); return; }
     if (editingJob) upsertJob.mutate({ job: { ...form, id: editingJob.id, favorite: editingJob.favorite, matchScore: editingJob.matchScore }, expectedRevision: editingJob.revision });
     else upsertJob.mutate({ job: { ...form, id: CreateEntityId('job'), favorite: false } });
-    setDrawer(null); ShowNotice(editingJob ? '岗位信息已更新' : '已新增岗位');
+    setDrawerOpen(false); ShowNotice(editingJob ? '岗位信息已更新' : '已新增岗位');
   }
   function ConfirmRemoveJob() {
     if (!deleteTarget) return;
     deleteJob.mutate({ id: deleteTarget.id });
-    setDeleteTarget(null); setDrawer(null); ShowNotice('岗位已删除');
+    setDeleteTarget(null); setDrawerOpen(false); ShowNotice('岗位已删除');
   }
   function ToggleFavorite(job: Job) { setJobFavorite.mutate({ id: job.id, favorite: !job.favorite, expectedRevision: job.revision }); }
   function CopyJobUrl(url: string) {
@@ -227,7 +220,7 @@ function JobsPage({ onGoAssistant }: { onGoAssistant: () => void }) {
               <button className={`ghost-btn${selectedJob.favorite ? ' on' : ''}`} type="button" aria-pressed={selectedJob.favorite} onClick={() => ToggleFavorite(selectedJob)}>
                 <Icon name="heart" size={14} />{selectedJob.favorite ? '已收藏' : '收藏'}
               </button>
-              <button className="ghost-btn" type="button" onClick={() => OpenDetail(selectedJob)}><Icon name="info" size={14} />详情</button>
+              <button className="ghost-btn" type="button" onClick={() => OpenEdit(selectedJob)}><Icon name="pencil-simple" size={14} />编辑</button>
             </div>
           </div>
           <JobReadView job={selectedJob} onCopyUrl={CopyJobUrl} />
@@ -237,24 +230,20 @@ function JobsPage({ onGoAssistant }: { onGoAssistant: () => void }) {
 
     {/* 抽屉经 portal 挂到 body：玻璃背景等祖先带动画/滤镜时 fixed 会退化为相对祖先定位，
         只有脱离该子树才能像简历/档案抽屉一样让遮罩与虚化盖住整个应用窗口。 */}
-    {drawer && createPortal(<div className="dw-layer" role="presentation">
-      <div className="dw-scrim" onClick={() => setDrawer(null)} />
+    {drawerOpen && createPortal(<div className="dw-layer" role="presentation">
+      <div className="dw-scrim" onClick={() => setDrawerOpen(false)} />
       <aside className="dw-drawer is-job" role="dialog" aria-modal="true" aria-labelledby="job-drawer-title" tabIndex={-1} ref={drawerRef}>
         <div className="dw-head">
           <div className="dw-head-main">
-            <div className="dw-title" id="job-drawer-title">{drawer.mode === 'view' ? drawer.job.title : editingJob ? '编辑岗位信息' : '手动添加岗位'}</div>
+            <div className="dw-title" id="job-drawer-title">{editingJob ? '编辑岗位信息' : '手动添加岗位'}</div>
             <div className="dw-meta">
-              {drawer.mode === 'view' ? <>
-                <span>{drawer.job.company}</span>
-                <span>{ChannelLabel[drawer.job.channel]}</span>
-                {Boolean(drawer.job.createdAt) && <span>{FormatRelativeTime(drawer.job.createdAt)}采集</span>}
-              </> : <span>{editingJob ? '修改后尚未保存' : '尚未保存'}</span>}
+              {editingJob ? <><span>{editingJob.company}</span><span>{ChannelLabel[editingJob.channel]}</span><span>修改后尚未保存</span></> : <span>尚未保存</span>}
             </div>
           </div>
-          <button className="icon-btn" type="button" aria-label="关闭详情" title="关闭详情" autoFocus onClick={() => setDrawer(null)}><Icon name="close" size={16} /></button>
+          <button className="icon-btn" type="button" aria-label="关闭编辑" title="关闭编辑" autoFocus onClick={() => setDrawerOpen(false)}><Icon name="close" size={16} /></button>
         </div>
         <div className="dw-body">
-          {drawer.mode === 'view' ? <JobReadView job={drawer.job} onCopyUrl={CopyJobUrl} /> : <div className="drawer-form">
+          <div className="drawer-form">
             <div className="form-two-col">
               <FormField label="公司 *"><input value={form.company} onChange={(event) => setForm({ ...form, company: event.target.value })} /></FormField>
               <FormField label="岗位名称 *"><input value={form.title} onChange={(event) => setForm({ ...form, title: event.target.value })} /></FormField>
@@ -271,18 +260,12 @@ function JobsPage({ onGoAssistant }: { onGoAssistant: () => void }) {
               <input type="datetime-local" value={ToDateTimeLocalValue(form.deadline)} onChange={(event) => setForm({ ...form, deadline: FromDateTimeLocalValue(event.target.value) })} />
             </FormField>
             <FormField label="完整 JD *"><textarea value={form.jd} onChange={(event) => setForm({ ...form, jd: event.target.value })} rows={8} /></FormField>
-          </div>}
+          </div>
         </div>
         <div className="dw-foot">
-          {drawer.mode === 'view' ? <>
-            <button className="ghost-btn" type="button" disabled={!drawer.job.url} onClick={() => drawer.job.url && CopyJobUrl(drawer.job.url)}><Icon name="copy" size={14} />复制链接</button>
-            <button className="ghost-btn is-danger" type="button" onClick={() => setDeleteTarget(drawer.job)}><Icon name="delete" size={14} />删除</button>
-            <button className="btn-accent" type="button" onClick={StartEditing}><Icon name="pencil-simple" size={14} />编辑</button>
-          </> : <>
-            {editingJob && <button className="ghost-btn is-danger" type="button" onClick={() => setDeleteTarget(editingJob)}><Icon name="delete" size={14} />删除</button>}
-            <button className="ghost-btn" type="button" onClick={() => setDrawer(null)}>取消</button>
-            <button className="btn-accent" type="button" onClick={SaveJob}><Icon name="check-circle" size={14} />保存岗位</button>
-          </>}
+          {editingJob && <button className="ghost-btn is-danger" type="button" onClick={() => setDeleteTarget(editingJob)}><Icon name="delete" size={14} />删除</button>}
+          <button className="ghost-btn" type="button" onClick={() => setDrawerOpen(false)}>取消</button>
+          <button className="btn-accent" type="button" onClick={SaveJob}><Icon name="check-circle" size={14} />保存岗位</button>
         </div>
       </aside>
     </div>, document.body)}
