@@ -119,20 +119,23 @@ describe('模型目录的应用内缓存', () => {
     const synced = ApplyModelRuntime(catalog, 'DeepSeek', 'deepseek-v4-flash', { contextWindow: 1_000_000, thinking: false });
 
     expect(FindCatalogModel(synced, 'DeepSeek', 'deepseek-v4-flash')).toMatchObject({ contextWindow: 1_000_000, thinking: false });
+    // 存量配置可能落在弹窗区间之外，回写时不按 128000–1000000 拦截，否则会被默认值替换掉
+    const legacy = ApplyModelRuntime(catalog, 'DeepSeek', 'deepseek-v4-flash', { contextWindow: 64_000, thinking: true });
+    expect(FindCatalogModel(legacy, 'DeepSeek', 'deepseek-v4-flash')?.contextWindow).toBe(64_000);
     // 非法窗口与缺失的宿主值不写入
     const ignored = ApplyModelRuntime(catalog, 'DeepSeek', 'deepseek-v4-flash', { contextWindow: 0, thinking: undefined });
     expect(FindCatalogModel(ignored, 'DeepSeek', 'deepseek-v4-flash')).toMatchObject({ contextWindow: 256_000, thinking: true });
   });
 
-  it('上下文窗口按原型格式展示，并校验 8K–2000K 与正整数输出上限', () => {
+  it('上下文窗口按原型格式展示，并校验 128000–1000000 与正整数输出上限', () => {
     expect(FormatContextWindow(1_000_000)).toBe('1M');
     expect(FormatContextWindow(256_000)).toBe('256K');
     expect(FormatContextWindow(1_500_000)).toBe('1.5M');
 
-    expect(IsValidContextWindow(8_000)).toBe(true);
-    expect(IsValidContextWindow(2_000_000)).toBe(true);
-    expect(IsValidContextWindow(7_999)).toBe(false);
-    expect(IsValidContextWindow(2_000_001)).toBe(false);
+    expect(IsValidContextWindow(128_000)).toBe(true);
+    expect(IsValidContextWindow(1_000_000)).toBe(true);
+    expect(IsValidContextWindow(127_999)).toBe(false);
+    expect(IsValidContextWindow(1_000_001)).toBe(false);
     expect(IsValidMaxOutput(8_192)).toBe(true);
     expect(IsValidMaxOutput(0)).toBe(false);
   });

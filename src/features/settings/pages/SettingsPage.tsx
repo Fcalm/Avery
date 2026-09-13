@@ -437,7 +437,7 @@ function SettingsPage({ onNavigateDeveloper, tab, requestedTab, tabRequestVersio
     const duplicate = provider.models.some((item, index) => index !== modelDialog.index && item.id === id);
     setModelErrors({ id: !id || duplicate, contextWindow: !IsValidContextWindow(contextWindow), maxOutput: !IsValidMaxOutput(maxOutput) });
     if (!id || duplicate) { ShowNotice(duplicate ? '已经有同名的模型 ID' : '模型 ID 不能为空'); return; }
-    if (!IsValidContextWindow(contextWindow)) { ShowNotice('上下文窗口需为 8K–2000K 的整数'); return; }
+    if (!IsValidContextWindow(contextWindow)) { ShowNotice('上下文窗口需为 128000–1000000 之间的整数'); return; }
     if (!IsValidMaxOutput(maxOutput)) { ShowNotice('最大输出 Token 需为正整数'); return; }
     const thinking = provider.id === 'Z.AI' ? true : modelDialog.thinking;
     const next: ModelCatalogModel = { id, contextWindow, maxOutput, inputImage: modelDialog.inputImage, inputPdf: modelDialog.inputPdf, thinking };

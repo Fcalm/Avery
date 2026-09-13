@@ -66,8 +66,9 @@ export const ModelCatalogStorageKey = 'avery.model-catalog.v1';
 /** 与宿主端 DefaultContextLimit 一致：作为新模型的上下文窗口初值。 */
 export const DefaultContextWindow = 256_000;
 export const DefaultMaxOutput = 8_192;
-export const MinimumContextWindow = 8_000;
-export const MaximumContextWindow = 2_000_000;
+/** 模型弹窗允许填写的上下文窗口区间：按 token 数填写 128000–1000000，不接受 K 简写。 */
+export const MinimumContextWindow = 128_000;
+export const MaximumContextWindow = 1_000_000;
 
 /** 各供应商的模型初值：DeepSeek 使用官方 V4 默认列表，自定义供应商从空列表开始。 */
 const DefaultProviderSeeds: Array<{ id: ModelCatalogProviderId; name: string; custom: boolean; models: string[] }> = [
@@ -225,6 +226,8 @@ export function FindCatalogProvider(catalog: ModelCatalog, providerId: string): 
 
 /**
  * 用宿主返回的当前生效值回写某个模型：进入设置页时，本地目录不能把用户已配置的上下文窗口与思考模式覆盖成默认值。
+ * 这里只要求正整数，不套用弹窗的 128000–1000000 区间：区间限制的是手工输入，
+ * 存量配置可能落在区间之外，若被拦下就会被默认值悄悄替换掉。
  * 模型 ID 在目录里不存在时原样返回，此时以宿主配置为准的字段由后续保存写回。
  */
 export function ApplyModelRuntime(catalog: ModelCatalog, providerId: ModelCatalogProviderId, modelId: string, runtime: { contextWindow?: unknown; thinking?: unknown }): ModelCatalog {
@@ -238,7 +241,7 @@ export function ApplyModelRuntime(catalog: ModelCatalog, providerId: ModelCatalo
       ...provider,
       models: provider.models.map((model) => model.id !== modelId ? model : {
         ...model,
-        ...(contextWindow !== null && IsValidContextWindow(contextWindow) ? { contextWindow } : {}),
+        ...(contextWindow === null ? {} : { contextWindow }),
         ...(thinking === undefined ? {} : { thinking }),
       }),
     }),
