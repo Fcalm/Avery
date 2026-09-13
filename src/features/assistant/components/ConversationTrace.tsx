@@ -139,9 +139,12 @@ function ConversationTrace({ traces, title, onSelectTrace }: ConversationTracePr
 
   const usage = useMemo(() => CreateTraceTokenUsage(sortedTraces), [sortedTraces]);
   const selected = events.find((event) => event.id === selectedId) ?? null;
-  // 正文字段排首位并默认展开（对齐原型“Content 卡承载主要内容”的意图），其余字段随后折叠。
+  // 正文字段排首位并默认展开（对齐原型“Content 卡承载主要内容”的意图），其余字段随后折叠；
+  // role 字段不重复成卡——详情信息栏已展示角色。
   const detailSections = selected
-    ? PayloadSections(selected.payload).sort((left, right) => (left.key === 'content' ? -1 : right.key === 'content' ? 1 : 0))
+    ? PayloadSections(selected.payload)
+        .filter((section) => section.key !== 'role')
+        .sort((left, right) => (left.key === 'content' ? -1 : right.key === 'content' ? 1 : 0))
     : [];
   const activeRole = RoleFilters.find((item) => item.key === role) ?? RoleFilters[0];
 

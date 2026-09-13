@@ -675,5 +675,9 @@ button { background: none; border: 0; }
 .pcard-h .chev { margin-left: auto; font-size: 10px; color: var(--text-3); transition: transform .25s var(--ease); }
 .pcard[open] .pcard-h .chev { transform: rotate(180deg); }
 .pcard-b { padding: 11px; border-top: 1px solid var(--border); background: var(--panel); }
-.pcode { margin: 0; font-family: var(--font-data); font-size: 11.5px; line-height: 1.65; color: var(--text-2); white-space: pre-wrap; word-break: break-word; }
+.pcode { margin: 0; max-height: 240px; overflow-y: auto; font-family: var(--font-data); font-size: 11.5px; line-height: 1.65; color: var(--text-2); white-space: pre-wrap; word-break: break-word; }
+/* 长载荷在卡片内滚动；滚动条与轨迹列表同款，悬停才显形 */
+.pcode::-webkit-scrollbar { width: 10px; }
+.pcode::-webkit-scrollbar-thumb { background: transparent; border-radius: 99px; border: 3px solid transparent; background-clip: content-box; }
+.pcode:hover::-webkit-scrollbar-thumb { background: var(--border-2); background-clip: content-box; }
 .tr-detail-none { padding: 34px 18px; text-align: center; font-size: 12.5px; line-height: 1.7; color: var(--text-3); }
