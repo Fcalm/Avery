@@ -393,6 +393,13 @@ button { background: none; border: 0; }
    ============================================================================ */
 @keyframes viewIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
 
+/* 对话视图切换：消息容器整体做一次 viewIn（原型 renderChat 每次重建 thread-inner.view-anim）。
+   React 侧配合 AssistantPage 的 key={conversation.id}，切换会话/切回对话都会重放。 */
+.message-list { animation: viewIn .4s var(--ease) both; }
+
+/* Agent 回复的名字行（原型 .msg-name）：用户消息不显示 */
+.msg-name { margin-bottom: 6px; color: var(--text); font-size: 12px; font-weight: 650; letter-spacing: .01em; }
+
 /* 新建对话空态：问候语与输入框作为一组垂直居中（原型 .thread{margin-top:auto}
    + .composer-wrap{margin-bottom:auto} 的布局在 React 里的等价写法）。 */
 .assistant-main.is-new-thread .empty { margin-top: auto; }
@@ -568,7 +575,7 @@ button { background: none; border: 0; }
 .assistant-layout.is-composer-compact .cmp-btn:not(.icon-only) span { display: none; }
 .assistant-layout.is-composer-compact .composer-foot > span:last-child { display: none; }
 @media (prefers-reduced-motion: reduce) {
-  .empty, .ctx-item, .menu.pop { animation-duration: .001ms !important; }
+  .empty, .message-list, .ctx-item, .menu.pop { animation-duration: .001ms !important; }
 }
 
 /* ------------------------------------------------------- 对话轨迹（原型一比一） */

@@ -314,7 +314,8 @@ input:focus, textarea:focus, select:focus { background: var(--titlebar-control);
 .chat-message { max-width: 100%; margin-bottom: var(--space-5); }
 /* 用户气泡宽度跟随内容收缩，长文仍受消息列宽度约束；靠右对齐不变。 */
 .chat-message.user { width: fit-content; max-width: 100%; }
-.chat-message.user > .markdown-text { border-radius: var(--radius-card) var(--radius-card) var(--radius-mark) var(--radius-card); padding: var(--space-3) var(--space-4); background: var(--surface-card-muted); }
+/* 用户气泡对齐原型 .msg-bubble：次级底色 + 1px 描边 + 统一 r-card 圆角 */
+.chat-message.user > .markdown-text { border: 1px solid var(--border); border-radius: var(--r-card); padding: 10px 14px; background: var(--surface-2); }
 .markdown-text { color: var(--ink); font-size: var(--text-body); line-height: 28px; }
 .markdown-text > :first-child { margin-top: 0; }
 .markdown-text > :last-child { margin-bottom: 0; }
@@ -1275,8 +1276,7 @@ select:focus, select:focus-visible,
   .resume-action-row { margin-left: auto; }
 }
 
-/* 聊天表面使用浅绿信息层；输入区保留描边并透出下方卡片。 */
-.chat-message.user > .markdown-text,
+/* 聊天表面使用浅绿信息层；输入区保留描边并透出下方卡片。用户气泡已对齐原型次级底色，不再参与本组。 */
 .markdown-text pre,
 .markdown-text code { background: var(--color-bg-end); }
 .markdown-text pre code { background: transparent; }
