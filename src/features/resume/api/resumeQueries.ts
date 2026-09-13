@@ -36,7 +36,7 @@ export function useRenameResume(handlers?: WorkspaceMutationHandlers) {
   });
 }
 
-/** 逻辑删除简历；成功后从缓存移除。 */
+/** 删除简历及其全部历史版本（后端为数据库硬删除）；成功后从缓存移除。 */
 export function useDeleteResume(handlers?: WorkspaceMutationHandlers) {
   return useWorkspaceMutation<{ id: string }, { id: string }>({
     mutationFn: ({ id }, options) => Unwrap(platformClient.workspace.DeleteResume(id, options)),

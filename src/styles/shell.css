@@ -1014,3 +1014,18 @@ button { background: none; border: 0; }
 .dw-drawer .form-field { gap: 5px; font-size: 12.5px; color: var(--text-2); }
 .dw-drawer .form-field input { min-height: 32px; padding: 0 10px; font: inherit; }
 .dw-drawer .form-field textarea { padding: 8px 10px; font: inherit; }
+
+/* ============================== 简历详情抽屉（原型 openResume 一比一） ============================== */
+/* 简历正文是文档版式，比档案/投递抽屉更宽，避免长行被截断。 */
+.dw-drawer.is-resume { width: min(680px, 92vw); }
+/* 历史版本只读提示条：复用 note.plain，右侧提供返回当前版本的动作。 */
+.dw-drawer .note-act { flex: none; margin-left: auto; border: 0; padding: 0; background: transparent; font-size: 12px; font-weight: 550; color: var(--accent); cursor: pointer; }
+/* 版本历史：当前版本 + 至多两份历史，仅支持查看与还原（对齐后端能力，历史不可编辑）。 */
+.dw-drawer .rev-sec { margin-top: 26px; }
+.dw-drawer .rev-row { display: flex; align-items: center; gap: 10px; padding: 9px 0; border-bottom: 1px solid var(--border); font-size: 12.5px; }
+.dw-drawer .rev-row:last-child { border-bottom: 0; }
+.dw-drawer .rev-label { flex: none; font-weight: 600; color: var(--text); }
+.dw-drawer .rev-time { flex: 1; min-width: 0; color: var(--text-3); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dw-drawer .rev-act { border: 0; padding: 0 0 0 12px; background: transparent; font-size: 12px; font-weight: 550; color: var(--text-3); cursor: pointer; transition: color .16s var(--ease); }
+.dw-drawer .rev-act:hover { color: var(--accent); }
+.dw-drawer .rev-none { margin: 10px 0 0; color: var(--text-3); font-size: 12.5px; }

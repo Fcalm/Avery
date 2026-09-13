@@ -78,11 +78,13 @@ export class ResumeRepository {
     return { id, name, revision: existing.revision };
   }
 
-  /** 逻辑删除简历；被投递引用时保留墓碑以维持历史快照。 */
+  /** 硬删除简历：正文与全部版本行一并从数据库移除；投递凭证存于独立冻结表且不持有本表外键，不受影响。 */
   Delete(id: string): any {
     if (typeof id !== 'string' || id.length === 0 || id.length > 200) throw new Error('Resume id is invalid.');
     const run = this.db.transaction(() => {
-      this.db.prepare('UPDATE resumes SET deleted_at = ?, updated_at = ? WHERE id = ?').run(GetNow(), GetNow(), id);
+      // 先删子表 resume_revisions 再删主表，foreign_keys = ON 时避免外键约束失败。
+      this.db.prepare('DELETE FROM resume_revisions WHERE resume_id = ?').run(id);
+      this.db.prepare('DELETE FROM resumes WHERE id = ?').run(id);
       this.attachmentLifecycle.RemoveLinks('resume', id);
       WriteAudit(this.db, 'user', 'delete', 'resume', id, {});
     });

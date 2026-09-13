@@ -5,19 +5,19 @@ import { ResumeRepository } from '../../../apps/backend/src/electron/repositorie
 const require = createRequire(import.meta.url);
 const Database = require('better-sqlite3');
 
-function createRepository(): ResumeRepository {
+function createRepository(): { repository: ResumeRepository; db: import('better-sqlite3').Database } {
   const db = new Database(':memory:');
   db.exec(`
     CREATE TABLE resumes (id TEXT PRIMARY KEY, name TEXT, document_json TEXT, revision INTEGER, created_at INTEGER, updated_at INTEGER, deleted_at INTEGER);
     CREATE TABLE resume_revisions (id TEXT PRIMARY KEY, resume_id TEXT, revision INTEGER, document_json TEXT, source TEXT, is_pinned INTEGER DEFAULT 0, is_protected INTEGER DEFAULT 0, created_at INTEGER);
     CREATE TABLE audit_events (id TEXT, actor_type TEXT, action TEXT, entity_type TEXT, entity_id TEXT, metadata_json TEXT, created_at INTEGER);
   `);
-  return new ResumeRepository({ db, attachmentLifecycle: { ReplaceLinks: () => undefined, RemoveLinks: () => undefined } });
+  return { repository: new ResumeRepository({ db, attachmentLifecycle: { ReplaceLinks: () => undefined, RemoveLinks: () => undefined } }), db };
 }
 
 describe('ResumeRepository revision', () => {
   it('拒绝过期 revision，避免覆盖已保存的内容', () => {
-    const repository = createRepository();
+    const { repository } = createRepository();
     expect(repository.Upsert({ id: 'resume-1', name: '初版', sections: [] })).toEqual({ id: 'resume-1', revision: 1 });
     expect(repository.Upsert({ id: 'resume-1', name: '二版', sections: [{ type: 'summary' }] }, 1)).toEqual({ id: 'resume-1', revision: 2 });
 
@@ -33,7 +33,7 @@ describe('ResumeRepository revision', () => {
   });
 
   it('只保留当前与两份历史，并将还原写为新的递增版本', () => {
-    const repository = createRepository();
+    const { repository } = createRepository();
     repository.Upsert({ id: 'resume-1', name: '简历', content: '第一版' });
     repository.Upsert({ id: 'resume-1', name: '简历', content: '第二版' }, 1);
     repository.Upsert({ id: 'resume-1', name: '简历', content: '第三版' }, 2);
@@ -56,5 +56,18 @@ describe('ResumeRepository revision', () => {
     expect(repository.GetRevisions('resume-1').map((item) => item.revision)).toEqual([5, 3]);
     const current = repository.GetRevisions('resume-1')[0];
     expect(() => repository.DeleteRevision('resume-1', current.id)).toThrow('current resume revision');
+  });
+
+  it('删除简历时连同样本版本行一并从数据库移除', () => {
+    const { repository, db } = createRepository();
+    repository.Upsert({ id: 'resume-1', name: '简历', content: '第一版' });
+    repository.Upsert({ id: 'resume-1', name: '简历', content: '第二版' }, 1);
+    expect(repository.Delete('resume-1')).toEqual({ id: 'resume-1' });
+    // 硬删除而非墓碑：正文与历史版本都不允许在库中残留。
+    expect(db.prepare('SELECT COUNT(*) AS count FROM resumes').get()).toMatchObject({ count: 0 });
+    expect(db.prepare('SELECT COUNT(*) AS count FROM resume_revisions').get()).toMatchObject({ count: 0 });
+    expect(() => repository.GetRevisions('resume-1')).toThrow('not found');
+    // 删除动作留审计痕迹，便于排查误删。
+    expect(db.prepare("SELECT COUNT(*) AS count FROM audit_events WHERE action = 'delete' AND entity_type = 'resume'").get()).toMatchObject({ count: 1 });
   });
 });
