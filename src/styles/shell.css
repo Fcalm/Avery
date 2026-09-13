@@ -887,3 +887,100 @@ button { background: none; border: 0; }
 /* 展开菜单统一走共享 Select 的自定义浮层（同权限选择），触发器高度与输入框一致。 */
 .profile-drawer .custom-select-trigger { min-height: 32px; padding: 0 10px; font-size: 12.5px; }
 .profile-drawer .custom-select-option { font-size: 12.5px; }
+
+/* ================================================== 投递记录（applications board）
+   对齐原型 applications 视图：上方 dashboard（七日折线 + 进展圆环），下方阶段看板。
+   与原型唯一的布局差异：原型整页滚动，这里定高，滚动收进各阶段列内部（隐藏滚动条）。 */
+.applications-page.standard-page { display: block; height: calc(100% - var(--space-2)); max-width: 1180px; margin: 0 auto var(--space-2); padding: 0; }
+.page-container:has(.applications-page) { overflow: hidden; }
+.app-view { display: flex; height: 100%; min-height: 0; flex-direction: column; padding: 34px 34px 40px; animation: viewIn .4s var(--ease) both; }
+.app-view .view-h { display: flex; align-items: flex-end; gap: 16px; padding-bottom: 18px; border-bottom: 1px solid var(--border); margin-bottom: 6px; }
+.app-view .view-h h1 { margin: 0; font-size: 21px; font-weight: 640; letter-spacing: -.015em; }
+.app-view .view-h p { margin: 3px 0 0; max-width: 62ch; font-size: 13px; color: var(--text-2); }
+.app-view .view-h .vh-act { margin-left: auto; display: flex; flex: none; gap: 8px; }
+
+/* dashboard：折线图占 1.55 份，进展圆环占 1 份。 */
+.app-view .dash { display: grid; grid-template-columns: 1.55fr 1fr; gap: 14px; padding-top: 18px; }
+.app-view .panel { border: 1px solid var(--border); border-radius: var(--r-card); background: var(--raised); padding: 16px; }
+.app-view .panel-h { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.app-view .panel-t { font-size: 13.5px; font-weight: 600; }
+.app-view .panel-s { font-size: 11.5px; color: var(--text-3); margin-top: 2px; }
+.app-view .panel-num { display: flex; align-items: baseline; gap: 3px; font-family: var(--font-data); }
+.app-view .panel-num b { font-size: 22px; font-weight: 640; letter-spacing: -.02em; }
+.app-view .panel-num span { font-size: 11px; color: var(--text-3); }
+
+/* 七日折线图：面积渐显、圆点逐个浮现（CSS 延迟），折线由 JS 按路径总长回拉 dashoffset 画出。 */
+.app-view .chart-wrap { position: relative; margin-top: 8px; }
+.app-view .chart { display: block; width: 100%; height: auto; overflow: visible; }
+.app-view .chart .grid { stroke: var(--border); stroke-width: 1; }
+.app-view .chart .axis { fill: var(--text-3); font-family: var(--font-data); font-size: 10px; }
+.app-view .chart .area { fill: url(#appAreaFill); opacity: 0; animation: appAreaIn .7s var(--ease) .3s forwards; }
+.app-view .chart .line { fill: none; stroke: var(--accent); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.app-view .chart .dot { fill: var(--raised); stroke: var(--accent); stroke-width: 1.8; opacity: 0; animation: appDotIn .34s var(--ease) forwards; }
+.app-view .chart .hit { fill: transparent; cursor: crosshair; }
+.app-view .chart .tip-line { stroke: var(--border-2); stroke-width: 1; stroke-dasharray: 3 3; opacity: 0; transition: opacity .15s var(--ease); }
+.app-view .chart .tip-dot { fill: var(--accent); stroke: var(--raised); stroke-width: 2; opacity: 0; transition: opacity .15s var(--ease); }
+.app-view .chart-wrap.hot .tip-line, .app-view .chart-wrap.hot .tip-dot { opacity: 1; }
+.app-view .g-stop-0 { stop-color: var(--accent); stop-opacity: .2; }
+.app-view .g-stop-1 { stop-color: var(--accent); stop-opacity: 0; }
+@keyframes appAreaIn { to { opacity: 1; } }
+@keyframes appDotIn { to { opacity: 1; } }
+.app-view .chart-tip { position: absolute; z-index: 2; pointer-events: none; padding: 5px 9px; border-radius: 8px; background: var(--text); color: var(--bg); font-family: var(--font-data); font-size: 11.5px; white-space: nowrap; transform: translate(-50%, -146%); opacity: 0; transition: opacity .15s var(--ease); }
+.app-view .chart-wrap.hot .chart-tip { opacity: 1; }
+
+/* 进展圆环：分段颜色与间隙取自原型，分段生长动画由 JS 按 dasharray 驱动。 */
+.app-view .donut-wrap { position: relative; display: grid; place-items: center; margin: 6px 0 2px; }
+.app-view .donut { display: block; width: 158px; height: 158px; }
+.app-view .seg-arc { fill: none; stroke-width: 13; }
+.app-view .seg-arc.seg-a { stroke: var(--seg-a); }
+.app-view .seg-arc.seg-b { stroke: var(--seg-b); }
+.app-view .seg-arc.seg-c { stroke: var(--seg-c); }
+.app-view .donut-c { position: absolute; inset: 0; display: grid; place-content: center; text-align: center; pointer-events: none; }
+.app-view .donut-c b { display: block; font-family: var(--font-data); font-size: 24px; font-weight: 640; letter-spacing: -.02em; line-height: 1.15; }
+.app-view .donut-c span { font-size: 11px; color: var(--text-3); }
+.app-view .legend { display: grid; gap: 8px; margin-top: 12px; }
+.app-view .lg-r { display: flex; align-items: center; gap: 9px; font-size: 12.5px; }
+.app-view .lg-swatch { width: 9px; height: 9px; border-radius: 3px; flex: none; }
+.app-view .sw-a { background: var(--seg-a); }
+.app-view .sw-b { background: var(--seg-b); }
+.app-view .sw-c { background: var(--seg-c); }
+.app-view .lg-t { color: var(--text-2); }
+.app-view .lg-n { margin-left: auto; font-family: var(--font-data); font-size: 11.5px; color: var(--text-3); }
+.app-view .lg-n b { color: var(--text); font-weight: 550; }
+
+/* 阶段看板：卡片可拖拽换列，拖经的列高亮即磁吸反馈；列内滚动条隐藏。 */
+.app-view .pipe { display: grid; flex: 1 1 auto; min-height: 0; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-top: 22px; }
+.app-view .col { display: flex; min-width: 0; min-height: 0; flex-direction: column; }
+.app-view .col-h { display: flex; align-items: center; gap: 8px; padding: 0 2px 10px; }
+.app-view .col-t { font-size: 13px; font-weight: 600; }
+.app-view .col-n { font-family: var(--font-data); font-size: 11px; color: var(--text-3); background: var(--surface-2); border-radius: var(--r-pill); padding: 1px 7px; }
+.app-view .col-body { display: flex; flex: 1 1 auto; min-height: 0; flex-direction: column; gap: 9px; padding: 9px; border: 1px dashed var(--border); border-radius: var(--r-card); background: var(--surface); overflow-y: auto; scrollbar-width: none; transition: border-color .18s var(--ease), background-color .18s var(--ease); }
+.app-view .col-body::-webkit-scrollbar { display: none; }
+.app-view .col-body.over { border-color: var(--accent); background: var(--accent-soft); }
+.app-view .col-empty { font-size: 11.5px; color: var(--text-3); text-align: center; padding: 24px 0; }
+.app-view .acard { border: 1px solid var(--border); border-radius: var(--r-control); background: var(--raised); padding: 11px 12px; cursor: grab; text-align: left; transition: border-color .18s var(--ease), box-shadow .2s var(--ease), transform .14s var(--ease), opacity .18s var(--ease); }
+.app-view .acard:hover { border-color: var(--border-2); box-shadow: var(--shadow); }
+.app-view .acard:active { cursor: grabbing; }
+.app-view .acard.dragging { opacity: .45; border-style: dashed; }
+.app-view .acard:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.app-view .ac-top { display: flex; align-items: center; gap: 6px; }
+.app-view .ac-co { font-size: 13.5px; font-weight: 600; }
+.app-view .ac-flag { margin-left: auto; display: inline-flex; font-size: 13px; color: var(--accent); }
+.app-view .ac-role { font-size: 12.5px; color: var(--text-2); margin-top: 3px; }
+.app-view .ac-meta { font-family: var(--font-data); font-size: 11px; color: var(--text-3); margin-top: 8px; }
+.app-view .ac-next { font-size: 11.5px; color: var(--text-2); margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border); }
+.app-view .ac-next.urgent { color: var(--accent); font-weight: 500; }
+
+/* 窄屏回退：dashboard 竖排、看板两列/单列，页面恢复滚动，列内仍用隐藏滚动条自行滚动。 */
+@media (max-width: 1080px) {
+  .page-container:has(.applications-page) { overflow: auto; }
+  .applications-page.standard-page { height: auto; min-height: 0; }
+  .app-view { height: auto; }
+  .app-view .dash { grid-template-columns: 1fr; }
+  .app-view .pipe { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .app-view .col-body { max-height: 480px; }
+}
+@media (max-width: 680px) {
+  .app-view { padding: 20px 18px 24px; }
+  .app-view .pipe { grid-template-columns: 1fr; }
+}

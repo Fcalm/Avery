@@ -1,16 +1,15 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent } from 'react';
 import { useUiStore } from '../../../app/UiStore';
-import { useApplications, useDeleteApplication, useUpsertApplication } from '../../../features/application/api/applicationQueries';
+import { useApplications, useDeleteApplication, useMoveApplicationStatus, useUpsertApplication } from '../../../features/application/api/applicationQueries';
 import { useJobs } from '../../../features/job/api/jobQueries';
 import { useResumes } from '../../../features/resume/api/resumeQueries';
 import { CreateEntityId } from '../../workspace/api/workspaceData';
 import { Button, Drawer, FormField, Modal, Select } from '../../../shared/components/UI';
 import { Icon } from '../../../shared/components/Icon';
-import { ApplicationStatusLabel } from '../../../shared/utils/format';
+import { ApplicationStatusLabel, ChannelLabel } from '../../../shared/utils/format';
 import type { Application, ApplicationStatus } from '../../../types/domain';
 
 const Statuses: ApplicationStatus[] = ['saved', 'applied', 'written_test', 'interviewing', 'ended'];
-const FilterOptions: Array<{ value: 'all' | ApplicationStatus; label: string }> = [{ value: 'all', label: '全部' }, ...Statuses.map((status) => ({ value: status, label: ApplicationStatusLabel[status] }))];
 const BoardColumns: Array<{ id: string; label: string; statuses: ApplicationStatus[] }> = [
   { id: 'saved', label: '待投递', statuses: ['saved'] },
   { id: 'applied', label: '已投递', statuses: ['applied'] },
@@ -18,10 +17,184 @@ const BoardColumns: Array<{ id: string; label: string; statuses: ApplicationStat
   { id: 'ended', label: '已结束', statuses: ['ended'] },
 ];
 
-function FormatDate(value?: string): string {
-  if (!value) return '未设置';
+/** 与阶段对应的默认跟进文案；卡片有下一步日期时改显“下一步 M/D”。 */
+const NextByStatus: Record<ApplicationStatus, string> = {
+  saved: '待投递',
+  applied: '已投递，暂无回音',
+  written_test: '等待笔试安排',
+  interviewing: '等待安排面试',
+  ended: '流程已结束',
+};
+
+function FormatDay(value?: string): string {
+  if (!value) return '';
   const [, month, day] = value.split('-');
-  return month && day ? `${month}-${day}` : value;
+  return month && day ? `${Number(month)}/${Number(day)}` : value;
+}
+
+/** 本地日历日期 YYYY-MM-DD；不用 toISOString，避免 UTC 偏移把当天算错。 */
+function LocalDateKey(date: Date): string {
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${date.getFullYear()}-${month}-${day}`;
+}
+
+/** 最近七天的 M/D 标签，旧 → 新，与折线图 X 轴一致。 */
+function WeekLabels(): string[] {
+  const labels: string[] = [];
+  for (let offset = 6; offset >= 0; offset--) {
+    const date = new Date();
+    date.setDate(date.getDate() - offset);
+    labels.push(`${date.getMonth() + 1}/${date.getDate()}`);
+  }
+  return labels;
+}
+
+/** 最近七天的投递量（按 appliedAt 日历日统计），旧 → 新。 */
+function WeekCounts(applications: Application[]): number[] {
+  const keys: string[] = [];
+  for (let offset = 6; offset >= 0; offset--) {
+    const date = new Date();
+    date.setDate(date.getDate() - offset);
+    keys.push(LocalDateKey(date));
+  }
+  const buckets = new Map(keys.map((key) => [key, 0]));
+  applications.forEach((application) => {
+    if (application.appliedAt && buckets.has(application.appliedAt)) buckets.set(application.appliedAt, (buckets.get(application.appliedAt) ?? 0) + 1);
+  });
+  return keys.map((key) => buckets.get(key) ?? 0);
+}
+
+/** 原型用数据里的 urgent 标记临近节点；投递没有该字段，按“下一步日期距今 2 天内（含逾期）且流程未结束”推导。 */
+function IsUrgent(application: Application): boolean {
+  if (!application.nextStepAt || application.status === 'ended' || application.status === 'saved') return false;
+  const target = new Date(`${application.nextStepAt}T00:00:00`);
+  if (Number.isNaN(target.getTime())) return false;
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  return target.getTime() - today.getTime() <= 2 * 24 * 60 * 60 * 1000;
+}
+
+const CHART_WIDTH = 560;
+const CHART_HEIGHT = 186;
+const CHART_PAD = { left: 30, right: 14, top: 18, bottom: 30 };
+
+/** 最近七日折线图：结构与动画一比一对齐原型 lineChart/wireChart/animateLine。 */
+function WeekChart({ week, labels }: { week: number[]; labels: string[] }) {
+  const wrapRef = useRef<HTMLDivElement | null>(null);
+  const lineRef = useRef<SVGPathElement | null>(null);
+  const tipRef = useRef<HTMLDivElement | null>(null);
+  const tipLineRef = useRef<SVGLineElement | null>(null);
+  const tipDotRef = useRef<SVGCircleElement | null>(null);
+  const max = Math.max(4, Math.max(...week) + 1);
+  const innerWidth = CHART_WIDTH - CHART_PAD.left - CHART_PAD.right;
+  const innerHeight = CHART_HEIGHT - CHART_PAD.top - CHART_PAD.bottom;
+  const step = innerWidth / (week.length - 1);
+  const X = (index: number) => CHART_PAD.left + step * index;
+  const Y = (value: number) => CHART_PAD.top + innerHeight - (innerHeight * value) / max;
+  const points = week.map((value, index) => [X(index), Y(value)] as const);
+  const linePath = points.map(([x, y], index) => `${index ? 'L' : 'M'}${x.toFixed(1)} ${y.toFixed(1)}`).join(' ');
+  const areaPath = `${linePath} L ${points[points.length - 1][0].toFixed(1)} ${(CHART_PAD.top + innerHeight).toFixed(1)} L ${CHART_PAD.left} ${(CHART_PAD.top + innerHeight).toFixed(1)} Z`;
+
+  useEffect(() => {
+    // 折线生长动画按路径总长回拉 dashoffset；reduce-motion 用户直接呈现静态折线。
+    const line = lineRef.current;
+    if (!line || window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    const length = line.getTotalLength();
+    line.style.strokeDasharray = String(length);
+    line.style.strokeDashoffset = String(length);
+    line.style.transition = 'stroke-dashoffset .95s cubic-bezier(.16,1,.3,1)';
+    const frame = requestAnimationFrame(() => requestAnimationFrame(() => { line.style.strokeDashoffset = '0'; }));
+    return () => cancelAnimationFrame(frame);
+  }, []);
+
+  function HandlePointEnter(event: ReactMouseEvent<SVGRectElement>) {
+    // 悬停反馈只改类名与属性（原型 wireChart 的做法）：dragover/悬停是高频事件，走 React 状态会整板重渲染。
+    const rect = event.currentTarget;
+    const wrap = wrapRef.current;
+    if (!wrap) return;
+    const x = Number(rect.dataset.x);
+    const y = Number(rect.dataset.y);
+    wrap.classList.add('hot');
+    if (tipRef.current) {
+      tipRef.current.textContent = `${rect.dataset.label} 投出 ${rect.dataset.v} 份`;
+      tipRef.current.style.left = `${Math.min(Math.max((x / CHART_WIDTH) * 100, 9), 91)}%`;
+      tipRef.current.style.top = `${(y / CHART_HEIGHT) * 100}%`;
+    }
+    tipLineRef.current?.setAttribute('x1', String(x));
+    tipLineRef.current?.setAttribute('x2', String(x));
+    tipDotRef.current?.setAttribute('cx', String(x));
+    tipDotRef.current?.setAttribute('cy', String(y));
+  }
+
+  function HandleChartLeave() { wrapRef.current?.classList.remove('hot'); }
+
+  return <div className="chart-wrap" ref={wrapRef} onMouseLeave={HandleChartLeave}>
+    <svg className="chart" viewBox={`0 0 ${CHART_WIDTH} ${CHART_HEIGHT}`} role="img" aria-label="最近七日投递数量折线图">
+      <defs>
+        <linearGradient id="appAreaFill" x1="0" y1="0" x2="0" y2="1">
+          <stop className="g-stop-0" offset="0%"></stop>
+          <stop className="g-stop-1" offset="100%"></stop>
+        </linearGradient>
+      </defs>
+      {[0, Math.round(max / 2), max].map((tick) => <g key={tick}>
+        <line className="grid" x1={CHART_PAD.left} y1={Y(tick).toFixed(1)} x2={CHART_WIDTH - CHART_PAD.right} y2={Y(tick).toFixed(1)}></line>
+        <text className="axis" x={CHART_PAD.left - 8} y={(Y(tick) + 3.5).toFixed(1)} textAnchor="end">{tick}</text>
+      </g>)}
+      {labels.map((label, index) => <text className="axis" key={`${label}-${index}`} x={X(index).toFixed(1)} y={CHART_HEIGHT - 10} textAnchor="middle">{label}</text>)}
+      <path className="area" d={areaPath}></path>
+      <path className="line" ref={lineRef} d={linePath}></path>
+      {points.map(([x, y], index) => <circle className="dot" key={index} cx={x.toFixed(1)} cy={y.toFixed(1)} r="3.4" style={{ animationDelay: `${360 + index * 70}ms` }}></circle>)}
+      <line className="tip-line" ref={tipLineRef} y1={CHART_PAD.top} y2={CHART_PAD.top + innerHeight}></line>
+      <circle className="tip-dot" ref={tipDotRef} r="4.6"></circle>
+      {points.map(([x, y], index) => <rect className="hit" key={index} x={(x - step / 2).toFixed(1)} y={CHART_PAD.top} width={step.toFixed(1)} height={innerHeight} data-x={x.toFixed(1)} data-y={y.toFixed(1)} data-v={week[index]} data-label={labels[index]} onMouseEnter={HandlePointEnter}></rect>)}
+    </svg>
+    <div className="chart-tip" ref={tipRef}></div>
+  </div>;
+}
+
+/** 进展圆环：分段颜色与分段间隙一比一对齐原型 donut/animateDonut。 */
+function ProgressDonut({ segments, total }: { segments: Array<{ cls: string; count: number }>; total: number }) {
+  const radius = 54;
+  const circumference = 2 * Math.PI * radius;
+  const gap = 3;
+  const arcRefs = useRef<Array<SVGCircleElement | null>>([]);
+  const signature = segments.map((segment) => segment.count).join(',');
+  const safeTotal = total || 1;
+  let accumulated = 0;
+  let arcIndex = 0;
+  const arcs = segments.flatMap((segment) => {
+    if (!segment.count) return [];
+    const fraction = segment.count / safeTotal;
+    const length = Math.max(circumference * fraction - gap, 2);
+    const staggerIndex = arcIndex++;
+    const arc = <circle key={segment.cls} ref={(element) => { arcRefs.current[staggerIndex] = element; }} className={`seg-arc ${segment.cls}`} cx="70" cy="70" r={radius} strokeDasharray={`${length.toFixed(1)} ${(circumference - length).toFixed(1)}`} strokeDashoffset={(-circumference * accumulated).toFixed(1)}></circle>;
+    accumulated += fraction;
+    return [arc];
+  });
+
+  useEffect(() => {
+    // 数据变化时组件以新 signature 重挂载，分段从 0 生长到目标弧长，相邻段错峰 90ms。
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    arcRefs.current.forEach((arc, index) => {
+      if (!arc) return;
+      const target = arc.getAttribute('stroke-dasharray');
+      if (!target) return;
+      arc.style.transition = '';
+      arc.style.strokeDasharray = `0 ${circumference.toFixed(1)}`;
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        arc.style.transition = `stroke-dasharray .8s cubic-bezier(.16,1,.3,1) ${index * 90}ms`;
+        arc.style.strokeDasharray = target;
+      }));
+    });
+  }, [signature]);
+
+  return <div className="donut-wrap">
+    <svg className="donut" viewBox="0 0 140 140" role="img" aria-label="投递进展占比">
+      <g transform="rotate(-90 70 70)">{arcs}</g>
+    </svg>
+    <div className="donut-c"><b>{total}</b><span>个投递</span></div>
+  </div>;
 }
 
 function ApplicationsPage() {
@@ -30,26 +203,23 @@ function ApplicationsPage() {
   const jobs = useJobs();
   const resumes = useResumes();
   const upsertApplication = useUpsertApplication({ onConflict: () => ShowNotice('投递已在其他窗口被修改，已刷新为最新版本'), onFailure: () => ShowNotice('投递保存失败，请稍后重试。') });
+  const moveApplicationStatus = useMoveApplicationStatus({ onConflict: () => ShowNotice('投递已在其他窗口被修改，已刷新为最新版本'), onFailure: () => ShowNotice('投递状态更新失败，请稍后重试。') });
   const deleteApplication = useDeleteApplication({ onFailure: () => ShowNotice('投递删除失败，请稍后重试。') });
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [editing, setEditing] = useState<Application | null>(null);
   const [form, setForm] = useState<Partial<Application>>({ status: 'saved', note: '' });
   const [deleteTarget, setDeleteTarget] = useState<Application | null>(null);
-  const [filter, setFilter] = useState<'all' | ApplicationStatus>('all');
-  const [query, setQuery] = useState('');
   const jobsById = useMemo(() => Object.fromEntries(jobs.map((job) => [job.id, job])), [jobs]);
-  const filteredApplications = useMemo(() => {
-    const keyword = query.trim().toLocaleLowerCase();
-    return applications.filter((application) => {
-      const job = jobsById[application.jobId];
-      const matchesFilter = filter === 'all' || application.status === filter;
-      const searchable = `${job?.company ?? ''} ${job?.title ?? ''} ${job?.city ?? ''}`.toLocaleLowerCase();
-      return matchesFilter && (!keyword || searchable.includes(keyword));
-    }).sort((left, right) => (right.nextStepAt ?? right.appliedAt ?? '').localeCompare(left.nextStepAt ?? left.appliedAt ?? ''));
-  }, [applications, filter, jobsById, query]);
-  const activeCount = applications.filter((application) => application.status !== 'ended' && application.status !== 'saved').length;
-  const followUpCount = applications.filter((application) => Boolean(application.nextStepAt) && application.status !== 'ended').length;
-  const interviewCount = applications.filter((application) => application.status === 'interviewing').length;
+  const weekLabels = useMemo(WeekLabels, []);
+  const week = useMemo(() => WeekCounts(applications), [applications]);
+  const weekTotal = week.reduce((sum, value) => sum + value, 0);
+  // 圆环只统计已发出后的进展（已投递/笔试/面试），待投递与已结束不进入“当前进展”。
+  const inFlowApplications = applications.filter((application) => application.status === 'applied' || application.status === 'written_test' || application.status === 'interviewing');
+  const donutSegments = [
+    { cls: 'seg-a', t: '面试', count: applications.filter((application) => application.status === 'interviewing').length },
+    { cls: 'seg-b', t: '笔试', count: applications.filter((application) => application.status === 'written_test').length },
+    { cls: 'seg-c', t: '已投递', count: applications.filter((application) => application.status === 'applied').length },
+  ];
 
   function OpenNew() { setEditing(null); setForm({ jobId: jobs[0]?.id, resumeId: resumes[0]?.id, status: 'saved', note: '' }); setDrawerOpen(true); }
   function OpenEdit(application: Application) { setEditing(application); setForm(application); setDrawerOpen(true); }
@@ -62,18 +232,97 @@ function ApplicationsPage() {
   }
   function ConfirmDeleteApplication() { if (!deleteTarget) return; deleteApplication.mutate({ id: deleteTarget.id }); setDeleteTarget(null); setDrawerOpen(false); ShowNotice('投递记录已删除'); }
 
+  function HandleCardDragStart(event: ReactDragEvent<HTMLElement>, application: Application) {
+    event.dataTransfer.setData('text/plain', application.id);
+    event.dataTransfer.effectAllowed = 'move';
+    event.currentTarget.classList.add('dragging');
+  }
+  function HandleCardDragEnd(event: ReactDragEvent<HTMLElement>) {
+    event.currentTarget.classList.remove('dragging');
+    document.querySelectorAll('.col-body.over').forEach((zone) => zone.classList.remove('over'));
+  }
+  function HandleZoneDragOver(event: ReactDragEvent<HTMLDivElement>) {
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'move';
+    event.currentTarget.classList.add('over');
+  }
+  function HandleZoneDragLeave(event: ReactDragEvent<HTMLDivElement>) {
+    const related = event.relatedTarget as Node | null;
+    if (related && event.currentTarget.contains(related)) return;
+    event.currentTarget.classList.remove('over');
+  }
+  function HandleZoneDrop(event: ReactDragEvent<HTMLDivElement>, column: (typeof BoardColumns)[number]) {
+    event.preventDefault();
+    event.currentTarget.classList.remove('over');
+    MoveApplication(event.dataTransfer.getData('text/plain'), column);
+  }
+  /** 拖拽换阶段：目标列就是当前列则忽略；合并列落到该列的第一个状态（测评与面试 → 笔试中）。 */
+  function MoveApplication(id: string, column: (typeof BoardColumns)[number]) {
+    const application = applications.find((item) => item.id === id);
+    if (!application || column.statuses.includes(application.status)) return;
+    moveApplicationStatus.mutate({ id: application.id, status: column.statuses[0], expectedRevision: application.revision });
+    ShowNotice(`${jobsById[application.jobId]?.company ?? '投递'} 已移到「${column.label}」`);
+  }
+  function HandleCardKeyDown(event: ReactKeyboardEvent<HTMLElement>, application: Application) {
+    if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); OpenEdit(application); }
+  }
+
   return <div className="standard-page applications-page">
-    <section className="applications-reference-overview">
-      <header className="applications-reference-heading"><div><h1>投递管理</h1><p>集中追踪每个机会的状态变化与下一步安排。</p></div><div className="applications-stats" aria-label="投递数据概览"><span><b>{applications.length}</b><small>全部投递</small></span><span><b>{activeCount}</b><small>进行中</small></span><span><b>{followUpCount}</b><small>待跟进</small></span><span><b>{interviewCount}</b><small>面试中</small></span></div></header>
-      <div className="applications-reference-toolbar"><div className="application-filter-tags" role="group" aria-label="投递状态筛选">{FilterOptions.map((option) => <button key={option.value} type="button" className={filter === option.value ? 'selected' : ''} onClick={() => setFilter(option.value)}>{option.label} <b>{option.value === 'all' ? applications.length : applications.filter((application) => application.status === option.value).length}</b></button>)}</div><div className="applications-toolbar-actions"><label className="applications-search"><Icon name="search" size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索企业、岗位或城市" aria-label="搜索投递记录" /></label><Button variant="primary" onClick={OpenNew}><Icon name="plus" size={16} />添加投递</Button></div></div>
-    </section>
-    <section className="applications-board" aria-label="按阶段管理投递">{BoardColumns.map((column) => {
-      const columnApplications = filteredApplications.filter((application) => column.statuses.includes(application.status));
-      return <section className="applications-board-column" key={column.id} aria-label={column.label}><header><h2>{column.label}</h2><b>{columnApplications.length}</b><button type="button" aria-label={`新增${column.label}投递`} title="新增投递" onClick={OpenNew}><Icon name="plus" size={14} /></button></header><div className="applications-board-list">{columnApplications.length ? columnApplications.map((application) => {
-        const job = jobsById[application.jobId];
-        return <button key={application.id} type="button" className="application-board-card" onClick={() => OpenEdit(application)}><span className="application-company-mark">{job?.company.slice(0, 1) ?? '职'}</span><span className="application-board-copy"><b>{job?.title ?? '已删除岗位'}</b><small>{job ? `${job.company} · ${job.city}` : '对应岗位已删除'}</small><span className="application-board-tags">{typeof job?.matchScore === 'number' && <i>匹配 {job.matchScore}%</i>}{job?.salary && <i>{job.salary}</i>}</span>{application.nextStepAt && <em>{application.status === 'interviewing' ? '下一轮' : '下一步'} {FormatDate(application.nextStepAt)}</em>}<span className="application-board-footer"><small>{application.appliedAt ? `投递于 ${FormatDate(application.appliedAt)}` : '尚未投递'}</small><b>{ApplicationStatusLabel[application.status]}</b></span></span></button>;
-      }) : <p className="applications-board-empty">暂无记录</p>}</div></section>;
-    })}</section>
+    <div className="app-view">
+      <div className="view-h">
+        <div><h1>投递记录</h1><p>上半部分是最近七天的投递节奏，下半部分是按阶段排列的投递卡片。卡片可以直接拖动换阶段，点开可以看详情。</p></div>
+        <div className="vh-act"><button className="ghost-btn" type="button" onClick={OpenNew}><Icon name="plus" size={14} />添加投递</button></div>
+      </div>
+      <div className="dash">
+        <section className="panel">
+          <div className="panel-h">
+            <div><div className="panel-t">最近七日投递</div><div className="panel-s">按提交日期统计</div></div>
+            <div className="panel-num"><b>{weekTotal}</b><span>份</span></div>
+          </div>
+          <WeekChart key={week.join(',')} week={week} labels={weekLabels} />
+        </section>
+        <section className="panel">
+          <div className="panel-h">
+            <div><div className="panel-t">当前进展</div><div className="panel-s">共 {inFlowApplications.length} 个在流程中</div></div>
+          </div>
+          <ProgressDonut key={donutSegments.map((segment) => segment.count).join(',')} segments={donutSegments} total={inFlowApplications.length} />
+          <div className="legend">
+            {donutSegments.map((segment) => <div className="lg-r" key={segment.cls}>
+              <span className={`lg-swatch ${segment.cls.replace('seg-', 'sw-')}`}></span>
+              <span className="lg-t">{segment.t}</span>
+              <span className="lg-n"><b>{segment.count}</b> 个 · {Math.round((segment.count / (inFlowApplications.length || 1)) * 100)}%</span>
+            </div>)}
+          </div>
+        </section>
+      </div>
+      <div className="pipe">
+        {BoardColumns.map((column) => {
+          const items = applications.filter((application) => column.statuses.includes(application.status))
+            .sort((left, right) => (right.nextStepAt ?? right.appliedAt ?? '').localeCompare(left.nextStepAt ?? left.appliedAt ?? ''));
+          return <section className="col" key={column.id} aria-label={column.label}>
+            <div className="col-h"><span className="col-t">{column.label}</span><span className="col-n">{items.length}</span></div>
+            <div className="col-body" data-drop={column.id} onDragOver={HandleZoneDragOver} onDragLeave={HandleZoneDragLeave} onDrop={(event) => HandleZoneDrop(event, column)}>
+              {items.length ? items.map((application) => {
+                const job = jobsById[application.jobId];
+                const urgent = IsUrgent(application);
+                return <article className="acard" key={application.id} draggable data-application={application.id} tabIndex={0} role="button"
+                  aria-label={`${job?.company ?? '未知企业'}，${job?.title ?? '已删除岗位'}，点击查看详情`}
+                  onDragStart={(event) => HandleCardDragStart(event, application)} onDragEnd={HandleCardDragEnd}
+                  onClick={() => OpenEdit(application)} onKeyDown={(event) => HandleCardKeyDown(event, application)}>
+                  <div className="ac-top">
+                    <span className="ac-co">{job?.company ?? '未知企业'}</span>
+                    {urgent && <span className="ac-flag" role="img" aria-label="有临近的时间节点"><Icon name="clock" size={13} /></span>}
+                  </div>
+                  <div className="ac-role">{job?.title ?? '已删除岗位'}</div>
+                  <div className="ac-meta">{application.appliedAt ? `${FormatDay(application.appliedAt)} 投递` : '未投递'} · {job ? ChannelLabel[job.channel] : '渠道未知'}</div>
+                  <div className={`ac-next${urgent ? ' urgent' : ''}`}>{application.nextStepAt ? `下一步 ${FormatDay(application.nextStepAt)}` : NextByStatus[application.status]}</div>
+                </article>;
+              }) : <div className="col-empty">把卡片拖到这里</div>}
+            </div>
+          </section>;
+        })}
+      </div>
+    </div>
     <Drawer open={drawerOpen} title={editing ? '编辑投递记录' : '新增投递记录'} onClose={() => setDrawerOpen(false)}><div className="drawer-form"><FormField label="选择岗位"><Select value={form.jobId ?? ''} ariaLabel="选择岗位" onChange={(jobId) => setForm({ ...form, jobId })} options={jobs.map((job) => ({ value: job.id, label: `${job.company} · ${job.title}` }))} /></FormField><FormField label="使用简历"><Select value={form.resumeId ?? ''} ariaLabel="使用简历" onChange={(resumeId) => setForm({ ...form, resumeId })} options={resumes.map((resume) => ({ value: resume.id, label: resume.name }))} /></FormField><FormField label="当前阶段"><Select value={form.status ?? 'saved'} ariaLabel="当前阶段" onChange={(status) => setForm({ ...form, status: status as ApplicationStatus })} options={Statuses.map((status) => ({ value: status, label: ApplicationStatusLabel[status] }))} /></FormField><div className="form-two-col"><FormField label="投递日期"><input type="date" value={form.appliedAt ?? ''} onChange={(event) => setForm({ ...form, appliedAt: event.target.value })} /></FormField><FormField label="下一步日期"><input type="date" value={form.nextStepAt ?? ''} onChange={(event) => setForm({ ...form, nextStepAt: event.target.value })} /></FormField></div><FormField label="备注"><textarea rows={5} value={form.note ?? ''} onChange={(event) => setForm({ ...form, note: event.target.value })} /></FormField><div className="drawer-actions">{editing && <Button variant="danger" onClick={() => setDeleteTarget(editing)}>删除</Button>}<span /><Button onClick={() => setDrawerOpen(false)}>取消</Button><Button variant="primary" onClick={SaveApplication}>保存记录</Button></div></div></Drawer>
     <Modal open={Boolean(deleteTarget)} title="删除这条投递记录？" onClose={() => setDeleteTarget(null)}><p className="modal-copy">删除后投递记录及其进度事件将被移除，此操作不可撤销。</p><div className="modal-actions"><Button onClick={() => setDeleteTarget(null)}>取消</Button><Button variant="danger" onClick={ConfirmDeleteApplication}>确认删除</Button></div></Modal>
   </div>;
