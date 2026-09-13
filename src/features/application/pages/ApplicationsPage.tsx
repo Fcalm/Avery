@@ -9,12 +9,12 @@ import { Icon } from '../../../shared/components/Icon';
 import { ApplicationStatusLabel, ChannelLabel } from '../../../shared/utils/format';
 import type { Application, ApplicationStatus } from '../../../types/domain';
 
-const Statuses: ApplicationStatus[] = ['saved', 'applied', 'written_test', 'interviewing', 'ended'];
-const BoardColumns: Array<{ id: string; label: string; statuses: ApplicationStatus[] }> = [
-  { id: 'saved', label: '待投递', statuses: ['saved'] },
-  { id: 'applied', label: '已投递', statuses: ['applied'] },
-  { id: 'in-progress', label: '测评与面试', statuses: ['written_test', 'interviewing'] },
-  { id: 'ended', label: '已结束', statuses: ['ended'] },
+/** 三阶段模型：只保留已投递/笔试/面试（不做旧版本兼容，已收藏/已结束记录不再展示）。 */
+const Statuses: ApplicationStatus[] = ['applied', 'written_test', 'interviewing'];
+const BoardColumns: Array<{ id: string; status: ApplicationStatus; label: string }> = [
+  { id: 'applied', status: 'applied', label: '已投递' },
+  { id: 'written_test', status: 'written_test', label: '笔试' },
+  { id: 'interviewing', status: 'interviewing', label: '面试' },
 ];
 
 /** 与阶段对应的默认跟进文案；卡片有下一步日期时改显“下一步 M/D”。 */
@@ -207,21 +207,21 @@ function ApplicationsPage() {
   const deleteApplication = useDeleteApplication({ onFailure: () => ShowNotice('投递删除失败，请稍后重试。') });
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [editing, setEditing] = useState<Application | null>(null);
-  const [form, setForm] = useState<Partial<Application>>({ status: 'saved', note: '' });
+  const [form, setForm] = useState<Partial<Application>>({ status: 'applied', note: '' });
   const [deleteTarget, setDeleteTarget] = useState<Application | null>(null);
   const jobsById = useMemo(() => Object.fromEntries(jobs.map((job) => [job.id, job])), [jobs]);
   const weekLabels = useMemo(WeekLabels, []);
   const week = useMemo(() => WeekCounts(applications), [applications]);
   const weekTotal = week.reduce((sum, value) => sum + value, 0);
-  // 圆环只统计已发出后的进展（已投递/笔试/面试），待投递与已结束不进入“当前进展”。
-  const inFlowApplications = applications.filter((application) => application.status === 'applied' || application.status === 'written_test' || application.status === 'interviewing');
+  // 看板与圆环同源：只呈现三个投递阶段的记录，其余状态（已收藏/已结束）不做兼容展示。
+  const boardApplications = useMemo(() => applications.filter((application) => Statuses.includes(application.status)), [applications]);
   const donutSegments = [
-    { cls: 'seg-a', t: '面试', count: applications.filter((application) => application.status === 'interviewing').length },
-    { cls: 'seg-b', t: '笔试', count: applications.filter((application) => application.status === 'written_test').length },
-    { cls: 'seg-c', t: '已投递', count: applications.filter((application) => application.status === 'applied').length },
+    { cls: 'seg-a', t: '面试', count: boardApplications.filter((application) => application.status === 'interviewing').length },
+    { cls: 'seg-b', t: '笔试', count: boardApplications.filter((application) => application.status === 'written_test').length },
+    { cls: 'seg-c', t: '已投递', count: boardApplications.filter((application) => application.status === 'applied').length },
   ];
 
-  function OpenNew() { setEditing(null); setForm({ jobId: jobs[0]?.id, resumeId: resumes[0]?.id, status: 'saved', note: '' }); setDrawerOpen(true); }
+  function OpenNew() { setEditing(null); setForm({ jobId: jobs[0]?.id, resumeId: resumes[0]?.id, status: 'applied', note: '' }); setDrawerOpen(true); }
   function OpenEdit(application: Application) { setEditing(application); setForm(application); setDrawerOpen(true); }
   function SaveApplication() {
     if (!form.jobId || !form.resumeId || !form.status) return;
@@ -256,11 +256,11 @@ function ApplicationsPage() {
     event.currentTarget.classList.remove('over');
     MoveApplication(event.dataTransfer.getData('text/plain'), column);
   }
-  /** 拖拽换阶段：目标列就是当前列则忽略；合并列落到该列的第一个状态（测评与面试 → 笔试中）。 */
+  /** 拖拽换阶段：拖回原列忽略。 */
   function MoveApplication(id: string, column: (typeof BoardColumns)[number]) {
     const application = applications.find((item) => item.id === id);
-    if (!application || column.statuses.includes(application.status)) return;
-    moveApplicationStatus.mutate({ id: application.id, status: column.statuses[0], expectedRevision: application.revision });
+    if (!application || application.status === column.status) return;
+    moveApplicationStatus.mutate({ id: application.id, status: column.status, expectedRevision: application.revision });
     ShowNotice(`${jobsById[application.jobId]?.company ?? '投递'} 已移到「${column.label}」`);
   }
   function HandleCardKeyDown(event: ReactKeyboardEvent<HTMLElement>, application: Application) {
@@ -283,21 +283,21 @@ function ApplicationsPage() {
         </section>
         <section className="panel">
           <div className="panel-h">
-            <div><div className="panel-t">当前进展</div><div className="panel-s">共 {inFlowApplications.length} 个在流程中</div></div>
+            <div><div className="panel-t">当前进展</div><div className="panel-s">共 {boardApplications.length} 个在流程中</div></div>
           </div>
-          <ProgressDonut key={donutSegments.map((segment) => segment.count).join(',')} segments={donutSegments} total={inFlowApplications.length} />
+          <ProgressDonut key={donutSegments.map((segment) => segment.count).join(',')} segments={donutSegments} total={boardApplications.length} />
           <div className="legend">
             {donutSegments.map((segment) => <div className="lg-r" key={segment.cls}>
               <span className={`lg-swatch ${segment.cls.replace('seg-', 'sw-')}`}></span>
               <span className="lg-t">{segment.t}</span>
-              <span className="lg-n"><b>{segment.count}</b> 个 · {Math.round((segment.count / (inFlowApplications.length || 1)) * 100)}%</span>
+              <span className="lg-n"><b>{segment.count}</b> 个 · {Math.round((segment.count / (boardApplications.length || 1)) * 100)}%</span>
             </div>)}
           </div>
         </section>
       </div>
       <div className="pipe">
         {BoardColumns.map((column) => {
-          const items = applications.filter((application) => column.statuses.includes(application.status))
+          const items = boardApplications.filter((application) => application.status === column.status)
             .sort((left, right) => (right.nextStepAt ?? right.appliedAt ?? '').localeCompare(left.nextStepAt ?? left.appliedAt ?? ''));
           return <section className="col" key={column.id} aria-label={column.label}>
             <div className="col-h"><span className="col-t">{column.label}</span><span className="col-n">{items.length}</span></div>
@@ -323,7 +323,7 @@ function ApplicationsPage() {
         })}
       </div>
     </div>
-    <Drawer open={drawerOpen} title={editing ? '编辑投递记录' : '新增投递记录'} onClose={() => setDrawerOpen(false)}><div className="drawer-form"><FormField label="选择岗位"><Select value={form.jobId ?? ''} ariaLabel="选择岗位" onChange={(jobId) => setForm({ ...form, jobId })} options={jobs.map((job) => ({ value: job.id, label: `${job.company} · ${job.title}` }))} /></FormField><FormField label="使用简历"><Select value={form.resumeId ?? ''} ariaLabel="使用简历" onChange={(resumeId) => setForm({ ...form, resumeId })} options={resumes.map((resume) => ({ value: resume.id, label: resume.name }))} /></FormField><FormField label="当前阶段"><Select value={form.status ?? 'saved'} ariaLabel="当前阶段" onChange={(status) => setForm({ ...form, status: status as ApplicationStatus })} options={Statuses.map((status) => ({ value: status, label: ApplicationStatusLabel[status] }))} /></FormField><div className="form-two-col"><FormField label="投递日期"><input type="date" value={form.appliedAt ?? ''} onChange={(event) => setForm({ ...form, appliedAt: event.target.value })} /></FormField><FormField label="下一步日期"><input type="date" value={form.nextStepAt ?? ''} onChange={(event) => setForm({ ...form, nextStepAt: event.target.value })} /></FormField></div><FormField label="备注"><textarea rows={5} value={form.note ?? ''} onChange={(event) => setForm({ ...form, note: event.target.value })} /></FormField><div className="drawer-actions">{editing && <Button variant="danger" onClick={() => setDeleteTarget(editing)}>删除</Button>}<span /><Button onClick={() => setDrawerOpen(false)}>取消</Button><Button variant="primary" onClick={SaveApplication}>保存记录</Button></div></div></Drawer>
+    <Drawer open={drawerOpen} title={editing ? '编辑投递记录' : '新增投递记录'} onClose={() => setDrawerOpen(false)}><div className="drawer-form"><FormField label="选择岗位"><Select value={form.jobId ?? ''} ariaLabel="选择岗位" onChange={(jobId) => setForm({ ...form, jobId })} options={jobs.map((job) => ({ value: job.id, label: `${job.company} · ${job.title}` }))} /></FormField><FormField label="使用简历"><Select value={form.resumeId ?? ''} ariaLabel="使用简历" onChange={(resumeId) => setForm({ ...form, resumeId })} options={resumes.map((resume) => ({ value: resume.id, label: resume.name }))} /></FormField><FormField label="当前阶段"><Select value={form.status ?? 'applied'} ariaLabel="当前阶段" onChange={(status) => setForm({ ...form, status: status as ApplicationStatus })} options={Statuses.map((status) => ({ value: status, label: ApplicationStatusLabel[status] }))} /></FormField><div className="form-two-col"><FormField label="投递日期"><input type="date" value={form.appliedAt ?? ''} onChange={(event) => setForm({ ...form, appliedAt: event.target.value })} /></FormField><FormField label="下一步日期"><input type="date" value={form.nextStepAt ?? ''} onChange={(event) => setForm({ ...form, nextStepAt: event.target.value })} /></FormField></div><FormField label="备注"><textarea rows={5} value={form.note ?? ''} onChange={(event) => setForm({ ...form, note: event.target.value })} /></FormField><div className="drawer-actions">{editing && <Button variant="danger" onClick={() => setDeleteTarget(editing)}>删除</Button>}<span /><Button onClick={() => setDrawerOpen(false)}>取消</Button><Button variant="primary" onClick={SaveApplication}>保存记录</Button></div></div></Drawer>
     <Modal open={Boolean(deleteTarget)} title="删除这条投递记录？" onClose={() => setDeleteTarget(null)}><p className="modal-copy">删除后投递记录及其进度事件将被移除，此操作不可撤销。</p><div className="modal-actions"><Button onClick={() => setDeleteTarget(null)}>取消</Button><Button variant="danger" onClick={ConfirmDeleteApplication}>确认删除</Button></div></Modal>
   </div>;
 }

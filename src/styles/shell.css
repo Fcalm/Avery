@@ -889,11 +889,11 @@ button { background: none; border: 0; }
 .profile-drawer .custom-select-option { font-size: 12.5px; }
 
 /* ================================================== 投递记录（applications board）
-   对齐原型 applications 视图：上方 dashboard（七日折线 + 进展圆环），下方阶段看板。
-   与原型唯一的布局差异：原型整页滚动，这里定高，滚动收进各阶段列内部（隐藏滚动条）。 */
-.applications-page.standard-page { display: block; height: calc(100% - var(--space-2)); max-width: 1180px; margin: 0 auto var(--space-2); padding: 0; }
-.page-container:has(.applications-page) { overflow: hidden; }
-.app-view { display: flex; height: 100%; min-height: 0; flex-direction: column; padding: 34px 34px 40px; animation: viewIn .4s var(--ease) both; }
+   对齐原型 applications 视图：上方 dashboard（七日折线 + 进展圆环），下方三阶段看板（已投递/笔试/面试）。
+   页面随内容整体滚动；列高固定为 5 张卡片 + 6 个间隔（列内 4 个间隙 + 上下内边距），
+   超过 5 张的卡片在列内用隐藏滚动条滚动。 */
+.applications-page.standard-page { display: block; max-width: 1180px; margin: 0 auto var(--space-2); padding: 0; }
+.app-view { --app-acard-h: 118px; --app-col-gap: 9px; display: flex; flex-direction: column; padding: 34px 34px 40px; animation: viewIn .4s var(--ease) both; }
 .app-view .view-h { display: flex; align-items: flex-end; gap: 16px; padding-bottom: 18px; border-bottom: 1px solid var(--border); margin-bottom: 6px; }
 .app-view .view-h h1 { margin: 0; font-size: 21px; font-weight: 640; letter-spacing: -.015em; }
 .app-view .view-h p { margin: 3px 0 0; max-width: 62ch; font-size: 13px; color: var(--text-2); }
@@ -948,37 +948,33 @@ button { background: none; border: 0; }
 .app-view .lg-n { margin-left: auto; font-family: var(--font-data); font-size: 11.5px; color: var(--text-3); }
 .app-view .lg-n b { color: var(--text); font-weight: 550; }
 
-/* 阶段看板：卡片可拖拽换列，拖经的列高亮即磁吸反馈；列内滚动条隐藏。 */
-.app-view .pipe { display: grid; flex: 1 1 auto; min-height: 0; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-top: 22px; }
-.app-view .col { display: flex; min-width: 0; min-height: 0; flex-direction: column; }
+/* 阶段看板：卡片可拖拽换列，拖经的列高亮即磁吸反馈；列内滚动条隐藏。
+   列高 = 5 × 卡片高 + 6 × 间隔；卡片各行行高显式固定并单行截断，保证 118px 高度恒定。 */
+.app-view .pipe { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-top: 22px; }
+.app-view .col { display: flex; min-width: 0; flex-direction: column; }
 .app-view .col-h { display: flex; align-items: center; gap: 8px; padding: 0 2px 10px; }
 .app-view .col-t { font-size: 13px; font-weight: 600; }
 .app-view .col-n { font-family: var(--font-data); font-size: 11px; color: var(--text-3); background: var(--surface-2); border-radius: var(--r-pill); padding: 1px 7px; }
-.app-view .col-body { display: flex; flex: 1 1 auto; min-height: 0; flex-direction: column; gap: 9px; padding: 9px; border: 1px dashed var(--border); border-radius: var(--r-card); background: var(--surface); overflow-y: auto; scrollbar-width: none; transition: border-color .18s var(--ease), background-color .18s var(--ease); }
+.app-view .col-body { display: flex; height: calc(5 * var(--app-acard-h) + 6 * var(--app-col-gap)); flex-direction: column; gap: var(--app-col-gap); padding: var(--app-col-gap); border: 1px dashed var(--border); border-radius: var(--r-card); background: var(--surface); overflow-y: auto; scrollbar-width: none; transition: border-color .18s var(--ease), background-color .18s var(--ease); }
 .app-view .col-body::-webkit-scrollbar { display: none; }
 .app-view .col-body.over { border-color: var(--accent); background: var(--accent-soft); }
-.app-view .col-empty { font-size: 11.5px; color: var(--text-3); text-align: center; padding: 24px 0; }
-.app-view .acard { border: 1px solid var(--border); border-radius: var(--r-control); background: var(--raised); padding: 11px 12px; cursor: grab; text-align: left; transition: border-color .18s var(--ease), box-shadow .2s var(--ease), transform .14s var(--ease), opacity .18s var(--ease); }
+.app-view .col-empty { margin: auto 0; font-size: 11.5px; color: var(--text-3); text-align: center; padding: 24px 0; }
+.app-view .acard { flex: none; border: 1px solid var(--border); border-radius: var(--r-control); background: var(--raised); padding: 11px 12px; cursor: grab; text-align: left; transition: border-color .18s var(--ease), box-shadow .2s var(--ease), transform .14s var(--ease), opacity .18s var(--ease); }
 .app-view .acard:hover { border-color: var(--border-2); box-shadow: var(--shadow); }
 .app-view .acard:active { cursor: grabbing; }
 .app-view .acard.dragging { opacity: .45; border-style: dashed; }
 .app-view .acard:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .app-view .ac-top { display: flex; align-items: center; gap: 6px; }
-.app-view .ac-co { font-size: 13.5px; font-weight: 600; }
+.app-view .ac-co { flex: 1 1 auto; min-width: 0; overflow: hidden; font-size: 13.5px; font-weight: 600; line-height: 18px; text-overflow: ellipsis; white-space: nowrap; }
 .app-view .ac-flag { margin-left: auto; display: inline-flex; font-size: 13px; color: var(--accent); }
-.app-view .ac-role { font-size: 12.5px; color: var(--text-2); margin-top: 3px; }
-.app-view .ac-meta { font-family: var(--font-data); font-size: 11px; color: var(--text-3); margin-top: 8px; }
-.app-view .ac-next { font-size: 11.5px; color: var(--text-2); margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border); }
+.app-view .ac-role { overflow: hidden; font-size: 12.5px; color: var(--text-2); margin-top: 3px; line-height: 18px; text-overflow: ellipsis; white-space: nowrap; }
+.app-view .ac-meta { overflow: hidden; font-family: var(--font-data); font-size: 11px; color: var(--text-3); margin-top: 8px; line-height: 14px; text-overflow: ellipsis; white-space: nowrap; }
+.app-view .ac-next { overflow: hidden; font-size: 11.5px; color: var(--text-2); margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border); line-height: 16px; text-overflow: ellipsis; white-space: nowrap; }
 .app-view .ac-next.urgent { color: var(--accent); font-weight: 500; }
 
-/* 窄屏回退：dashboard 竖排、看板两列/单列，页面恢复滚动，列内仍用隐藏滚动条自行滚动。 */
+/* 窄屏回退：dashboard 竖排、看板单列，列高保持“5 卡 + 6 间隔”不变。 */
 @media (max-width: 1080px) {
-  .page-container:has(.applications-page) { overflow: auto; }
-  .applications-page.standard-page { height: auto; min-height: 0; }
-  .app-view { height: auto; }
   .app-view .dash { grid-template-columns: 1fr; }
-  .app-view .pipe { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .app-view .col-body { max-height: 480px; }
 }
 @media (max-width: 680px) {
   .app-view { padding: 20px 18px 24px; }
