@@ -3,7 +3,7 @@ import type { CSSProperties, ImgHTMLAttributes } from 'react';
 /** 图标字重：对应 Phosphor 的 Regular / Light / Fill 三套本地字体。 */
 type IconWeight = 'regular' | 'light' | 'fill';
 
-type IconName = 'assistant' | 'jobs' | 'applications' | 'resumes' | 'profiles' | 'developer' | 'plus' | 'resume' | 'resume-panel' | 'browser' | 'panel-expand' | 'panel-shrink' | 'brand' | 'more' | 'settings' | 'developer-mode' | 'balance' | 'logout' | 'sidebar-expand' | 'sidebar-collapse' | 'chevron-down' | 'chevron-up' | 'chevron-right' | 'send' | 'edit' | 'delete' | 'archive' | 'heart' | 'map-pin' | 'arrow-right' | 'arrow-left' | 'loading' | 'error' | 'recovery' | 'refresh' | 'close' | 'stop' | 'music' | 'user-check' | 'user-x' | 'deepseek' | 'window-minimize' | 'window-restore' | 'window-maximize' | 'trace' | 'logs' | 'search' | 'moon' | 'sun' | 'check' | 'check-circle' | 'pin' | 'account' | 'workspace' | 'sliders' | 'paperclip' | 'brain' | 'gauge' | 'folder-simple' | 'shield-check' | 'pencil-simple' | 'robot' | 'lightning' | 'briefcase';
+type IconName = 'assistant' | 'jobs' | 'applications' | 'resumes' | 'profiles' | 'developer' | 'plus' | 'resume' | 'resume-panel' | 'browser' | 'panel-expand' | 'panel-shrink' | 'brand' | 'more' | 'settings' | 'developer-mode' | 'balance' | 'logout' | 'sidebar-expand' | 'sidebar-collapse' | 'chevron-down' | 'chevron-up' | 'chevron-right' | 'send' | 'edit' | 'delete' | 'archive' | 'heart' | 'map-pin' | 'arrow-right' | 'arrow-left' | 'loading' | 'error' | 'recovery' | 'refresh' | 'close' | 'stop' | 'music' | 'user-check' | 'user-x' | 'deepseek' | 'window-minimize' | 'window-restore' | 'window-maximize' | 'trace' | 'logs' | 'search' | 'moon' | 'sun' | 'check' | 'check-circle' | 'pin' | 'account' | 'workspace' | 'sliders' | 'paperclip' | 'brain' | 'gauge' | 'folder-simple' | 'shield-check' | 'pencil-simple' | 'robot' | 'lightning' | 'briefcase' | 'clock' | 'cpu' | 'list-bullets' | 'sparkle' | 'user' | 'wrench';
 
 /**
  * IconName 到 Phosphor 字形的映射。深松绿设计系统的图标统一来自
@@ -16,6 +16,8 @@ const glyphs: Record<IconName, string> = {
   'arrow-left': 'arrow-left',
   paperclip: 'paperclip', brain: 'brain', gauge: 'gauge', 'folder-simple': 'folder-simple',
   'shield-check': 'shield-check', 'pencil-simple': 'pencil-simple', robot: 'robot', lightning: 'lightning', briefcase: 'briefcase',
+  // 对话轨迹（原型一比一）：创建时间 / 模型 / 角色筛选与角色徽标
+  clock: 'clock', cpu: 'cpu', 'list-bullets': 'list-bullets', sparkle: 'sparkle', user: 'user', wrench: 'wrench',
 };
 
 /** 未收录于 Phosphor 的品牌图标继续走本地 PNG 资源。 */

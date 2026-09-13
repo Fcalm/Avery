@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { AgentObservability, AgentTraceEvent } from '../../../packages/contracts/src/index';
-import { BuildApiRequests, BuildTimeline, CreateTraceTokenUsage } from '../../../src/features/developer/components/TraceViewer';
+import { BuildTimeline, CreateTraceTokenUsage } from '../../../src/features/assistant/components/traceModel';
 
 function Event(ordinal: number, eventType: string, payload: unknown): AgentTraceEvent {
   return { ordinal, eventType, payload, tokenCount: 1, createdAt: ordinal };
@@ -31,7 +31,6 @@ describe('TraceViewer timeline', () => {
     ];
 
     const timeline = BuildTimeline('append-only', 1, events);
-    const requests = BuildApiRequests('append-only', 1, events);
 
     expect(timeline.map((event) => event.payload)).toEqual([
       { role: 'system', content: 'prompt' },
@@ -40,9 +39,6 @@ describe('TraceViewer timeline', () => {
       { role: 'tool', tool_call_id: 'call-1', content: '{"ok":true}' },
       { role: 'assistant', content: 'done' },
     ]);
-    expect(requests).toHaveLength(2);
-    expect(requests[1]).toMatchObject({ apiRequestIndex: 2, model: 'model-a', messageCount: 4, toolCount: 1 });
-    expect((requests[1].payload as { messages: unknown[] }).messages).toHaveLength(4);
   });
 
   it('append-only 消息按 messageId 保留真实的相同正文消息', () => {

@@ -99,3 +99,9 @@
 .ph-lightning::before { content: "\e2de"; }
 /* 场景（工作） */
 .ph-briefcase::before { content: "\e0ee"; }
+/* 对话轨迹（原型一比一）：搜索 / 角色筛选 / 角色图标 / 创建时间 / 模型 */
+.ph-clock::before { content: "\e19a"; }
+.ph-cpu::before { content: "\e610"; }
+.ph-list-bullets::before { content: "\e2f2"; }
+.ph-user::before { content: "\e4c2"; }
+.ph-wrench::before { content: "\e5d4"; }

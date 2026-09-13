@@ -21,7 +21,7 @@ import { Icon, type IconName } from '../../../shared/components/Icon';
 import { MarkdownText } from '../../../shared/components/MarkdownText';
 import { ASSISTANT_MAIN_MIN_WIDTH } from '../../../shared/layoutConstants';
 import { CreateSessionUsagePresentation } from '../usagePresentation';
-import { TraceViewer } from '../../developer/components/TraceViewer';
+import { ConversationTrace } from '../../assistant/components/ConversationTrace';
 import type { ChatMessage, PageId } from '../../../types/domain';
 
 // 场景文案与图标一比一取自原型；default/application 仍是后端真实场景 id，浏览器投递能力不变。
@@ -904,7 +904,7 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
   const CurrentConfirmation = ConfirmationOptions.find((item) => item.id === permission) ?? ConfirmationOptions[0];
   const CurrentScenario = ScenarioOptions.find((item) => item.id === scenarioId) ?? ScenarioOptions[0];
   return <div className={`assistant-layout ${isComposerCompact ? 'is-composer-compact' : ''}`} style={{ '--assistant-main-min-width': `${ASSISTANT_MAIN_MIN_WIDTH}px` } as CSSProperties}>
-    {assistantView === 'trace' ? <section className="assistant-main assistant-trace" aria-label="当前对话轨迹"><TraceViewer traces={observability?.traces ?? []} conversations={conversations} focusConversationId={activeConversationId} onSelectTrace={GetAgentTraceEvents} /></section> : <section className={`assistant-main ${isNewThread ? 'is-new-thread' : ''}`}>
+    {assistantView === 'trace' ? <section className="assistant-main assistant-trace" aria-label="当前对话轨迹"><ConversationTrace traces={(observability?.traces ?? []).filter((trace) => trace.sessionId === activeConversationId)} title={conversation?.title ?? '新对话'} onSelectTrace={GetAgentTraceEvents} /></section> : <section className={`assistant-main ${isNewThread ? 'is-new-thread' : ''}`}>
       {conversation?.messages.length ? <div ref={messageListRef} className="message-list"><div className="message-thread">{conversation.messages.map((message) => <article key={message.id} className={`chat-message ${message.role}`}>{message.role === 'assistant' && settings.thinkingEnabled && message.thinkingContent && <details className="thinking-block"><summary>思考内容</summary><div className="thinking-content"><MarkdownText content={message.thinkingContent} /></div></details>}<MarkdownText content={message.content} /></article>)}</div></div> : <EmptyAssistant name={settings.nickname} />}
       <div className="composer-dock">
         {shouldShowTodo && <div className="task-dock"><div className="task-summary"><span className={`task-status-icon ${GetTodoPresentation(activeTodo?.status ?? 'pending').className}`} aria-hidden="true">{GetTodoPresentation(activeTodo?.status ?? 'pending').symbol}</span><span className="task-summary-copy">{activeTodo?.title ?? '正在处理任务'}</span><span className={`task-summary-status ${GetTodoPresentation(activeTodo?.status ?? 'pending').className}`}>{GetTodoPresentation(activeTodo?.status ?? 'pending').label}</span></div><div className="task-card" aria-label="Todo 列表"><div className="task-card-heading">Todo · {agentTodos.length} 项</div><div className="task-list">{agentTodos.map((todo) => { const presentation = GetTodoPresentation(todo.status); return <div key={todo.id} className={`task-list-item ${presentation.className}`}><span className="task-status-icon" aria-hidden="true">{presentation.symbol}</span><span className="task-list-title">{todo.title}</span><span className="task-list-status">{presentation.label}</span></div>; })}</div></div></div>}
