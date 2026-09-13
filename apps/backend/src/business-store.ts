@@ -290,7 +290,9 @@ export class BusinessStore {
   /** Agent 岗位保存：只写岗位库，不创建投递记录，也不依赖简历。 */
   SaveTrackedJob(input: any): any {
     if (!input || typeof input !== 'object') throw new Error('Job tracking input is invalid.');
-    const existingJob = this.jobs.ListAll().find((item: any) => item.id === input.jobId);
+    // 按 ID 直读而不是遍历岗位列表：已到期的岗位已写墓碑，遍历会找不到它，
+    // 从而把一次跟踪写入变成“新岗位”，丢掉截止时间并重建已自动删除的岗位。
+    const existingJob = this.jobs.FindById(input.jobId);
     const savedJob = this.jobService.Upsert({
       ...(existingJob ?? {}), id: input.jobId, company: input.company, title: input.title,
       city: input.city ?? existingJob?.city ?? '', salary: input.salary ?? existingJob?.salary,
@@ -328,7 +330,8 @@ export class BusinessStore {
         jobSeekingType: input.jobSeekingType ?? input.employmentType ?? 'social_recruitment', channel: input.channel ?? 'company_website', favorite: false,
         url: input.url, jd: input.jd ?? '',
       };
-      const existingJob = this.jobs.ListAll().find((item: any) => item.id === input.jobId);
+      // 与 SaveTrackedJob 同理：投递推进必须拿到已到期岗位的存储版本与截止时间，不能被岗位库可见性过滤掉。
+      const existingJob = this.jobs.FindById(input.jobId);
       const savedJob = this.jobService.Upsert({ ...(existingJob ?? {}), ...job }, existingJob?.revision);
       const existingApplication = this.applications.ListAll().find((item: any) => item.id === input.applicationId);
       const savedApplication = this.applicationService.Upsert({

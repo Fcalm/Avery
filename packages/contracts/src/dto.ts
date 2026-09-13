@@ -61,6 +61,10 @@ export interface JobDto {
   matchScore?: number;
   url?: string;
   jd: string;
+  /** 截止时间（UTC 毫秒）；到时后由岗位库自动清理，缺省表示长期有效。 */
+  deadline?: number;
+  /** 入库时间（UTC 毫秒）；由后端 created_at 投影写入，只读。 */
+  createdAt?: number;
   revision?: number;
 }
 

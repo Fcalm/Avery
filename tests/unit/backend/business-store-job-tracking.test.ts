@@ -6,7 +6,7 @@ describe('BusinessStore 岗位跟踪', () => {
     const upsertJob = vi.fn((job) => ({ ...job, revision: 1 }));
     const upsertApplication = vi.fn();
     const store = Object.assign(Object.create(BusinessStore.prototype), {
-      jobs: { ListAll: vi.fn(() => []) },
+      jobs: { FindById: vi.fn(() => undefined) },
       jobService: { Upsert: upsertJob },
       applicationService: { Upsert: upsertApplication },
     }) as BusinessStore;
@@ -26,7 +26,7 @@ describe('BusinessStore 岗位跟踪', () => {
     const recordEvidence = vi.fn(() => ({ applicationId: 'application-42', resumeId: 'resume-1', revision: 4, contentHash: 'hash', created: true }));
     const store = Object.assign(Object.create(BusinessStore.prototype), {
       db: { transaction: (work: () => unknown) => work },
-      jobs: { ListAll: vi.fn(() => []) },
+      jobs: { FindById: vi.fn(() => undefined) },
       applications: { ListAll: vi.fn(() => []), RecordResumeEvidence: recordEvidence },
       jobService: { Upsert: vi.fn(() => ({ id: 'job-42', revision: 2 })) },
       applicationService: { Upsert: vi.fn(() => ({ id: 'application-42', revision: 3 })) },
@@ -41,5 +41,21 @@ describe('BusinessStore 岗位跟踪', () => {
     expect(result).toMatchObject({ applicationId: 'application-42', resumeEvidence: { revision: 4, contentHash: 'hash' } });
     expect(() => store.UpdateApplicationTracking({ applicationId: 'application-42', jobId: 'job-42', status: 'applied', resumeId: 'resume-1' }))
       .toThrow('bound resume evidence');
+  });
+
+  it('投递推进保留已到期岗位的原截止时间，不把自动删除的岗位重建为长期有效', () => {
+    const existingJob = { id: 'job-42', company: '示例科技', title: 'Agent 工程师', favorite: false, deadline: 1_700_000_000_000, revision: 7, createdAt: 1_600_000_000_000 };
+    const upsertJob = vi.fn((job) => ({ id: job.id, revision: job.revision + 1 }));
+    const store = Object.assign(Object.create(BusinessStore.prototype), {
+      db: { transaction: (work: () => unknown) => work },
+      jobs: { FindById: vi.fn(() => existingJob) },
+      applications: { ListAll: vi.fn(() => []), RecordResumeEvidence: vi.fn() },
+      jobService: { Upsert: upsertJob },
+      applicationService: { Upsert: vi.fn(() => ({ id: 'application-42', revision: 1 })) },
+    }) as BusinessStore;
+
+    store.UpdateApplicationTracking({ applicationId: 'application-42', jobId: 'job-42', company: '示例科技', title: 'Agent 工程师', status: 'written_test', resumeId: 'resume-1' });
+
+    expect(upsertJob).toHaveBeenCalledWith(expect.objectContaining({ deadline: 1_700_000_000_000 }), 7);
   });
 });

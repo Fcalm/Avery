@@ -51,6 +51,7 @@ export const JobUpsertSchema = z.object({
   matchScore: z.number().optional(),
   url: z.string().max(2000).optional(),
   jd: z.string().max(200000).optional(),
+  deadline: z.number().int().positive().optional(),
 }).passthrough();
 
 /** 投递 upsert：id/jobId/resumeId 为结构必需；日期字段为 YYYY-MM-DD。 */

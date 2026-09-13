@@ -28,10 +28,10 @@ export function ToDisplay(value: unknown, displayMap: Record<string, string>): u
   return typeof value === 'string' && Object.prototype.hasOwnProperty.call(displayMap, value) ? displayMap[value] : value;
 }
 
-/** 岗位写入前映射为存储形状；不修改原始对象。 */
+/** 岗位写入前映射为存储形状；不修改原始对象。createdAt 由 created_at 列投影，不重复落入 payload。 */
 export function JobToStorage(job: any): any {
   if (!job || typeof job !== 'object') return job;
-  const { employmentType: legacyEmploymentType, ...rest } = job;
+  const { employmentType: legacyEmploymentType, createdAt: _createdAt, ...rest } = job;
   const requestedType = job.jobSeekingType ?? legacyEmploymentType;
   const jobSeekingType = requestedType === 'full_time' || requestedType === '正式工' ? 'social_recruitment' : requestedType;
   return { ...rest, jobSeekingType: ToStorage(jobSeekingType, JobSeekingTypeStorage), channel: ToStorage(job.channel, ChannelStorage) };

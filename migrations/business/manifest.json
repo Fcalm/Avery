@@ -11,6 +11,7 @@
     { "version": 9, "name": "v9-boss-contact-batches", "file": "v9-boss-contact-batches.sql", "kind": "sql", "checksumSeed": "avery-boss-contact-batches-v1" },
     { "version": 10, "name": "v10-conversation-pin-archive", "file": "v10-conversation-pin-archive.sql", "kind": "sql", "checksumSeed": "avery-conversation-pin-archive-v1" },
     { "version": 11, "name": "v11-resume-three-version-history", "file": "v11-resume-three-version-history.cjs", "kind": "js", "checksumSeed": "avery-resume-three-version-history-v1" },
-    { "version": 12, "name": "v12-conversation-scene-environment", "file": "v12-conversation-scene-environment.sql", "kind": "sql", "checksumSeed": "avery-conversation-scene-environment-v1" }
+    { "version": 12, "name": "v12-conversation-scene-environment", "file": "v12-conversation-scene-environment.sql", "kind": "sql", "checksumSeed": "avery-conversation-scene-environment-v1" },
+    { "version": 13, "name": "v13-job-deadline", "file": "v13-job-deadline.sql", "kind": "sql", "checksumSeed": "avery-job-deadline-v1" }
   ]
 }
