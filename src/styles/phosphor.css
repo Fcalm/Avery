@@ -105,3 +105,5 @@
 .ph-list-bullets::before { content: "\e2f2"; }
 .ph-user::before { content: "\e4c2"; }
 .ph-wrench::before { content: "\e5d4"; }
+/* 档案抽屉（原型一比一）：复制内容 */
+.ph-copy::before { content: "\e1ca"; }

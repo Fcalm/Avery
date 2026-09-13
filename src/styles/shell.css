@@ -771,3 +771,73 @@ button { background: none; border: 0; }
 .btn-accent:hover { background: var(--accent-hover); }
 .btn-accent:active { transform: scale(.98); }
 .btn-accent:disabled { background: var(--surface-2); color: var(--text-3); cursor: default; transform: none; }
+
+/* ============================== 档案界面（原型静态视图一比一） ============================== */
+.profile-view { max-width: 960px; margin: 0 auto; padding: 34px 34px 40px; animation: viewIn .4s var(--ease) both; }
+.profile-view .view-h { display: flex; align-items: flex-end; gap: 16px; padding-bottom: 18px; border-bottom: 1px solid var(--border); margin-bottom: 6px; }
+.profile-view .view-h h1 { margin: 0; font-size: 21px; font-weight: 640; letter-spacing: -.015em; }
+.profile-view .view-h p { margin: 3px 0 0; font-size: 13px; color: var(--text-2); max-width: 62ch; }
+.profile-view .vh-act { margin-left: auto; display: flex; gap: 8px; }
+.profile-view .vgroup-h { font-size: 11px; font-weight: 600; letter-spacing: .07em; text-transform: uppercase; color: var(--text-3); padding: 20px 12px 4px; }
+.profile-view .vrow {
+  display: flex; width: 100%; align-items: center; gap: 14px; cursor: pointer;
+  padding: 13px 12px; border: 0; border-radius: var(--r-control);
+  background: transparent; text-align: left; transition: background-color .18s var(--ease);
+}
+.profile-view .vrow:hover { background: var(--surface-2); }
+.profile-view .vrow + .vrow { border-top: 1px solid var(--border); }
+.profile-view .vrow-main { min-width: 0; flex: 1; }
+.profile-view .vrow-t { display: block; font-size: 13.5px; font-weight: 600; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.profile-view .vrow-d { display: block; font-size: 12.5px; color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.profile-view .tag {
+  flex: none; font-family: var(--font-data); font-size: 11px; padding: 2px 8px;
+  border-radius: var(--r-pill); background: var(--surface-2); color: var(--text-2); white-space: nowrap;
+}
+.profile-view .tag.accent { background: var(--accent-soft); color: var(--accent); }
+.profile-view .vrow-go { flex: none; color: var(--text-3); transition: transform .2s var(--ease), color .2s var(--ease); }
+.profile-view .vrow:hover .vrow-go { color: var(--accent); transform: translateX(2px); }
+.profile-view-empty { padding: 48px 12px; color: var(--text-3); font-size: 12.5px; line-height: 1.7; text-align: center; }
+
+/* 档案条目只读视图：小节标题 + 字段键值对（侧栏与抽屉共用） */
+.profile-entry .sec { margin-top: 22px; }
+.profile-entry .sec:first-child { margin-top: 0; }
+.profile-entry .sec-h { font-size: 11px; font-weight: 600; letter-spacing: .07em; text-transform: uppercase; color: var(--text-3); padding-bottom: 7px; border-bottom: 1px solid var(--border); }
+.profile-entry .kv { display: grid; gap: 10px; padding-top: 13px; }
+.profile-entry .kv-r { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 12.5px; color: var(--text-2); }
+.profile-entry .kv-r b { font-weight: 550; color: var(--text); text-align: right; overflow-wrap: anywhere; }
+.profile-entry .kv-none { font-style: normal; font-weight: 400; color: var(--text-3); }
+
+.profile-entry .sec-h { font-size: 11px; font-weight: 600; letter-spacing: .07em; text-transform: uppercase; color: var(--text-3); padding-bottom: 7px; border-bottom: 1px solid var(--border); }
+.profile-entry .kv { display: grid; gap: 10px; padding-top: 13px; }
+.profile-entry .kv-r { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 12.5px; color: var(--text-2); }
+.profile-entry .kv-r b { font-weight: 550; color: var(--text); text-align: right; overflow-wrap: anywhere; }
+.profile-entry .kv-none { font-style: normal; font-weight: 400; color: var(--text-3); }
+.profile-entry-none { margin: 0; color: var(--text-3); font-size: 12.5px; line-height: 1.7; }
+
+/* ============================== 档案详情抽屉（原型 .drawer 一比一） ============================== */
+/* 遮罩盖住整个应用窗口（含顶栏），挂载即播放淡入；模糊叠加满足“背景虚化”。 */
+.profile-scrim {
+  position: fixed; inset: 0; z-index: 60;
+  background: rgba(24, 24, 27, .36); backdrop-filter: blur(2px);
+  animation: profileScrimIn .3s var(--ease) both;
+}
+[data-theme="dark"] .profile-scrim { background: rgba(0, 0, 0, .56); }
+@keyframes profileScrimIn { from { opacity: 0; } to { opacity: 1; } }
+.profile-drawer {
+  position: fixed; top: 0; right: 0; bottom: 0; z-index: 61;
+  display: flex; flex-direction: column; width: min(500px, 92vw);
+  background: var(--panel); border-left: 1px solid var(--border); box-shadow: var(--shadow-lg);
+  animation: profileDrawerIn .38s var(--ease) both; outline: none;
+}
+@keyframes profileDrawerIn { from { transform: translateX(102%); } to { transform: none; } }
+.dw-head { flex: none; display: flex; align-items: flex-start; gap: 12px; padding: 15px 16px 14px 18px; border-bottom: 1px solid var(--border); }
+.dw-head-main { min-width: 0; }
+.dw-title { font-size: 15px; font-weight: 640; letter-spacing: -.01em; }
+.dw-meta { display: flex; flex-wrap: wrap; gap: 3px 12px; margin-top: 4px; font-size: 12px; color: var(--text-3); }
+.dw-head .icon-btn { margin-left: auto; }
+.dw-body { flex: 1; min-height: 0; overflow-y: auto; padding: 18px; }
+.dw-body::-webkit-scrollbar { width: 10px; }
+.dw-body::-webkit-scrollbar-thumb { background: transparent; border-radius: 99px; border: 3px solid transparent; background-clip: content-box; }
+.dw-body:hover::-webkit-scrollbar-thumb { background: var(--border-2); background-clip: content-box; }
+.dw-foot { flex: none; display: flex; align-items: center; gap: 8px; padding: 12px 18px; border-top: 1px solid var(--border); background: var(--surface); }
+.dw-foot-spacer { flex: 1; }

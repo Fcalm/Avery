@@ -1,10 +1,13 @@
-import { type ChangeEvent, useMemo, useState } from 'react';
+import { type ChangeEvent, useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useUiStore } from '../../../app/UiStore';
 import { useProfiles, useSaveProfiles } from '../../../features/profile/api/profileQueries';
+import { ProfileEntryView, GetProfileCopyText } from '../components/ProfileEntryView';
+import { CompareProfileCategory, GetProfileSummary } from '../profileView';
 import { CreateEntityId } from '../../workspace/api/workspaceData';
-import { Button, Drawer, EmptyState, FormField, Modal, Select } from '../../../shared/components/UI';
+import { Button, FormField, Modal, Select } from '../../../shared/components/UI';
 import { Icon } from '../../../shared/components/Icon';
-import { FormatTime, GetExcerpt, ProfileCategoryLabel } from '../../../shared/utils/format';
+import { FormatTime, ProfileCategoryLabel } from '../../../shared/utils/format';
 import type { ProfileCategory, ProfileItem } from '../../../types/domain';
 import {
   ChangeProfileDraftCategory,
@@ -18,8 +21,9 @@ import {
 } from '../profileDraft';
 
 const Categories: ProfileCategory[] = ['application', 'education', 'work', 'job_intention', 'project', 'skill_certificate', 'other'];
-type ProfileFilterCategory = ProfileCategory | 'all';
-const FilterCategories: ProfileFilterCategory[] = ['all', ...Categories];
+
+/** 抽屉的两种形态：阅读态只渲染内容，编辑态才出现输入框（对应原型 dw-foot 的按钮切换）。 */
+type ProfileDrawer = { mode: 'view'; item: ProfileItem } | { mode: 'edit'; item: ProfileItem | null };
 
 function ProfileTemplateForm({
   category,
@@ -56,24 +60,54 @@ function ProfileTemplateForm({
   </section>;
 }
 
+/** 标签显示短日期；最近更新的一条用主色标签，对应原型里个别 tag 的 accent 形态。 */
+function FormatDay(value?: number): string {
+  return typeof value === 'number' ? new Date(value).toLocaleDateString('zh-CN') : '未更新';
+}
+
 function ProfilesPage() {
   const { ShowNotice, setProfileConflict } = useUiStore();
   const profiles = useProfiles();
   const saveProfiles = useSaveProfiles({ onConflict: () => setProfileConflict(true), onFailure: () => ShowNotice('档案保存失败，请稍后重试。') });
-  const [category, setCategory] = useState<ProfileFilterCategory>('all');
-  const [query, setQuery] = useState('');
-  const [drawerOpen, setDrawerOpen] = useState(false);
-  const [editing, setEditing] = useState<ProfileItem | null>(null);
-  const [draft, setDraft] = useState<Partial<ProfileItem>>({ category: 'project', title: '', content: '' });
-  const [deleteTarget, setDeleteTarget] = useState<ProfileItem | null>(null);
-  const items = useMemo(() => profiles.filter((item) => (category === 'all' || item.category === category) && `${item.title}${item.content}`.toLowerCase().includes(query.toLowerCase())), [profiles, category, query]);
+  const [drawer, SetDrawer] = useState<ProfileDrawer | null>(null);
+  const [draft, SetDraft] = useState<Partial<ProfileItem>>({ category: 'project', title: '', content: '' });
+  const [deleteTarget, SetDeleteTarget] = useState<ProfileItem | null>(null);
+  const drawerRef = useRef<HTMLElement>(null);
+  const editingItem = drawer?.mode === 'edit' ? drawer.item : null;
+
+  // 抽屉打开期间 Escape 关闭、初始焦点落在关闭按钮（原型 showDrawer 聚焦 dwClose）。
+  useEffect(() => {
+    if (!drawer) return undefined;
+    const CloseOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') { event.preventDefault(); SetDrawer(null); }
+    };
+    document.addEventListener('keydown', CloseOnEscape);
+    drawerRef.current?.focus();
+    return () => document.removeEventListener('keydown', CloseOnEscape);
+  }, [drawer]);
+
+  // 原型档案视图：按固定分类顺序分组，组内按标题排序，保证列表稳定。
+  const groups = useMemo(() => {
+    const result: Array<{ category: ProfileCategory; items: ProfileItem[] }> = [];
+    for (const item of [...profiles].sort((left, right) => CompareProfileCategory(left.category, right.category) || left.title.localeCompare(right.title, 'zh-Hans-CN'))) {
+      const group = result.at(-1);
+      if (group && group.category === item.category) group.items.push(item);
+      else result.push({ category: item.category, items: [item] });
+    }
+    return result;
+  }, [profiles]);
+  const newestId = useMemo(() => profiles.reduce<ProfileItem | null>((newest, item) => (!newest || (item.updatedAt ?? 0) > (newest.updatedAt ?? 0) ? item : newest), null)?.id ?? null, [profiles]);
+
   function OpenNew() {
-    const nextCategory = category === 'all' ? 'project' : category;
-    setEditing(null);
-    setDraft(CreateProfileDraft(nextCategory));
-    setDrawerOpen(true);
+    SetDraft(CreateProfileDraft('project'));
+    SetDrawer({ mode: 'edit', item: null });
   }
-  function OpenEdit(item: ProfileItem) { setEditing(item); setDraft(item); setDrawerOpen(true); }
+  function OpenDetail(item: ProfileItem) { SetDrawer({ mode: 'view', item }); }
+  function StartEditing() {
+    if (drawer?.mode !== 'view') return;
+    SetDraft(drawer.item);
+    SetDrawer({ mode: 'edit', item: drawer.item });
+  }
   function SaveProfile() {
     if (!draft.title?.trim() || !draft.content?.trim() || !draft.category) { ShowNotice('请填写资料标题和正文'); return; }
     const requiredField = ProfileTemplateSections[draft.category]
@@ -88,40 +122,85 @@ function ProfilesPage() {
       });
     if (invalidDateField) { ShowNotice(`${invalidDateField.field.label}请使用 ${DatePlaceholder} 格式`); return; }
     const title = draft.title; const content = draft.content; const profileCategory = draft.category;
-    const next = editing ? profiles.map((item) => (item.id === editing.id ? { ...editing, ...draft, updatedAt: Date.now() } : item)) : [{ id: CreateEntityId('profile'), category: profileCategory, title, content, updatedAt: Date.now() }, ...profiles];
+    const next = editingItem ? profiles.map((item) => (item.id === editingItem.id ? { ...editingItem, ...draft, updatedAt: Date.now() } : item)) : [{ id: CreateEntityId('profile'), category: profileCategory, title, content, updatedAt: Date.now() }, ...profiles];
     saveProfiles.mutate({ items: next });
-    setDrawerOpen(false); ShowNotice(editing ? '资料已保存' : '已新增资料');
+    SetDrawer(null); ShowNotice(editingItem ? '资料已保存' : '已新增资料');
   }
   function ConfirmDeleteProfile() {
     if (!deleteTarget) return;
     const next = profiles.filter((item) => item.id !== deleteTarget.id);
     saveProfiles.mutate({ items: next });
-    setDeleteTarget(null); setDrawerOpen(false); ShowNotice('资料已删除');
+    SetDeleteTarget(null); SetDrawer(null); ShowNotice('资料已删除');
   }
-  return <div className="standard-page profiles-page">
-    <section className="profiles-reference-overview">
-      <header className="profiles-reference-heading"><div><h1>档案库</h1><p>把项目、工作、教育和技能资料沉淀为可直接引用的内容。</p></div><div className="profiles-reference-stats" aria-label="档案数据概览"><span><b>{profiles.length}</b><small>全部资料</small></span><span><b>{items.length}</b><small>当前显示</small></span></div><Button variant="primary" onClick={OpenNew}><Icon name="plus" size={16} />新建资料</Button></header>
-    </section>
-    <section className="profiles-filter-toolbar" aria-label="档案筛选">
-      <div className="tabs">{FilterCategories.map((item) => <button key={item} className={category === item ? 'selected' : ''} aria-pressed={category === item} onClick={() => setCategory(item)}>{item === 'all' ? '全部' : ProfileCategoryLabel[item]}</button>)}</div>
-      <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索资料" aria-label="搜索资料" />
-    </section>
-    <section className="paper-block profiles-list-card">
-      <header><div><h2>档案资料</h2><p>当前分类：{category === 'all' ? '全部' : ProfileCategoryLabel[category]} · {items.length} 条</p></div></header>
-      {items.length === 0 ? <EmptyState icon={<Icon name="profiles" size={24} />} title="该分类还没有资料" description="新增一张资料卡，后续可以在简历中复用。" action={<Button onClick={OpenNew}>新建资料</Button>} /> : <section className="profile-grid">{items.map((item) => <article className="profile-card" key={item.id} onClick={() => OpenEdit(item)}><div className="profile-card-top"><p className="card-kicker">{ProfileCategoryLabel[item.category]}</p><Icon name="profiles" size={18} /></div><h2>{item.title}</h2><pre>{GetExcerpt(item.content)}</pre><footer>更新于 {FormatTime(item.updatedAt)}<span>查看资料</span></footer></article>)}</section>}
-    </section>
-    <Drawer open={drawerOpen} title={editing ? '编辑资料' : '新建资料'} onClose={() => setDrawerOpen(false)}><div className="drawer-form">
-      <div className="profile-draft-basics">
-        <FormField label="分类"><Select value={draft.category ?? 'project'} ariaLabel="资料分类" onChange={(value) => {
-          const nextCategory = value as ProfileCategory;
-          setDraft(ChangeProfileDraftCategory(draft, nextCategory));
-        }} options={Categories.map((item) => ({ value: item, label: ProfileCategoryLabel[item] }))} /></FormField>
-        <FormField label="标题"><input value={draft.title ?? ''} onChange={(event) => setDraft({ ...draft, title: event.target.value })} /></FormField>
-      </div>
-      {draft.category && <ProfileTemplateForm key={draft.category} category={draft.category} content={draft.content ?? ProfileTemplateForCategory(draft.category)} onFieldChange={(sectionTitle, field, value) => setDraft((current) => ({ ...current, content: UpdateProfileField(current.content ?? ProfileTemplateForCategory(draft.category!), sectionTitle, field, value) }))} />}
-      <div className="drawer-actions">{editing && <Button variant="danger" onClick={() => setDeleteTarget(editing)}>删除</Button>}<span /><Button onClick={() => setDrawerOpen(false)}>取消</Button><Button variant="primary" onClick={SaveProfile}>保存资料</Button></div>
-    </div></Drawer>
-    <Modal open={Boolean(deleteTarget)} title="删除这条资料？" onClose={() => setDeleteTarget(null)}><p className="modal-copy">该操作不可撤销。</p><div className="modal-actions"><Button onClick={() => setDeleteTarget(null)}>取消</Button><Button variant="danger" onClick={ConfirmDeleteProfile}>确认删除</Button></div></Modal>
+  function CopyEntry() {
+    if (drawer?.mode !== 'view') return;
+    // 剪贴板可能被系统策略拒绝；复制失败不打断阅读，只跳过确认提示。
+    void navigator.clipboard?.writeText(GetProfileCopyText(drawer.item)).then(() => ShowNotice(`已复制「${drawer.item.title}」的内容`)).catch(() => undefined);
+  }
+
+  const drawerTitle = drawer
+    ? drawer.mode === 'view'
+      ? drawer.item.title
+      : draft.title?.trim() || (drawer.item ? drawer.item.title : '新建条目')
+    : '';
+  const drawerCategory = drawer ? (drawer.mode === 'view' ? drawer.item.category : draft.category ?? 'project') : 'project';
+  return <div className="profile-view">
+    <div className="view-h">
+      <div><h1>档案</h1><p>你的资料底稿，Avery 写简历、填申请表时都从这里取。点开任意一条可以看到完整内容。</p></div>
+      <div className="vh-act"><button className="ghost-btn" type="button" onClick={OpenNew}><Icon name="plus" size={14} />添加条目</button></div>
+    </div>
+    {groups.map((group) => <div key={group.category}>
+      <div className="vgroup-h">{ProfileCategoryLabel[group.category]}</div>
+      {group.items.map((item) => <button className="vrow clickable" type="button" key={item.id} onClick={() => OpenDetail(item)}>
+        <span className="vrow-main"><span className="vrow-t">{item.title}</span><span className="vrow-d">{GetProfileSummary(item.content)}</span></span>
+        <span className={`tag ${item.id === newestId ? 'accent' : ''}`}>{FormatDay(item.updatedAt)}</span>
+        <Icon name="chevron-right" className="vrow-go" size={13} />
+      </button>)}
+    </div>)}
+    {!profiles.length && <div className="profile-view-empty">还没有档案条目。点右上角「添加条目」，把项目、工作、教育和技能资料沉淀下来。</div>}
+
+    {/* 抽屉经 portal 挂到 body：玻璃背景等祖先带动画/滤镜时 fixed 会退化为相对祖先定位，
+        只有脱离该子树才能像原型一样让遮罩与虚化盖住整个应用窗口。 */}
+    {drawer && createPortal(<div className="profile-drawer-layer" role="presentation">
+      <div className="profile-scrim" onClick={() => SetDrawer(null)} />
+      <aside className="profile-drawer" role="dialog" aria-modal="true" aria-labelledby="profile-drawer-title" tabIndex={-1} ref={drawerRef}>
+        <div className="dw-head">
+          <div className="dw-head-main">
+            <div className="dw-title" id="profile-drawer-title">{drawerTitle}</div>
+            <div className="dw-meta">
+              <span>{ProfileCategoryLabel[drawerCategory]}</span>
+              {drawer.mode === 'view'
+                ? <span>更新于 {FormatTime(drawer.item.updatedAt) || '未知时间'}</span>
+                : <span>{editingItem ? '修改后尚未保存' : '尚未保存'}</span>}
+            </div>
+          </div>
+          <button className="icon-btn" type="button" aria-label="关闭详情" title="关闭详情" autoFocus onClick={() => SetDrawer(null)}><Icon name="close" size={16} /></button>
+        </div>
+        <div className="dw-body">
+          {drawer.mode === 'view' ? <ProfileEntryView item={drawer.item} /> : <div className="drawer-form">
+            <div className="profile-draft-basics">
+              <FormField label="分类"><Select value={draft.category ?? 'project'} ariaLabel="资料分类" onChange={(value) => {
+                const nextCategory = value as ProfileCategory;
+                SetDraft(ChangeProfileDraftCategory(draft, nextCategory));
+              }} options={Categories.map((item) => ({ value: item, label: ProfileCategoryLabel[item] }))} /></FormField>
+              <FormField label="标题"><input value={draft.title ?? ''} onChange={(event) => SetDraft({ ...draft, title: event.target.value })} /></FormField>
+            </div>
+            {draft.category && <ProfileTemplateForm key={draft.category} category={draft.category} content={draft.content ?? ProfileTemplateForCategory(draft.category)} onFieldChange={(sectionTitle, field, value) => SetDraft((current) => ({ ...current, content: UpdateProfileField(current.content ?? ProfileTemplateForCategory(draft.category!), sectionTitle, field, value) }))} />}
+          </div>}
+        </div>
+        <div className="dw-foot">
+          {drawer.mode === 'view' ? <>
+            <button className="ghost-btn" type="button" onClick={CopyEntry}><Icon name="copy" size={14} />复制内容</button>
+            <button className="btn-accent" type="button" onClick={StartEditing}><Icon name="pencil-simple" size={14} />编辑</button>
+          </> : <>
+            {editingItem && <button className="ghost-btn is-danger" type="button" onClick={() => SetDeleteTarget(editingItem)}><Icon name="delete" size={14} />删除</button>}
+            <button className="ghost-btn" type="button" onClick={() => SetDrawer(null)}>取消</button>
+            <button className="btn-accent" type="button" onClick={SaveProfile}><Icon name="check-circle" size={14} />保存资料</button>
+          </>}
+        </div>
+      </aside>
+    </div>, document.body)}
+    <Modal open={Boolean(deleteTarget)} title="删除这条资料？" onClose={() => SetDeleteTarget(null)}><p className="modal-copy">该操作不可撤销。</p><div className="modal-actions"><Button onClick={() => SetDeleteTarget(null)}>取消</Button><Button variant="danger" onClick={ConfirmDeleteProfile}>确认删除</Button></div></Modal>
   </div>;
 }
 
