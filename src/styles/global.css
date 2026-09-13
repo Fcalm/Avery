@@ -267,8 +267,8 @@ input:focus, textarea:focus, select:focus { background: var(--titlebar-control);
 .message-list { display: flex; justify-content: center; padding: var(--space-4) var(--space-7); }
 .message-thread { width: min(680px, 100%); }
 .chat-message { max-width: 100%; margin-bottom: var(--space-5); }
-/* 用户气泡宽度跟随内容收缩，长文仍受消息列宽度约束；靠右对齐不变。 */
-.chat-message.user { width: fit-content; max-width: 100%; }
+/* 用户气泡宽度跟随内容收缩，长文上限为消息列宽的 90%，右侧留出呼吸空间；靠右对齐不变。 */
+.chat-message.user { width: fit-content; max-width: 90%; }
 /* 用户气泡对齐原型 .msg-bubble：次级底色 + 1px 描边 + 统一 r-card 圆角 */
 .chat-message.user > .markdown-text { border: 1px solid var(--border); border-radius: var(--r-card); padding: 10px 14px; background: var(--surface-2); }
 .markdown-text { color: var(--ink); font-size: var(--text-body); line-height: 28px; }
