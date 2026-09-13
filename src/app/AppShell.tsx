@@ -48,7 +48,7 @@ function AppShell({ page, onNavigate, onRestartOnboarding, settingsTab, onReques
   const pinConversation = useSetConversationPinned({ onConflict: () => ShowNotice('会话已在其他窗口被修改，已刷新为最新版本'), onFailure: () => ShowNotice('会话置顶失败，请稍后重试。') });
   const archiveConversation = useSetConversationArchived({ onConflict: () => ShowNotice('会话已在其他窗口被修改，已刷新为最新版本'), onFailure: () => ShowNotice('会话归档失败，请稍后重试。') });
   const { settings, setSettings, saveSettingsNow } = useSettingsStore();
-  const { activeConversationId, setActiveConversationId, resumePanelOpen, setResumePanelOpen, rightPanelWidth, rightPanelExpanded, setRightPanelExpanded, assistantView, setAssistantView, ShowNotice } = useUiStore();
+  const { activeConversationId, setActiveConversationId, resumePanelOpen, setResumePanelOpen, assistantView, setAssistantView, ShowNotice } = useUiStore();
   const activeConversation = conversations.find((item) => item.id === activeConversationId);
 
   const [collapsed, SetCollapsed] = useState(false);
@@ -216,16 +216,9 @@ function AppShell({ page, onNavigate, onRestartOnboarding, settingsTab, onReques
   }
 
   function HandleResumePanel() {
-    if (resumePanelOpen && page === 'assistant') { setResumePanelOpen(false); setRightPanelExpanded(false); return; }
+    if (resumePanelOpen && page === 'assistant') { setResumePanelOpen(false); return; }
     setResumePanelOpen(true);
     if (page !== 'assistant') onNavigate('assistant');
-  }
-  function HandlePanelExpansion() {
-    if (!resumePanelOpen) {
-      setResumePanelOpen(true);
-      if (page !== 'assistant') onNavigate('assistant');
-    }
-    setRightPanelExpanded(!rightPanelExpanded);
   }
 
   function BeginRenameConversation(id: string, title: string) {
@@ -307,8 +300,7 @@ function AppShell({ page, onNavigate, onRestartOnboarding, settingsTab, onReques
     });
   }
 
-  const rightPanelWidthToken = rightPanelExpanded ? 'min(720px, calc(100vw - var(--sidebar-width) - var(--space-7)))' : `${rightPanelWidth}px`;
-  return <div ref={appShellRef} className={`app-shell ${collapsed ? 'is-collapsed' : ''} ${page === 'assistant' && resumePanelOpen ? 'has-right-panel' : ''} ${page === 'assistant' && resumePanelOpen && rightPanelExpanded ? 'is-right-panel-expanded' : ''}`} style={{ '--main-content-min-width': `${minimumContentWidth}px`, '--right-panel-width': rightPanelWidthToken } as CSSProperties}>
+  return <div ref={appShellRef} className={`app-shell ${collapsed ? 'is-collapsed' : ''}`} style={{ '--main-content-min-width': `${minimumContentWidth}px` } as CSSProperties}>
     <header className="topbar">
       <div className="tb-group">
         <button className="icon-btn" type="button" aria-label={collapsed ? '展开侧栏' : '收起侧栏'} aria-pressed={!collapsed} title={collapsed ? '展开侧栏' : '收起侧栏'} onClick={() => SetCollapsed((value) => !value)}><Icon name="sidebar-expand" size={17} /></button>
@@ -350,8 +342,8 @@ function AppShell({ page, onNavigate, onRestartOnboarding, settingsTab, onReques
       {page === 'assistant' && <div className="tb-actions">
         {/* 按钮声明去向：轨迹视图下显示"对话"引导返回，图标随目标切换 */}
         <button className="tb-txt-btn" type="button" aria-pressed={assistantView === 'trace'} title={assistantView === 'trace' ? '切换至对话' : '切换至对话轨迹'} onClick={HandleToggleTrace}><Icon name={assistantView === 'trace' ? 'assistant' : 'trace'} size={14} /><span>{assistantView === 'trace' ? '对话' : '对话轨迹'}</span></button>
-        <button className="icon-btn" type="button" aria-pressed={rightPanelExpanded} aria-label={rightPanelExpanded ? '缩小右侧面板' : '展开右侧面板'} title={rightPanelExpanded ? '缩小右侧面板' : '展开右侧面板'} onClick={HandlePanelExpansion}><Icon name={rightPanelExpanded ? 'panel-shrink' : 'panel-expand'} size={17} /></button>
-        <button className="icon-btn flip" type="button" aria-expanded={resumePanelOpen} aria-label={resumePanelOpen ? '隐藏右侧边栏' : '打开右侧边栏'} title={resumePanelOpen ? '隐藏右侧边栏' : '打开右侧边栏'} onClick={HandleResumePanel}><Icon name="sidebar-expand" size={17} /></button>
+        {/* 原型 rsToggle：字形镜像指向右侧面板，展开时用填充字重 */}
+        <button className="icon-btn flip" type="button" aria-expanded={resumePanelOpen} aria-label={resumePanelOpen ? '收起右侧边栏' : '展开右侧边栏'} title={resumePanelOpen ? '收起右侧边栏' : '展开右侧边栏'} onClick={HandleResumePanel}><Icon name="sidebar-expand" size={17} weight={resumePanelOpen ? 'fill' : 'regular'} /></button>
       </div>}
       {page === 'assistant' && <span className="tb-div" aria-hidden="true" />}
 

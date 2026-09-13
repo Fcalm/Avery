@@ -21,10 +21,6 @@ interface UiStoreValue {
   setCurrentResumeId: (id: string | null) => void;
   resumePanelOpen: boolean;
   setResumePanelOpen: (open: boolean) => void;
-  rightPanelWidth: number;
-  setRightPanelWidth: (width: number) => void;
-  rightPanelExpanded: boolean;
-  setRightPanelExpanded: (expanded: boolean) => void;
   assistantView: 'chat' | 'trace';
   setAssistantView: (view: 'chat' | 'trace') => void;
   developerView: 'logs' | 'evaluation';
@@ -42,8 +38,6 @@ function UiStoreProvider({ children }: { children: ReactNode }) {
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
   const [currentResumeId, setCurrentResumeId] = useState<string | null>(null);
   const [resumePanelOpen, setResumePanelOpen] = useState(false);
-  const [rightPanelWidth, setRightPanelWidth] = useState(430);
-  const [rightPanelExpanded, setRightPanelExpanded] = useState(false);
   const [assistantView, setAssistantView] = useState<'chat' | 'trace'>('chat');
   const [developerView, setDeveloperView] = useState<'logs' | 'evaluation'>('logs');
   const [notice, setNotice] = useState<Notice | null>(null);
@@ -72,12 +66,10 @@ function UiStoreProvider({ children }: { children: ReactNode }) {
     activeConversationId, setActiveConversationId,
     currentResumeId, setCurrentResumeId,
     resumePanelOpen, setResumePanelOpen,
-    rightPanelWidth, setRightPanelWidth,
-    rightPanelExpanded, setRightPanelExpanded,
     assistantView, setAssistantView,
     developerView, setDeveloperView,
     notice, ShowNotice, HideNotice, profileConflict, setProfileConflict,
-  }), [activeConversationId, currentResumeId, resumePanelOpen, rightPanelWidth, rightPanelExpanded, assistantView, developerView, notice, profileConflict, ShowNotice, HideNotice]);
+  }), [activeConversationId, currentResumeId, resumePanelOpen, assistantView, developerView, notice, profileConflict, ShowNotice, HideNotice]);
 
   return <UiStoreContext.Provider value={value}>{children}</UiStoreContext.Provider>;
 }

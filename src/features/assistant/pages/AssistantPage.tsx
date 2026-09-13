@@ -2,7 +2,6 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type Chang
 import { useQueryClient } from '@tanstack/react-query';
 import { useLayoutEffect } from 'react';
 import type { AgentObservability, AgentStreamEvent, BrowserActionState, ConfirmationMode, ReasoningEffort } from '@avery/contracts';
-import { CreateResumeDocumentMarkup } from '@avery/contracts';
 import { useUiStore } from '../../../app/UiStore';
 import { WORKSPACE_QUERY_KEY } from '../../../features/workspace/api/workspaceData';
 import {
@@ -10,8 +9,8 @@ import {
   useCreateConversation, usePatchConversations, useRemoveConversationMessage,
 } from '../../../features/conversation/api/conversationQueries';
 import { useResumes, useUpsertResume } from '../../../features/resume/api/resumeQueries';
-import { useProfiles } from '../../../features/profile/api/profileQueries';
 import { useSettings } from '../../../features/settings/api/settingsQueries';
+import { DocSidePanel } from '../components/DocSidePanel';
 import {
   AcquireResumeEditLock, BindProjectEnvironment, CancelAgentRequest, ConfirmBrowserAction, ConfirmCronTask, ConfirmResumeEdit, GetAgentObservability, GetAgentTraceEvents, GetProviderCatalog, GetSessionAssistantState, ImportAttachmentFile,
   ReleaseResumeEditLock, ReloadAgentSession, SelectAgentProjectDirectory, SendAgentRequest, SubscribeAgentStream, UpdateAgentConfirmationMode, UpdateAgentReasoningEffort,
@@ -55,15 +54,6 @@ function FormatTokenCount(value: number) {
   return value >= 1000 ? `${(value / 1000).toFixed(value >= 100000 ? 0 : 1)}k` : String(Math.round(value));
 }
 
-function TruncateResumeTitle(title: string) {
-  const characters = Array.from(title.trim() || '未命名简历');
-  return characters.slice(0, 8).join('');
-}
-
-/** 侧栏预览始终复用导出模板：历史内容会安全降级为段落和列表。 */
-function ResumePreview({ name, content }: { name: string; content: string }) {
-  return <div className="resume-html-preview" dangerouslySetInnerHTML={{ __html: CreateResumeDocumentMarkup({ name, summary: '', content }) }} />;
-}
 type SessionUsageView = {
   percent: number; threshold: number; compressionCount: number; tokens: number; limit: number;
   source: 'actual' | 'unavailable' | 'legacy_estimate' | 'loading'; promptTokens: number; completionTokens: number; totalTokens: number; cachedInputTokens: number; reportedRequestCount: number; unreportedRequestCount: number;
@@ -159,10 +149,9 @@ function WriteConversationComposerStates(states: Record<string, StoredConversati
 }
 
 function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
-  const { activeConversationId, setActiveConversationId, currentResumeId, setCurrentResumeId, resumePanelOpen, setResumePanelOpen, setRightPanelWidth, assistantView, ShowNotice } = useUiStore();
+  const { activeConversationId, setActiveConversationId, currentResumeId, setCurrentResumeId, resumePanelOpen, assistantView, ShowNotice } = useUiStore();
   const conversations = useConversations();
   const resumes = useResumes();
-  const profiles = useProfiles();
   const settings = useSettings();
   const createConversation = useCreateConversation({ onFailure: () => ShowNotice('会话创建失败，请稍后重试。') });
   const appendMessages = useAppendConversationMessages({ onFailure: () => ShowNotice('消息保存失败，请稍后重试。') });
@@ -190,7 +179,6 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
   const [panelWidth, setPanelWidth] = useState(430);
   const [isComposerCompact, setIsComposerCompact] = useState(false);
   const [editing, setEditing] = useState(false);
-  const [showResumeMenu, setShowResumeMenu] = useState(false);
   const [resumeText, setResumeText] = useState(resumes.find((item) => item.id === currentResumeId)?.content ?? '');
   const [savedText, setSavedText] = useState(resumeText);
   const [history, setHistory] = useState<string[]>([]);
@@ -356,11 +344,10 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
   }, [composer]);
 
   useEffect(() => {
-    if (!showPermission && !showScenario && !showModel && !showReasoningEffort && !showResumeMenu) return undefined;
+    if (!showPermission && !showScenario && !showModel && !showReasoningEffort) return undefined;
     const CloseAssistantMenusOnOutsidePointer = (event: PointerEvent) => {
       const target = event.target;
       const composerMenu = target instanceof Element ? target.closest('.menu-wrap') : null;
-      const resumeSwitcher = resumeSideRef.current?.querySelector('.resume-switcher');
       if (composerMenu?.querySelector('.permission-button')) {
         setShowScenario(false);
         setShowModel(false);
@@ -383,7 +370,6 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
         setShowModel(false);
         setShowReasoningEffort(false);
       }
-      if (!resumeSwitcher?.contains(target as Node)) setShowResumeMenu(false);
     };
     const CloseAssistantMenusOnEscape = (event: globalThis.KeyboardEvent) => {
       if (event.key !== 'Escape') return;
@@ -391,7 +377,6 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
       setShowScenario(false);
       setShowModel(false);
       setShowReasoningEffort(false);
-      setShowResumeMenu(false);
     };
     document.addEventListener('pointerdown', CloseAssistantMenusOnOutsidePointer);
     document.addEventListener('keydown', CloseAssistantMenusOnEscape);
@@ -399,7 +384,7 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
       document.removeEventListener('pointerdown', CloseAssistantMenusOnOutsidePointer);
       document.removeEventListener('keydown', CloseAssistantMenusOnEscape);
     };
-  }, [showModel, showPermission, showReasoningEffort, showResumeMenu, showScenario]);
+  }, [showModel, showPermission, showReasoningEffort, showScenario]);
 
   /** 读取会话专属状态。切换时先清空旧会话数据，迟到响应不得覆盖当前会话。 */
   const RefreshSessionAssistantState = useCallback(async (sessionId: string | null) => {
@@ -746,18 +731,17 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
     event.preventDefault();
     const startX = event.clientX; const start = panelWidthRef.current;
     const layoutWidth = resumeSideRef.current?.parentElement?.clientWidth ?? 0;
-    // 始终给对话和输入栏保留最低阅读宽度；不足时由 CSS 的窄屏抽屉规则接管。
+    // 始终给对话和输入栏保留最低阅读宽度；窗口放不下时设计下限让位（与原型 rsClamp 一致）。
     const maximum = Math.min(720, Math.max(360, layoutWidth - ASSISTANT_MAIN_MIN_WIDTH));
+    const minimum = Math.min(360, maximum);
     document.body.classList.add('is-resizing-resume');
     function HandleMove(moveEvent: globalThis.MouseEvent) {
-      const width = Math.min(maximum, Math.max(360, start - (moveEvent.clientX - startX)));
+      const width = Math.min(maximum, Math.max(minimum, start - (moveEvent.clientX - startX)));
       panelWidthRef.current = width;
       setPanelWidth(width);
-      setRightPanelWidth(width);
     }
     function HandleUp() {
       setPanelWidth(panelWidthRef.current);
-      setRightPanelWidth(panelWidthRef.current);
       document.body.classList.remove('is-resizing-resume');
       document.removeEventListener('mousemove', HandleMove);
       document.removeEventListener('mouseup', HandleUp);
@@ -765,6 +749,13 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
     document.addEventListener('mousemove', HandleMove); document.addEventListener('mouseup', HandleUp);
   }
   function HandleEditChange(value: string) { setHistory((current) => [...current, resumeText]); setResumeText(value); }
+  /** 撤销最近一次编辑：弹回上一份快照；编辑期间随时可用，保存后历史清空。 */
+  function UndoResumeEdit() {
+    const last = history.at(-1);
+    if (!last) return;
+    setResumeText(last);
+    setHistory((current) => current.slice(0, -1));
+  }
   /** 用户发起手动编辑前获取后端互斥锁；Agent 占用或本轮仍在处理时拒绝进入编辑。 */
   async function HandleStartEditing() {
     if (!resume) return;
@@ -798,7 +789,6 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
   }
   /** 切换当前简历：释放仍持有的编辑锁并重置编辑态，加载用户在菜单中选定的简历。 */
   function HandleSelectResume(resumeId: string) {
-    setShowResumeMenu(false);
     const nextResume = resumes.find((item) => item.id === resumeId);
     if (!nextResume || nextResume.id === currentResumeId) return;
     if (editLockRef.current) { void ReleaseResumeEditLock(editLockRef.current); editLockRef.current = null; }
@@ -1016,7 +1006,7 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
         </div>}
       </div>
     </section>}
-    <section ref={resumeSideRef} className={`resume-side ${resumePanelOpen ? 'open' : ''}`} aria-hidden={!resumePanelOpen} style={{ '--panel-width': `${panelWidth}px` } as CSSProperties}>{resumePanelOpen && <button className="resume-side-backdrop" aria-label="关闭简历栏" onClick={() => setResumePanelOpen(false)} />}<div className="resize-bar" onMouseDown={HandleResize} /><aside><div className="resume-paper">{editing ? <textarea value={resumeText} onChange={(event) => HandleEditChange(event.target.value)} /> : <ResumePreview name={resume?.name ?? '未命名简历'} content={resumeText} />}</div><div className="resume-bottom-bar"><div className="resume-switcher"><button className="resume-switcher-trigger" type="button" disabled={!resumes.length} aria-haspopup="menu" aria-expanded={showResumeMenu} title={resume?.name ?? '选择简历'} onClick={() => setShowResumeMenu((value) => !value)}><span>{TruncateResumeTitle(resume?.name ?? '选择简历')}</span><Icon name={showResumeMenu ? 'chevron-up' : 'chevron-down'} size={15} /></button>{showResumeMenu && <div className="resume-switcher-menu" role="menu" aria-label="切换简历">{resumes.map((item) => <button key={item.id} type="button" role="menuitem" className={item.id === currentResumeId ? 'selected' : ''} title={item.name} onClick={() => HandleSelectResume(item.id)}>{TruncateResumeTitle(item.name)}</button>)}</div>}</div><div className="resume-action-row"><Button onClick={editing ? HandleCancelEditing : () => void HandleStartEditing()}>{editing ? '取消' : '编辑'}</Button><Button disabled={!editing || !history.length} onClick={() => { const last = history.at(-1); if (last) { setResumeText(last); setHistory((current) => current.slice(0, -1)); } }}>撤销</Button><Button variant="primary" disabled={!editing} onClick={() => void HandleSaveResume()}>保存</Button></div></div></aside></section>
+    {resumePanelOpen && <DocSidePanel resumes={resumes} currentResumeId={currentResumeId} editing={editing} resumeText={resumeText} canUndo={history.length > 0} panelWidth={panelWidth} onSelectResume={HandleSelectResume} onEditChange={HandleEditChange} onStartEditing={() => void HandleStartEditing()} onCancelEditing={HandleCancelEditing} onSaveResume={() => void HandleSaveResume()} onUndo={UndoResumeEdit} onResizeStart={HandleResize} />}
     <Modal open={showFullyTrustedWarning} title="开启自动执行模式" onClose={() => setShowFullyTrustedWarning(false)}><p className="modal-copy">开启后，Agent 可在当前场景的工具白名单与数据授权范围内自动执行操作，不再逐项请求确认。此设置不会授予新的工具、文件或账号权限。</p><div className="modal-actions"><Button onClick={() => setShowFullyTrustedWarning(false)}>取消</Button><Button variant="primary" onClick={() => { setShowFullyTrustedWarning(false); void ApplyConfirmationMode('fully_trusted'); }}>我了解风险，继续</Button></div></Modal>
   </div>;
 }
