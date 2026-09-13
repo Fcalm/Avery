@@ -1,84 +1,238 @@
-import { useEffect, useMemo, useState, type UIEvent } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useUiStore } from '../../../app/UiStore';
-import { useApplications } from '../../../features/application/api/applicationQueries';
-import { useDeleteJob, useJobs, useSetJobFavorite, useUpsertJob } from '../../../features/job/api/jobQueries';
-import { CreateEntityId } from '../../workspace/api/workspaceData';
-import { Button, Drawer, EmptyState, FormField, Modal, Select } from '../../../shared/components/UI';
+import { Button, Drawer, FormField, Modal, Select } from '../../../shared/components/UI';
 import { Icon } from '../../../shared/components/Icon';
-import { ChannelLabel, GetScoreLabel, JobScoreLabel } from '../../../shared/utils/format';
-import type { Channel, Job, JobScore } from '../../../types/domain';
+import { ChannelLabel, FormatDateTime, FormatRelativeTime, FromDateTimeLocalValue, JobSeekingTypeLabel, ToDateTimeLocalValue } from '../../../shared/utils/format';
+import { CreateEntityId } from '../../workspace/api/workspaceData';
+import { useDeleteJob, useJobs, useSetJobFavorite, useUpsertJob } from '../api/jobQueries';
+import { BuildCollectPrompt, JobConditionGroups, LoadJobConditions, SaveJobConditions, type JobConditions } from '../api/jobConditions';
+import { ScoreRing } from '../components/ScoreRing';
+import type { Channel, Job, JobSeekingType } from '../../../types/domain';
 
-const BlankJob: Omit<Job, 'id' | 'favorite'> = { company: '', title: '', city: '', salary: '', experience: '', jobSeekingType: 'social_recruitment', channel: 'boss_zhipin', jd: '' };
 const ChannelOptions: Channel[] = ['boss_zhipin', 'company_website', 'other'];
-const JobPageSize = 50;
-type QuickFilter = 'all' | 'excellent' | 'applied' | 'favorite';
-type SortMode = 'score' | 'company' | 'title';
+const JobSeekingTypeOptions: JobSeekingType[] = ['intern', 'campus_recruitment', 'social_recruitment'];
+type SortMode = 'posted' | 'score';
 
-function JobsPage() {
-  const { ShowNotice } = useUiStore();
+/** 表单只承载用户可编辑字段；createdAt 由后端 created_at 投影，不参与写回。 */
+type JobForm = Pick<Job, 'company' | 'title' | 'city' | 'salary' | 'experience' | 'jobSeekingType' | 'channel' | 'url' | 'jd' | 'deadline'>;
+
+const BlankJob: JobForm = {
+  company: '', title: '', city: '', salary: '', experience: '',
+  jobSeekingType: 'social_recruitment', channel: 'boss_zhipin', url: '', jd: '', deadline: undefined,
+};
+
+function ToForm(job: Job): JobForm {
+  const { company, title, city, salary, experience, jobSeekingType, channel, url, jd, deadline } = job;
+  return { company, title, city, salary, experience, jobSeekingType, channel, url, jd, deadline };
+}
+
+/** 排序与筛选：与原型一致，只作用于已入库岗位，不改变采集条件。 */
+const SortOptions: Array<{ value: SortMode; label: string }> = [
+  { value: 'posted', label: '按发布时间' },
+  { value: 'score', label: '按岗位分数' },
+];
+
+function JobsPage({ onGoAssistant }: { onGoAssistant: () => void }) {
+  const { ShowNotice, setComposerSeed, setActiveConversationId, setAssistantView } = useUiStore();
   const jobs = useJobs();
-  const applications = useApplications();
   const upsertJob = useUpsertJob({ onConflict: () => ShowNotice('岗位已在其他窗口被修改，已刷新为最新版本'), onFailure: () => ShowNotice('岗位保存失败，请稍后重试。') });
   const setJobFavorite = useSetJobFavorite({ onConflict: () => ShowNotice('岗位收藏更新失败，请稍后重试。'), onFailure: () => ShowNotice('岗位收藏更新失败，请稍后重试。') });
   const deleteJob = useDeleteJob({ onFailure: () => ShowNotice('岗位删除失败，请稍后重试。') });
+
+  const [conditions, setConditions] = useState<JobConditions>(() => LoadJobConditions());
+  const [query, setQuery] = useState('');
+  const [sortMode, setSortMode] = useState<SortMode>('score');
+  const [favoriteOnly, setFavoriteOnly] = useState(false);
+  const [filterOpen, setFilterOpen] = useState(false);
+  const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [editingJob, setEditingJob] = useState<Job | null>(null);
-  const [form, setForm] = useState<Omit<Job, 'id' | 'favorite'>>(BlankJob);
+  const [form, setForm] = useState<JobForm>(BlankJob);
   const [deleteTarget, setDeleteTarget] = useState<Job | null>(null);
-  const [visibleJobCount, setVisibleJobCount] = useState(JobPageSize);
-  const [quickFilter, setQuickFilter] = useState<QuickFilter>('all');
-  const [sortMode, setSortMode] = useState<SortMode>('score');
-  const [query, setQuery] = useState('');
-  const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
-  const appliedJobIds = useMemo(() => new Set(applications.filter((item) => item.status !== 'saved').map((item) => item.jobId)), [applications]);
+  const filterRef = useRef<HTMLDivElement>(null);
+
+  /** 条件选择只写入应用内缓存：它决定采集口径，不是岗位事实，因此不进入业务数据库。 */
+  useEffect(() => { SaveJobConditions(conditions); }, [conditions]);
+
+  useEffect(() => {
+    if (!filterOpen) return undefined;
+    function CloseOnOutsidePointer(event: PointerEvent) {
+      if (!filterRef.current?.contains(event.target as Node)) setFilterOpen(false);
+    }
+    document.addEventListener('pointerdown', CloseOnOutsidePointer);
+    return () => document.removeEventListener('pointerdown', CloseOnOutsidePointer);
+  }, [filterOpen]);
+
   const filtered = useMemo(() => {
     const keyword = query.trim().toLocaleLowerCase();
     const result = jobs.filter((job) => {
-      const matchesQuickFilter = quickFilter === 'all'
-        || (quickFilter === 'excellent' && GetScoreLabel(job.matchScore) === 'excellent')
-        || (quickFilter === 'applied' && appliedJobIds.has(job.id))
-        || (quickFilter === 'favorite' && job.favorite);
-      return matchesQuickFilter && (!keyword || `${job.company} ${job.title} ${job.city}`.toLocaleLowerCase().includes(keyword));
+      if (favoriteOnly && !job.favorite) return false;
+      if (!keyword) return true;
+      return `${job.company} ${job.title} ${job.city} ${ChannelLabel[job.channel]}`.toLocaleLowerCase().includes(keyword);
     });
-    return result.sort((left, right) => {
-      if (sortMode === 'company') return left.company.localeCompare(right.company, 'zh-CN');
-      if (sortMode === 'title') return left.title.localeCompare(right.title, 'zh-CN');
-      return (right.matchScore ?? -1) - (left.matchScore ?? -1);
-    });
-  }, [appliedJobIds, jobs, query, quickFilter, sortMode]);
-  const visibleJobs = useMemo(() => filtered.slice(0, visibleJobCount), [filtered, visibleJobCount]);
-  const selectedJob = filtered.find((job) => job.id === selectedJobId) ?? filtered[0] ?? null;
-  const appliedJobCount = appliedJobIds.size;
-  const favoriteCount = jobs.filter((job) => job.favorite).length;
-  const highMatchCount = jobs.filter((job) => GetScoreLabel(job.matchScore) === 'excellent').length;
+    return result.sort((left, right) => (sortMode === 'score'
+      ? (right.matchScore ?? -1) - (left.matchScore ?? -1)
+      : (right.createdAt ?? 0) - (left.createdAt ?? 0)));
+  }, [favoriteOnly, jobs, query, sortMode]);
 
-  useEffect(() => { setVisibleJobCount(JobPageSize); }, [quickFilter, query, sortMode]);
+  const selectedJob = filtered.find((job) => job.id === selectedJobId) ?? filtered[0] ?? null;
+
   useEffect(() => { if (!selectedJobId || !filtered.some((job) => job.id === selectedJobId)) setSelectedJobId(filtered[0]?.id ?? null); }, [filtered, selectedJobId]);
 
   function OpenNew() { setEditingJob(null); setForm(BlankJob); setDrawerOpen(true); }
-  function OpenEdit(job: Job) { setEditingJob(job); setForm(job); setDrawerOpen(true); }
+  function OpenEdit(job: Job) { setEditingJob(job); setForm(ToForm(job)); setDrawerOpen(true); }
   function SaveJob() {
     if (!form.company || !form.title || !form.city || !form.experience || !form.jd) { ShowNotice('请填写公司、岗位、城市、经验要求和完整 JD'); return; }
     if (editingJob) upsertJob.mutate({ job: { ...form, id: editingJob.id, favorite: editingJob.favorite, matchScore: editingJob.matchScore }, expectedRevision: editingJob.revision });
     else upsertJob.mutate({ job: { ...form, id: CreateEntityId('job'), favorite: false } });
     setDrawerOpen(false); ShowNotice(editingJob ? '岗位信息已更新' : '已新增岗位');
   }
-  function ToggleFavorite(job: Job) { setJobFavorite.mutate({ id: job.id, favorite: !job.favorite, expectedRevision: job.revision }); }
-  function HandleApplyJob(job: Job) { ShowNotice(appliedJobIds.has(job.id) ? '该岗位已有投递记录，请前往投递管理查看进度' : '请前往投递管理选择简历后创建投递记录'); }
   function ConfirmRemoveJob() { if (!deleteTarget) return; deleteJob.mutate({ id: deleteTarget.id }); setDeleteTarget(null); setDrawerOpen(false); ShowNotice('岗位已删除'); }
-  function HandleJobListScroll(event: UIEvent<HTMLDivElement>) { const element = event.currentTarget; if (element.scrollTop + element.clientHeight >= element.scrollHeight - 120) setVisibleJobCount((current) => Math.min(filtered.length, current + JobPageSize)); }
+  function ToggleFavorite(job: Job) { setJobFavorite.mutate({ id: job.id, favorite: !job.favorite, expectedRevision: job.revision }); }
+  function CopyJobUrl(job: Job) {
+    if (!job.url) return;
+    void navigator.clipboard?.writeText(job.url).then(() => ShowNotice('岗位链接已复制')).catch(() => ShowNotice('岗位链接复制失败，请手动选择复制'));
+  }
+  /** 采集入口与原型一致：把条件整理成指令预填到助手输入框，由用户确认后发送。 */
+  function CollectViaAvery() {
+    setComposerSeed(BuildCollectPrompt(conditions));
+    setActiveConversationId(null);
+    setAssistantView('chat');
+    onGoAssistant();
+  }
 
-  return <div className="standard-page jobs-page">
-    <section className="jobs-reference-overview">
-      <header className="jobs-reference-heading"><div><h1>岗位库</h1><p>集中整理关注的职位，并查看与当前简历的匹配信息。</p></div><div className="jobs-reference-stats" aria-label="岗位数据概览"><span><b>{jobs.length}</b><small>全部岗位</small></span><span><b>{favoriteCount}</b><small>已收藏</small></span><span><b>{appliedJobCount}</b><small>已投递</small></span><span><b>{highMatchCount}</b><small>高匹配</small></span></div></header>
-      <div className="jobs-reference-toolbar"><div className="jobs-quick-filters" role="group" aria-label="快速筛选"><button type="button" className={quickFilter === 'all' ? 'selected' : ''} onClick={() => setQuickFilter('all')}>全部 <b>{jobs.length}</b></button><button type="button" className={quickFilter === 'excellent' ? 'selected' : ''} onClick={() => setQuickFilter('excellent')}>高匹配 <b>{highMatchCount}</b></button><button type="button" className={quickFilter === 'applied' ? 'selected' : ''} onClick={() => setQuickFilter('applied')}>已投递 <b>{appliedJobCount}</b></button><button type="button" className={quickFilter === 'favorite' ? 'selected' : ''} onClick={() => setQuickFilter('favorite')}>已收藏 <b>{favoriteCount}</b></button><Select value={sortMode} ariaLabel="岗位排序" onChange={(value) => setSortMode(value as SortMode)} options={[{ value: 'score', label: '按匹配度排序' }, { value: 'company', label: '按企业排序' }, { value: 'title', label: '按岗位名称排序' }]} /></div><div className="jobs-reference-actions"><label className="jobs-reference-search"><Icon name="search" size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索企业、岗位或城市" aria-label="搜索岗位" /></label><Button variant="primary" onClick={OpenNew}><Icon name="plus" size={16} />新增岗位</Button></div></div>
+  const activeSort = SortOptions.find((option) => option.value === sortMode) ?? SortOptions[0];
+
+  return <div className="standard-page job-view">
+    <div className="view-h">
+      <div>
+        <h1>岗位库</h1>
+        <p>这里存放采集到的岗位。左边是岗位列表，右边是详情，上面的条件决定 Avery 去采集什么。</p>
+      </div>
+      <div className="vh-act"><button className="ghost-btn" type="button" onClick={OpenNew}><Icon name="plus" size={14} />手动添加</button></div>
+    </div>
+
+    <section className="panel cond" aria-label="采集条件">
+      <div className="field">
+        <span>岗位关键词</span>
+        <input type="search" value={conditions.keyword} placeholder="例如：产品设计师" aria-label="岗位关键词" onChange={(event) => setConditions({ ...conditions, keyword: event.target.value })} />
+      </div>
+      {JobConditionGroups.map((group) => <div className="field" key={group.key}>
+        <span>{group.label}</span>
+        <Select value={conditions[group.key]} ariaLabel={group.label} options={group.options.map((option) => ({ value: option.value, label: option.label }))} onChange={(value) => setConditions({ ...conditions, [group.key]: value })} />
+      </div>)}
+      <button className="btn-accent cond-go" type="button" onClick={CollectViaAvery}><Icon name="sparkle" size={14} />让 Avery 采集岗位</button>
     </section>
-    <section className="jobs-reference-workspace" aria-label="岗位列表与详情">
-      <div className="jobs-reference-list-card"><header><span>当前显示 {filtered.length} 个岗位</span><small>按匹配度排序</small></header>{jobs.length === 0 ? <EmptyState icon={<Icon name="jobs" size={24} />} title="还没有保存的岗位" description="集中整理关注的机会，从新增一个岗位开始。" action={<Button variant="primary" onClick={OpenNew}><Icon name="plus" size={16} />新增岗位</Button>} /> : filtered.length === 0 ? <EmptyState icon={<Icon name="jobs" size={24} />} title="没有符合筛选条件的岗位" description="调整搜索词或快速筛选后重试。" action={<Button onClick={() => { setQuickFilter('all'); setQuery(''); }}>重置筛选</Button>} /> : <div className="job-grid" onScroll={HandleJobListScroll}>{visibleJobs.map((job) => <button className={`job-reference-row ${selectedJob?.id === job.id ? 'selected' : ''}`} type="button" key={job.id} onClick={() => setSelectedJobId(job.id)}><span className="job-reference-mark">{job.company.slice(0, 1)}</span><span className="job-reference-copy"><b>{job.title}</b><small>{job.company} · {job.city} · {job.salary || '薪资面议'} · {job.experience}</small><i>{ChannelLabel[job.channel]}</i></span><span className="job-reference-score"><b>{job.matchScore ?? '—'}{typeof job.matchScore === 'number' && '%'}</b><small>匹配度</small><span className="job-reference-expand-indicator" aria-hidden="true">&gt;</span></span></button>)}{visibleJobs.length < filtered.length && <p className="job-list-more" role="status">继续向下滚动加载更多岗位</p>}</div>}</div>
-      <article className="job-reference-detail">{selectedJob ? <><header className="job-reference-detail-heading"><span className="job-reference-mark is-large">{selectedJob.company.slice(0, 1)}</span><div><h2>{selectedJob.title}</h2><p>{selectedJob.company} · {selectedJob.city} · {selectedJob.salary || '薪资面议'} · {selectedJob.experience}</p><div className="job-reference-tags"><span>匹配 {selectedJob.matchScore ?? '待计算'}{typeof selectedJob.matchScore === 'number' && '%'}</span><span>{ChannelLabel[selectedJob.channel]}</span>{appliedJobIds.has(selectedJob.id) && <span>已投递</span>}</div></div><div className="job-reference-detail-score"><b>{selectedJob.matchScore ?? '—'}{typeof selectedJob.matchScore === 'number' && '%'}</b><small>综合匹配</small></div></header><section className="job-reference-section"><h3>Avery 匹配分析</h3><p>岗位匹配度为 {JobScoreLabel[GetScoreLabel(selectedJob.matchScore)]}。可根据岗位要求、经历与技能进一步调整投递材料。</p></section><section className="job-reference-section"><h3>岗位摘要</h3><p>{selectedJob.jd || '暂未保存岗位描述。'}</p></section><footer className="job-reference-footer"><Button variant="primary" onClick={() => HandleApplyJob(selectedJob)}><Icon name="applications" size={16} />加入投递计划</Button><Button onClick={() => OpenEdit(selectedJob)}><Icon name="edit" size={16} />编辑岗位</Button><button className={`favorite-button ${selectedJob.favorite ? 'on' : ''}`} type="button" onClick={() => ToggleFavorite(selectedJob)} aria-label={selectedJob.favorite ? '取消收藏' : '收藏岗位'} title={selectedJob.favorite ? '取消收藏' : '收藏岗位'}><Icon name="heart" size={18} /></button></footer></> : <EmptyState icon={<Icon name="jobs" size={24} />} title="选择一个岗位" description="在左侧浏览岗位，并在这里查看完整信息。" />}</article>
-    </section>
-    <Drawer open={drawerOpen} title={editingJob ? '编辑岗位信息' : '新增岗位'} onClose={() => setDrawerOpen(false)}><div className="drawer-form"><div className="form-two-col"><FormField label="公司 *"><input value={form.company} onChange={(event) => setForm({ ...form, company: event.target.value })} /></FormField><FormField label="岗位名称 *"><input value={form.title} onChange={(event) => setForm({ ...form, title: event.target.value })} /></FormField><FormField label="城市 *"><input value={form.city} onChange={(event) => setForm({ ...form, city: event.target.value })} /></FormField><FormField label="薪资"><input value={form.salary ?? ''} onChange={(event) => setForm({ ...form, salary: event.target.value })} /></FormField><FormField label="经验要求 *"><input value={form.experience} onChange={(event) => setForm({ ...form, experience: event.target.value })} /></FormField><FormField label="渠道"><Select value={form.channel} ariaLabel="渠道" onChange={(channel) => setForm({ ...form, channel: channel as Channel })} options={ChannelOptions.map((item) => ({ value: item, label: ChannelLabel[item] }))} /></FormField></div><FormField label="求职类型"><div className="segmented"><button className={form.jobSeekingType === 'intern' ? 'selected' : ''} onClick={() => setForm({ ...form, jobSeekingType: 'intern' })}>实习</button><button className={form.jobSeekingType === 'campus_recruitment' ? 'selected' : ''} onClick={() => setForm({ ...form, jobSeekingType: 'campus_recruitment' })}>校招</button><button className={form.jobSeekingType === 'social_recruitment' ? 'selected' : ''} onClick={() => setForm({ ...form, jobSeekingType: 'social_recruitment' })}>社招</button></div></FormField><FormField label="岗位链接"><input value={form.url ?? ''} onChange={(event) => setForm({ ...form, url: event.target.value })} placeholder="https://" /></FormField><FormField label="完整 JD *"><textarea value={form.jd} onChange={(event) => setForm({ ...form, jd: event.target.value })} rows={8} /></FormField>{editingJob && <Button variant="quiet" onClick={() => ToggleFavorite(editingJob)}>{editingJob.favorite ? '取消收藏' : '加入收藏'}</Button>}<div className="drawer-actions">{editingJob && <Button variant="danger" onClick={() => setDeleteTarget(editingJob)}>删除</Button>}<span /><Button onClick={() => setDrawerOpen(false)}>取消</Button><Button variant="primary" onClick={SaveJob}>保存岗位</Button></div></div></Drawer>
-    <Modal open={Boolean(deleteTarget)} title="删除这份岗位？" onClose={() => setDeleteTarget(null)}><p className="modal-copy">删除后岗位将从岗位库移除，此操作不可撤销。</p><div className="modal-actions"><Button onClick={() => setDeleteTarget(null)}>取消</Button><Button variant="danger" onClick={ConfirmRemoveJob}>确认删除</Button></div></Modal>
+
+    <div className="jlib">
+      <section className="panel" aria-label="岗位列表">
+        <div className="jsearch">
+          <Icon name="search" size={15} />
+          <input type="search" value={query} placeholder="搜索公司、岗位或城市" aria-label="搜索岗位" onChange={(event) => setQuery(event.target.value)} />
+          <span className="sep-v" aria-hidden="true"></span>
+          <div className="menu-wrap" ref={filterRef}>
+            <button className={`filter-btn${favoriteOnly ? ' on' : ''}`} type="button" aria-expanded={filterOpen} aria-haspopup="menu" onClick={() => setFilterOpen((current) => !current)}>
+              <Icon name="sliders" size={14} />筛选<Icon name="chevron-down" size={9} className="chev" />
+            </button>
+            {filterOpen && <div className="menu drop sm" role="menu" aria-label="筛选与排序">
+              <div className="menu-label">排序</div>
+              {SortOptions.map((option) => <button key={option.value} className={`menu-item plain${sortMode === option.value ? ' sel' : ''}`} type="button" role="menuitemradio" aria-checked={sortMode === option.value} onClick={() => { setSortMode(option.value); setFilterOpen(false); }}>
+                <span className="mt">{option.label}</span><Icon name="check" size={14} className="tick" />
+              </button>)}
+              <div className="menu-label">筛选</div>
+              <button className={`menu-item plain${favoriteOnly ? ' sel' : ''}`} type="button" role="menuitemcheckbox" aria-checked={favoriteOnly} onClick={() => { setFavoriteOnly((current) => !current); setFilterOpen(false); }}>
+                <span className="mt">只看已收藏</span><Icon name="check" size={14} className="tick" />
+              </button>
+            </div>}
+          </div>
+        </div>
+        <div className="jrows">
+          {filtered.length
+            ? filtered.map((job) => <button key={job.id} className={`jrow${selectedJob?.id === job.id ? ' active' : ''}`} type="button" aria-pressed={selectedJob?.id === job.id} onClick={() => setSelectedJobId(job.id)}>
+              <span className="jr-main">
+                <span className="jr-co">{job.company}</span>
+                <span className="jr-role">{job.title}</span>
+                <span className="jr-tags">
+                  <span className="jtag">{job.salary || '薪资面议'}</span>
+                  <span className="jtag">{job.city || '城市不限'}</span>
+                  <span className="jtag">{ChannelLabel[job.channel]}</span>
+                </span>
+              </span>
+              <ScoreRing score={job.matchScore} />
+            </button>)
+            : <div className="jrow-empty">{jobs.length ? '没有匹配的岗位，换个关键词，或者清掉筛选再看看。' : '还没有保存的岗位，点右上角“手动添加”，或者用上面的条件让 Avery 去采集。'}</div>}
+        </div>
+      </section>
+
+      <section className="panel job-detail" aria-label="岗位详情">
+        {selectedJob ? <>
+          <div className="jd-head">
+            <div className="jd-title">
+              <div className="jd-co">{selectedJob.company}</div>
+              <div className="jd-role">{selectedJob.title}</div>
+            </div>
+            <ScoreRing score={selectedJob.matchScore} size="detail" />
+            <div className="jd-actions">
+              <button className={`ghost-btn${selectedJob.favorite ? ' on' : ''}`} type="button" aria-pressed={selectedJob.favorite} onClick={() => ToggleFavorite(selectedJob)}>
+                <Icon name="heart" size={14} />{selectedJob.favorite ? '已收藏' : '收藏'}
+              </button>
+              <button className="ghost-btn" type="button" onClick={() => OpenEdit(selectedJob)}><Icon name="edit" size={14} />编辑</button>
+            </div>
+          </div>
+          <div className="sec">
+            <div className="sec-h">基本信息</div>
+            <div className="kv">
+              <div className="kv-r"><span>薪资</span><b>{selectedJob.salary || '面议'}</b></div>
+              <div className="kv-r"><span>城市</span><b>{selectedJob.city || '不限'}</b></div>
+              <div className="kv-r"><span>渠道</span><b>{ChannelLabel[selectedJob.channel]}</b></div>
+              <div className="kv-r"><span>求职类型</span><b>{JobSeekingTypeLabel[selectedJob.jobSeekingType]}</b></div>
+              <div className="kv-r"><span>工作经验</span><b>{selectedJob.experience || '不限'}</b></div>
+              <div className="kv-r"><span>采集时间</span><b title={FormatDateTime(selectedJob.createdAt)}>{FormatRelativeTime(selectedJob.createdAt) || '—'}</b></div>
+              <div className="kv-r"><span>岗位链接</span><b>{selectedJob.url
+                ? <span className="kv-link"><span title={selectedJob.url}>{selectedJob.url}</span><button type="button" aria-label="复制岗位链接" title="复制岗位链接" onClick={() => CopyJobUrl(selectedJob)}><Icon name="copy" size={13} /></button></span>
+                : '未填写'}</b></div>
+              <div className="kv-r"><span>截止时间</span><b>{selectedJob.deadline ? FormatDateTime(selectedJob.deadline) : '长期有效'}</b></div>
+            </div>
+          </div>
+          <div className="sec">
+            <div className="sec-h">职位 JD</div>
+            <div className="jd-body">{selectedJob.jd ? <div className="jd-text">{selectedJob.jd}</div> : <div className="jd-none">暂未保存岗位描述。</div>}</div>
+          </div>
+        </> : <div className="jd-empty">从左边选一个岗位，这里会显示它的完整信息。</div>}
+      </section>
+    </div>
+
+    <Drawer open={drawerOpen} title={editingJob ? '编辑岗位信息' : '手动添加岗位'} onClose={() => setDrawerOpen(false)}>
+      <div className="drawer-form">
+        <div className="form-two-col">
+          <FormField label="公司 *"><input value={form.company} onChange={(event) => setForm({ ...form, company: event.target.value })} /></FormField>
+          <FormField label="岗位名称 *"><input value={form.title} onChange={(event) => setForm({ ...form, title: event.target.value })} /></FormField>
+          <FormField label="城市 *"><input value={form.city} onChange={(event) => setForm({ ...form, city: event.target.value })} /></FormField>
+          <FormField label="薪资"><input value={form.salary ?? ''} onChange={(event) => setForm({ ...form, salary: event.target.value })} /></FormField>
+          <FormField label="经验要求 *"><input value={form.experience} onChange={(event) => setForm({ ...form, experience: event.target.value })} /></FormField>
+          <FormField label="渠道"><Select value={form.channel} ariaLabel="渠道" onChange={(channel) => setForm({ ...form, channel: channel as Channel })} options={ChannelOptions.map((item) => ({ value: item, label: ChannelLabel[item] }))} /></FormField>
+        </div>
+        <FormField label="求职类型">
+          <div className="segmented">{JobSeekingTypeOptions.map((item) => <button key={item} type="button" className={form.jobSeekingType === item ? 'selected' : ''} onClick={() => setForm({ ...form, jobSeekingType: item })}>{JobSeekingTypeLabel[item]}</button>)}</div>
+        </FormField>
+        <FormField label="岗位链接"><input value={form.url ?? ''} onChange={(event) => setForm({ ...form, url: event.target.value })} placeholder="https://" /></FormField>
+        <FormField label="截止时间" hint="到期后岗位会自动从岗位库删除；留空表示长期有效。">
+          <input type="datetime-local" value={ToDateTimeLocalValue(form.deadline)} onChange={(event) => setForm({ ...form, deadline: FromDateTimeLocalValue(event.target.value) })} />
+        </FormField>
+        <FormField label="完整 JD *"><textarea value={form.jd} onChange={(event) => setForm({ ...form, jd: event.target.value })} rows={8} /></FormField>
+        <div className="drawer-actions">
+          {editingJob && <Button variant="danger" onClick={() => setDeleteTarget(editingJob)}>删除</Button>}
+          <span />
+          <Button onClick={() => setDrawerOpen(false)}>取消</Button>
+          <Button variant="primary" onClick={SaveJob}>保存岗位</Button>
+        </div>
+      </div>
+    </Drawer>
+
+    <Modal open={Boolean(deleteTarget)} title="删除这份岗位？" onClose={() => setDeleteTarget(null)}>
+      <p className="modal-copy">删除后岗位将从岗位库移除，此操作不可撤销。</p>
+      <div className="modal-actions"><Button onClick={() => setDeleteTarget(null)}>取消</Button><Button variant="danger" onClick={ConfirmRemoveJob}>确认删除</Button></div>
+    </Modal>
   </div>;
 }
 

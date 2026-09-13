@@ -1055,3 +1055,130 @@ button { background: none; border: 0; }
   padding: 12px 14px; background: var(--raised); color: var(--text);
   font-family: inherit; font-size: 12.5px; line-height: 1.8;
 }
+
+/* ============================================================================
+   岗位库（原型一比一）：上方条件决定采集口径，左列表右详情。
+   条件选择只影响采集指令，不作为岗位筛选；列表筛选仅保留搜索、排序与只看已收藏。
+   ========================================================================== */
+.job-view.standard-page {
+  display: block;
+  max-width: 1180px;
+  margin: 0 auto var(--space-2);
+  padding: 34px 34px 40px;
+  animation: viewIn .4s var(--ease) both;
+}
+.job-view .view-h { display: flex; align-items: flex-end; gap: 16px; padding-bottom: 18px; border-bottom: 1px solid var(--border); margin-bottom: 6px; }
+.job-view .view-h h1 { margin: 0; font-size: 21px; font-weight: 640; letter-spacing: -.015em; }
+.job-view .view-h p { margin: 3px 0 0; max-width: 62ch; font-size: 13px; color: var(--text-2); }
+.job-view .view-h .vh-act { margin-left: auto; display: flex; flex: none; gap: 8px; }
+
+.job-view .panel {
+  border: 1px solid var(--border);
+  border-radius: var(--r-card);
+  background: var(--raised);
+  padding: 16px;
+}
+
+/* ------------------------------------------------------------ 条件选择面板 */
+/* 8 个条件按 4 列排布，采集按钮独占一行右对齐；窄窗口退化为 3 列。 */
+.job-view .cond { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; align-items: end; margin-top: 18px; }
+.job-view .cond .field { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.job-view .cond .field > span { padding-left: 1px; color: var(--text-3); font-size: 11px; font-weight: 600; letter-spacing: .05em; }
+.job-view .cond .field input {
+  height: 32px; min-width: 0; border: 1px solid var(--border-2); border-radius: var(--r-control);
+  padding: 0 10px; background: var(--panel); color: var(--text); font-size: 12.5px;
+  transition: border-color .18s var(--ease), box-shadow .18s var(--ease);
+}
+.job-view .cond .field input:focus { outline: 0; border-color: var(--accent); box-shadow: var(--focus-ring); }
+.job-view .cond .field input::placeholder { color: var(--text-3); }
+.job-view .cond .custom-select { width: 100%; }
+.job-view .cond .custom-select-trigger { height: 32px; min-height: 32px; font-size: 12.5px; }
+.job-view .cond-go { grid-column: 1 / -1; justify-self: end; height: 32px; white-space: nowrap; }
+
+/* ------------------------------------------------------------- 列表 + 详情 */
+.jlib { display: grid; grid-template-columns: minmax(300px, 1fr) minmax(340px, 1.15fr); gap: 14px; margin-top: 14px; align-items: start; }
+.jlib .panel { padding: 14px; }
+.jsearch { display: flex; align-items: center; gap: 8px; padding: 0 6px 0 11px; border: 1px solid var(--border-2); border-radius: var(--r-control); background: var(--panel); transition: border-color .2s var(--ease); }
+.jsearch:focus-within { border-color: var(--accent); }
+.jsearch > i.ph { flex: none; font-size: 15px; color: var(--text-3); }
+.jsearch input { flex: 1; min-width: 0; height: 32px; border: 0; outline: 0; background: none; font-size: 13px; }
+.jsearch input::placeholder { color: var(--text-3); }
+.jsearch .sep-v { width: 1px; height: 18px; flex: none; background: var(--border); }
+.filter-btn {
+  display: inline-flex; align-items: center; gap: 6px; height: 26px; flex: none;
+  border: 1px solid var(--border); border-radius: var(--r-control); padding: 0 8px;
+  color: var(--text-2); font-size: 12.5px;
+  transition: background-color .16s var(--ease), border-color .18s var(--ease), color .18s var(--ease);
+}
+.filter-btn:hover { background: var(--surface-2); color: var(--text); }
+.filter-btn.on { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
+.filter-btn i.ph { font-size: 14px; }
+.filter-btn .chev { font-size: 9px; transition: transform .25s var(--ease); }
+.filter-btn[aria-expanded="true"] .chev { transform: rotate(180deg); }
+
+.jrows { display: flex; flex-direction: column; gap: 6px; max-height: 600px; margin-top: 11px; margin-right: -4px; padding-right: 4px; overflow-y: auto; }
+.jrow {
+  display: flex; align-items: center; gap: 11px; width: 100%; padding: 10px 11px; text-align: left;
+  border: 1px solid transparent; border-radius: var(--r-control);
+  transition: background-color .16s var(--ease), border-color .16s var(--ease);
+}
+.jrow:hover { background: var(--surface-2); }
+.jrow.active { background: var(--accent-soft); border-color: var(--accent); }
+.jr-main { min-width: 0; flex: 1; }
+.jr-co { display: block; font-size: 13.5px; font-weight: 600; color: var(--text); }
+.jr-role { display: block; margin-top: 2px; font-size: 12.5px; color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.jr-tags { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 7px; }
+.jtag { border-radius: var(--r-pill); padding: 1px 7px; background: var(--surface-2); color: var(--text-2); font-family: var(--font-data); font-size: 10.5px; white-space: nowrap; }
+.jrow.active .jtag { background: var(--raised); }
+.jrow-empty, .jd-empty { color: var(--text-3); font-size: 12.5px; line-height: 1.7; text-align: center; }
+.jrow-empty { padding: 30px 0; }
+.jd-empty { padding: 60px 20px; }
+
+/* 分数环是岗位行里最醒目的元素，因此环内数字用主色与数据字体。 */
+.ring-wrap { position: relative; display: grid; flex: none; place-items: center; }
+.ring-wrap.w-row { width: 38px; height: 38px; }
+.ring-wrap.w-detail { width: 48px; height: 48px; }
+.mini-ring { position: absolute; inset: 0; width: 100%; height: 100%; transform: rotate(-90deg); }
+.mini-ring .mr-track { fill: none; stroke: var(--border-2); stroke-width: 3; }
+.mini-ring .mr-val { fill: none; stroke: var(--accent); stroke-width: 3; stroke-linecap: round; }
+.jr-num { position: relative; color: var(--accent); font-family: var(--font-data); font-size: 12.5px; font-weight: 650; letter-spacing: -.03em; }
+.ring-wrap.w-detail .jr-num { font-size: 14px; }
+
+/* ---------------------------------------------------------------- 详情面板 */
+.jd-head { display: flex; align-items: center; gap: 12px; }
+.jd-title { flex: 1; min-width: 0; }
+.jd-co { font-size: 16px; font-weight: 660; letter-spacing: -.015em; color: var(--text); }
+.jd-role { margin-top: 3px; font-size: 12.5px; color: var(--text-2); }
+.jd-actions { display: flex; flex: none; gap: 8px; }
+.jd-actions .ghost-btn.on { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
+.job-view .sec { margin-top: 22px; }
+.job-view .sec-h { padding-bottom: 7px; border-bottom: 1px solid var(--border); color: var(--text-3); font-size: 11px; font-weight: 600; letter-spacing: .07em; text-transform: uppercase; }
+.job-view .kv { display: grid; gap: 10px; padding-top: 13px; }
+.job-view .kv-r { display: flex; align-items: center; justify-content: space-between; gap: 12px; color: var(--text-2); font-size: 12.5px; }
+.job-view .kv-r > span { flex: none; }
+.job-view .kv-r b { min-width: 0; color: var(--text); font-weight: 550; text-align: right; overflow-wrap: anywhere; }
+/* 岗位链接：应用不允许在窗口内跳转外部站点，因此只提供只读文本与复制入口。 */
+.job-view .kv-link { display: inline-flex; align-items: center; gap: 6px; max-width: 300px; }
+.job-view .kv-link > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.job-view .kv-link button { display: grid; width: 24px; height: 24px; flex: none; place-items: center; border: 0; border-radius: var(--radius-mark); padding: 0; color: var(--text-3); background: transparent; cursor: pointer; }
+.job-view .kv-link button:hover { color: var(--accent); background: var(--surface-2); }
+.jd-body { padding-top: 13px; }
+.jd-text { color: var(--text-2); font-size: 13px; line-height: 1.7; white-space: pre-wrap; }
+.jd-none { color: var(--text-3); font-size: 12.5px; }
+
+@media (max-width: 1080px){
+  .job-view .cond { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+@media (max-width: 860px){
+  .jlib { grid-template-columns: 1fr; }
+}
+@media (max-width: 619px){
+  .job-view.standard-page { padding: 25px 17px; }
+  .job-view .view-h { align-items: stretch; flex-direction: column; }
+  .job-view .view-h .vh-act { margin-left: 0; }
+  .job-view .cond { grid-template-columns: 1fr; }
+  .jrows { max-height: none; }
+  .job-view .kv-r { align-items: flex-start; flex-direction: column; gap: 3px; }
+  .job-view .kv-r b { text-align: left; }
+  .job-view .kv-link { max-width: 100%; }
+}
