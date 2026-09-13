@@ -10,6 +10,7 @@ import {
 } from '../../../features/conversation/api/conversationQueries';
 import { useResumes, useUpsertResume } from '../../../features/resume/api/resumeQueries';
 import { useSettings } from '../../../features/settings/api/settingsQueries';
+import { ApplyModelCatalogToProviders, LoadModelCatalog, SubscribeModelCatalog } from '../../../features/settings/api/modelCatalog';
 import { DocSidePanel } from '../components/DocSidePanel';
 import {
   AcquireResumeEditLock, BindProjectEnvironment, CancelAgentRequest, ConfirmBrowserAction, ConfirmCronTask, ConfirmResumeEdit, GetAgentObservability, GetAgentTraceEvents, GetProviderCatalog, GetSessionAssistantState, ImportAttachmentFile,
@@ -477,10 +478,17 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
     setReasoningEffort(stored?.reasoningEffort ?? 'medium');
   }, [activeConversationId, PersistConversationComposerState, settings.model, settings.provider]);
   useEffect(() => {
-    void GetProviderCatalog().then((result) => {
-      const configured = result.providers.filter((item) => item.configured && item.models.length) as ProviderCatalogEntry[];
-      if (configured.length) setProviderCatalog(configured);
-    }).catch(() => undefined);
+    // 模型目录缓存在应用本地：被禁用或移除的供应商、被删掉的模型不再出现在模型选择里。
+    const loadCatalog = () => {
+      void GetProviderCatalog().then((result) => {
+        const configured = result.providers.filter((item) => item.configured && item.models.length) as ProviderCatalogEntry[];
+        if (!configured.length) return;
+        const visible = ApplyModelCatalogToProviders(LoadModelCatalog(), configured);
+        setProviderCatalog(visible.length ? visible : configured);
+      }).catch(() => undefined);
+    };
+    loadCatalog();
+    return SubscribeModelCatalog(loadCatalog);
   }, [settings.provider, settings.model]);
 
   // 卸载时释放仍持有的用户编辑锁，避免锁在租约期内阻塞 Agent 编辑。

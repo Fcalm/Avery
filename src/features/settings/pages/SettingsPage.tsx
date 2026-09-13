@@ -3,6 +3,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useUiStore } from '../../../app/UiStore';
 import { useSettingsStore } from '../../../features/settings/api/settingsQueries';
 import { ClearAgentObservability, ClearBrowserProfile, ConfigureAgent, GetAgentModuleConfiguration, GetAgentStatus, GetBrowserRuntimeStatus, GetCronBrowserAccess, GetDeepSeekModels, GetProviderCatalog, IsDesktopAgentAvailable, ResetAgentModules, RevokeCronBrowserAccess, SelectAgentModuleDirectory, SetAgentTraceRetention, TestAgentConnection } from '../../../features/assistant/api/agentQueries';
+import { ApplyModelRuntime, CreateCatalogModel, DefaultContextWindow, DefaultMaxOutput, FindCatalogModel, FindCatalogProvider, FormatContextWindow, IsValidContextWindow, IsValidMaxOutput, LoadModelCatalog, MergeBackendProviders, MergeProviderModels, ModelApiFormats, SaveModelCatalog, type ModelApiFormat, type ModelCatalog, type ModelCatalogModel, type ModelCatalogProvider } from '../api/modelCatalog';
 import { CreateWorkspaceBackup, MigrateWorkspace } from '../../../features/workspace/api/workspaceActions';
 import { WORKSPACE_QUERY_KEY } from '../../../features/workspace/api/workspaceData';
 import { Button, FormField, Modal, PageHeader, Select } from '../../../shared/components/UI';
@@ -11,7 +12,7 @@ import type { SettingsDraft } from '../../../types/domain';
 import type { AgentBrowserRuntimeStatus, AgentModuleConfiguration, CronBrowserAccessStatus } from '@avery/contracts';
 
 export type SettingTab = 'account' | 'workspace' | 'api' | 'browser' | 'developer';
-type FieldErrors = Partial<Record<'traceRetention' | 'compressionThreshold' | 'contextLength', string>>;
+type FieldErrors = Partial<Record<'traceRetention' | 'compressionThreshold', string>>;
 export const SettingsTabs: Array<{ id: SettingTab; label: string; description: string }> = [
   { id: 'account', label: '账户', description: '管理应用内的显示名称。' },
   { id: 'workspace', label: '工作空间', description: '管理档案、简历版本和导出文件的存放目录。' },
@@ -19,15 +20,23 @@ export const SettingsTabs: Array<{ id: SettingTab; label: string; description: s
   { id: 'browser', label: '浏览器设置', description: '选择 Avery 隔离浏览器，或安全连接已登录 BOSS 的个人浏览器。' },
   { id: 'developer', label: '开发者模式', description: '查看本地日志、Trace 和上下文用量界面。' },
 ];
-const FallbackDeepSeekModels = ['deepseek-v4-flash', 'deepseek-v4-pro', 'deepseek-v4-flash-vision-exp'];
 const BrowserEngineLabels = { electron: 'Avery 隔离浏览器', chrome: 'Google Chrome', edge: 'Microsoft Edge' } as const;
-/** 模型配置侧栏的供应商分组与标记：内置供应商归入「推荐」，自定义提供商单独成组。 */
-const ProviderEntries: Array<{ id: SettingsDraft['provider']; label: string; mark: string; group: string }> = [
-  { id: 'DeepSeek', label: 'DeepSeek', mark: 'D', group: '推荐' },
-  { id: 'Z.AI', label: '智谱 GLM', mark: 'Z', group: '推荐' },
-  { id: '自定义', label: '自定义提供商', mark: '+', group: '自定义供应商' },
-];
+/** 模型配置侧栏的分组：推荐 = 官方供应商，自定义供应商可删除并改用自定义端点。 */
 const ProviderGroups = ['推荐', '自定义供应商'];
+/** 模型标记：与原型一致，推荐供应商用字母，自定义供应商用加号。 */
+const ProviderMarks: Record<SettingsDraft['provider'], string> = { DeepSeek: 'D', 'Z.AI': 'Z', '自定义': '+' };
+
+/** 模型编辑弹窗的草稿：数值字段保留字符串，取消时才不会写回目录。 */
+interface ModelDialogDraft {
+  index: number;
+  id: string;
+  contextWindow: string;
+  maxOutput: string;
+  inputImage: boolean;
+  inputPdf: boolean;
+  thinking: boolean;
+}
+interface ModelDialogErrors { id?: boolean; contextWindow?: boolean; maxOutput?: boolean; }
 
 function NormalizeProviderSettings(settings: SettingsDraft): SettingsDraft {
   const contextLimitMode = settings.contextLimitMode ?? (settings.provider === '自定义' ? 'custom' : 'default');
@@ -36,18 +45,6 @@ function NormalizeProviderSettings(settings: SettingsDraft): SettingsDraft {
   const baseUrl = settings.provider === 'Z.AI' ? 'https://open.bigmodel.cn/api/paas/v4' : settings.provider === 'DeepSeek' ? 'https://api.deepseek.com' : settings.baseUrl;
   const browserEngine = settings.browserEngine === 'electron' || settings.browserEngine === 'chrome' ? settings.browserEngine : 'edge';
   return { ...settings, model, baseUrl, contextLength, contextLimitMode, browserEngine, thinkingEnabled: settings.provider === 'Z.AI' ? true : settings.thinkingEnabled };
-}
-
-function IsValidContextLength(value: string): boolean {
-  const match = value.trim().match(/^(\d+)\s*([kK])?$/);
-  const limit = match ? Number(match[1]) * (match[2] ? 1000 : 1) : Number.NaN;
-  return Number.isSafeInteger(limit) && limit >= 8_000 && limit <= 2_000_000;
-}
-
-function ParseContextLimit(value: string): number | null {
-  const match = value.trim().match(/^(\d+)\s*([kK])?$/);
-  const limit = match ? Number(match[1]) * (match[2] ? 1000 : 1) : Number.NaN;
-  return Number.isSafeInteger(limit) ? limit : null;
 }
 
 function FormatContextLength(value: number): string {
@@ -59,7 +56,6 @@ function SettingsPage({ onNavigateDeveloper, tab, requestedTab, tabRequestVersio
   const queryClient = useQueryClient();
   const { settings, saveSettingsNow } = useSettingsStore();
   const [draft, setDraft] = useState<SettingsDraft>(() => NormalizeProviderSettings(settings));
-  const [deepSeekModels, setDeepSeekModels] = useState<string[]>(FallbackDeepSeekModels);
   const [refreshingModels, setRefreshingModels] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [showLeave, setShowLeave] = useState(false);
@@ -82,20 +78,65 @@ function SettingsPage({ onNavigateDeveloper, tab, requestedTab, tabRequestVersio
   const [providerConfigurations, setProviderConfigurations] = useState<Partial<Record<SettingsDraft['provider'], { model: string; baseUrl: string; contextLimit: number; contextLimitMode: 'default' | 'custom'; compressionThreshold: number; thinkingEnabled: boolean }>>>({});
   const [providerReloading, setProviderReloading] = useState(false);
   const providerSpinTimer = useRef(0);
+  // 供应商与模型目录只存在于应用本地：启用状态、API 格式、模型增删与模型能力都缓存在这里。
+  const [catalog, setCatalog] = useState<ModelCatalog>(() => LoadModelCatalog());
+  const [apiKeyShown, setApiKeyShown] = useState(false);
+  const [apiFormatOpen, setApiFormatOpen] = useState(false);
+  const apiFormatRef = useRef<HTMLDivElement>(null);
+  const [modelDialog, setModelDialog] = useState<ModelDialogDraft | null>(null);
+  const [modelErrors, setModelErrors] = useState<ModelDialogErrors>({});
+  const [providerDeleteTarget, setProviderDeleteTarget] = useState<ModelCatalogProvider | null>(null);
   useEffect(() => { setDraft(NormalizeProviderSettings(settings)); }, [settings]);
+  /** 当前模型即生效值：上下文窗口与思考模式始终跟随目录里选中的模型。 */
+  useEffect(() => {
+    const active = FindCatalogModel(catalog, draft.provider, draft.model);
+    if (!active) return;
+    const contextLength = FormatContextWindow(active.contextWindow);
+    setDraft((current) => current.thinkingEnabled === active.thinking && current.contextLength === contextLength && current.contextLimitMode === 'custom'
+      ? current
+      : { ...current, thinkingEnabled: active.thinking, contextLength, contextLimitMode: 'custom' });
+  }, [catalog, draft.provider, draft.model, draft.contextLength, draft.contextLimitMode, draft.thinkingEnabled]);
+
+  /** 当前模型不在列表里（被删除、或供应商还没有模型）时自动选中第一个模型。 */
+  useEffect(() => {
+    const provider = FindCatalogProvider(catalog, draft.provider);
+    if (!provider || !provider.models.length) return;
+    if (provider.models.some((item) => item.id === draft.model)) return;
+    setDraft((current) => ({ ...current, model: provider.models[0].id }));
+  }, [catalog, draft.provider, draft.model]);
+  /** 侧栏供应商被删除后回落到第一个仍启用的供应商，避免面板停在已不存在的条目上。 */
+  useEffect(() => {
+    if (FindCatalogProvider(catalog, draft.provider)) return;
+    const fallback = catalog.providers.find((item) => item.enabled) ?? catalog.providers[0];
+    if (fallback) SelectProvider(fallback.id);
+  }, [catalog, draft.provider]);
+  /** API 格式菜单：点击外部或按 Esc 关闭，与其它下拉菜单行为一致。 */
+  useEffect(() => {
+    if (!apiFormatOpen) return;
+    const closeOnPointer = (event: PointerEvent) => { if (!apiFormatRef.current?.contains(event.target as Node)) setApiFormatOpen(false); };
+    const closeOnEscape = (event: KeyboardEvent) => { if (event.key === 'Escape') setApiFormatOpen(false); };
+    document.addEventListener('pointerdown', closeOnPointer);
+    document.addEventListener('keydown', closeOnEscape);
+    return () => { document.removeEventListener('pointerdown', closeOnPointer); document.removeEventListener('keydown', closeOnEscape); };
+  }, [apiFormatOpen]);
   /** API Key 不进入 Renderer；只以主进程返回的脱敏配置状态驱动成功标记。 */
   useEffect(() => {
     const isCurrentProviderConfigured = configuredProviders.has(draft.provider) || (apiKeyConfigured && configuredProvider === draft.provider);
     document.body.classList.toggle('settings-has-configured-api-key', isCurrentProviderConfigured);
     return () => document.body.classList.remove('settings-has-configured-api-key');
   }, [apiKeyConfigured, configuredProvider, configuredProviders, draft.provider]);
+  /** 写入本地模型目录并同步落缓存；目录是对话页过滤可选模型的依据。 */
+  function UpdateCatalog(next: ModelCatalog): void {
+    setCatalog(next);
+    SaveModelCatalog(next);
+  }
   async function RefreshDeepSeekModels(manual = false) {
     if (!IsDesktopAgentAvailable()) return;
     setRefreshingModels(true);
     try {
       const result = await GetDeepSeekModels();
-      if (result.models.length) setDeepSeekModels(result.models);
-      if (manual) ShowNotice(result.models.length ? '已同步最新模型列表' : '未获取到可用模型，已保留默认模型');
+      if (result.models.length) UpdateCatalog(MergeProviderModels(catalog, 'DeepSeek', result.models));
+      if (manual) ShowNotice(result.models.length ? '已同步最新模型列表' : '未获取到可用模型，已保留现有列表');
     } catch (error) {
       if (manual) ShowNotice(error instanceof Error ? error.message : '模型列表刷新失败');
     } finally {
@@ -107,21 +148,27 @@ function SettingsPage({ onNavigateDeveloper, tab, requestedTab, tabRequestVersio
   }, [tab, draft.provider]);
   /** 读取主进程侧的供应商目录与当前生效配置；进入页签与页头刷新按钮共用同一份逻辑。 */
   async function LoadProviderConfiguration() {
-    const catalog = await GetProviderCatalog();
-    setConfiguredProviders(new Set(catalog.providers.filter((item) => item.configured).map((item) => item.provider)));
-    setProviderConfigurations(Object.fromEntries(catalog.providers.filter((item) => item.configured).map((item) => [item.provider, item])));
+    const backendCatalog = await GetProviderCatalog();
+    setConfiguredProviders(new Set(backendCatalog.providers.filter((item) => item.configured).map((item) => item.provider)));
+    setProviderConfigurations(Object.fromEntries(backendCatalog.providers.filter((item) => item.configured).map((item) => [item.provider, item])));
     const status = await GetAgentStatus();
+    const runtimeProvider = status.provider === '自定义' ? '自定义' : status.provider === 'Z.AI' ? 'Z.AI' : 'DeepSeek';
+    // 宿主目录只提供供应商与可用模型：已有的本地模型不被覆盖，重新加载还能找回被删掉的官方供应商；
+    // 宿主返回的上下文窗口与思考模式是当前生效值，要回写到对应模型，避免进入设置页就把用户配置重置成默认值。
+    const merged = MergeBackendProviders(catalog, backendCatalog.providers);
+    const runtimeEntry = backendCatalog.providers.find((item) => item.provider === runtimeProvider);
+    UpdateCatalog(ApplyModelRuntime(merged, runtimeProvider, status.model, { contextWindow: status.contextLimit, thinking: runtimeEntry?.thinkingEnabled }));
     setApiKeyConfigured(status.configured);
-    setConfiguredProvider(status.provider === 'Z.AI' ? 'Z.AI' : status.provider === '自定义' ? '自定义' : 'DeepSeek');
+    setConfiguredProvider(runtimeProvider);
     const contextLimit = status.contextLimit;
     if (!contextLimit) return;
     setDraft((current) => NormalizeProviderSettings({
       ...current,
-      provider: status.provider === '自定义' ? '自定义' : status.provider === 'Z.AI' ? 'Z.AI' : 'DeepSeek',
+      provider: runtimeProvider,
       model: status.model,
       baseUrl: status.baseUrl ?? current.baseUrl,
       contextLength: FormatContextLength(contextLimit),
-      contextLimitMode: status.contextLimitMode ?? 'default',
+      contextLimitMode: 'custom',
       compressionThreshold: status.compressionThreshold ?? current.compressionThreshold,
     }));
   }
@@ -156,7 +203,7 @@ function SettingsPage({ onNavigateDeveloper, tab, requestedTab, tabRequestVersio
         ...current,
         ...patch,
         ...(saved ? {
-          model: saved.model,
+          model: patch.model ?? saved.model,
           baseUrl: saved.baseUrl,
           contextLength: FormatContextLength(saved.contextLimit),
           contextLimitMode: saved.contextLimitMode,
@@ -173,21 +220,22 @@ function SettingsPage({ onNavigateDeveloper, tab, requestedTab, tabRequestVersio
     const nextErrors: FieldErrors = {};
     if (draft.compressionThreshold < 1 || draft.compressionThreshold > 80 || !Number.isInteger(draft.compressionThreshold)) nextErrors.compressionThreshold = '请输入 1–80 之间的整数。';
     if (draft.traceRetention < 1 || draft.traceRetention > 100 || !Number.isInteger(draft.traceRetention)) nextErrors.traceRetention = '请输入 1–100 之间的整数。';
-    if (draft.contextLimitMode === 'custom' && !IsValidContextLength(draft.contextLength)) nextErrors.contextLength = '请输入 8K–2000K，例如 128K 或 128000。';
+    const activeParameters = ResolveActiveModelParameters();
+    if (!activeParameters) { ShowNotice('请先在模型列表里添加或选择一个模型'); return false; }
     setFieldErrors(nextErrors);
     if (Object.keys(nextErrors).length) { ShowNotice('请修正标记的设置项后再保存'); return false; }
     ShowNotice(tab === 'api' ? '正在保存 API 配置…' : '正在保存设置…', 'pending');
     if (tab === 'api' && IsDesktopAgentAvailable()) {
       try {
-        await ConfigureAgent({ provider: draft.provider, apiKey: draft.apiKey, baseUrl: draft.baseUrl, model: draft.model, thinkingEnabled: draft.thinkingEnabled, contextLength: draft.contextLength, contextLimitMode: draft.contextLimitMode, compressionThreshold: draft.compressionThreshold });
+        await ConfigureAgent({ provider: draft.provider, apiKey: draft.apiKey, baseUrl: draft.baseUrl, model: draft.model, thinkingEnabled: activeParameters.thinkingEnabled, contextLength: activeParameters.contextLength, contextLimitMode: activeParameters.contextLimitMode, compressionThreshold: draft.compressionThreshold });
         setApiKeyConfigured(true);
         setConfiguredProvider(draft.provider);
         setConfiguredProviders((current) => new Set([...current, draft.provider]));
         setProviderConfigurations((current) => ({ ...current, [draft.provider]: {
           model: draft.model,
           baseUrl: draft.baseUrl,
-          contextLimit: ParseContextLimit(draft.contextLength) ?? 256000,
-          contextLimitMode: draft.contextLimitMode ?? 'default',
+          contextLimit: activeParameters.contextLimit,
+          contextLimitMode: activeParameters.contextLimitMode,
           compressionThreshold: draft.compressionThreshold,
           thinkingEnabled: draft.thinkingEnabled,
         } }));
@@ -248,6 +296,8 @@ function SettingsPage({ onNavigateDeveloper, tab, requestedTab, tabRequestVersio
   }
   async function TestApiConnection() {
     if (!IsDesktopAgentAvailable()) { ShowNotice('请在桌面客户端中测试 API 连接'); return; }
+    const activeParameters = ResolveActiveModelParameters();
+    if (!activeParameters) { ShowNotice('请先在模型列表里添加或选择一个模型'); return; }
     try {
       await TestAgentConnection({ provider: draft.provider, apiKey: draft.apiKey, baseUrl: draft.baseUrl, model: draft.model, thinkingEnabled: draft.thinkingEnabled, contextLength: draft.contextLength, contextLimitMode: draft.contextLimitMode, compressionThreshold: draft.compressionThreshold });
       ShowNotice('API 连接测试成功，配置尚未保存');
@@ -329,44 +379,100 @@ function SettingsPage({ onNavigateDeveloper, tab, requestedTab, tabRequestVersio
     } finally { setUpdatingModules(false); }
   }
   function SelectProvider(provider: SettingsDraft['provider']) {
-    if (provider === 'DeepSeek') {
-      UpdateDraft({ provider, baseUrl: 'https://api.deepseek.com', model: draft.model.startsWith('deepseek-') && draft.model !== 'deepseek-chat' && draft.model !== 'deepseek-reasoner' ? draft.model : 'deepseek-v4-flash' });
-      return;
-    }
-    if (provider === 'Z.AI') {
-      UpdateDraft({ provider, baseUrl: 'https://open.bigmodel.cn/api/paas/v4', model: 'glm-5.3-flash', thinkingEnabled: true });
-      return;
-    }
-    UpdateDraft({ provider });
+    const entry = FindCatalogProvider(catalog, provider);
+    // 切换供应商时带上它在本地目录里的模型；已配置过的供应商优先沿用上次保存的模型。
+    const preferred = providerConfigurations[provider]?.model ?? draft.model;
+    const model = entry?.models.some((item) => item.id === preferred) ? preferred : entry?.models[0]?.id ?? preferred;
+    const baseUrl = provider === 'DeepSeek' ? 'https://api.deepseek.com' : provider === 'Z.AI' ? 'https://open.bigmodel.cn/api/paas/v4' : draft.baseUrl;
+    UpdateDraft({ provider, baseUrl, model });
   }
   /** 主进程侧是否已保存过该供应商的可用凭据（含刚保存但目录尚未回读的状态）。 */
   function IsProviderConfigured(provider: SettingsDraft['provider']): boolean {
     return configuredProviders.has(provider) || (apiKeyConfigured && configuredProvider === provider);
   }
-  /** DeepSeek 的模型来自官方接口同步；其余供应商只使用当前配置的模型名。 */
-  function ModelsForProvider(): string[] {
-    return draft.provider === 'DeepSeek' ? [...new Set([draft.model, ...deepSeekModels])].filter(Boolean) : [draft.model].filter(Boolean);
+  function ReplaceProvider(next: ModelCatalogProvider): ModelCatalog {
+    return { ...catalog, providers: catalog.providers.map((item) => item.id === next.id ? next : item) };
+  }
+  /** 启用/禁用供应商：禁用后它不再出现在对话的模型选择里。 */
+  function ToggleProviderEnabled(provider: ModelCatalogProvider) {
+    UpdateCatalog(ReplaceProvider({ ...provider, enabled: !provider.enabled }));
+    ShowNotice(provider.enabled ? `${provider.name} 已禁用，不会再出现在对话的模型选择里` : `${provider.name} 已启用，可在对话里选择使用`);
+  }
+  function RemoveProvider(provider: ModelCatalogProvider) {
+    UpdateCatalog({ ...catalog, providers: catalog.providers.filter((item) => item.id !== provider.id) });
+    setProviderDeleteTarget(null);
+    ShowNotice(`已从模型目录移除 ${provider.name}`);
+  }
+  function SetApiFormat(apiFormat: ModelApiFormat) {
+    const provider = FindCatalogProvider(catalog, draft.provider);
+    setApiFormatOpen(false);
+    if (!provider) return;
+    UpdateCatalog(ReplaceProvider({ ...provider, apiFormat }));
+    ShowNotice(`接口格式改为 ${ModelApiFormats.find((item) => item.key === apiFormat)?.label ?? apiFormat}`);
+  }
+  function RemoveModel(provider: ModelCatalogProvider, model: ModelCatalogModel) {
+    UpdateCatalog(ReplaceProvider({ ...provider, models: provider.models.filter((item) => item.id !== model.id) }));
+    ShowNotice(`已删除模型 ${model.id}`);
+  }
+  function OpenModelDialog(index: number) {
+    const model = index >= 0 ? FindCatalogProvider(catalog, draft.provider)?.models[index] : undefined;
+    setModelErrors({});
+    setModelDialog({
+      index,
+      id: model?.id ?? '',
+      contextWindow: String(model?.contextWindow ?? DefaultContextWindow),
+      maxOutput: String(model?.maxOutput ?? DefaultMaxOutput),
+      inputImage: model?.inputImage ?? false,
+      inputPdf: model?.inputPdf ?? false,
+      thinking: model?.thinking ?? true,
+    });
+  }
+  function CloseModelDialog() { setModelDialog(null); setModelErrors({}); }
+  function SaveModelDialog() {
+    const provider = FindCatalogProvider(catalog, draft.provider);
+    if (!modelDialog || !provider) return;
+    const id = modelDialog.id.trim();
+    const contextWindow = Number(modelDialog.contextWindow);
+    const maxOutput = Number(modelDialog.maxOutput);
+    const duplicate = provider.models.some((item, index) => index !== modelDialog.index && item.id === id);
+    setModelErrors({ id: !id || duplicate, contextWindow: !IsValidContextWindow(contextWindow), maxOutput: !IsValidMaxOutput(maxOutput) });
+    if (!id || duplicate) { ShowNotice(duplicate ? '已经有同名的模型 ID' : '模型 ID 不能为空'); return; }
+    if (!IsValidContextWindow(contextWindow)) { ShowNotice('上下文窗口需为 8K–2000K 的整数'); return; }
+    if (!IsValidMaxOutput(maxOutput)) { ShowNotice('最大输出 Token 需为正整数'); return; }
+    const thinking = provider.id === 'Z.AI' ? true : modelDialog.thinking;
+    const next: ModelCatalogModel = { id, contextWindow, maxOutput, inputImage: modelDialog.inputImage, inputPdf: modelDialog.inputPdf, thinking };
+    const wasActive = modelDialog.index >= 0 && draft.model === provider.models[modelDialog.index]?.id;
+    const models = modelDialog.index >= 0 ? provider.models.map((item, index) => index === modelDialog.index ? next : item) : [...provider.models, next];
+    UpdateCatalog(ReplaceProvider({ ...provider, models }));
+    // 改名后当前模型要跟着新 ID；编辑当前模型的上下文窗口与思考模式需要保存后才下发宿主。
+    if (wasActive) { UpdateDraft({ model: id }); setDirty(true); }
+    CloseModelDialog();
+    ShowNotice(modelDialog.index >= 0 ? '模型配置已保存' : `已添加模型 ${id}`);
+  }
+  /** 当前生效模型的宿主端参数：上下文窗口与思考模式取自本地目录里选中的模型。 */
+  function ResolveActiveModelParameters() {
+    const active = FindCatalogModel(catalog, draft.provider, draft.model);
+    if (!active) return null;
+    return { thinkingEnabled: draft.provider === 'Z.AI' ? true : active.thinking, contextLength: FormatContextWindow(active.contextWindow), contextLimit: active.contextWindow, contextLimitMode: 'custom' as const };
   }
   function RenderModelConfiguration() {
-    const providerName = ProviderEntries.find((item) => item.id === draft.provider)?.label ?? '模型提供商';
-    const providerConfigured = IsProviderConfigured(draft.provider);
-    const models = ModelsForProvider();
-    const contextLimitCustom = draft.contextLimitMode === 'custom';
-    const thinkingLocked = draft.provider === 'Z.AI';
+    const provider = FindCatalogProvider(catalog, draft.provider) ?? catalog.providers[0];
+    const providerConfigured = IsProviderConfigured(provider.id);
+    const apiFormatLabel = ModelApiFormats.find((item) => item.key === provider.apiFormat)?.label ?? ModelApiFormats[0].label;
     // 分组标签与供应商条目平铺在同一个列表里：包一层容器会打断 .set-group 的间距规则。
     const sideItems: ReactNode[] = [];
     ProviderGroups.forEach((group) => {
       sideItems.push(<div className="set-group" key={`group-${group}`}>{group}</div>);
-      ProviderEntries.filter((item) => item.group === group).forEach((item) => {
+      catalog.providers.filter((item) => (group === '推荐' ? !item.custom : item.custom)).forEach((item) => {
         const configured = IsProviderConfigured(item.id);
         sideItems.push(<button key={item.id} className={`prov${item.id === draft.provider ? ' sel' : ''}`} type="button" aria-current={item.id === draft.provider ? 'true' : undefined} onClick={() => SelectProvider(item.id)}>
-          <span className="prov-mark" aria-hidden="true">{item.mark}</span>
-          <span className="pn">{item.label}</span>
+          <span className="prov-mark" aria-hidden="true">{ProviderMarks[item.id]}</span>
+          <span className="pn">{item.name}</span>
           <span className={`dot${configured ? ' on' : ''}`} title={configured ? '已配置' : '未配置'} />
         </button>);
       });
     });
-    return <div className="set set-root">
+    return <div className="set set-root model-set-scope">
       <div className="set-head">
         <div>
           <h1>模型设置</h1>
@@ -378,9 +484,11 @@ function SettingsPage({ onNavigateDeveloper, tab, requestedTab, tabRequestVersio
         <aside className="set-side" aria-label="模型供应商">{sideItems}</aside>
         <div className="set-pane">
           <div className="set-d-head">
-            <span className="set-name">{providerName}</span>
-            <span className={`pill ${providerConfigured ? 'on' : 'off'}`}>{providerConfigured ? '已配置' : '待配置'}</span>
+            <span className="set-name">{provider.name}</span>
+            <span className={`pill ${provider.enabled ? 'on' : 'off'}`}>{provider.enabled ? '已启用' : '未启用'}</span>
+            <button className="pill-btn" type="button" onClick={() => ToggleProviderEnabled(provider)}>{provider.enabled ? '禁用' : '启用'}</button>
             <div className="set-d-acts">
+              {provider.custom && <button className="icon-btn set-del" type="button" aria-label="删除供应商" title="删除供应商" onClick={() => setProviderDeleteTarget(provider)}><Icon name="delete" size={16} /></button>}
               <button className="ghost-btn" type="button" onClick={() => void TestApiConnection()}><Icon name="gauge" size={14} />测试连接</button>
               <button className="btn-accent" type="button" onClick={() => void SaveSettings()}><Icon name="check-circle" size={14} />保存配置</button>
             </div>
@@ -388,58 +496,112 @@ function SettingsPage({ onNavigateDeveloper, tab, requestedTab, tabRequestVersio
           <div className="set-fields">
             <label className="set-field">
               <span className="lb">Base URL</span>
-              <input className="set-inp" value={draft.baseUrl} readOnly={draft.provider === 'Z.AI'} spellCheck={false} placeholder="https://api.example.com/v1" onChange={(event) => UpdateDraft({ baseUrl: event.target.value })} />
+              <input className="set-inp" value={draft.baseUrl} readOnly={!provider.custom} spellCheck={false} placeholder="https://api.example.com/v1" onChange={(event) => UpdateDraft({ baseUrl: event.target.value })} />
             </label>
-            <label className="set-field">
-              <span className="lb">接口格式</span>
-              <input className="set-inp" value="Chat Completions (/chat/completions)" readOnly />
-            </label>
+            <div className="set-field">
+              <span className="lb">API 格式</span>
+              {/* 推荐供应商固定使用 Chat Completions：选择器保留展示但不可操作。 */}
+              {provider.custom ? <div className="menu-wrap" ref={apiFormatRef}>
+                <button className="sel-btn menu-trigger" type="button" aria-expanded={apiFormatOpen} aria-haspopup="true" onClick={() => setApiFormatOpen((current) => !current)}>
+                  <span className="v">{apiFormatLabel}</span>
+                  <Icon name="chevron-down" className="chev" size={11} />
+                </button>
+                {apiFormatOpen && <div className="menu drop" role="menu" aria-label="API 格式">
+                  {ModelApiFormats.map((format) => <button key={format.key} className={`menu-item${format.key === provider.apiFormat ? ' sel' : ''}`} type="button" role="menuitemradio" aria-checked={format.key === provider.apiFormat} onClick={() => SetApiFormat(format.key)}>
+                    <span><span className="mt">{format.label}</span><span className="md">{format.note}</span></span>
+                    <Icon name="check" size={14} className="tick" />
+                  </button>)}
+                </div>}
+              </div> : <button className="sel-btn" type="button" disabled aria-disabled="true" title="推荐供应商固定使用 Chat Completions，不能修改接口格式">
+                <span className="v">{apiFormatLabel}</span>
+                <Icon name="chevron-down" className="chev" size={11} />
+              </button>}
+            </div>
             <label className="set-field">
               <span className="lb">API Key</span>
-              <input className="set-inp" type="password" value={draft.apiKey} autoComplete="off" spellCheck={false} placeholder={providerConfigured ? '已安全保存，输入新密钥可覆盖' : '粘贴供应商给你的 Key'} onChange={(event) => UpdateDraft({ apiKey: event.target.value })} />
+              <span className="inp-wrap">
+                <input className="set-inp" type={apiKeyShown ? 'text' : 'password'} value={draft.apiKey} autoComplete="off" spellCheck={false} placeholder={providerConfigured ? '已安全保存，输入新密钥可覆盖' : '粘贴供应商给你的 Key'} onChange={(event) => UpdateDraft({ apiKey: event.target.value })} />
+                <button className="inp-eye" type="button" aria-label={apiKeyShown ? '隐藏 API Key' : '显示 API Key'} title={apiKeyShown ? '隐藏' : '显示'} onClick={() => setApiKeyShown((current) => !current)}><Icon name={apiKeyShown ? 'eye-slash' : 'eye'} size={16} /></button>
+              </span>
             </label>
             <div className="set-field">
               <span className="lb-row">
                 <span className="lb">模型列表</span>
-                <button className={`icon-btn sm lb-get${refreshingModels ? ' is-spinning' : ''}`} type="button" aria-label="获取模型列表" title={draft.provider === 'DeepSeek' ? '获取模型列表' : '仅 DeepSeek 支持从官方接口同步模型列表'} disabled={draft.provider !== 'DeepSeek' || refreshingModels} onClick={() => void RefreshDeepSeekModels(true)}><Icon name="recovery" size={14} /></button>
+                <button className={`icon-btn sm lb-get${refreshingModels ? ' is-spinning' : ''}`} type="button" aria-label="获取模型列表" title={provider.id === 'DeepSeek' ? '获取模型列表' : '仅 DeepSeek 支持从官方接口同步模型列表'} disabled={provider.id !== 'DeepSeek' || refreshingModels} onClick={() => void RefreshDeepSeekModels(true)}><Icon name="recovery" size={14} /></button>
               </span>
               <div className="set-models">
-                {/* 自定义供应商只有一个模型名，直接在该行内填写；其余供应商展示可切换的模型列表。 */}
-                {draft.provider === '自定义'
-                  ? <div className="mrow"><input className="set-inp" value={draft.model} aria-label="模型名称" placeholder="输入模型名称" spellCheck={false} onChange={(event) => UpdateDraft({ model: event.target.value })} /></div>
-                  : models.length
-                    ? models.map((model) => <div className="mrow" key={model}>
-                      <span className="mrow-name">{model}</span>
-                      <span className="mrow-chips">{model === draft.model && <span className="jtag">当前</span>}</span>
-                      {models.length > 1 && <span className="mrow-acts">
-                        <button className={`icon-btn sm${model === draft.model ? ' def' : ''}`} type="button" aria-label="设为当前模型" aria-pressed={model === draft.model} title="设为当前模型" onClick={() => UpdateDraft({ model })}><Icon name="lightning" size={14} weight={model === draft.model ? 'fill' : 'regular'} /></button>
-                      </span>}
-                    </div>)
-                    : <div className="mrow-empty">还没有可用模型。填好 Base URL 与 API Key 后，用模型列表右上角的按钮同步。</div>}
+                {provider.models.length ? provider.models.map((model, index) => {
+                  const isActive = model.id === draft.model;
+                  return <div className="mrow" key={model.id}>
+                    <span className="mrow-name">{model.id}</span>
+                    <span className="mrow-chips">
+                      {model.inputImage && <span className="jtag">视觉</span>}
+                      <span className="jtag">{FormatContextWindow(model.contextWindow)}</span>
+                    </span>
+                    <span className="mrow-acts">
+                      <button className={`icon-btn sm${isActive ? ' def' : ''}`} type="button" aria-label="设为当前模型" aria-pressed={isActive} title="设为当前模型" onClick={() => UpdateDraft({ model: model.id })}><Icon name="lightning" size={14} weight={isActive ? 'fill' : 'regular'} /></button>
+                      <button className="icon-btn sm" type="button" aria-label="编辑模型配置" title="编辑模型配置" onClick={() => OpenModelDialog(index)}><Icon name="pencil-simple" size={14} /></button>
+                      <button className="icon-btn sm" type="button" aria-label="删除模型" title="删除模型" onClick={() => RemoveModel(provider, model)}><Icon name="delete" size={14} /></button>
+                    </span>
+                  </div>;
+                }) : <div className="mrow-empty">还没有模型。点下面的「添加模型」填上供应商文档里的模型名。</div>}
               </div>
+              <button className="quiet-btn set-add" type="button" onClick={() => OpenModelDialog(-1)}><Icon name="plus" size={15} />添加模型</button>
             </div>
-            <div className="set-field is-switch">
-              <span className="sw-txt">
-                <b>思考模式</b>
-                <small>{thinkingLocked ? 'GLM 模型始终启用思考模式。' : '开启后，助手会展示可折叠的思考内容。'}</small>
-              </span>
-              <button className="switch" type="button" role="switch" aria-checked={draft.thinkingEnabled} aria-label="思考模式" aria-disabled={thinkingLocked || undefined} disabled={thinkingLocked} onClick={() => UpdateDraft({ thinkingEnabled: !draft.thinkingEnabled })}><span className="knob" /></button>
-            </div>
-            <div className="set-field is-switch">
-              <span className="sw-txt">
-                <b>自定义上下文限制</b>
-                <small>{contextLimitCustom ? '按下方数值计算输入上限；已知模型不能超过其官方上限。' : '关闭时默认使用 256K；若模型上限更小，则自动使用模型上限。'}</small>
-              </span>
-              <button className="switch" type="button" role="switch" aria-checked={contextLimitCustom} aria-label="自定义上下文限制" onClick={() => UpdateDraft({ contextLimitMode: contextLimitCustom ? 'default' : 'custom' })}><span className="knob" /></button>
-            </div>
-            {contextLimitCustom && <label className="set-field">
-              <span className="lb">上下文限制</span>
-              <input className={`set-inp${fieldErrors.contextLength ? ' bad' : ''}`} value={draft.contextLength} placeholder="例如 128K" spellCheck={false} aria-invalid={Boolean(fieldErrors.contextLength)} aria-describedby={fieldErrors.contextLength ? 'context-limit-error' : undefined} onChange={(event) => UpdateDraft({ contextLength: event.target.value })} />
-              {fieldErrors.contextLength && <small className="field-error" id="context-limit-error" role="alert">{fieldErrors.contextLength}</small>}
-            </label>}
           </div>
         </div>
       </div>
+
+      {/* 模型配置弹窗按原型：模型 ID、上下文窗口、最大输出 Token、思考模式与输入/输出类型都作用于单个模型。 */}
+      {modelDialog && <Modal open title={modelDialog.index >= 0 ? '编辑模型配置' : '添加模型'} onClose={CloseModelDialog}>
+        <div className="model-dialog model-set-scope">
+          <label className="set-field">
+            <span className="lb">模型 ID</span>
+            <input className={`set-inp${modelErrors.id ? ' bad' : ''}`} value={modelDialog.id} placeholder="供应商文档里的模型名" spellCheck={false} autoComplete="off" onChange={(event) => { setModelErrors((current) => ({ ...current, id: false })); setModelDialog({ ...modelDialog, id: event.target.value }); }} />
+          </label>
+          <label className="set-field">
+            <span className="lb">上下文窗口</span>
+            <input className={`set-inp${modelErrors.contextWindow ? ' bad' : ''}`} value={modelDialog.contextWindow} inputMode="numeric" spellCheck={false} onChange={(event) => { setModelErrors((current) => ({ ...current, contextWindow: false })); setModelDialog({ ...modelDialog, contextWindow: event.target.value.replace(/[^0-9]/g, '') }); }} />
+          </label>
+          <label className="set-field">
+            <span className="lb">最大输出 Token</span>
+            <input className={`set-inp${modelErrors.maxOutput ? ' bad' : ''}`} value={modelDialog.maxOutput} inputMode="numeric" spellCheck={false} onChange={(event) => { setModelErrors((current) => ({ ...current, maxOutput: false })); setModelDialog({ ...modelDialog, maxOutput: event.target.value.replace(/[^0-9]/g, '') }); }} />
+          </label>
+          <div className="set-field is-switch">
+            <span className="sw-txt">
+              <b>思考模式</b>
+              <small>{draft.provider === 'Z.AI' ? 'GLM 模型始终启用思考模式。' : '开启后助手会展示可折叠的思考内容；当前模型的取值随配置一起保存。'}</small>
+            </span>
+            <button className="switch" type="button" role="switch" aria-checked={draft.provider === 'Z.AI' ? true : modelDialog.thinking} aria-label="思考模式" aria-disabled={draft.provider === 'Z.AI' || undefined} disabled={draft.provider === 'Z.AI'} onClick={() => setModelDialog({ ...modelDialog, thinking: !modelDialog.thinking })}><span className="knob" /></button>
+          </div>
+          <div className="set-field">
+            <span className="lb">输入类型</span>
+            <div className="chk-row">
+              <label className="chk locked"><input type="checkbox" checked readOnly disabled /><span className="box"><Icon name="check" size={11} /></span><span>文本</span><Icon name="lock-simple" className="lock" size={12} /></label>
+              <label className="chk"><input type="checkbox" checked={modelDialog.inputImage} onChange={(event) => setModelDialog({ ...modelDialog, inputImage: event.target.checked })} /><span className="box"><Icon name="check" size={11} /></span><span>图片</span></label>
+              <label className="chk"><input type="checkbox" checked={modelDialog.inputPdf} onChange={(event) => setModelDialog({ ...modelDialog, inputPdf: event.target.checked })} /><span className="box"><Icon name="check" size={11} /></span><span>PDF</span></label>
+            </div>
+          </div>
+          <div className="set-field">
+            <span className="lb">输出类型</span>
+            <div className="chk-row">
+              <label className="chk locked"><input type="checkbox" checked readOnly disabled /><span className="box"><Icon name="check" size={11} /></span><span>文本</span><Icon name="lock-simple" className="lock" size={12} /></label>
+            </div>
+          </div>
+        </div>
+        <div className="modal-actions">
+          <button className="ghost-btn" type="button" onClick={CloseModelDialog}>取消</button>
+          <button className="btn-accent" type="button" onClick={SaveModelDialog}>保存</button>
+        </div>
+      </Modal>}
+
+      <Modal open={Boolean(providerDeleteTarget)} title="从模型目录移除这个供应商？" onClose={() => setProviderDeleteTarget(null)}>
+        <p className="modal-copy">移除后 {providerDeleteTarget?.name} 不再出现在设置页与对话的模型选择里；点页头的「重新加载配置」可以把它找回来。</p>
+        <div className="modal-actions">
+          <button className="ghost-btn" type="button" onClick={() => setProviderDeleteTarget(null)}>取消</button>
+          <button className="ghost-btn is-danger" type="button" onClick={() => providerDeleteTarget && RemoveProvider(providerDeleteTarget)}>移除供应商</button>
+        </div>
+      </Modal>
     </div>;
   }
   const current = SettingsTabs.find((item) => item.id === tab)!;

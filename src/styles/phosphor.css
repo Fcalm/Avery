@@ -111,3 +111,7 @@
 .ph-info::before { content: "\e2ce"; }
 /* 简历抽屉（原型一比一）：下载 PDF */
 .ph-download-simple::before { content: "\e20c"; }
+/* 模型配置（原型一比一）：API Key 显示与隐藏、弹窗里固定输入类型的锁标记 */
+.ph-eye::before { content: "\e220"; }
+.ph-eye-slash::before { content: "\e224"; }
+.ph-lock-simple::before { content: "\e308"; }
