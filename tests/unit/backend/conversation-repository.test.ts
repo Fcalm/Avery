@@ -39,6 +39,14 @@ describe('ConversationRepository 创建', () => {
     expect(() => repository.Create({ id: 'conversation-4', title: '坏场景', scenarioId: 'resume-copilot' as unknown as 'default' })).toThrow('scenario is invalid');
     db.close();
   });
+
+  it('功能上线前的旧会话缺元数据时仍可读取，遗留场景标识归一为默认场景', () => {
+    const { db, repository } = CreateRepository();
+    db.prepare("INSERT INTO conversations(id, title, scenario_id, revision, created_at, updated_at, last_used_at) VALUES('legacy-1', '旧会话', 'resume-copilot', 1, 1, 1, 1)").run();
+
+    expect(repository.ListAll().find((item: any) => item.id === 'legacy-1')).toMatchObject({ scenarioId: 'default', projectId: null, projectName: null });
+    db.close();
+  });
 });
 
 describe('ConversationRepository 删除', () => {

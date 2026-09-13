@@ -78,7 +78,8 @@ export class CronRunnerService {
     const replyId = `reply-${requestId}`;
     const dateLabel = new Intl.DateTimeFormat('zh-CN', { timeZone: claim.task.schedule.timeZone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(claim.run.scheduledAt));
     try {
-      await this.input.business.CreateConversation({ id: conversationId, title: `${claim.task.title} · ${dateLabel}`.slice(0, 300) });
+      // 定时任务会话同样要定格场景：侧栏据此显示「工作」而非默认「聊天」；无人值守运行不绑定项目目录。
+      await this.input.business.CreateConversation({ id: conversationId, title: `${claim.task.title} · ${dateLabel}`.slice(0, 300), scenarioId: claim.task.scenarioId });
       await this.input.business.AppendConversationMessages(conversationId, [
         { id: `message-${randomUUID()}`, role: 'user', content: claim.task.message },
         { id: replyId, role: 'assistant', content: '', thinkingContent: '' },
