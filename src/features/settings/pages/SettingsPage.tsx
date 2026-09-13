@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useUiStore } from '../../../app/UiStore';
 import { useSettingsStore } from '../../../features/settings/api/settingsQueries';
@@ -21,6 +21,13 @@ export const SettingsTabs: Array<{ id: SettingTab; label: string; description: s
 ];
 const FallbackDeepSeekModels = ['deepseek-v4-flash', 'deepseek-v4-pro', 'deepseek-v4-flash-vision-exp'];
 const BrowserEngineLabels = { electron: 'Avery 隔离浏览器', chrome: 'Google Chrome', edge: 'Microsoft Edge' } as const;
+/** 模型配置侧栏的供应商分组与标记：内置供应商归入「推荐」，自定义提供商单独成组。 */
+const ProviderEntries: Array<{ id: SettingsDraft['provider']; label: string; mark: string; group: string }> = [
+  { id: 'DeepSeek', label: 'DeepSeek', mark: 'D', group: '推荐' },
+  { id: 'Z.AI', label: '智谱 GLM', mark: 'Z', group: '推荐' },
+  { id: '自定义', label: '自定义提供商', mark: '+', group: '自定义供应商' },
+];
+const ProviderGroups = ['推荐', '自定义供应商'];
 
 function NormalizeProviderSettings(settings: SettingsDraft): SettingsDraft {
   const contextLimitMode = settings.contextLimitMode ?? (settings.provider === '自定义' ? 'custom' : 'default');
@@ -73,6 +80,8 @@ function SettingsPage({ onNavigateDeveloper, tab, requestedTab, tabRequestVersio
   const [configuredProvider, setConfiguredProvider] = useState<SettingsDraft['provider'] | null>(null);
   const [configuredProviders, setConfiguredProviders] = useState<Set<SettingsDraft['provider']>>(new Set());
   const [providerConfigurations, setProviderConfigurations] = useState<Partial<Record<SettingsDraft['provider'], { model: string; baseUrl: string; contextLimit: number; contextLimitMode: 'default' | 'custom'; compressionThreshold: number; thinkingEnabled: boolean }>>>({});
+  const [providerReloading, setProviderReloading] = useState(false);
+  const providerSpinTimer = useRef(0);
   useEffect(() => { setDraft(NormalizeProviderSettings(settings)); }, [settings]);
   /** API Key 不进入 Renderer；只以主进程返回的脱敏配置状态驱动成功标记。 */
   useEffect(() => {
@@ -96,28 +105,44 @@ function SettingsPage({ onNavigateDeveloper, tab, requestedTab, tabRequestVersio
   useEffect(() => {
     if (tab === 'api' && draft.provider === 'DeepSeek') void RefreshDeepSeekModels();
   }, [tab, draft.provider]);
+  /** 读取主进程侧的供应商目录与当前生效配置；进入页签与页头刷新按钮共用同一份逻辑。 */
+  async function LoadProviderConfiguration() {
+    const catalog = await GetProviderCatalog();
+    setConfiguredProviders(new Set(catalog.providers.filter((item) => item.configured).map((item) => item.provider)));
+    setProviderConfigurations(Object.fromEntries(catalog.providers.filter((item) => item.configured).map((item) => [item.provider, item])));
+    const status = await GetAgentStatus();
+    setApiKeyConfigured(status.configured);
+    setConfiguredProvider(status.provider === 'Z.AI' ? 'Z.AI' : status.provider === '自定义' ? '自定义' : 'DeepSeek');
+    const contextLimit = status.contextLimit;
+    if (!contextLimit) return;
+    setDraft((current) => NormalizeProviderSettings({
+      ...current,
+      provider: status.provider === '自定义' ? '自定义' : status.provider === 'Z.AI' ? 'Z.AI' : 'DeepSeek',
+      model: status.model,
+      baseUrl: status.baseUrl ?? current.baseUrl,
+      contextLength: FormatContextLength(contextLimit),
+      contextLimitMode: status.contextLimitMode ?? 'default',
+      compressionThreshold: status.compressionThreshold ?? current.compressionThreshold,
+    }));
+  }
   useEffect(() => {
     if (tab !== 'api' || !IsDesktopAgentAvailable()) return;
-    void GetProviderCatalog().then((catalog) => {
-      setConfiguredProviders(new Set(catalog.providers.filter((item) => item.configured).map((item) => item.provider)));
-      setProviderConfigurations(Object.fromEntries(catalog.providers.filter((item) => item.configured).map((item) => [item.provider, item])));
-    }).catch(() => undefined);
-    void GetAgentStatus().then((status) => {
-      setApiKeyConfigured(status.configured);
-      setConfiguredProvider(status.provider === 'Z.AI' ? 'Z.AI' : status.provider === '自定义' ? '自定义' : 'DeepSeek');
-      const contextLimit = status.contextLimit;
-      if (!contextLimit) return;
-      setDraft((current) => NormalizeProviderSettings({
-        ...current,
-        provider: status.provider === '自定义' ? '自定义' : status.provider === 'Z.AI' ? 'Z.AI' : 'DeepSeek',
-        model: status.model,
-        baseUrl: status.baseUrl ?? current.baseUrl,
-        contextLength: FormatContextLength(contextLimit),
-        contextLimitMode: status.contextLimitMode ?? 'default',
-        compressionThreshold: status.compressionThreshold ?? current.compressionThreshold,
-      }));
-    }).catch(() => { setApiKeyConfigured(false); setConfiguredProvider(null); });
+    void LoadProviderConfiguration().catch(() => { setApiKeyConfigured(false); setConfiguredProvider(null); });
   }, [tab]);
+  /** 页头的重新加载按钮：先播一次旋转动画，再回读主进程配置。 */
+  async function ReloadProviderConfiguration() {
+    if (!IsDesktopAgentAvailable()) { ShowNotice('请在桌面客户端中重新加载配置'); return; }
+    if (providerSpinTimer.current) window.clearTimeout(providerSpinTimer.current);
+    setProviderReloading(true);
+    providerSpinTimer.current = window.setTimeout(() => setProviderReloading(false), 640);
+    try {
+      await LoadProviderConfiguration();
+      ShowNotice('配置已重新加载');
+    } catch (error) {
+      ShowNotice(error instanceof Error ? error.message : '配置重新加载失败');
+    }
+  }
+  useEffect(() => () => { if (providerSpinTimer.current) window.clearTimeout(providerSpinTimer.current); }, []);
   useEffect(() => {
     if (tab === 'developer' && IsDesktopAgentAvailable()) void RefreshModuleConfiguration();
   }, [tab]);
@@ -314,37 +339,113 @@ function SettingsPage({ onNavigateDeveloper, tab, requestedTab, tabRequestVersio
     }
     UpdateDraft({ provider });
   }
+  /** 主进程侧是否已保存过该供应商的可用凭据（含刚保存但目录尚未回读的状态）。 */
+  function IsProviderConfigured(provider: SettingsDraft['provider']): boolean {
+    return configuredProviders.has(provider) || (apiKeyConfigured && configuredProvider === provider);
+  }
+  /** DeepSeek 的模型来自官方接口同步；其余供应商只使用当前配置的模型名。 */
+  function ModelsForProvider(): string[] {
+    return draft.provider === 'DeepSeek' ? [...new Set([draft.model, ...deepSeekModels])].filter(Boolean) : [draft.model].filter(Boolean);
+  }
   function RenderModelConfiguration() {
-    const providerOptions: Array<{ id: SettingsDraft['provider']; label: string; symbol: string }> = [
-      { id: 'DeepSeek', label: 'DeepSeek', symbol: 'D' },
-      { id: 'Z.AI', label: '智谱 GLM', symbol: 'Z' },
-      { id: '自定义', label: '自定义提供商', symbol: '+' },
-    ];
-    const currentProviderConfigured = configuredProviders.has(draft.provider) || (apiKeyConfigured && configuredProvider === draft.provider);
-    const modelOptions = draft.provider === 'DeepSeek'
-      ? [...new Set([draft.model, ...deepSeekModels])].map((model) => ({ value: model, label: model }))
-      : [{ value: draft.model, label: draft.model }];
-    const providerName = providerOptions.find((item) => item.id === draft.provider)?.label ?? '模型提供商';
-    return <section className="settings-panel api-panel model-configuration-panel">
-      <aside className="model-provider-list" aria-label="模型供应商">
-        <div className="model-provider-group">{providerOptions.filter((item) => item.id !== '自定义').map((item) => <button key={item.id} className={item.id === draft.provider ? 'selected' : ''} type="button" aria-pressed={item.id === draft.provider} onClick={() => SelectProvider(item.id)}><span className="model-provider-symbol">{item.symbol}</span><span><b>{item.label}</b></span><i className={configuredProviders.has(item.id) || (apiKeyConfigured && configuredProvider === item.id) ? 'is-configured' : ''} aria-label={configuredProviders.has(item.id) || (apiKeyConfigured && configuredProvider === item.id) ? '已配置' : '未配置'} /></button>)}</div>
-        <div className="model-provider-group"><small>自定义提供商</small>{providerOptions.filter((item) => item.id === '自定义').map((item) => <button key={item.id} className={item.id === draft.provider ? 'selected' : ''} type="button" aria-pressed={item.id === draft.provider} onClick={() => SelectProvider(item.id)}><span className="model-provider-symbol">{item.symbol}</span><span><b>{item.label}</b></span><i className={configuredProviders.has(item.id) || (apiKeyConfigured && configuredProvider === item.id) ? 'is-configured' : ''} aria-label={configuredProviders.has(item.id) || (apiKeyConfigured && configuredProvider === item.id) ? '已配置' : '未配置'} /></button>)}</div>
-      </aside>
-      <div className="model-provider-detail">
-        <header><div><h2>{providerName}</h2><p>配置完成后，可在对话输入框中选择此模型。</p></div><div className="model-provider-actions"><span className={currentProviderConfigured ? 'is-configured' : ''}>{currentProviderConfigured ? '已配置' : '待配置'}</span><div className="api-actions"><Button onClick={() => void TestApiConnection()}>测试连接</Button><Button variant="primary" onClick={() => void SaveSettings()}>保存配置</Button></div></div></header>
-        <div className="model-provider-fields">
-          <div className="model-config-basic-fields"><label className="model-config-field"><span>Base URL</span><input value={draft.baseUrl} readOnly={draft.provider === 'Z.AI'} onChange={(event) => UpdateDraft({ baseUrl: event.target.value })} /></label><label className="model-config-field"><span>接口格式</span><input value="Chat Completions (/chat/completions)" readOnly /></label></div>
-          <label className="model-config-field"><span>API Key</span><input type="password" value={draft.apiKey} onChange={(event) => UpdateDraft({ apiKey: event.target.value })} autoComplete="off" placeholder={currentProviderConfigured ? '已安全保存，输入新密钥可覆盖' : '请输入 API Key'} /></label>
-          <section className="model-config-models"><div><span>模型列表</span>{draft.provider === 'DeepSeek' && <Button variant="quiet" disabled={refreshingModels} onClick={() => void RefreshDeepSeekModels(true)}>{refreshingModels ? '同步中…' : '刷新模型'}</Button>}</div><article><span className="model-provider-symbol">{draft.provider === '自定义' ? '+' : draft.provider === 'Z.AI' ? 'Z' : 'D'}</span>{draft.provider === 'Z.AI' ? <input value="glm-5.3-flash" readOnly /> : draft.provider === '自定义' ? <input value={draft.model} onChange={(event) => UpdateDraft({ model: event.target.value })} placeholder="输入模型名称" /> : <Select value={draft.model} onChange={(model) => UpdateDraft({ model })} ariaLabel="默认模型" options={modelOptions} />}</article></section>
-          <section className="model-config-advanced"><label className="switch-line"><span><b>思考模式</b><small>{draft.provider === 'Z.AI' ? 'GLM 模型始终启用思考模式。' : '开启后，助手会展示可折叠的思考内容。'}</small></span><input type="checkbox" checked={draft.thinkingEnabled} disabled={draft.provider === 'Z.AI'} onChange={(event) => UpdateDraft({ thinkingEnabled: event.target.checked })} /></label><label className="switch-line"><span><b>自定义上下文限制</b><small>关闭时使用模型默认上限。</small></span><input type="checkbox" checked={draft.contextLimitMode === 'custom'} onChange={(event) => UpdateDraft({ contextLimitMode: event.target.checked ? 'custom' : 'default' })} /></label>{draft.contextLimitMode === 'custom' && <label className="model-config-field"><span>上下文限制</span><input value={draft.contextLength} aria-invalid={Boolean(fieldErrors.contextLength)} onChange={(event) => UpdateDraft({ contextLength: event.target.value })} placeholder="例如 128K" /></label>}</section>
+    const providerName = ProviderEntries.find((item) => item.id === draft.provider)?.label ?? '模型提供商';
+    const providerConfigured = IsProviderConfigured(draft.provider);
+    const models = ModelsForProvider();
+    const contextLimitCustom = draft.contextLimitMode === 'custom';
+    const thinkingLocked = draft.provider === 'Z.AI';
+    // 分组标签与供应商条目平铺在同一个列表里：包一层容器会打断 .set-group 的间距规则。
+    const sideItems: ReactNode[] = [];
+    ProviderGroups.forEach((group) => {
+      sideItems.push(<div className="set-group" key={`group-${group}`}>{group}</div>);
+      ProviderEntries.filter((item) => item.group === group).forEach((item) => {
+        const configured = IsProviderConfigured(item.id);
+        sideItems.push(<button key={item.id} className={`prov${item.id === draft.provider ? ' sel' : ''}`} type="button" aria-current={item.id === draft.provider ? 'true' : undefined} onClick={() => SelectProvider(item.id)}>
+          <span className="prov-mark" aria-hidden="true">{item.mark}</span>
+          <span className="pn">{item.label}</span>
+          <span className={`dot${configured ? ' on' : ''}`} title={configured ? '已配置' : '未配置'} />
+        </button>);
+      });
+    });
+    return <div className="set set-root">
+      <div className="set-head">
+        <div>
+          <h1>模型设置</h1>
+          <p>管理自定义模型供应商，配置后可在聊天时选择使用。</p>
+        </div>
+        <button className={`icon-btn set-refresh${providerReloading ? ' is-spinning' : ''}`} type="button" aria-label="重新加载配置" title="重新加载配置" onClick={() => void ReloadProviderConfiguration()}><Icon name="recovery" size={17} /></button>
+      </div>
+      <div className="set-card">
+        <aside className="set-side" aria-label="模型供应商">{sideItems}</aside>
+        <div className="set-pane">
+          <div className="set-d-head">
+            <span className="set-name">{providerName}</span>
+            <span className={`pill ${providerConfigured ? 'on' : 'off'}`}>{providerConfigured ? '已配置' : '待配置'}</span>
+            <div className="set-d-acts">
+              <button className="ghost-btn" type="button" onClick={() => void TestApiConnection()}><Icon name="gauge" size={14} />测试连接</button>
+              <button className="btn-accent" type="button" onClick={() => void SaveSettings()}><Icon name="check-circle" size={14} />保存配置</button>
+            </div>
+          </div>
+          <div className="set-fields">
+            <label className="set-field">
+              <span className="lb">Base URL</span>
+              <input className="set-inp" value={draft.baseUrl} readOnly={draft.provider === 'Z.AI'} spellCheck={false} placeholder="https://api.example.com/v1" onChange={(event) => UpdateDraft({ baseUrl: event.target.value })} />
+            </label>
+            <label className="set-field">
+              <span className="lb">接口格式</span>
+              <input className="set-inp" value="Chat Completions (/chat/completions)" readOnly />
+            </label>
+            <label className="set-field">
+              <span className="lb">API Key</span>
+              <input className="set-inp" type="password" value={draft.apiKey} autoComplete="off" spellCheck={false} placeholder={providerConfigured ? '已安全保存，输入新密钥可覆盖' : '粘贴供应商给你的 Key'} onChange={(event) => UpdateDraft({ apiKey: event.target.value })} />
+            </label>
+            <div className="set-field">
+              <span className="lb-row">
+                <span className="lb">模型列表</span>
+                <button className={`icon-btn sm lb-get${refreshingModels ? ' is-spinning' : ''}`} type="button" aria-label="获取模型列表" title={draft.provider === 'DeepSeek' ? '获取模型列表' : '仅 DeepSeek 支持从官方接口同步模型列表'} disabled={draft.provider !== 'DeepSeek' || refreshingModels} onClick={() => void RefreshDeepSeekModels(true)}><Icon name="recovery" size={14} /></button>
+              </span>
+              <div className="set-models">
+                {/* 自定义供应商只有一个模型名，直接在该行内填写；其余供应商展示可切换的模型列表。 */}
+                {draft.provider === '自定义'
+                  ? <div className="mrow"><input className="set-inp" value={draft.model} aria-label="模型名称" placeholder="输入模型名称" spellCheck={false} onChange={(event) => UpdateDraft({ model: event.target.value })} /></div>
+                  : models.length
+                    ? models.map((model) => <div className="mrow" key={model}>
+                      <span className="mrow-name">{model}</span>
+                      <span className="mrow-chips">{model === draft.model && <span className="jtag">当前</span>}</span>
+                      {models.length > 1 && <span className="mrow-acts">
+                        <button className={`icon-btn sm${model === draft.model ? ' def' : ''}`} type="button" aria-label="设为当前模型" aria-pressed={model === draft.model} title="设为当前模型" onClick={() => UpdateDraft({ model })}><Icon name="lightning" size={14} weight={model === draft.model ? 'fill' : 'regular'} /></button>
+                      </span>}
+                    </div>)
+                    : <div className="mrow-empty">还没有可用模型。填好 Base URL 与 API Key 后，用模型列表右上角的按钮同步。</div>}
+              </div>
+            </div>
+            <div className="set-field is-switch">
+              <span className="sw-txt">
+                <b>思考模式</b>
+                <small>{thinkingLocked ? 'GLM 模型始终启用思考模式。' : '开启后，助手会展示可折叠的思考内容。'}</small>
+              </span>
+              <button className="switch" type="button" role="switch" aria-checked={draft.thinkingEnabled} aria-label="思考模式" aria-disabled={thinkingLocked || undefined} disabled={thinkingLocked} onClick={() => UpdateDraft({ thinkingEnabled: !draft.thinkingEnabled })}><span className="knob" /></button>
+            </div>
+            <div className="set-field is-switch">
+              <span className="sw-txt">
+                <b>自定义上下文限制</b>
+                <small>{contextLimitCustom ? '按下方数值计算输入上限；已知模型不能超过其官方上限。' : '关闭时默认使用 256K；若模型上限更小，则自动使用模型上限。'}</small>
+              </span>
+              <button className="switch" type="button" role="switch" aria-checked={contextLimitCustom} aria-label="自定义上下文限制" onClick={() => UpdateDraft({ contextLimitMode: contextLimitCustom ? 'default' : 'custom' })}><span className="knob" /></button>
+            </div>
+            {contextLimitCustom && <label className="set-field">
+              <span className="lb">上下文限制</span>
+              <input className={`set-inp${fieldErrors.contextLength ? ' bad' : ''}`} value={draft.contextLength} placeholder="例如 128K" spellCheck={false} aria-invalid={Boolean(fieldErrors.contextLength)} aria-describedby={fieldErrors.contextLength ? 'context-limit-error' : undefined} onChange={(event) => UpdateDraft({ contextLength: event.target.value })} />
+              {fieldErrors.contextLength && <small className="field-error" id="context-limit-error" role="alert">{fieldErrors.contextLength}</small>}
+            </label>}
+          </div>
         </div>
       </div>
-    </section>;
+    </div>;
   }
   const current = SettingsTabs.find((item) => item.id === tab)!;
   const usesPersonalBrowser = (draft.browserEngine ?? 'edge') !== 'electron';
   const browserSelectionPending = Boolean(browserRuntime && browserRuntime.engine !== (draft.browserEngine ?? 'edge'));
-  if (tab === 'api') return <div className="settings-page"><section className="settings-content"><PageHeader eyebrow="设置" title={current.label} description={current.description} />{RenderModelConfiguration()}</section><Modal open={showLeave} title="存在未保存的修改" onClose={() => setShowLeave(false)}><p className="modal-copy">切换设置项前，请选择如何处理当前修改。</p><div className="modal-actions"><Button onClick={() => setShowLeave(false)}>继续编辑</Button><Button onClick={DiscardAndSwitch}>放弃修改</Button><Button variant="primary" onClick={async () => { if (await SaveSettings() && nextTab) CommitTab(nextTab); setNextTab(null); setShowLeave(false); }}>保存并切换</Button></div></Modal></div>;
+  if (tab === 'api') return <div className="settings-page is-model-set">{RenderModelConfiguration()}<Modal open={showLeave} title="存在未保存的修改" onClose={() => setShowLeave(false)}><p className="modal-copy">切换设置项前，请选择如何处理当前修改。</p><div className="modal-actions"><Button onClick={() => setShowLeave(false)}>继续编辑</Button><Button onClick={DiscardAndSwitch}>放弃修改</Button><Button variant="primary" onClick={async () => { if (await SaveSettings() && nextTab) CommitTab(nextTab); setNextTab(null); setShowLeave(false); }}>保存并切换</Button></div></Modal></div>;
   return <div className="settings-page"><section className="settings-content"><PageHeader eyebrow="设置" title={current.label} description={current.description} actions={tab !== 'api' && tab !== 'browser' ? <Button variant="primary" onClick={() => void SaveSettings()}>保存更改</Button> : undefined} />
     {tab === 'developer' && <><div className="setting-note module-settings"><b>本地模块</b><p>{moduleConfiguration?.status === 'active' ? `已启用：${moduleConfiguration.directoryName ?? '已选择目录'}。模块仅在启动会话前校验。` : '当前使用官方默认模块。选择本地模块目录前，请确认其来源可信。'}</p><div className="api-actions"><Button disabled={updatingModules} onClick={() => void SelectUserModules()}>{updatingModules ? '处理中…' : '选择本地模块'}</Button><Button variant="danger" disabled={updatingModules || moduleConfiguration?.status !== 'active'} onClick={() => setShowResetModules(true)}>恢复官方默认模块</Button></div></div><Modal open={showResetModules} title="恢复官方默认模块？" onClose={() => setShowResetModules(false)}><p className="modal-copy">当前本地模块配置将被移除，后续新会话将使用内置模块。运行中的助手任务不会被中断。</p><div className="modal-actions"><Button onClick={() => setShowResetModules(false)}>取消</Button><Button variant="danger" disabled={updatingModules} onClick={() => void ConfirmResetModules()}>确认恢复默认</Button></div></Modal></>}
      {tab === 'account' && <div className="settings-panel"><FormField label="账户昵称"><input value={draft.nickname} onChange={(event) => UpdateDraft({ nickname: event.target.value })} /><small>将显示在侧边栏与欢迎页面中。</small></FormField><FormField label="会话自定义上下文"><textarea rows={6} value={draft.customContext ?? ''} onChange={(event) => UpdateDraft({ customContext: event.target.value })} placeholder="例如：我偏好简洁直白的表达，简历经历需包含量化成果…" /><small>该上下文将注入每个 Avery 会话，不会读取你开发项目目录中的规则文档。</small></FormField></div>}
@@ -378,7 +479,6 @@ function SettingsPage({ onNavigateDeveloper, tab, requestedTab, tabRequestVersio
       </div>
       <Modal open={!usesPersonalBrowser && showClearBrowserProfile} title="清除隔离浏览器登录数据" onClose={() => setShowClearBrowserProfile(false)}><p className="modal-copy">这会关闭 Avery 隔离浏览器并删除其专用 Profile，其中的 Cookie、站点存储和登录状态无法恢复。不会影响你的个人浏览器。</p><div className="modal-actions"><Button onClick={() => setShowClearBrowserProfile(false)}>取消</Button><Button variant="danger" disabled={browserRuntimeBusy} onClick={() => void ClearBrowserProfileHandler()}>确认清除</Button></div></Modal>
     </>}
-    {tab === 'api' && <div className="settings-panel api-panel"><div className="segmented"><button className={draft.provider === 'DeepSeek' ? 'selected' : ''} onClick={() => UpdateDraft({ provider: 'DeepSeek', baseUrl: 'https://api.deepseek.com', model: draft.model.startsWith('deepseek-') && draft.model !== 'deepseek-chat' && draft.model !== 'deepseek-reasoner' ? draft.model : 'deepseek-v4-flash' })}>DeepSeek</button><button className={draft.provider === 'Z.AI' ? 'selected' : ''} onClick={() => UpdateDraft({ provider: 'Z.AI', baseUrl: 'https://open.bigmodel.cn/api/paas/v4', model: 'glm-5.3-flash', thinkingEnabled: true })}>GLM</button><button className={draft.provider === '自定义' ? 'selected' : ''} onClick={() => UpdateDraft({ provider: '自定义' })}>自定义</button></div><FormField label="API Key"><input type="password" value={draft.apiKey} onChange={(event) => UpdateDraft({ apiKey: event.target.value })} autoComplete="off" /></FormField>{draft.provider === 'DeepSeek' ? <><FormField label="可用模型" hint="从 DeepSeek 官方接口同步，未配置凭据时使用当前 V4 默认模型。"><div className="model-select-row"><Select value={draft.model} onChange={(model) => UpdateDraft({ model })} ariaLabel="可用模型" options={[...new Set([draft.model, ...deepSeekModels])].map((model) => ({ value: model, label: model }))} /><Button variant="quiet" disabled={refreshingModels} onClick={() => void RefreshDeepSeekModels(true)}>{refreshingModels ? '同步中…' : '刷新模型'}</Button></div></FormField><label className="switch-line"><span><b>思考模式</b><small>开启后，助手回复会展示可折叠的思考内容。</small></span><input type="checkbox" checked={draft.thinkingEnabled} onChange={(event) => UpdateDraft({ thinkingEnabled: event.target.checked })} /></label></> : draft.provider === 'Z.AI' ? <><FormField label="模型"><input value="glm-5.3-flash" readOnly /></FormField><FormField label="API 端点"><input value="https://open.bigmodel.cn/api/paas/v4" readOnly /></FormField><div className="setting-note"><b>GLM 思考模式</b><p>使用智谱中国区官方 API。GLM-5.3-Flash 强制启用思考；会话中的思考强度仍可调整，并按官方 low、high、max 三档发送。</p></div></> : <><FormField label="Base URL"><input value={draft.baseUrl} onChange={(event) => UpdateDraft({ baseUrl: event.target.value })} /></FormField><FormField label="模型名称"><input value={draft.model} onChange={(event) => UpdateDraft({ model: event.target.value })} /></FormField></>}<label className="switch-line"><span><b>自定义上下文限制</b><small>关闭时默认使用 256K；若模型上限更小，则自动使用模型上限。</small></span><input type="checkbox" checked={draft.contextLimitMode === 'custom'} onChange={(event) => UpdateDraft({ contextLimitMode: event.target.checked ? 'custom' : 'default' })} /></label>{draft.contextLimitMode === 'custom' && <FormField label="上下文限制" hint="支持 128K 或 128000；已知模型不能超过其官方上限。"><input value={draft.contextLength} aria-invalid={Boolean(fieldErrors.contextLength)} aria-describedby={fieldErrors.contextLength ? 'context-limit-error' : undefined} onChange={(event) => UpdateDraft({ contextLength: event.target.value })} />{fieldErrors.contextLength && <small className="field-error" id="context-limit-error" role="alert">{fieldErrors.contextLength}</small>}</FormField>}<div className="api-actions"><Button onClick={() => void TestApiConnection()}>测试连接</Button><Button variant="primary" onClick={() => void SaveSettings()}>保存配置</Button></div></div>}
     {tab === 'developer' && <div className="settings-panel developer-settings"><label className="switch-line"><span><b>启用开发者模式</b><small>开启后在侧边栏显示本地开发者工具。</small></span><input type="checkbox" checked={draft.developerMode} onChange={(event) => UpdateDraft({ developerMode: event.target.checked })} /></label><FormField label="Trace 保留数量" hint="默认 50，最多保留 100 条本地 Trace。"><input type="number" min="1" max="100" value={draft.traceRetention} aria-invalid={Boolean(fieldErrors.traceRetention)} aria-describedby={fieldErrors.traceRetention ? 'trace-retention-error' : undefined} onChange={(event) => UpdateDraft({ traceRetention: Number(event.target.value) })} />{fieldErrors.traceRetention && <small className="field-error" id="trace-retention-error" role="alert">{fieldErrors.traceRetention}</small>}</FormField><FormField label="自动压缩阈值"><div className="input-suffix"><input type="number" min="1" max="80" value={draft.compressionThreshold} aria-invalid={Boolean(fieldErrors.compressionThreshold)} aria-describedby={fieldErrors.compressionThreshold ? 'compression-threshold-error' : undefined} onChange={(event) => UpdateDraft({ compressionThreshold: Number(event.target.value) })} /><span>%</span></div>{fieldErrors.compressionThreshold && <small className="field-error" id="compression-threshold-error" role="alert">{fieldErrors.compressionThreshold}</small>}<small>按 System、Tools 和 Messages 的完整输入计算；只能配置为 1–80 的整数。</small></FormField><div className="setting-note"><b>Trace 隐私提示</b><p>真实 Trace 可能包含简历、JD 与附件片段，仅保存在本机；关闭开发者模式后不再新增 Trace。</p></div><div className="danger-zone"><div><b>清空 Trace</b><p>删除所有本地 Trace，不可撤销。</p></div><Button variant="danger" onClick={() => setShowClear(true)}>一键清空</Button></div>{draft.developerMode && <Button onClick={onNavigateDeveloper}>打开开发者工具</Button>}</div>}
   </section><Modal open={showLeave} title="存在未保存的修改" onClose={() => setShowLeave(false)}><p className="modal-copy">切换设置项前，请选择如何处理当前修改。</p><div className="modal-actions"><Button onClick={() => setShowLeave(false)}>继续编辑</Button><Button onClick={DiscardAndSwitch}>放弃修改</Button><Button variant="primary" onClick={async () => { if (await SaveSettings() && nextTab) CommitTab(nextTab); setNextTab(null); setShowLeave(false); }}>保存并切换</Button></div></Modal><Modal open={showClear} title="确认清空全部 Trace？" onClose={() => setShowClear(false)}><p className="modal-copy">将删除本地全部运行日志、Trace 索引和事件。此操作不可撤销。</p><div className="modal-actions"><Button onClick={() => setShowClear(false)}>取消</Button><Button variant="danger" onClick={() => void ClearDeveloperObservability()}>确认清空</Button></div></Modal><Modal open={showMigrate} title="确认迁移工作空间？" onClose={() => setShowMigrate(false)}><p className="modal-copy">将复制并校验数据后切换到目标空目录，原工作空间会保留。Agent 运行期间无法迁移。</p><div className="modal-actions"><Button onClick={() => setShowMigrate(false)}>取消</Button><Button variant="primary" onClick={() => void MigrateWorkspaceHandler()}>确认迁移</Button></div></Modal>
   </div>;

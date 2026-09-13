@@ -1196,3 +1196,130 @@ button { background: none; border: 0; }
   .job-view .kv-r b { text-align: left; }
   .kv-link { max-width: 100%; }
 }
+
+/* ============================== 模型配置（原型一比一） ============================== */
+/* 页面本体自带原型 .set 的留白与最大宽度，设置外壳不再追加内边距。 */
+.settings-page.is-model-set { padding: 0; }
+.set-root { max-width: 1120px; margin: 0 auto; padding: 34px 30px 46px; }
+
+.set-root .set-head { display: flex; align-items: flex-end; gap: 18px; }
+.set-root .set-head h1 { margin: 0; font-size: 30px; font-weight: 680; letter-spacing: -.025em; line-height: 1.15; }
+.set-root .set-head p { margin: 7px 0 0; max-width: 72ch; font-size: 13.5px; color: var(--text-2); }
+.set-root .set-refresh { margin-left: auto; color: var(--text-3); }
+.set-root .set-refresh:hover { color: var(--text); }
+.set-root .set-refresh.is-spinning i { animation: setSpin .6s var(--ease); }
+@keyframes setSpin { to { transform: rotate(360deg); } }
+
+/* 单卡片两栏：左边供应商列表，右边选中供应商的配置 */
+.set-root .set-card {
+  display: grid; grid-template-columns: 290px minmax(0, 1fr);
+  margin-top: 20px; border: 1px solid var(--border); border-radius: var(--r-card);
+  background: var(--raised); overflow: hidden;
+}
+.set-root .set-side {
+  padding: 14px 10px; border-right: 1px solid var(--border); background: var(--surface);
+  border-radius: calc(var(--r-card) - 1px) 0 0 calc(var(--r-card) - 1px);
+}
+.set-root .set-group { padding: 14px 10px 6px; color: var(--text-3); font-size: 12px; font-weight: 600; }
+.set-root .set-group:first-child { padding-top: 2px; }
+
+.set-root .prov {
+  display: flex; width: 100%; height: 40px; align-items: center; gap: 10px; padding: 0 10px; cursor: pointer;
+  border: 1px solid transparent; border-radius: var(--r-control); background: transparent;
+  text-align: left; font-size: 13.5px; font-weight: 550; color: var(--text-2);
+  transition: background-color .16s var(--ease), border-color .16s var(--ease), color .16s var(--ease);
+}
+/* 供应商标记占位与原型的品牌图标同宽，保证各条名称左边缘对齐 */
+.set-root .prov-mark { display: grid; width: 17px; height: 17px; flex: none; place-items: center; color: var(--text-3); font-size: 12px; font-weight: 700; transition: color .18s var(--ease); }
+.set-root .prov .pn { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.set-root .prov .dot { width: 7px; height: 7px; flex: none; border-radius: 50%; background: var(--border-2); transition: background-color .2s var(--ease); }
+.set-root .prov .dot.on { background: var(--accent); }
+.set-root .prov:hover { background: var(--surface-2); color: var(--text); }
+.set-root .prov.sel { border-color: var(--border-2); background: var(--raised); color: var(--text); font-weight: 600; }
+.set-root .prov.sel .prov-mark { color: var(--accent); }
+
+.set-root .set-pane { display: flex; min-width: 0; flex-direction: column; gap: 22px; padding: 22px 26px 28px; }
+.set-root .set-d-head { display: flex; min-width: 0; align-items: center; gap: 9px; }
+.set-root .set-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 20px; font-weight: 660; letter-spacing: -.02em; }
+.set-root .pill { display: inline-flex; height: 26px; flex: none; align-items: center; padding: 0 12px; border-radius: var(--r-pill); font-size: 12.5px; font-weight: 600; white-space: nowrap; }
+.set-root .pill.on { background: var(--accent); color: var(--accent-on); }
+.set-root .pill.off { background: var(--surface-2); color: var(--text-3); }
+/* 原型把面板操作放在标题行右侧（禁用 / 删除），这里换成测试连接与保存配置 */
+.set-root .set-d-acts { display: flex; flex: none; gap: 8px; margin-left: auto; }
+
+.set-root .set-fields { display: flex; min-width: 0; flex-direction: column; gap: 17px; }
+.set-root .set-field { display: flex; min-width: 0; flex-direction: column; gap: 7px; }
+.set-root .set-field > .lb { padding-left: 1px; color: var(--text-2); font-size: 12.5px; font-weight: 550; }
+.set-root .set-inp {
+  width: 100%; height: 40px; padding: 0 12px; border: 1px solid var(--border-2); border-radius: var(--r-control);
+  background: var(--panel); color: var(--text); font-family: inherit; font-size: 13.5px;
+  transition: border-color .18s var(--ease), box-shadow .18s var(--ease);
+}
+.set-root .set-inp::placeholder { color: var(--text-3); }
+/* 只读字段（接口格式、官方 Base URL）不参与编辑，用底色与文字层级区分 */
+.set-root .set-inp[readonly] { background: var(--surface); color: var(--text-2); }
+.set-root .set-inp:focus { outline: 0; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.set-root .set-inp.bad { border-color: var(--danger); }
+.set-root .set-inp.bad:focus { box-shadow: 0 0 0 3px var(--danger-hover); }
+.set-root .field-error { color: var(--danger); font-size: 12px; }
+/* API Key 沿用“已配置”标记：主进程确认凭据可用时在标签后追加勾选文字。 */
+.set-root .set-field:has(input[type='password']) > .lb::after {
+  display: inline-block; margin-left: 8px; color: var(--accent);
+  content: ''; font-size: 11.5px; font-weight: 500;
+}
+body.settings-has-configured-api-key .set-root .set-field:has(input[type='password']) > .lb::after { content: '✓ 已配置'; }
+
+/* 模型列表：标签右侧是同步按钮，卡片内一行一个模型 */
+.set-root .lb-row { display: flex; align-items: center; gap: 5px; }
+.set-root .lb-row .lb { padding-left: 1px; color: var(--text-2); font-size: 12.5px; font-weight: 550; }
+.set-root .lb-get { margin-left: 1px; color: var(--text-3); }
+.set-root .lb-get:hover { color: var(--text); }
+.set-root .lb-get.is-spinning i { animation: setSpin .6s var(--ease); }
+.set-root .set-models { border: 1px solid var(--border); border-radius: var(--r-card); background: var(--panel); overflow: hidden; }
+.set-root .mrow { display: flex; min-width: 0; align-items: center; gap: 9px; padding: 9px 10px 9px 14px; }
+.set-root .mrow + .mrow { border-top: 1px solid var(--border); }
+.set-root .mrow:hover { background: var(--surface); }
+.set-root .mrow-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13.5px; font-weight: 550; }
+.set-root .mrow-chips { display: flex; flex: none; gap: 5px; }
+.set-root .mrow-acts { display: flex; flex: none; gap: 1px; }
+.set-root .mrow .icon-btn.sm { color: var(--text-3); }
+.set-root .mrow .icon-btn.sm:hover { color: var(--text); }
+.set-root .mrow .icon-btn.sm.def { color: var(--accent); }
+.set-root .mrow-empty { padding: 20px 14px; color: var(--text-3); font-size: 12.5px; text-align: center; }
+/* 自定义供应商只有一个自由填写的模型名，直接在该行内输入；min-height 要一起压掉全局输入的 40px 下限。 */
+.set-root .mrow .set-inp { flex: 1; min-width: 0; height: 32px; min-height: 32px; padding: 0 9px; font-size: 13px; }
+.set-root .icon-btn:disabled { opacity: .45; cursor: default; pointer-events: none; }
+
+/* 开关行：思考模式与自定义上下文限制沿用原型的开关控件 */
+.set-root .switch {
+  position: relative; width: 34px; height: 20px; flex: none; cursor: pointer;
+  border: 0; border-radius: var(--r-pill); background: var(--border-2);
+  transition: background-color .22s var(--ease);
+}
+.set-root .switch .knob { position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: var(--raised); box-shadow: 0 1px 2px rgba(0, 0, 0, .2); transition: transform .24s var(--ease); }
+.set-root .switch[aria-checked="true"] { background: var(--accent); }
+.set-root .switch[aria-checked="true"] .knob { transform: translateX(14px); }
+.set-root .switch:not([aria-disabled="true"]):hover { box-shadow: 0 0 0 3px var(--accent-soft); }
+.set-root .switch[aria-disabled="true"] { opacity: .45; cursor: default; }
+.set-root .set-field.is-switch { flex-direction: row; align-items: center; gap: 14px; }
+.set-root .sw-txt { display: flex; min-width: 0; flex: 1; flex-direction: column; gap: 3px; }
+.set-root .sw-txt b { font-size: 13px; font-weight: 600; letter-spacing: -.005em; }
+.set-root .sw-txt small { color: var(--text-3); font-size: 12.5px; line-height: 1.55; }
+
+@media (max-width: 1040px){
+  .set-root { padding: 28px 22px 40px; }
+}
+@media (max-width: 900px){
+  .set-root .set-card { grid-template-columns: minmax(0, 1fr); }
+  .set-root .set-side { border-right: 0; border-bottom: 1px solid var(--border); border-radius: calc(var(--r-card) - 1px) calc(var(--r-card) - 1px) 0 0; }
+  .set-root .set-pane { padding: 20px 18px 24px; }
+  .set-root .set-head h1 { font-size: 26px; }
+}
+@media (max-width: 619px){
+  .set-root { padding: 24px 17px 36px; }
+  /* 窄屏下操作按钮换到独立一行，避免把模型名挤成省略号 */
+  .set-root .set-d-head { flex-wrap: wrap; align-items: stretch; }
+  .set-root .set-d-acts { width: 100%; margin-left: 0; }
+  .set-root .set-d-acts > * { flex: 1; justify-content: center; }
+  .set-root .set-field.is-switch { align-items: flex-start; }
+}

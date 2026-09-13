@@ -1729,15 +1729,6 @@ select:focus, select:focus-visible,
 .settings-panel .switch-line input[type='checkbox']:checked::after { transform: translateX(16px); }
 .settings-panel .switch-line input[type='checkbox']:focus-visible { outline: 2px solid var(--color-text-primary); outline-offset: 2px; }
 .settings-panel .switch-line input[type='checkbox']:disabled { cursor: not-allowed; opacity: .5; }
-.settings-panel .form-field:has(input[type='password']) > span::after {
-  display: inline-block;
-  margin-left: var(--space-2);
-  color: var(--color-tag-text);
-  content: '';
-  font-size: var(--text-meta);
-  font-weight: 500;
-}
-body.settings-has-configured-api-key .settings-panel.api-panel .form-field:has(input[type='password']) > span::after { content: '✓ 已配置'; }
 .browser-settings-panel { gap: var(--space-3); }
 .browser-settings-panel .form-field { border-bottom: 1px solid var(--color-border); padding-bottom: var(--space-3); }
 .browser-runtime-bar {
@@ -2061,7 +2052,7 @@ body.settings-has-configured-api-key .settings-panel.api-panel .form-field:has(i
 .settings-sidebar-tabs .nav-entry.is-active { color: var(--color-text-primary); background: var(--color-surface-card); box-shadow: var(--shadow-nav-current); }
 .sidebar-return-home { flex: 0 0 auto; }
 
-/* 设置页标题保持在内容背景上，模型配置使用紧凑的供应商与详情双栏。 */
+/* 设置页标题与面板同宽并直接落在内容背景上，标题不再套一层卡片。 */
 .settings-content { max-width: none; }
 .settings-content .page-header,
 .settings-content .settings-panel { width: min(100%, 1120px); max-width: none; }
@@ -2073,93 +2064,8 @@ body.settings-has-configured-api-key .settings-panel.api-panel .form-field:has(i
   box-shadow: none;
 }
 .settings-content .page-header .eyebrow { display: none; }
-.model-configuration-panel {
-  display: grid;
-  min-height: 492px;
-  grid-template-columns: minmax(184px, 23%) minmax(0, 1fr);
-  gap: 0;
-  overflow: hidden;
-  padding: 0;
-}
-.model-provider-list {
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
-  gap: var(--space-3);
-  border-right: 1px solid var(--color-border);
-  padding: var(--space-3) var(--space-2);
-  background: var(--color-control-light);
-}
-.model-provider-group { display: grid; gap: var(--space-1); }
-.model-provider-group > small { padding: 0 var(--space-2); color: var(--color-text-secondary); font-size: var(--text-meta); font-weight: 500; }
-.model-provider-group > button {
-  display: grid;
-  min-width: 0;
-  grid-template-columns: 24px minmax(0, 1fr) 7px;
-  gap: var(--space-1);
-  align-items: center;
-  border: 1px solid transparent;
-  border-radius: var(--radius-control);
-  min-height: 38px;
-  padding: 4px var(--space-2);
-  color: var(--color-text-primary);
-  background: transparent;
-  text-align: left;
-  transition: border-color var(--transition-standard), background var(--transition-standard);
-}
-.model-provider-group > button:hover,
-.model-provider-group > button:focus-visible { outline: none; border-color: var(--color-border); background: var(--color-surface-card); }
-.model-provider-group > button.selected { border-color: var(--color-border); background: var(--color-surface-card); box-shadow: none; }
-.model-provider-symbol {
-  display: grid;
-  width: 24px;
-  height: 24px;
-  place-items: center;
-  border-radius: var(--radius-control);
-  color: var(--color-tag-text);
-  background: var(--color-tag-surface);
-  font-size: var(--text-ui);
-  font-weight: 600;
-}
-.model-provider-group > button > span:nth-child(2) { display: grid; min-width: 0; }
-.model-provider-group b { overflow: hidden; color: inherit; font-size: var(--text-ui); font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
-.model-provider-group > button > i { width: 7px; height: 7px; border-radius: 50%; background: var(--color-border); }
-.model-provider-group > button > i.is-configured { background: var(--success); }
-.model-provider-detail { display: flex; min-width: 0; flex-direction: column; padding: var(--space-4) var(--space-5); }
-.model-provider-detail > header { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-3); margin-bottom: var(--space-3); }
-.model-provider-detail > header h2 { margin: 0; color: var(--color-text-primary); font-size: var(--text-frame-title); font-weight: 600; line-height: 28px; }
-.model-provider-detail > header p { margin: 2px 0 0; color: var(--color-text-secondary); font-size: var(--text-meta); line-height: 18px; }
-.model-provider-actions { display: flex; align-items: center; justify-content: flex-end; gap: var(--space-2); }
-.model-provider-actions .api-actions { display: flex; gap: var(--space-2); }
-.model-provider-actions .api-actions .button { min-height: 32px; padding: 4px var(--space-3); font-size: var(--text-meta); }
-.model-provider-actions > span { flex: 0 0 auto; border-radius: var(--radius-pill); padding: 2px var(--space-2); color: var(--color-text-secondary); background: var(--color-control-light); font-size: var(--text-meta); }
-.model-provider-actions > span.is-configured { color: var(--success); background: var(--success-soft); }
-.model-provider-fields { display: grid; gap: var(--space-3); }
-.model-config-basic-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-3); }
-.model-config-field { display: grid; gap: var(--space-1); min-width: 0; }
-.model-config-field > span,
-.model-config-models > div > span { color: var(--color-text-secondary); font-size: var(--text-ui); line-height: 20px; }
-.model-config-field input { min-height: 38px; border: 1px solid var(--color-border); padding: 0 var(--space-3); background: var(--color-surface-card); }
-.model-config-models { display: grid; gap: var(--space-1); }
-.model-config-models > div { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); }
-.model-config-models > div .button { min-height: 28px; padding: 3px var(--space-2); font-size: var(--text-meta); }
-.model-config-models > article { display: grid; grid-template-columns: 24px minmax(0, 1fr); gap: var(--space-2); align-items: center; border: 1px solid var(--color-border); border-radius: var(--radius-control); padding: 6px var(--space-2); background: var(--color-surface-card); }
-.model-config-models > article :is(input, .custom-select) { min-width: 0; }
-.model-config-models > article input,
-.model-config-models > article .custom-select-trigger { min-height: 32px; border: 0; padding: 0; background: transparent; }
-.model-config-advanced { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-3); border-top: 1px solid var(--color-border); padding-top: var(--space-3); }
-.model-config-advanced .switch-line { min-height: 38px; border: 0; padding: 0; }
-.model-config-advanced > .model-config-field { grid-column: 1 / -1; }
 
 @media (max-width: 619px){
   .settings-sidebar-heading { display: none; }
   .settings-sidebar-tabs { overflow-x: auto; grid-auto-flow: column; grid-auto-columns: max-content; }
-  .model-configuration-panel { min-height: 0; grid-template-columns: minmax(0, 1fr); }
-  .model-provider-list { border-right: 0; border-bottom: 1px solid var(--color-border); }
-  .model-provider-detail { padding: var(--space-4); }
-  .model-provider-detail > header,
-  .model-provider-actions { align-items: stretch; flex-direction: column; }
-  .model-provider-actions .api-actions { justify-content: flex-end; }
-  .model-config-basic-fields,
-  .model-config-advanced { grid-template-columns: minmax(0, 1fr); }
 }
