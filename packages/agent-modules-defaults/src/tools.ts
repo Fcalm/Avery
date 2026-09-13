@@ -253,6 +253,8 @@ function BuildRegistry(): RegisteredAgentTool[] {
     },
     {
       definition: CreateDefinition('SaveJob', 'Save one selected job to the local job library. It does not create an application record and does not require a bound resume. For CollectJobs results, pass only collectionId, candidateId, and optional matchScore; the Host copies the trusted cached candidate. For a job observed directly in the browser, pass its complete observed fields. Call ReadApplicationStatus first for directly observed jobs.', {
+        // 顶层必须声明 type: object：DeepSeek 只接受对象型参数 Schema，纯 oneOf 会被判为 type: null 而整轮请求 400。
+        type: 'object',
         oneOf: [
           { type: 'object', properties: { collectionId: { type: 'string', minLength: 1, maxLength: 200 }, candidateId: { type: 'string', minLength: 1, maxLength: 200 }, matchScore: { type: 'number', minimum: 0, maximum: 100 } }, required: ['collectionId', 'candidateId'], additionalProperties: false },
           { type: 'object', properties: {

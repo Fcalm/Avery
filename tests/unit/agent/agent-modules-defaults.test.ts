@@ -276,6 +276,21 @@ describe('agent-modules-defaults', () => {
     expect(names).not.toContain('BrowserFillForm');
   });
 
+  // DeepSeek 只接受对象型参数 Schema，顶层缺失 type: object 的 oneOf 会被判为 type: null 并让整轮请求 400。
+  it('所有工具的参数 Schema 顶层都声明 type: object，SaveJob 仍保留二选一分支', () => {
+    const tools = CreateToolsModule(CreatePorts());
+    const definitions = [...tools.GetToolDefinitions(), ...tools.GetToolDefinitions('application')];
+
+    expect(definitions.length).toBeGreaterThan(0);
+    for (const tool of definitions) {
+      expect(tool.definition.function.parameters.type, tool.definition.function.name).toBe('object');
+    }
+    const saveJob = tools.GetToolDefinitions('application').find((tool) => tool.definition.function.name === 'SaveJob');
+    const branches = saveJob?.definition.function.parameters.oneOf as Array<{ required?: string[] }> | undefined;
+    expect(branches).toHaveLength(2);
+    expect(branches?.map((branch) => branch.required)).toEqual(expect.arrayContaining([['collectionId', 'candidateId'], ['jobId', 'company', 'title', 'url']]));
+  });
+
   it('工具模块拒绝直接猜测未启用的网络工具名', async () => {
     const search = vi.fn(async () => ({ items: [], hasMore: false }));
     const context = CreateToolContext({
