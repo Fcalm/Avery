@@ -1,13 +1,15 @@
 import { useEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent } from 'react';
+import { createPortal } from 'react-dom';
 import { useUiStore } from '../../../app/UiStore';
 import { useApplications, useDeleteApplication, useMoveApplicationStatus, useUpsertApplication } from '../../../features/application/api/applicationQueries';
+import { AppendApplicationTimeline, GetApplicationTimeline, type ApplicationTimelineEntry } from '../applicationTimeline';
 import { useJobs } from '../../../features/job/api/jobQueries';
 import { useResumes } from '../../../features/resume/api/resumeQueries';
 import { CreateEntityId } from '../../workspace/api/workspaceData';
-import { Button, Drawer, FormField, Modal, Select } from '../../../shared/components/UI';
+import { Button, FormField, Modal, Select } from '../../../shared/components/UI';
 import { Icon } from '../../../shared/components/Icon';
 import { ApplicationStatusLabel, ChannelLabel } from '../../../shared/utils/format';
-import type { Application, ApplicationStatus } from '../../../types/domain';
+import type { Application, ApplicationStatus, Job } from '../../../types/domain';
 
 /** 三阶段模型：只保留已投递/笔试/面试（不做旧版本兼容，已收藏/已结束记录不再展示）。 */
 const Statuses: ApplicationStatus[] = ['applied', 'written_test', 'interviewing'];
@@ -30,6 +32,11 @@ function FormatDay(value?: string): string {
   if (!value) return '';
   const [, month, day] = value.split('-');
   return month && day ? `${Number(month)}/${Number(day)}` : value;
+}
+
+/** 状态 → 看板阶段文案；三阶段之外的状态按共享映射兜底显示。 */
+function StageLabel(status: ApplicationStatus): string {
+  return BoardColumns.find((column) => column.status === status)?.label ?? ApplicationStatusLabel[status];
 }
 
 /** 本地日历日期 YYYY-MM-DD；不用 toISOString，避免 UTC 偏移把当天算错。 */
@@ -197,6 +204,47 @@ function ProgressDonut({ segments, total }: { segments: Array<{ cls: string; cou
   </div>;
 }
 
+/** 抽屉两形态：阅读态只渲染内容与阶段滑块；编辑态才出现输入框与选择菜单（对应原型 dw-foot 的按钮切换）。 */
+type ApplicationDrawer = { mode: 'view'; application: Application } | { mode: 'edit'; application: Application | null };
+
+/** 时间线首条记录由投递数据推导：通过某渠道提交申请。 */
+function TimelineSeed(application: Application, job?: Job): ApplicationTimelineEntry[] {
+  if (!application.appliedAt) return [];
+  return [{ d: FormatDay(application.appliedAt), t: `通过 ${job ? ChannelLabel[job.channel] : '未知渠道'} 提交申请` }];
+}
+
+/** 阅读态正文：下一步提示条 + 投递信息键值对 + 流程记录时间线（结构一比一对齐原型 openApp）。 */
+function ApplicationDetailView({ application, job }: { application: Application; job?: Job }) {
+  const urgent = IsUrgent(application);
+  const stageLabel = StageLabel(application.status);
+  const timeline = GetApplicationTimeline(application.id, TimelineSeed(application, job));
+  const fields: Array<[string, string]> = [
+    ['投递时间', FormatDay(application.appliedAt) || '未投递'],
+    ['投递渠道', job ? ChannelLabel[job.channel] : '未知'],
+    ['工作地点', job?.city || '未设置'],
+    ['薪资区间', job?.salary || '面议'],
+    ['当前阶段', stageLabel],
+  ];
+  return <>
+    <div className={`note${urgent ? '' : ' plain'}`}>
+      <Icon name={urgent ? 'clock' : 'info'} size={15} />
+      <span>{application.nextStepAt ? `下一步 ${FormatDay(application.nextStepAt)}` : NextByStatus[application.status]}</span>
+    </div>
+    <div className="sec">
+      <div className="sec-h">投递信息</div>
+      <div className="kv">{fields.map(([label, value]) => <div className="kv-r" key={label}><span>{label}</span><b>{value}</b></div>)}</div>
+    </div>
+    <div className="sec">
+      <div className="sec-h">流程记录</div>
+      <div className="tl">
+        {timeline.length
+          ? timeline.map((entry, index) => <div className="tl-r" key={`${entry.d}-${index}`}><span className="tl-d">{entry.d}</span><span className="tl-t">{entry.t}</span></div>)
+          : <p className="tl-none">暂无流程记录，拖动卡片换阶段后会出现在这里。</p>}
+      </div>
+    </div>
+  </>;
+}
+
 function ApplicationsPage() {
   const { ShowNotice } = useUiStore();
   const applications = useApplications();
@@ -205,10 +253,22 @@ function ApplicationsPage() {
   const upsertApplication = useUpsertApplication({ onConflict: () => ShowNotice('投递已在其他窗口被修改，已刷新为最新版本'), onFailure: () => ShowNotice('投递保存失败，请稍后重试。') });
   const moveApplicationStatus = useMoveApplicationStatus({ onConflict: () => ShowNotice('投递已在其他窗口被修改，已刷新为最新版本'), onFailure: () => ShowNotice('投递状态更新失败，请稍后重试。') });
   const deleteApplication = useDeleteApplication({ onFailure: () => ShowNotice('投递删除失败，请稍后重试。') });
-  const [drawerOpen, setDrawerOpen] = useState(false);
-  const [editing, setEditing] = useState<Application | null>(null);
+  const [drawer, SetDrawer] = useState<ApplicationDrawer | null>(null);
   const [form, setForm] = useState<Partial<Application>>({ status: 'applied', note: '' });
   const [deleteTarget, setDeleteTarget] = useState<Application | null>(null);
+  const drawerRef = useRef<HTMLElement>(null);
+  const editingApplication = drawer?.mode === 'edit' ? drawer.application : null;
+
+  // 抽屉打开期间 Escape 关闭、初始焦点落在关闭按钮（原型 showDrawer 聚焦 dwClose）。
+  useEffect(() => {
+    if (!drawer) return undefined;
+    const CloseOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') { event.preventDefault(); SetDrawer(null); }
+    };
+    document.addEventListener('keydown', CloseOnEscape);
+    drawerRef.current?.focus();
+    return () => document.removeEventListener('keydown', CloseOnEscape);
+  }, [drawer]);
   const jobsById = useMemo(() => Object.fromEntries(jobs.map((job) => [job.id, job])), [jobs]);
   const weekLabels = useMemo(WeekLabels, []);
   const week = useMemo(() => WeekCounts(applications), [applications]);
@@ -221,16 +281,33 @@ function ApplicationsPage() {
     { cls: 'seg-c', t: '已投递', count: boardApplications.filter((application) => application.status === 'applied').length },
   ];
 
-  function OpenNew() { setEditing(null); setForm({ jobId: jobs[0]?.id, resumeId: resumes[0]?.id, status: 'applied', note: '' }); setDrawerOpen(true); }
-  function OpenEdit(application: Application) { setEditing(application); setForm(application); setDrawerOpen(true); }
+  function OpenNew() { setForm({ jobId: jobs[0]?.id, resumeId: resumes[0]?.id, status: 'applied', note: '' }); SetDrawer({ mode: 'edit', application: null }); }
+  function OpenDetail(application: Application) { SetDrawer({ mode: 'view', application }); }
+  function StartEditing() {
+    if (drawer?.mode !== 'view') return;
+    setForm(drawer.application);
+    SetDrawer({ mode: 'edit', application: drawer.application });
+  }
+  /** 取消编辑：从详情进入的回到阅读态（丢弃草稿），新建的直接关闭抽屉。 */
+  function CancelEditing() {
+    if (drawer?.mode !== 'edit') return;
+    if (drawer.application) SetDrawer({ mode: 'view', application: drawer.application });
+    else SetDrawer(null);
+  }
   function SaveApplication() {
     if (!form.jobId || !form.resumeId || !form.status) return;
     const jobId = form.jobId; const resumeId = form.resumeId; const status = form.status;
-    if (editing) upsertApplication.mutate({ application: { ...editing, ...form } as Application, expectedRevision: editing.revision });
-    else upsertApplication.mutate({ application: { id: CreateEntityId('application'), jobId, resumeId, status, note: form.note ?? '', appliedAt: form.appliedAt, nextStepAt: form.nextStepAt } as Application });
-    setDrawerOpen(false); ShowNotice(editing ? '投递记录已更新' : '已新增投递记录');
+    if (editingApplication) {
+      upsertApplication.mutate({ application: { ...editingApplication, ...form } as Application, expectedRevision: editingApplication.revision });
+      if (status !== editingApplication.status) {
+        AppendApplicationTimeline(editingApplication.id, TimelineSeed(editingApplication, jobsById[editingApplication.jobId]), `移到「${StageLabel(status)}」`);
+      }
+    } else {
+      upsertApplication.mutate({ application: { id: CreateEntityId('application'), jobId, resumeId, status, note: form.note ?? '', appliedAt: form.appliedAt, nextStepAt: form.nextStepAt } as Application });
+    }
+    SetDrawer(null); ShowNotice(editingApplication ? '投递记录已更新' : '已新增投递记录');
   }
-  function ConfirmDeleteApplication() { if (!deleteTarget) return; deleteApplication.mutate({ id: deleteTarget.id }); setDeleteTarget(null); setDrawerOpen(false); ShowNotice('投递记录已删除'); }
+  function ConfirmDeleteApplication() { if (!deleteTarget) return; deleteApplication.mutate({ id: deleteTarget.id }); setDeleteTarget(null); SetDrawer(null); ShowNotice('投递记录已删除'); }
 
   function HandleCardDragStart(event: ReactDragEvent<HTMLElement>, application: Application) {
     event.dataTransfer.setData('text/plain', application.id);
@@ -256,16 +333,22 @@ function ApplicationsPage() {
     event.currentTarget.classList.remove('over');
     MoveApplication(event.dataTransfer.getData('text/plain'), column);
   }
-  /** 拖拽换阶段：拖回原列忽略。 */
+  /** 拖拽/滑块换阶段：拖回原列忽略；时间线只记在前端会话内。 */
   function MoveApplication(id: string, column: (typeof BoardColumns)[number]) {
     const application = applications.find((item) => item.id === id);
     if (!application || application.status === column.status) return;
     moveApplicationStatus.mutate({ id: application.id, status: column.status, expectedRevision: application.revision });
+    AppendApplicationTimeline(application.id, TimelineSeed(application, jobsById[application.jobId]), `移到「${column.label}」`);
     ShowNotice(`${jobsById[application.jobId]?.company ?? '投递'} 已移到「${column.label}」`);
   }
   function HandleCardKeyDown(event: ReactKeyboardEvent<HTMLElement>, application: Application) {
-    if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); OpenEdit(application); }
+    if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); OpenDetail(application); }
   }
+
+  const drawerApplication = drawer?.application ?? null;
+  const drawerJob = drawerApplication ? jobsById[drawerApplication.jobId] : drawer?.mode === 'edit' && form.jobId ? jobsById[form.jobId] : undefined;
+  const drawerStageLabel = drawerApplication ? StageLabel(drawerApplication.status) : '';
+  const drawerTitle = drawer ? drawerJob?.company ?? (drawer.mode === 'edit' && !drawer.application ? '新建投递' : '投递详情') : '';
 
   return <div className="standard-page applications-page">
     <div className="app-view">
@@ -308,7 +391,7 @@ function ApplicationsPage() {
                 return <article className="acard" key={application.id} draggable data-application={application.id} tabIndex={0} role="button"
                   aria-label={`${job?.company ?? '未知企业'}，${job?.title ?? '已删除岗位'}，点击查看详情`}
                   onDragStart={(event) => HandleCardDragStart(event, application)} onDragEnd={HandleCardDragEnd}
-                  onClick={() => OpenEdit(application)} onKeyDown={(event) => HandleCardKeyDown(event, application)}>
+                  onClick={() => OpenDetail(application)} onKeyDown={(event) => HandleCardKeyDown(event, application)}>
                   <div className="ac-top">
                     <span className="ac-co">{job?.company ?? '未知企业'}</span>
                     {urgent && <span className="ac-flag" role="img" aria-label="有临近的时间节点"><Icon name="clock" size={13} /></span>}
@@ -323,7 +406,50 @@ function ApplicationsPage() {
         })}
       </div>
     </div>
-    <Drawer open={drawerOpen} title={editing ? '编辑投递记录' : '新增投递记录'} onClose={() => setDrawerOpen(false)}><div className="drawer-form"><FormField label="选择岗位"><Select value={form.jobId ?? ''} ariaLabel="选择岗位" onChange={(jobId) => setForm({ ...form, jobId })} options={jobs.map((job) => ({ value: job.id, label: `${job.company} · ${job.title}` }))} /></FormField><FormField label="使用简历"><Select value={form.resumeId ?? ''} ariaLabel="使用简历" onChange={(resumeId) => setForm({ ...form, resumeId })} options={resumes.map((resume) => ({ value: resume.id, label: resume.name }))} /></FormField><FormField label="当前阶段"><Select value={form.status ?? 'applied'} ariaLabel="当前阶段" onChange={(status) => setForm({ ...form, status: status as ApplicationStatus })} options={Statuses.map((status) => ({ value: status, label: ApplicationStatusLabel[status] }))} /></FormField><div className="form-two-col"><FormField label="投递日期"><input type="date" value={form.appliedAt ?? ''} onChange={(event) => setForm({ ...form, appliedAt: event.target.value })} /></FormField><FormField label="下一步日期"><input type="date" value={form.nextStepAt ?? ''} onChange={(event) => setForm({ ...form, nextStepAt: event.target.value })} /></FormField></div><FormField label="备注"><textarea rows={5} value={form.note ?? ''} onChange={(event) => setForm({ ...form, note: event.target.value })} /></FormField><div className="drawer-actions">{editing && <Button variant="danger" onClick={() => setDeleteTarget(editing)}>删除</Button>}<span /><Button onClick={() => setDrawerOpen(false)}>取消</Button><Button variant="primary" onClick={SaveApplication}>保存记录</Button></div></div></Drawer>
+    {/* 抽屉经 portal 挂到 body：玻璃背景等祖先带动画/滤镜时 fixed 会退化为相对祖先定位，
+        只有脱离该子树才能像原型一样让遮罩与虚化盖住整个应用窗口。 */}
+    {drawer && createPortal(<div className="dw-layer" role="presentation">
+      <div className="dw-scrim" onClick={() => SetDrawer(null)} />
+      <aside className="dw-drawer" role="dialog" aria-modal="true" aria-labelledby="application-drawer-title" tabIndex={-1} ref={drawerRef}>
+        <div className="dw-head">
+          <div className="dw-head-main">
+            <div className="dw-title" id="application-drawer-title">{drawerTitle}</div>
+            <div className="dw-meta">
+              {drawer.mode === 'view'
+                ? <><span>{drawerJob?.title ?? '已删除岗位'}</span><span>当前在「{drawerStageLabel}」</span></>
+                : <span>{drawer.application ? '修改后尚未保存' : '尚未保存'}</span>}
+            </div>
+          </div>
+          <button className="icon-btn" type="button" aria-label="关闭详情" title="关闭详情" autoFocus onClick={() => SetDrawer(null)}><Icon name="close" size={16} /></button>
+        </div>
+        <div className="dw-body">
+          {drawer.mode === 'view'
+            ? <ApplicationDetailView application={drawer.application} job={drawerJob ?? undefined} />
+            : <div className="drawer-form">
+              <FormField label="岗位"><Select value={form.jobId ?? ''} ariaLabel="选择岗位" onChange={(jobId) => setForm({ ...form, jobId })} options={jobs.map((job) => ({ value: job.id, label: `${job.company} · ${job.title}` }))} /></FormField>
+              <FormField label="使用简历"><Select value={form.resumeId ?? ''} ariaLabel="使用简历" onChange={(resumeId) => setForm({ ...form, resumeId })} options={resumes.map((resume) => ({ value: resume.id, label: resume.name }))} /></FormField>
+              <FormField label="当前阶段"><Select value={form.status ?? 'applied'} ariaLabel="当前阶段" onChange={(status) => setForm({ ...form, status: status as ApplicationStatus })} options={Statuses.map((status) => ({ value: status, label: ApplicationStatusLabel[status] }))} /></FormField>
+              <FormField label="投递日期"><input type="date" value={form.appliedAt ?? ''} onChange={(event) => setForm({ ...form, appliedAt: event.target.value })} /></FormField>
+              <FormField label="下一步日期"><input type="date" value={form.nextStepAt ?? ''} onChange={(event) => setForm({ ...form, nextStepAt: event.target.value })} /></FormField>
+              <FormField label="备注"><textarea rows={4} value={form.note ?? ''} onChange={(event) => setForm({ ...form, note: event.target.value })} /></FormField>
+            </div>}
+        </div>
+        <div className="dw-foot">
+          {drawer.mode === 'view' ? <>
+            <button className="ghost-btn is-danger" type="button" onClick={() => setDeleteTarget(drawer.application)}><Icon name="delete" size={14} />删除</button>
+            <button className="ghost-btn" type="button" onClick={StartEditing}><Icon name="pencil-simple" size={14} />编辑</button>
+            <span className="foot-label">移动到</span>
+            <div className="stage-seg" role="group" aria-label="移动到其他阶段">
+              {BoardColumns.map((column) => <button key={column.id} type="button" className={`seg-i${drawer.application.status === column.status ? ' sel' : ''}`} onClick={() => { const application = drawer.application; SetDrawer(null); MoveApplication(application.id, column); }}>{column.label}</button>)}
+            </div>
+          </> : <>
+            {drawer.application && <button className="ghost-btn is-danger" type="button" onClick={() => setDeleteTarget(drawer.application)}><Icon name="delete" size={14} />删除</button>}
+            <button className="ghost-btn" type="button" onClick={CancelEditing}>取消</button>
+            <button className="btn-accent" type="button" onClick={SaveApplication}><Icon name="check-circle" size={14} />保存记录</button>
+          </>}
+        </div>
+      </aside>
+    </div>, document.body)}
     <Modal open={Boolean(deleteTarget)} title="删除这条投递记录？" onClose={() => setDeleteTarget(null)}><p className="modal-copy">删除后投递记录及其进度事件将被移除，此操作不可撤销。</p><div className="modal-actions"><Button onClick={() => setDeleteTarget(null)}>取消</Button><Button variant="danger" onClick={ConfirmDeleteApplication}>确认删除</Button></div></Modal>
   </div>;
 }

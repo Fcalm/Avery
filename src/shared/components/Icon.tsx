@@ -3,7 +3,7 @@ import type { CSSProperties, ImgHTMLAttributes } from 'react';
 /** 图标字重：对应 Phosphor 的 Regular / Light / Fill 三套本地字体。 */
 type IconWeight = 'regular' | 'light' | 'fill';
 
-type IconName = 'assistant' | 'jobs' | 'applications' | 'resumes' | 'profiles' | 'developer' | 'plus' | 'resume' | 'resume-panel' | 'browser' | 'panel-expand' | 'panel-shrink' | 'brand' | 'more' | 'settings' | 'developer-mode' | 'balance' | 'logout' | 'sidebar-expand' | 'sidebar-collapse' | 'chevron-down' | 'chevron-up' | 'chevron-right' | 'send' | 'edit' | 'delete' | 'archive' | 'heart' | 'map-pin' | 'arrow-right' | 'arrow-left' | 'loading' | 'error' | 'recovery' | 'refresh' | 'close' | 'stop' | 'music' | 'user-check' | 'user-x' | 'deepseek' | 'window-minimize' | 'window-restore' | 'window-maximize' | 'trace' | 'logs' | 'search' | 'moon' | 'sun' | 'check' | 'check-circle' | 'pin' | 'account' | 'workspace' | 'sliders' | 'paperclip' | 'brain' | 'gauge' | 'folder-simple' | 'shield-check' | 'pencil-simple' | 'robot' | 'lightning' | 'briefcase' | 'clock' | 'copy' | 'cpu' | 'list-bullets' | 'sparkle' | 'user' | 'wrench';
+type IconName = 'assistant' | 'jobs' | 'applications' | 'resumes' | 'profiles' | 'developer' | 'plus' | 'resume' | 'resume-panel' | 'browser' | 'panel-expand' | 'panel-shrink' | 'brand' | 'more' | 'settings' | 'developer-mode' | 'balance' | 'logout' | 'sidebar-expand' | 'sidebar-collapse' | 'chevron-down' | 'chevron-up' | 'chevron-right' | 'send' | 'edit' | 'delete' | 'archive' | 'heart' | 'map-pin' | 'arrow-right' | 'arrow-left' | 'loading' | 'error' | 'recovery' | 'refresh' | 'close' | 'stop' | 'music' | 'user-check' | 'user-x' | 'deepseek' | 'window-minimize' | 'window-restore' | 'window-maximize' | 'trace' | 'logs' | 'search' | 'moon' | 'sun' | 'check' | 'check-circle' | 'pin' | 'account' | 'workspace' | 'sliders' | 'paperclip' | 'brain' | 'gauge' | 'folder-simple' | 'shield-check' | 'pencil-simple' | 'robot' | 'lightning' | 'briefcase' | 'clock' | 'copy' | 'info' | 'cpu' | 'list-bullets' | 'sparkle' | 'user' | 'wrench';
 
 /**
  * IconName 到 Phosphor 字形的映射。深松绿设计系统的图标统一来自
@@ -20,6 +20,8 @@ const glyphs: Record<IconName, string> = {
   clock: 'clock', cpu: 'cpu', 'list-bullets': 'list-bullets', sparkle: 'sparkle', user: 'user', wrench: 'wrench',
   // 档案界面（原型一比一）：复制内容
   copy: 'copy',
+  // 投递详情（原型一比一）：下一步提示条的普通态
+  info: 'info',
 };
 
 /** 未收录于 Phosphor 的品牌图标继续走本地 PNG 资源。 */

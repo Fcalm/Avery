@@ -107,3 +107,5 @@
 .ph-wrench::before { content: "\e5d4"; }
 /* 档案抽屉（原型一比一）：复制内容 */
 .ph-copy::before { content: "\e1ca"; }
+/* 投递详情抽屉（原型一比一）：下一步提示条普通态 */
+.ph-info::before { content: "\e2ce"; }

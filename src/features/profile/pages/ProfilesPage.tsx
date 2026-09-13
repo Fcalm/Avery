@@ -162,9 +162,9 @@ function ProfilesPage() {
 
     {/* 抽屉经 portal 挂到 body：玻璃背景等祖先带动画/滤镜时 fixed 会退化为相对祖先定位，
         只有脱离该子树才能像原型一样让遮罩与虚化盖住整个应用窗口。 */}
-    {drawer && createPortal(<div className="profile-drawer-layer" role="presentation">
-      <div className="profile-scrim" onClick={() => SetDrawer(null)} />
-      <aside className="profile-drawer" role="dialog" aria-modal="true" aria-labelledby="profile-drawer-title" tabIndex={-1} ref={drawerRef}>
+    {drawer && createPortal(<div className="dw-layer" role="presentation">
+      <div className="dw-scrim" onClick={() => SetDrawer(null)} />
+      <aside className="dw-drawer" role="dialog" aria-modal="true" aria-labelledby="profile-drawer-title" tabIndex={-1} ref={drawerRef}>
         <div className="dw-head">
           <div className="dw-head-main">
             <div className="dw-title" id="profile-drawer-title">{drawerTitle}</div>

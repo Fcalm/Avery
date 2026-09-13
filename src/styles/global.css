@@ -668,8 +668,8 @@ body.is-resizing-resume, body.is-resizing-resume * { cursor: col-resize !importa
 }
 
 
-/* 确认弹窗必须覆盖右侧编辑抽屉，避免关闭抽屉后才能完成删除。 */
-.modal-layer { z-index: 60; align-items: center; justify-items: center; }
+/* 确认弹窗必须盖过原型抽屉（遮罩 z-60 / 抽屉 z-61），否则删除确认会被抽屉挡住。 */
+.modal-layer { z-index: 62; align-items: center; justify-items: center; }
 
 @media (prefers-reduced-motion: reduce){
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }

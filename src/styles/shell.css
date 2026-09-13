@@ -811,38 +811,32 @@ button { background: none; border: 0; }
 .profile-view .vrow:hover .vrow-go { color: var(--accent); transform: translateX(2px); }
 .profile-view-empty { padding: 48px 12px; color: var(--text-3); font-size: 12.5px; line-height: 1.7; text-align: center; }
 
-/* 档案条目只读视图：小节标题 + 字段键值对（侧栏与抽屉共用） */
-.profile-entry .sec { margin-top: 22px; }
-.profile-entry .sec:first-child { margin-top: 0; }
-.profile-entry .sec-h { font-size: 11px; font-weight: 600; letter-spacing: .07em; text-transform: uppercase; color: var(--text-3); padding-bottom: 7px; border-bottom: 1px solid var(--border); }
-.profile-entry .kv { display: grid; gap: 10px; padding-top: 13px; }
-.profile-entry .kv-r { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 12.5px; color: var(--text-2); }
-.profile-entry .kv-r b { font-weight: 550; color: var(--text); text-align: right; overflow-wrap: anywhere; }
-.profile-entry .kv-none { font-style: normal; font-weight: 400; color: var(--text-3); }
-
-.profile-entry .sec-h { font-size: 11px; font-weight: 600; letter-spacing: .07em; text-transform: uppercase; color: var(--text-3); padding-bottom: 7px; border-bottom: 1px solid var(--border); }
-.profile-entry .kv { display: grid; gap: 10px; padding-top: 13px; }
-.profile-entry .kv-r { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 12.5px; color: var(--text-2); }
-.profile-entry .kv-r b { font-weight: 550; color: var(--text); text-align: right; overflow-wrap: anywhere; }
-.profile-entry .kv-none { font-style: normal; font-weight: 400; color: var(--text-3); }
+/* 档案条目只读视图：小节标题 + 字段键值对（侧栏与抽屉共用，投递详情阅读态同规格） */
+.dw-body .sec { margin-top: 22px; }
+.dw-body .sec:first-child { margin-top: 0; }
+.dw-body .sec-h { font-size: 11px; font-weight: 600; letter-spacing: .07em; text-transform: uppercase; color: var(--text-3); padding-bottom: 7px; border-bottom: 1px solid var(--border); }
+.dw-body .kv { display: grid; gap: 10px; padding-top: 13px; }
+.dw-body .kv-r { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 12.5px; color: var(--text-2); }
+.dw-body .kv-r b { font-weight: 550; color: var(--text); text-align: right; overflow-wrap: anywhere; }
+.dw-body .kv-none { font-style: normal; font-weight: 400; color: var(--text-3); }
 .profile-entry-none { margin: 0; color: var(--text-3); font-size: 12.5px; line-height: 1.7; }
 
 /* ============================== 档案详情抽屉（原型 .drawer 一比一） ============================== */
 /* 遮罩盖住整个应用窗口（含顶栏），挂载即播放淡入；模糊叠加满足“背景虚化”。 */
-.profile-scrim {
+.dw-scrim {
   position: fixed; inset: 0; z-index: 60;
   background: rgba(24, 24, 27, .36); backdrop-filter: blur(2px);
-  animation: profileScrimIn .3s var(--ease) both;
+  animation: dwScrimIn .3s var(--ease) both;
 }
-[data-theme="dark"] .profile-scrim { background: rgba(0, 0, 0, .56); }
-@keyframes profileScrimIn { from { opacity: 0; } to { opacity: 1; } }
-.profile-drawer {
+[data-theme="dark"] .dw-scrim { background: rgba(0, 0, 0, .56); }
+@keyframes dwScrimIn { from { opacity: 0; } to { opacity: 1; } }
+.dw-drawer {
   position: fixed; top: 0; right: 0; bottom: 0; z-index: 61;
   display: flex; flex-direction: column; width: min(500px, 92vw);
   background: var(--panel); border-left: 1px solid var(--border); box-shadow: var(--shadow-lg);
-  animation: profileDrawerIn .38s var(--ease) both; outline: none;
+  animation: dwDrawerIn .38s var(--ease) both; outline: none;
 }
-@keyframes profileDrawerIn { from { transform: translateX(102%); } to { transform: none; } }
+@keyframes dwDrawerIn { from { transform: translateX(102%); } to { transform: none; } }
 .dw-head { flex: none; display: flex; align-items: flex-start; gap: 12px; padding: 15px 16px 14px 18px; border-bottom: 1px solid var(--border); }
 .dw-head-main { min-width: 0; }
 .dw-title { font-size: 15px; font-weight: 640; letter-spacing: -.01em; }
@@ -857,7 +851,7 @@ button { background: none; border: 0; }
 
 /* ============================== 档案抽屉编辑态：与阅读态同一套字号与排版 ============================== */
 /* 字段单列：标签在上、左对齐，控件占满行宽延伸到右缘；小节标题与阅读态 sec-h 同规格。 */
-.profile-drawer .application-profile-section > h3 {
+.dw-drawer .application-profile-section > h3 {
   margin: 0;
   border-bottom: 1px solid var(--border);
   padding: 0 0 7px;
@@ -868,8 +862,8 @@ button { background: none; border: 0; }
   line-height: 1.4;
   text-transform: uppercase;
 }
-.profile-drawer .application-profile-fields { grid-template-columns: minmax(0, 1fr); gap: 12px; }
-.profile-drawer .application-profile-field {
+.dw-drawer .application-profile-fields { grid-template-columns: minmax(0, 1fr); gap: 12px; }
+.dw-drawer .application-profile-field {
   grid-template-columns: minmax(0, 1fr);
   gap: 5px;
   align-items: stretch;
@@ -878,15 +872,15 @@ button { background: none; border: 0; }
   line-height: 20px;
   text-align: left;
 }
-.profile-drawer .application-profile-field > span { white-space: normal; }
-.profile-drawer .application-profile-field.is-multiline { grid-column: auto; }
-.profile-drawer .application-profile-field :is(input, select) { min-height: 32px; padding: 0 10px; font: inherit; }
-.profile-drawer .application-profile-field textarea { padding: 8px 10px; font: inherit; }
-.profile-drawer .profile-draft-basics .form-field input { min-height: 32px; padding: 0 10px; font: inherit; }
-.profile-drawer .profile-template-tip { font-size: 11px; }
+.dw-drawer .application-profile-field > span { white-space: normal; }
+.dw-drawer .application-profile-field.is-multiline { grid-column: auto; }
+.dw-drawer .application-profile-field :is(input, select) { min-height: 32px; padding: 0 10px; font: inherit; }
+.dw-drawer .application-profile-field textarea { padding: 8px 10px; font: inherit; }
+.dw-drawer .profile-draft-basics .form-field input { min-height: 32px; padding: 0 10px; font: inherit; }
+.dw-drawer .profile-template-tip { font-size: 11px; }
 /* 展开菜单统一走共享 Select 的自定义浮层（同权限选择），触发器高度与输入框一致。 */
-.profile-drawer .custom-select-trigger { min-height: 32px; padding: 0 10px; font-size: 12.5px; }
-.profile-drawer .custom-select-option { font-size: 12.5px; }
+.dw-drawer .custom-select-trigger { min-height: 32px; padding: 0 10px; font-size: 12.5px; }
+.dw-drawer .custom-select-option { font-size: 12.5px; }
 
 /* ================================================== 投递记录（applications board）
    对齐原型 applications 视图：上方 dashboard（七日折线 + 进展圆环），下方三阶段看板（已投递/笔试/面试）。
@@ -980,3 +974,43 @@ button { background: none; border: 0; }
   .app-view { padding: 20px 18px 24px; }
   .app-view .pipe { grid-template-columns: 1fr; }
 }
+
+/* ============================== 投递详情抽屉（原型 openApp 一比一） ============================== */
+/* 下一步提示条：urgent 主色底 + 时钟，普通态灰底 + info；紧急与否由“下一步日期距今 2 天内”推导。 */
+.dw-drawer .note {
+  display: flex; align-items: flex-start; gap: 9px;
+  margin-bottom: 4px; padding: 10px 12px;
+  border-radius: var(--r-control); color: var(--accent);
+  background: var(--accent-soft); font-size: 12.5px; line-height: 1.55;
+}
+.dw-drawer .note > .iconfont-png { flex: none; margin-top: 1px; font-size: 15px; }
+.dw-drawer .note.plain { color: var(--text-2); background: var(--surface-2); }
+.dw-drawer .note.plain > .iconfont-png { color: var(--text-3); }
+
+/* 流程记录时间线：竖向圆点轨道（对齐原型 .tl） */
+.dw-drawer .tl { padding-top: 13px; }
+.dw-drawer .tl-r { position: relative; display: flex; gap: 10px; padding: 0 0 13px 20px; }
+.dw-drawer .tl-r:last-child { padding-bottom: 0; }
+.dw-drawer .tl-r::before { content: ""; position: absolute; left: 5px; top: 14px; bottom: -1px; width: 1px; background: var(--border); }
+.dw-drawer .tl-r:last-child::before { display: none; }
+.dw-drawer .tl-r::after { content: ""; position: absolute; left: 1px; top: 5px; width: 9px; height: 9px; border-radius: 50%; background: var(--raised); border: 1.5px solid var(--accent); }
+.dw-drawer .tl-d { flex: none; width: 34px; font-family: var(--font-data); font-size: 11px; color: var(--text-3); }
+.dw-drawer .tl-t { flex: 1; font-size: 12.5px; line-height: 1.5; color: var(--text-2); }
+.dw-drawer .tl-none { margin: 13px 0 0; font-size: 12.5px; line-height: 1.7; color: var(--text-3); }
+
+/* 底部操作区：删除/编辑靠左，“移动到”标签推到右缘接阶段滑块（对齐原型 foot-label + stage-seg） */
+.dw-drawer .foot-label { margin-left: auto; align-self: center; font-size: 11.5px; color: var(--text-3); }
+.dw-drawer .stage-seg { display: flex; flex: none; gap: 3px; padding: 3px; border-radius: 9px; background: var(--surface-2); }
+.dw-drawer .seg-i {
+  height: 26px; padding: 0 10px; border: 0; border-radius: 6px; background: transparent;
+  font-size: 12px; font-weight: 550; color: var(--text-2); cursor: pointer;
+  transition: background-color .18s var(--ease), color .18s var(--ease);
+}
+.dw-drawer .seg-i:hover { color: var(--text); }
+.dw-drawer .seg-i.sel { background: var(--raised); color: var(--accent); }
+
+/* 编辑态表单：与阅读态同一套字号（标签 12.5px、控件 32px 高），单列占满行宽。 */
+.dw-drawer .drawer-form { gap: 12px; }
+.dw-drawer .form-field { gap: 5px; font-size: 12.5px; color: var(--text-2); }
+.dw-drawer .form-field input { min-height: 32px; padding: 0 10px; font: inherit; }
+.dw-drawer .form-field textarea { padding: 8px 10px; font: inherit; }
