@@ -1029,3 +1029,10 @@ button { background: none; border: 0; }
 .dw-drawer .rev-act { border: 0; padding: 0 0 0 12px; background: transparent; font-size: 12px; font-weight: 550; color: var(--text-3); cursor: pointer; transition: color .16s var(--ease); }
 .dw-drawer .rev-act:hover { color: var(--accent); }
 .dw-drawer .rev-none { margin: 10px 0 0; color: var(--text-3); font-size: 12.5px; }
+/* 编辑态：Markdown 源文编辑框，规格与侧边栏 rs-resume-editor 一致。 */
+.dw-resume-editor {
+  width: 100%; min-height: 60vh; resize: vertical;
+  border: 1px solid var(--border); border-radius: var(--r-control);
+  padding: 12px 14px; background: var(--raised); color: var(--text);
+  font-family: inherit; font-size: 12.5px; line-height: 1.8;
+}
