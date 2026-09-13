@@ -505,6 +505,8 @@ function AppShell({ page, onNavigate, onRestartOnboarding, settingsTab, onReques
           </nav>
 
           <div className="sb-scroll">
+            {/* 「最近」与项目空间板块同级：各占一个分区、各有分区标题；项目空间标题右侧放「更多」按钮，
+                与「最近」标题右侧的搜索按钮占同一位置。未绑定项目的会话留在「最近」。 */}
             <div className="sb-sec" aria-label="历史会话">
               <div className="sb-sec-h">
                 <span>最近</span>
@@ -514,19 +516,17 @@ function AppShell({ page, onNavigate, onRestartOnboarding, settingsTab, onReques
                 </div>
               </div>
               <div className="ti-list">
-                {/* 项目空间分组板块：组头（文件夹 + 分组名 + 更多）+ 组内会话行；未绑定项目的会话保持在「最近」平铺区。 */}
-                {conversationGroups.map((group) => <div className="ti-group" key={group.projectId}>
-                  <div className="ti-group-h">
-                    <Icon name="folder-simple" size={14} />
-                    <span className="ti-group-name" title={group.name}>{group.name}</span>
-                    <button className="ti-group-more" type="button" data-menu-trigger="group" aria-haspopup="menu" aria-expanded={groupMenu?.projectId === group.projectId} aria-label={`管理分组 ${group.name}`} title="更多" onClick={(event) => OpenGroupMenu(group.projectId, group.name, group.items.length, event.currentTarget)}><Icon name="more" size={13} /></button>
-                  </div>
-                  {group.items.map((item) => RenderConversationRow(item))}
-                </div>)}
                 {ungroupedConversations.map((item) => RenderConversationRow(item))}
-                {!visibleConversations.length && <div className="ti-empty">{searchKeyword ? '没有匹配的对话' : '还没有会话'}</div>}
+                {!ungroupedConversations.length && <div className="ti-empty">{searchKeyword ? '没有匹配的对话' : visibleConversations.length ? '所有对话都在项目空间里' : '还没有会话'}</div>}
               </div>
             </div>
+            {conversationGroups.map((group) => <div className="sb-sec" key={group.projectId} aria-label={`项目空间 ${group.name}`}>
+              <div className="sb-sec-h">
+                <span className="sb-sec-title" title={group.name}><Icon name="folder-simple" size={12} /><span>{group.name}</span></span>
+                <button className="sb-sec-more" type="button" data-menu-trigger="group" aria-haspopup="menu" aria-expanded={groupMenu?.projectId === group.projectId} aria-label={`管理项目空间 ${group.name}`} title="更多" onClick={(event) => OpenGroupMenu(group.projectId, group.name, group.items.length, event.currentTarget)}><Icon name="more" size={13} /></button>
+              </div>
+              <div className="ti-list">{group.items.map((item) => RenderConversationRow(item))}</div>
+            </div>)}
           </div>
 
           <div className="sb-foot">
