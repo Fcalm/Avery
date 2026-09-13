@@ -2447,16 +2447,6 @@ body.settings-has-configured-api-key .settings-panel.api-panel .form-field:has(i
 
 .user-flyout { row-gap: 2px; }
 
-.custom-select-option,
-.popup-menu button,
-
-.custom-select-option:is(:hover, :focus-visible),
-.popup-menu button:is(:hover, :focus-visible),
-
-.custom-select-option.is-selected:is(:hover, :focus-visible),
-.popup-menu button.selected:is(:hover, :focus-visible),
-.popup-menu button[aria-current='true']:is(:hover, :focus-visible),
-
 /* 输入框工具栏的规则优先级更高，权限菜单需在该上下文中显式恢复悬停反馈。 */
 .composer-bar .popup-menu button:is(:hover, :focus-visible) {
   outline: none;
