@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type CSSProperties, type KeyboardEvent, type MouseEvent } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type CSSProperties, type KeyboardEvent } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useLayoutEffect } from 'react';
 import type { AgentObservability, AgentStreamEvent, BrowserActionState, ConfirmationMode, ReasoningEffort } from '@avery/contracts';
@@ -198,7 +198,6 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
   const messageListRef = useRef<HTMLDivElement>(null);
   const enteredConversationRef = useRef<string | null>(null);
   const resumeSideRef = useRef<HTMLElement>(null);
-  const panelWidthRef = useRef(430);
   const activeRequestRef = useRef<string | null>(null);
   const activePlaceholderRef = useRef<{ conversationId: string; requestId: string; content: string; thinkingContent: string } | null>(null);
   const resumesRef = useRef(resumes);
@@ -727,27 +726,6 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
   }
 
   function HandleKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void HandleSend(); } }
-  function HandleResize(event: MouseEvent<HTMLDivElement>) {
-    event.preventDefault();
-    const startX = event.clientX; const start = panelWidthRef.current;
-    const layoutWidth = resumeSideRef.current?.parentElement?.clientWidth ?? 0;
-    // 始终给对话和输入栏保留最低阅读宽度；窗口放不下时设计下限让位（与原型 rsClamp 一致）。
-    const maximum = Math.min(720, Math.max(360, layoutWidth - ASSISTANT_MAIN_MIN_WIDTH));
-    const minimum = Math.min(360, maximum);
-    document.body.classList.add('is-resizing-resume');
-    function HandleMove(moveEvent: globalThis.MouseEvent) {
-      const width = Math.min(maximum, Math.max(minimum, start - (moveEvent.clientX - startX)));
-      panelWidthRef.current = width;
-      setPanelWidth(width);
-    }
-    function HandleUp() {
-      setPanelWidth(panelWidthRef.current);
-      document.body.classList.remove('is-resizing-resume');
-      document.removeEventListener('mousemove', HandleMove);
-      document.removeEventListener('mouseup', HandleUp);
-    }
-    document.addEventListener('mousemove', HandleMove); document.addEventListener('mouseup', HandleUp);
-  }
   function HandleEditChange(value: string) { setHistory((current) => [...current, resumeText]); setResumeText(value); }
   /** 撤销最近一次编辑：弹回上一份快照；编辑期间随时可用，保存后历史清空。 */
   function UndoResumeEdit() {
@@ -1006,7 +984,7 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
         </div>}
       </div>
     </section>}
-    {resumePanelOpen && <DocSidePanel resumes={resumes} currentResumeId={currentResumeId} editing={editing} resumeText={resumeText} canUndo={history.length > 0} panelWidth={panelWidth} onSelectResume={HandleSelectResume} onEditChange={HandleEditChange} onStartEditing={() => void HandleStartEditing()} onCancelEditing={HandleCancelEditing} onSaveResume={() => void HandleSaveResume()} onUndo={UndoResumeEdit} onResizeStart={HandleResize} />}
+    {resumePanelOpen && <DocSidePanel resumes={resumes} currentResumeId={currentResumeId} editing={editing} resumeText={resumeText} canUndo={history.length > 0} panelWidth={panelWidth} contentRef={resumeSideRef} onSelectResume={HandleSelectResume} onEditChange={HandleEditChange} onStartEditing={() => void HandleStartEditing()} onCancelEditing={HandleCancelEditing} onSaveResume={() => void HandleSaveResume()} onUndo={UndoResumeEdit} onPanelWidthChange={setPanelWidth} />}
     <Modal open={showFullyTrustedWarning} title="开启自动执行模式" onClose={() => setShowFullyTrustedWarning(false)}><p className="modal-copy">开启后，Agent 可在当前场景的工具白名单与数据授权范围内自动执行操作，不再逐项请求确认。此设置不会授予新的工具、文件或账号权限。</p><div className="modal-actions"><Button onClick={() => setShowFullyTrustedWarning(false)}>取消</Button><Button variant="primary" onClick={() => { setShowFullyTrustedWarning(false); void ApplyConfirmationMode('fully_trusted'); }}>我了解风险，继续</Button></div></Modal>
   </div>;
 }

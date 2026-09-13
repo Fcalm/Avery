@@ -704,6 +704,7 @@ button { background: none; border: 0; }
   content: ''; position: absolute; left: 3px; top: 0; bottom: 0; width: 2px;
   background: transparent; transition: background-color .15s var(--ease);
 }
+.rs-grip.on::after { background: var(--accent); }
 .rs-grip:hover::after, .rs-grip:focus-visible::after, body.is-resizing-resume .rs-grip::after { background: var(--accent); }
 
 .rs-head { flex: none; display: flex; align-items: center; gap: 8px; padding: 12px 12px 12px 14px; border-bottom: 1px solid var(--border); }
@@ -744,7 +745,13 @@ button { background: none; border: 0; }
   font-family: inherit; font-size: 12.5px; line-height: 1.8;
 }
 
+/* 边栏作为尺寸容器：窄到文字按钮放不下时隐藏文本只留图标，禁止文字竖排换行。 */
+.rside { container-type: inline-size; }
 .rs-foot { flex: none; display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-top: 1px solid var(--border); background: var(--surface); }
+.rs-foot :is(.ghost-btn, .btn-accent, .tb-txt-btn) { flex: none; white-space: nowrap; }
+@container (max-width: 419px) {
+  .rs-foot .btn-txt { display: none; }
+}
 .rs-actions { display: flex; align-items: center; gap: 8px; }
 .rs-foot .menu-wrap { margin-left: auto; }
 .rs-foot .menu.pop { width: 300px; max-height: min(58vh, 440px); }
