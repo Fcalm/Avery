@@ -1050,25 +1050,35 @@ input:focus, textarea:focus, select:focus { background: var(--color-surface-card
   display: grid;
   max-height: 240px;
   overflow-y: auto;
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-control);
-  padding: var(--space-1);
-  background: var(--color-surface-card);
-  box-shadow: var(--shadow-overlay);
+  border: 1px solid var(--border);
+  border-radius: var(--r-card);
+  padding: 6px;
+  background: var(--raised);
+  box-shadow: var(--shadow-lg);
 }
 .custom-select-option {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
   min-height: 32px;
   border: 0;
-  border-radius: calc(var(--radius-control) - var(--space-1));
-  padding: var(--space-2) var(--space-3);
+  border-radius: 9px;
+  padding: 8px 10px;
   color: var(--ink);
   background: transparent;
   font: inherit;
+  font-size: 13px;
   text-align: left;
+  transition: background-color .16s var(--ease);
 }
+/* 与 .menu 菜单同一套交互：悬停浅灰底；选中项不改底色，只在行尾亮出主色对勾。 */
 .custom-select-option:hover,
-.custom-select-option:focus-visible,
-.custom-select-option.is-selected { outline: none; background: var(--color-control-light); }
+.custom-select-option:focus-visible { outline: none; background: var(--surface-2); }
+.custom-select-option.is-selected { outline: none; }
+.custom-select-option .mt { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
+.custom-select-option .tick { margin-left: auto; flex: none; color: var(--accent); opacity: 0; transition: opacity .18s var(--ease); }
+.custom-select-option.is-selected .tick { opacity: 1; }
 .popup-menu, .user-flyout { border: 1px solid var(--color-border); border-radius: var(--radius-card); }
 .popup-menu button:hover, .popup-menu button:focus-visible, .popup-menu button.selected,
 .user-flyout > button:hover, .user-flyout > button:focus-visible, .user-flyout > button.selected,

@@ -473,6 +473,12 @@ button { background: none; border: 0; }
   max-height: min(60vh, 420px); overflow-y: auto;
   transform-origin: bottom left; animation: menuInUp .2s var(--ease) both;
 }
+/* 输入框工具条靠主内容区左缘：菜单若向左展开会伸出 .main-frame 的 overflow 边界被裁剪，
+   且右侧边栏展开时更甚。按原型 .menu.pop 的方向改为从触发器左缘向右展开。 */
+.composer .menu.pop {
+  right: auto; left: 0;
+  transform-origin: bottom left;
+}
 .menu.nv-menu { width: 262px; transform-origin: bottom right; }
 .menu-item .md { display: block; font-size: 12px; color: var(--text-3); line-height: 1.45; }
 /* 仅拉伸文本包装层；不能命中作为直接子元素的 .iconfont-png 图标（span），否则图标被拉宽。 */

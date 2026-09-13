@@ -146,7 +146,7 @@ function Select({ value, options, onChange, ariaLabel, disabled = false, classNa
 
   return <div className={`custom-select ${className}`} ref={rootRef}>
     <button className="custom-select-trigger" type="button" role="combobox" aria-label={ariaLabel} aria-controls={listboxId} aria-expanded={open} aria-haspopup="listbox" disabled={disabled} onClick={() => setOpen((current) => !current)} onKeyDown={HandleTriggerKeyDown}><span>{selected?.label ?? ''}</span><Icon name="chevron-down" size={16} /></button>
-    {open && <div className="custom-select-menu" id={listboxId} role="listbox" aria-label={ariaLabel}>{options.map((option, index) => <button key={option.value} className={`custom-select-option ${option.value === value ? 'is-selected' : ''}`} type="button" role="option" aria-selected={option.value === value} onClick={() => { onChange(option.value); setOpen(false); }} onKeyDown={(event) => HandleOptionKeyDown(event, index)}>{option.label}</button>)}</div>}
+    {open && <div className="custom-select-menu" id={listboxId} role="listbox" aria-label={ariaLabel}>{options.map((option, index) => <button key={option.value} className={`custom-select-option ${option.value === value ? 'is-selected' : ''}`} type="button" role="option" aria-selected={option.value === value} onClick={() => { onChange(option.value); setOpen(false); }} onKeyDown={(event) => HandleOptionKeyDown(event, index)}><span className="mt">{option.label}</span><Icon name="check" className="tick" size={14} /></button>)}</div>}
   </div>;
 }
 
