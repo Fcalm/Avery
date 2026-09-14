@@ -121,6 +121,7 @@ Agent 请求始终携带工具定义，因此历史 assistant 消息的 `reasoni
 - 连接测试调用一次最小非流式 Chat Completion，不依赖官方文档未声明的 `/models` 接口。
 - 正式请求发送 `thinking.type=enabled`、`thinking.clear_thinking=false`、`tool_stream=true`、`temperature=1`、`top_p=0.95`；会话五档思考强度映射为官方 `low/high/high/high/max`。
 - 图片使用 `messages[].content[]` 的 `image_url` 块，支持 URL 或受控附件转换得到的 Base64 Data URL；物理路径和 Base64 不写入会话历史。
+- 流式 Usage 的缓存命中原生字段为 `prompt_tokens_details.cached_tokens`，Adapter 归一化为 `cachedInputTokens` 供会话账本、Trace 与 UI 的缓存命中展示共用。
 - 切换供应商时禁止复用原供应商的已保存 Key，必须由用户重新输入并通过连接测试。
 
 ### 4.3 OpenAI 后续独立 Adapter
@@ -208,6 +209,7 @@ DeepSeek 0.2.0 Adapter 进一步固定以下协议：
 - 流请求必须发送 `stream_options.include_usage=true`。
 - `[DONE]` 前只允许一个非空 Usage 块。优先接受官方约定的空 `choices` 附加块；兼容 DeepSeek 实际返回的纯终止 choice（存在非空 `finish_reason`，但 delta 不含正文、思考或工具调用）。普通增量中的 `usage: null` 不计为 Usage 块。
 - `prompt_tokens`、`completion_tokens`、`total_tokens` 必须是非负安全整数，并满足 `total_tokens = prompt_tokens + completion_tokens`；不接受数字字符串或 `null` 转换。
+- 缓存命中输入 token 按 Provider 的字段位置读取：DeepSeek 用 `prompt_cache_hit_tokens`，Z.AI GLM 用 `prompt_tokens_details.cached_tokens`；两者统一归一化为 `cachedInputTokens`，同时出现且取值不一致时整块 Usage 按矛盾值拒绝。
 - 缺失或无效 Usage 转成显式 `unavailable` 事实；重复非空块，或 Usage 与真实正文、思考、工具调用增量同块，属于协议错误，不采用“最后一个覆盖”。
 - SDK/Core 对宿主只输出 `ProviderUsageFact`，因此会话账本、Trace 和 UI 数据源消费同一份 `provider` / `unavailable` 事实。
 

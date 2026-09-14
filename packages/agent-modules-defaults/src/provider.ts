@@ -105,18 +105,36 @@ function CreateSseParser(onData: (value: string) => void) {
   };
 }
 
+/**
+ * 缓存命中输入 token 的字段位置随 Provider 不同：DeepSeek 用顶层 prompt_cache_hit_tokens，
+ * GLM 等 OpenAI 风格响应放在 prompt_tokens_details.cached_tokens。两者是同一事实的两种写法，
+ * 同时出现时必须一致，否则整块 Usage 按矛盾值拒绝（沿用本合同对 usage 的唯一性要求）。
+ * 返回 undefined 表示两个字段都未提供；返回 null 表示字段存在但值非法或互相矛盾。
+ */
+function ReadCachedInputTokens(usage: Record<string, unknown> | null): number | undefined | null {
+  const details = usage?.prompt_tokens_details;
+  const cachedDetails = details && typeof details === 'object' ? details as Record<string, unknown> : undefined;
+  if (details !== undefined && details !== null && !cachedDetails) return null;
+  const values = [usage?.prompt_cache_hit_tokens, cachedDetails?.cached_tokens].filter((value) => value !== undefined);
+  if (values.length === 0) return undefined;
+  const [first, ...rest] = values;
+  if (typeof first !== 'number' || !Number.isSafeInteger(first) || first < 0) return null;
+  if (rest.some((value) => value !== first)) return null;
+  return first;
+}
+
 /** 仅接受 Provider 明确返回的完整非负整数 usage；无效或缺失时不使用估算值替代。 */
 function NormalizeModelUsage(value: unknown): ModelUsage | undefined {
   const usage = value && typeof value === 'object' ? value as Record<string, unknown> : null;
   const promptTokens = usage?.prompt_tokens;
   const completionTokens = usage?.completion_tokens;
   const totalTokens = usage?.total_tokens;
-  const cachedInputTokens = usage?.prompt_cache_hit_tokens;
+  const cachedInputTokens = ReadCachedInputTokens(usage);
   if (typeof promptTokens !== 'number' || !Number.isSafeInteger(promptTokens) || promptTokens < 0) return undefined;
   if (typeof completionTokens !== 'number' || !Number.isSafeInteger(completionTokens) || completionTokens < 0) return undefined;
   if (typeof totalTokens !== 'number' || !Number.isSafeInteger(totalTokens) || totalTokens < 0) return undefined;
   if (totalTokens !== promptTokens + completionTokens) return undefined;
-  if (cachedInputTokens !== undefined && (typeof cachedInputTokens !== 'number' || !Number.isSafeInteger(cachedInputTokens) || cachedInputTokens < 0 || cachedInputTokens > promptTokens)) return undefined;
+  if (cachedInputTokens === null || (cachedInputTokens !== undefined && cachedInputTokens > promptTokens)) return undefined;
   return { promptTokens, completionTokens, totalTokens, cachedInputTokens: cachedInputTokens ?? 0 };
 }
 

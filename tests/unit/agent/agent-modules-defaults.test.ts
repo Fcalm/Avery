@@ -897,7 +897,7 @@ describe('agent-modules-defaults', () => {
       return SseResponse([
         { choices: [{ delta: { reasoning_content: '分析' } }] },
         { choices: [{ delta: { tool_calls: [{ index: 0, id: 'glm-call-1', type: 'function', function: { name: 'Read', arguments: '{"path":"README.md"}' } }] } }] },
-        { choices: [{ finish_reason: 'tool_calls', delta: {} }], usage: { prompt_tokens: 20, completion_tokens: 10, total_tokens: 30 } },
+        { choices: [{ finish_reason: 'tool_calls', delta: {} }], usage: { prompt_tokens: 20, completion_tokens: 10, total_tokens: 30, prompt_tokens_details: { cached_tokens: 12 } } },
         '[DONE]',
       ]);
     }));
@@ -919,9 +919,30 @@ describe('agent-modules-defaults', () => {
     });
     expect(requestBody).not.toHaveProperty('stream_options');
     expect(result).toMatchObject({
-      reasoningContent: '分析', usage: { promptTokens: 20, completionTokens: 10, totalTokens: 30 },
+      reasoningContent: '分析', usage: { promptTokens: 20, completionTokens: 10, totalTokens: 30, cachedInputTokens: 12 },
       toolCalls: [{ id: 'glm-call-1', type: 'function', function: { name: 'Read', arguments: '{"path":"README.md"}' } }],
     });
+  });
+
+  it('缓存命中字段矛盾时整块 Usage 不进入账本，仅由 prompt_tokens_details 提供时正常采用', async () => {
+    const responses: unknown[] = [
+      { choices: [], usage: { prompt_tokens: 11, prompt_cache_hit_tokens: 8, prompt_tokens_details: { cached_tokens: 3 }, completion_tokens: 7, total_tokens: 18 } },
+      { choices: [], usage: { prompt_tokens: 11, prompt_tokens_details: { cached_tokens: 5 }, completion_tokens: 7, total_tokens: 18 } },
+    ];
+    vi.stubGlobal('fetch', vi.fn(async () => SseResponse([responses.shift(), '[DONE]'])));
+    vi.resetModules();
+    const { CreateProviderModule } = await import('../../../packages/agent-modules-defaults/src/provider');
+    const provider = CreateProviderModule(CreatePorts());
+    const common = {
+      model: 'deepseek-v4-flash', history: [], tools: [], signal: new AbortController().signal,
+      instructions: { ...BuildDefaultCompiledInstructions(), compiled: 'compiled prompt' }, onDelta: vi.fn(),
+    };
+
+    const contradictory = await provider.StreamCompletion({ ...common, requestId: 'usage-conflict' });
+    const detailsOnly = await provider.StreamCompletion({ ...common, requestId: 'usage-details' });
+
+    expect(contradictory.usage).toBeUndefined();
+    expect(detailsOnly.usage).toEqual({ promptTokens: 11, completionTokens: 7, totalTokens: 18, cachedInputTokens: 5 });
   });
 
   it('Provider 按 DeepSeek 官方协议发送视觉内容块且不透传宿主附件元数据', async () => {
