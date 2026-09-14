@@ -90,6 +90,9 @@ function GetDefaultReasoningEffort(options: ReasoningEffort[]) {
 
 interface ComposerAttachment { name: string; path: string; }
 interface AgentTodo { id: string; title: string; description: string; status: string; }
+/** 单个会话的 Todo 状态：todos 是该会话已创建的条目，active 表示该会话已有带 Todo 的运行。 */
+interface AgentTaskState { todos: AgentTodo[]; active: boolean; }
+const EmptyAgentTaskState: AgentTaskState = { todos: [], active: false };
 type SupportedProvider = 'DeepSeek' | 'Z.AI' | '自定义';
 type ProviderCatalogEntry = { provider: SupportedProvider; configured: boolean; model: string; models: string[] };
 
@@ -176,14 +179,13 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
   const [providerCatalog, setProviderCatalog] = useState<ProviderCatalogEntry[]>([
     { provider: settings.provider, configured: true, model: settings.model, models: settings.provider === 'DeepSeek' ? FallbackDeepSeekModels : [ResolveProviderModel(settings.provider, settings.model)] },
   ]);
-  const [isTaskActive, setIsTaskActive] = useState(false);
   const [panelWidth, setPanelWidth] = useState(430);
   const [isComposerCompact, setIsComposerCompact] = useState(false);
   const [editing, setEditing] = useState(false);
   const [resumeText, setResumeText] = useState(resumes.find((item) => item.id === currentResumeId)?.content ?? '');
   const [savedText, setSavedText] = useState(resumeText);
   const [history, setHistory] = useState<string[]>([]);
-  const [agentTodos, setAgentTodos] = useState<AgentTodo[]>([]);
+  const [tasksBySession, setTasksBySession] = useState<Record<string, AgentTaskState>>({});
   const [pendingEdit, setPendingEdit] = useState<{ requestId: string; confirmationId: string; name?: string; content: string; reason: string } | null>(null);
   const [pendingBrowserAction, setPendingBrowserAction] = useState<(BrowserActionState & { requestId: string }) | null>(null);
   const [pendingCronTask, setPendingCronTask] = useState<{ requestId: string; confirmationId: string; title: string; message: string; scenarioId: 'default' | 'application'; schedule: unknown; summary: string } | null>(null);
@@ -217,6 +219,11 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
   patchConversationsRef.current = patchConversations;
   activeConversationRef.current = activeConversationId;
 
+  /** Todo 归属产生它的那次会话：Agent 的 task_* 事件带 sessionId，按会话写入，切换会话不再串台。 */
+  const UpdateSessionTasks = useCallback((sessionId: string, update: (state: AgentTaskState) => AgentTaskState) => {
+    setTasksBySession((current) => ({ ...current, [sessionId]: update(current[sessionId] ?? EmptyAgentTaskState) }));
+  }, []);
+
   const RefreshConversationTrace = useCallback(async () => {
     setObservability(await GetAgentObservability());
   }, []);
@@ -235,6 +242,9 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
     reportedRequestCount: usage.reportedRequestCount,
     unreportedRequestCount: usage.unreportedRequestCount,
   });
+  // 只有当前会话自己的 Todo 参与渲染：新建会话页（无会话 id）与未产生 Todo 的会话都不显示任务条。
+  const agentTasks = (activeConversationId && tasksBySession[activeConversationId]) || EmptyAgentTaskState;
+  const agentTodos = agentTasks.todos;
   const activeTodo = agentTodos.find((item) => GetTodoPresentation(item.status).className === 'is-in-progress') ?? agentTodos.find((item) => GetTodoPresentation(item.status).className === 'is-pending') ?? agentTodos.at(-1);
   const PersistConversationComposerState = useCallback((conversationId: string | null, patch: Partial<StoredConversationComposerState>) => {
     if (!conversationId) return;
@@ -438,7 +448,6 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
     setAttachments([]);
     setProjectEnvironment(null);
     setScenarioId('default');
-    setAgentTodos([]);
     setPendingEdit(null);
     setPendingBrowserAction(null);
     setPendingCronTask(null);
@@ -446,7 +455,6 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
     setQuestionAnswers({});
     setOtherAnswers({});
     setPendingQuestionIndex(0);
-    setIsTaskActive(false);
     enteredConversationRef.current = null;
   }, [activeConversationId]);
 
@@ -549,19 +557,18 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
       ShowNotice(event.browserAction?.summary ?? '请在可见浏览器中完成登录或验证，然后发送“继续任务”');
       return;
     }
-    if ((event.type === 'task_created' || event.type === 'task_updated') && event.task) {
+    // task_* 事件带产生它的 sessionId（即会话 id）：只写入该会话，其他会话不受影响。
+    if ((event.type === 'task_created' || event.type === 'task_updated') && event.task && event.sessionId) {
       const task = event.task;
-      setAgentTodos((current) => {
-        const index = current.findIndex((item) => item.id === task.id);
-        if (index < 0) return [...current, task];
-        return current.map((item, itemIndex) => itemIndex === index ? task : item);
+      UpdateSessionTasks(event.sessionId, (state) => {
+        const index = state.todos.findIndex((item) => item.id === task.id);
+        return { todos: index < 0 ? [...state.todos, task] : state.todos.map((item, itemIndex) => itemIndex === index ? task : item), active: true };
       });
-      setIsTaskActive(true);
       return;
     }
-    if (event.type === 'task_deleted' && event.task) {
+    if (event.type === 'task_deleted' && event.task && event.sessionId) {
       const deletedTaskId = event.task.id;
-      setAgentTodos((current) => current.filter((item) => item.id !== deletedTaskId));
+      UpdateSessionTasks(event.sessionId, (state) => ({ ...state, todos: state.todos.filter((item) => item.id !== deletedTaskId) }));
       return;
     }
     if (event.type === 'question_requested' && event.requestId && event.questions) { setPendingQuestions({ requestId: event.requestId, questions: event.questions }); setQuestionAnswers(Object.fromEntries(event.questions.map((question) => [question.id, question.options[0] ?? '其他']))); setOtherAnswers({}); setPendingQuestionIndex(0); return; }
@@ -666,13 +673,13 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
         if (activeConversationRef.current === targetId) setProjectEnvironment(boundProject);
       }
       activePlaceholderRef.current = { conversationId: targetId, requestId, content: '', thinkingContent: '' };
-      setComposer(''); setAttachments([]); setAgentTodos([]); setIsTaskActive(false);
+      setComposer(''); setAttachments([]); UpdateSessionTasks(targetId, () => EmptyAgentTaskState);
       await SendAgentRequest({ requestId, sessionId: targetId, content: message.content, provider, model, reasoningEffort, confirmationMode: permission, attachments, projectId: boundProject?.projectId ?? undefined, scenarioId });
     } catch (error) {
       removeMessage.mutate({ conversationId: targetId, messageId: `reply-${requestId}` });
       activePlaceholderRef.current = null;
       activeRequestRef.current = null;
-      setIsTaskActive(false);
+      UpdateSessionTasks(targetId, (state) => ({ ...state, active: false }));
       ShowNotice(error instanceof Error ? error.message : '无法发起 Agent 请求');
     } finally {
       if (activeRequestRef.current === requestId) activeRequestRef.current = null;
@@ -801,7 +808,6 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
     if (nextScenarioId === scenarioId) { setShowScenario(false); return; }
     if (activeRequestRef.current) { ShowNotice('Agent 正在执行任务，请停止或等待本轮结束后再切换场景'); return; }
     setActiveConversationId(null);
-    setIsTaskActive(false);
     setShowScenario(false);
     setScenarioId(nextScenarioId);
     // 场景切换会建立新会话；确认权限不得跨场景沿用，尤其不能把完全信任隐式带入真实网站投递。
@@ -887,7 +893,7 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
 
   const isEmptyConversation = !conversation?.messages.length;
   const isNewThread = isEmptyConversation;
-  const shouldShowTodo = !isEmptyConversation && isTaskActive && agentTodos.length > 0;
+  const shouldShowTodo = !isEmptyConversation && agentTasks.active && agentTodos.length > 0;
   const hasComposerBlocker = Boolean(pendingQuestions || pendingEdit || pendingCronTask || pendingBrowserAction);
   const reasoningEffortOptions = GetReasoningEffortOptions(model);
   const CurrentConfirmation = ConfirmationOptions.find((item) => item.id === permission) ?? ConfirmationOptions[0];
