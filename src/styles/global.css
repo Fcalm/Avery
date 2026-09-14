@@ -1282,8 +1282,10 @@ select:focus, select:focus-visible,
 .evaluation-workspace { min-height: 0; overflow-y: auto; }
 .evaluation-run-list { max-height: 264px; overflow-y: auto; padding-right: var(--space-1); }
 
-/* Todo 缩略条和展开卡片共享同一内容表面，仅通过信息密度区分层级。 */
-.task-dock { position: relative; z-index: 3; margin-bottom: var(--space-2); font-family: var(--font-sans); font-size: var(--text-ui); }
+/* Todo 缩略条和展开卡片共享同一内容表面，仅通过信息密度区分层级。
+   宽度对齐输入框所在的 792px 居中列（shell.css 的 .composer-col），否则任务条会拉满整个
+   对话主区，与下方输入卡比例失衡。 */
+.task-dock { position: relative; z-index: 3; max-width: 792px; margin: 0 auto var(--space-2); font-family: var(--font-sans); font-size: var(--text-ui); }
 .task-summary {
   display: grid;
   width: 100%;
