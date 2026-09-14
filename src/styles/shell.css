@@ -218,13 +218,6 @@ button { background: none; border: 0; }
 }
 .sb-sec-more:hover, .sb-sec-more[aria-expanded="true"] { background: var(--border); color: var(--text); }
 .sb-sec-h:hover .sb-sec-more, .sb-sec-more:focus-visible, .sb-sec-more[aria-expanded="true"] { opacity: 1; }
-/* 分组弹窗的名称输入框：共享组件 Modal 内没有现成输入样式 */
-.modal-input {
-  width: 100%; min-height: 34px; border: 1px solid var(--border); border-radius: var(--r-control);
-  padding: 0 10px; background: var(--surface); color: var(--text); font: inherit; font-size: 13px;
-}
-.modal-input:focus { outline: 0; border-color: var(--accent); box-shadow: var(--focus-ring); }
-.modal-input + .modal-copy { margin-top: 10px; }
 
 /* 最近会话行：当前对话左侧竖条 barIn 展开 */
 .ti-wrap { position: relative; }
@@ -1197,6 +1190,99 @@ button { background: none; border: 0; }
   .kv-link { max-width: 100%; }
 }
 
+/* ============================== 弹窗（原型一比一） ============================== */
+/* 版式取自 avery-prototype 的确认弹窗（.cf-*）与 avery-settings 的编辑弹窗（.md-*）。
+   弹窗层压在抽屉（z-61）之上、通知（z-80）之下：原型里确认框同样要盖住详情抽屉。 */
+.modal-layer { position: fixed; z-index: 70; inset: 0; display: block; padding: 0; }
+/* 遮罩在原型的 .scrim 上补足 button 重置：应用用真实按钮承载遮罩点击，键盘也能关掉弹窗 */
+.scrim {
+  position: absolute; inset: 0; width: 100%; height: 100%; border: 0; padding: 0;
+  background: var(--scrim); opacity: 0; animation: scrimIn .3s var(--ease) both;
+}
+@keyframes scrimIn { to { opacity: 1; } }
+.modal {
+  position: fixed; left: 50%; top: 50%; z-index: 71;
+  background: var(--raised); border: 1px solid var(--border); border-radius: var(--r-card);
+  box-shadow: var(--shadow-lg);
+}
+/* confirm：原型 #cfModal，392px，标题与说明之间只隔一条留白 */
+.modal-confirm {
+  width: min(392px, calc(100vw - 40px)); max-height: calc(100dvh - 40px); overflow-y: auto;
+  padding: 18px 18px 16px;
+  /* 静态值就是原型 .modal.show 的终态：动画不生效时（如强制关闭动画）仍能居中 */
+  transform: translate(-50%, -50%);
+  animation: modalIn .28s var(--ease) both;
+}
+@keyframes modalIn {
+  from { opacity: 0; transform: translate(-50%, -50%) scale(.97); }
+  to { opacity: 1; transform: translate(-50%, -50%); }
+}
+.cf-head { display: flex; align-items: flex-start; gap: 10px; }
+.cf-title { flex: 1; padding-top: 2px; font-size: 15px; font-weight: 640; letter-spacing: -.01em; }
+.cf-text { margin: 8px 0 0; font-size: 12.5px; line-height: 1.6; color: var(--text-2); }
+.cf-foot { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+/* dialog：原型 #modal（620px）与 .cf-modal（440px），标题栏 + 滚动内容区 + 底部操作区 */
+.modal-dialog {
+  display: flex; width: min(620px, 92vw); max-height: calc(100dvh - 60px); flex-direction: column;
+  transform: translate(-50%, -50%);
+  animation: modalInForm .32s var(--ease) both;
+}
+.modal-dialog.is-sm { width: min(440px, 92vw); }
+@keyframes modalInForm {
+  from { opacity: 0; transform: translate(-50%, calc(-50% + 12px)) scale(.985); }
+  to { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+}
+.md-head { display: flex; align-items: center; gap: 12px; padding: 20px 18px 2px 22px; }
+.md-title { font-size: 17px; font-weight: 660; letter-spacing: -.015em; }
+.md-x { margin-left: auto; color: var(--text-3); }
+.md-body { display: flex; min-height: 0; flex: 1; flex-direction: column; gap: 18px; overflow-y: auto; padding: 18px 22px 4px; }
+.md-body::-webkit-scrollbar { width: 10px; }
+.md-body::-webkit-scrollbar-thumb { border: 3px solid transparent; border-radius: 99px; background: transparent; background-clip: content-box; }
+.md-body:hover::-webkit-scrollbar-thumb { background: var(--border-2); background-clip: content-box; }
+/* 下拉菜单从触发器下缘展开，需要溢出可见：正文一旦是滚动容器，贴着底部的菜单会被整块裁掉。
+   菜单打开期间不滚动正文——弹窗正文本身不高，需要滚动的长表单里没有下拉控件。 */
+.md-body:has(.custom-select-trigger[aria-expanded="true"]) { overflow: visible; }
+.md-body .lb { font-size: 13px; }
+/* 弹窗正文里的说明段落沿用原型 .cf-text 的排版 */
+.md-body .md-note { margin: 0; font-size: 12.5px; line-height: 1.6; color: var(--text-2); }
+.md-foot { display: flex; justify-content: flex-end; gap: 9px; padding: 22px 22px 20px; }
+/* 底部按钮在弹窗里比页面里高一档，与原型 .md-foot 一致 */
+.md-foot .ghost-btn, .md-foot .btn-accent, .md-foot .btn-danger { height: 36px; padding: 0 18px; font-size: 13.5px; }
+/* 弹窗内表单沿用原型 .set-field / .set-inp 的版式（重命名分组、新建测评项目等） */
+.md-body .form-field { display: flex; flex-direction: column; gap: 7px; }
+.md-body .form-field > span { padding-left: 1px; color: var(--text-2); font-size: 13px; font-weight: 550; }
+.md-body .form-field small { color: var(--text-3); font-size: 12px; line-height: 1.55; }
+.md-body input:not([type='checkbox']):not([type='radio']) {
+  width: 100%; height: 40px; padding: 0 12px; border: 1px solid var(--border-2); border-radius: var(--r-control);
+  background: var(--panel); color: var(--text); font-family: inherit; font-size: 13.5px;
+  transition: border-color .18s var(--ease), box-shadow .18s var(--ease);
+}
+.md-body input:not([type='checkbox']):not([type='radio'])::placeholder { color: var(--text-3); }
+.md-body input:not([type='checkbox']):not([type='radio']):focus { outline: 0; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+/* 破坏性主操作：原型里唯一填充的红色，深色主题沿用同一填充色 */
+.btn-danger {
+  display: inline-flex; align-items: center; gap: 7px; height: 32px; padding: 0 13px; cursor: pointer;
+  border: 0; border-radius: var(--r-control); background: var(--danger-fill); color: #fff;
+  font-size: 12.5px; font-weight: 600;
+  transition: background-color .18s var(--ease), transform .12s var(--ease);
+}
+.btn-danger:hover { background: var(--danger-fill-hover); }
+.btn-danger:active { transform: scale(.98); }
+.btn-danger:disabled { background: var(--surface-2); color: var(--text-3); cursor: default; transform: none; }
+/* 警示块（原型 .cf-warn）：破坏性确认里逐条列出会被清掉的内容 */
+.cf-warn {
+  display: flex; gap: 12px; padding: 14px 15px;
+  border: 1px solid rgba(180, 65, 60, .22); border-radius: var(--r-control); background: rgba(180, 65, 60, .06);
+}
+.cf-warn > i.ph { flex: none; margin-top: 1px; font-size: 18px; color: var(--danger-fill); }
+.cf-warn p { margin: 0; font-size: 12.5px; color: var(--text-2); line-height: 1.6; }
+.cf-warn p + p { margin-top: 10px; color: var(--text-3); }
+.cf-warn ul { display: flex; flex-direction: column; gap: 5px; margin: 9px 0 0; padding: 0; list-style: none; }
+.cf-warn li { position: relative; padding-left: 13px; font-size: 12.5px; color: var(--text-2); line-height: 1.5; }
+.cf-warn li::before { position: absolute; left: 2px; top: 7px; width: 4px; height: 4px; border-radius: 50%; background: var(--text-3); content: ""; }
+[data-theme="dark"] .cf-warn { border-color: rgba(224, 121, 111, .24); background: rgba(224, 121, 111, .08); }
+[data-theme="dark"] .cf-warn > i.ph { color: var(--danger); }
+
 /* ============================== 模型配置（原型一比一） ============================== */
 /* 页面本体自带原型 .set 的留白与最大宽度，设置外壳不再追加内边距。 */
 .settings-page.is-model-set { padding: 0; }
@@ -1332,7 +1418,7 @@ body.settings-has-configured-api-key .model-set-scope .set-field:has(input[type=
 .model-set-scope .quiet-btn:active { transform: scale(.98); }
 .model-set-scope .set-add { align-self: flex-start; }
 
-/* 模型弹窗：校验失败时用原型的多选标签样式提示必填项 */
+/* 模型弹窗内容：单个模型的字段组，间距与 .md-body 一致 */
 .model-dialog { display: flex; flex-direction: column; gap: 18px; }
 .model-set-scope .chk-row { display: flex; flex-wrap: wrap; gap: 9px; }
 .model-set-scope .chk {
@@ -1355,10 +1441,6 @@ body.settings-has-configured-api-key .model-set-scope .set-field:has(input[type=
 .model-set-scope .chk.locked:hover { border-color: var(--border-2); }
 .model-set-scope .chk .lock { color: var(--text-3); }
 .model-set-scope .chk:has(input:focus-visible) .box { outline: 2px solid var(--accent); outline-offset: 2px; }
-
-/* 模型编辑弹窗比应用默认弹窗宽（原型 620px），标题沿用原型的 md-title 字号 */
-.modal:has(> .model-dialog) { width: min(620px, 100%); }
-.modal:has(> .model-dialog) .modal-header h2 { font-family: var(--font-sans); font-size: 17px; font-weight: 660; letter-spacing: -.015em; }
 
 /* 开关行：模型弹窗里的思考模式沿用原型的开关控件 */
 .model-set-scope .switch {

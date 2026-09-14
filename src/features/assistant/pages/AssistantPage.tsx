@@ -16,7 +16,7 @@ import {
   AcquireResumeEditLock, BindProjectEnvironment, CancelAgentRequest, ConfirmBrowserAction, ConfirmCronTask, ConfirmResumeEdit, GetAgentObservability, GetAgentTraceEvents, GetProviderCatalog, GetSessionAssistantState, ImportAttachmentFile,
   ReleaseResumeEditLock, ReloadAgentSession, SelectAgentProjectDirectory, SendAgentRequest, SubscribeAgentStream, UpdateAgentConfirmationMode, UpdateAgentReasoningEffort,
 } from '../../../features/assistant/api/agentQueries';
-import { Button, Modal, Select } from '../../../shared/components/UI';
+import { Button, DialogButton, Modal, Select } from '../../../shared/components/UI';
 import { Icon, type IconName } from '../../../shared/components/Icon';
 import { MarkdownText } from '../../../shared/components/MarkdownText';
 import { ASSISTANT_MAIN_MIN_WIDTH } from '../../../shared/layoutConstants';
@@ -1006,7 +1006,17 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
       </div>
     </section>}
     {resumePanelOpen && <DocSidePanel resumes={resumes} currentResumeId={currentResumeId} editing={editing} resumeText={resumeText} canUndo={history.length > 0} panelWidth={panelWidth} contentRef={resumeSideRef} onSelectResume={HandleSelectResume} onEditChange={HandleEditChange} onStartEditing={() => void HandleStartEditing()} onCancelEditing={HandleCancelEditing} onSaveResume={() => void HandleSaveResume()} onUndo={UndoResumeEdit} onPanelWidthChange={setPanelWidth} />}
-    <Modal open={showFullyTrustedWarning} title="开启自动执行模式" onClose={() => setShowFullyTrustedWarning(false)}><p className="modal-copy">开启后，Agent 可在当前场景的工具白名单与数据授权范围内自动执行操作，不再逐项请求确认。此设置不会授予新的工具、文件或账号权限。</p><div className="modal-actions"><Button onClick={() => setShowFullyTrustedWarning(false)}>取消</Button><Button variant="primary" onClick={() => { setShowFullyTrustedWarning(false); void ApplyConfirmationMode('fully_trusted'); }}>我了解风险，继续</Button></div></Modal>
+    <Modal
+      open={showFullyTrustedWarning}
+      title="开启自动执行模式"
+      onClose={() => setShowFullyTrustedWarning(false)}
+      footer={<>
+        <DialogButton onClick={() => setShowFullyTrustedWarning(false)}>取消</DialogButton>
+        <DialogButton tone="accent" onClick={() => { setShowFullyTrustedWarning(false); void ApplyConfirmationMode('fully_trusted'); }}>我了解风险，继续</DialogButton>
+      </>}
+    >
+      开启后，Agent 可在当前场景的工具白名单与数据授权范围内自动执行操作，不再逐项请求确认。此设置不会授予新的工具、文件或账号权限。
+    </Modal>
   </div>;
 }
 

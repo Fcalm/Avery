@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useUiStore } from '../../../app/UiStore';
-import { Button, FormField, Modal, Select } from '../../../shared/components/UI';
+import { DialogButton, FormField, Modal, Select } from '../../../shared/components/UI';
 import { Icon } from '../../../shared/components/Icon';
 import { ChannelLabel, FormatDateTime, FormatRelativeTime, FromDateTimeLocalValue, JobSeekingTypeLabel, ToDateTimeLocalValue } from '../../../shared/utils/format';
 import { CreateEntityId } from '../../workspace/api/workspaceData';
@@ -270,9 +270,16 @@ function JobsPage({ onGoAssistant }: { onGoAssistant: () => void }) {
       </aside>
     </div>, document.body)}
 
-    <Modal open={Boolean(deleteTarget)} title="删除这份岗位？" onClose={() => setDeleteTarget(null)}>
-      <p className="modal-copy">删除后岗位将从岗位库移除，此操作不可撤销。</p>
-      <div className="modal-actions"><Button onClick={() => setDeleteTarget(null)}>取消</Button><Button variant="danger" onClick={ConfirmRemoveJob}>确认删除</Button></div>
+    <Modal
+      open={Boolean(deleteTarget)}
+      title="删除这份岗位？"
+      onClose={() => setDeleteTarget(null)}
+      footer={<>
+        <DialogButton onClick={() => setDeleteTarget(null)}>取消</DialogButton>
+        <DialogButton tone="danger" onClick={ConfirmRemoveJob}>确认删除</DialogButton>
+      </>}
+    >
+      删除后岗位将从岗位库移除，此操作不可撤销。
     </Modal>
   </div>;
 }

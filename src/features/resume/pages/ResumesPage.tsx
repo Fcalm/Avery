@@ -4,7 +4,7 @@ import { CreateResumeDocumentMarkup, type ResumeRevisionDocumentDto } from '@ave
 import { useUiStore } from '../../../app/UiStore';
 import { useDeleteResume, useResumes, useRestoreResumeRevision, useUpsertResume, LoadResumeRevisions, LoadResumeRevision, ExportResumeFile } from '../../../features/resume/api/resumeQueries';
 import { AcquireResumeEditLock, ReleaseResumeEditLock } from '../../assistant/api/agentQueries';
-import { Button, Modal } from '../../../shared/components/UI';
+import { DialogButton, Modal } from '../../../shared/components/UI';
 import { Icon } from '../../../shared/components/Icon';
 import { FormatTime } from '../../../shared/utils/format';
 import type { Resume } from '../../../types/domain';
@@ -248,13 +248,27 @@ function ResumesPage({ onGoAssistant }: { onGoAssistant: () => void }) {
         </div>
       </aside>
     </div>, document.body)}
-    <Modal open={Boolean(deleteTarget)} title="删除这份简历？" onClose={() => SetDeleteTarget(null)}>
-      <p className="modal-copy">删除后这份简历及其全部历史版本将从数据库中移除，无法恢复。</p>
-      <div className="modal-actions"><Button onClick={() => SetDeleteTarget(null)}>取消</Button><Button variant="danger" onClick={ConfirmDeleteResume}>确认删除</Button></div>
+    <Modal
+      open={Boolean(deleteTarget)}
+      title="删除这份简历？"
+      onClose={() => SetDeleteTarget(null)}
+      footer={<>
+        <DialogButton onClick={() => SetDeleteTarget(null)}>取消</DialogButton>
+        <DialogButton tone="danger" onClick={ConfirmDeleteResume}>确认删除</DialogButton>
+      </>}
+    >
+      删除后这份简历及其全部历史版本将从数据库中移除，无法恢复。
     </Modal>
-    <Modal open={Boolean(restoreTarget)} title="还原历史版本？" onClose={() => SetRestoreTarget(null)}>
-      <p className="modal-copy">将从 v{restoreTarget?.revision} 创建新的当前版本；不会降低版本号。</p>
-      <div className="modal-actions"><Button onClick={() => SetRestoreTarget(null)}>取消</Button><Button variant="primary" onClick={() => void ConfirmRestoreRevision()}>确认还原</Button></div>
+    <Modal
+      open={Boolean(restoreTarget)}
+      title="还原历史版本？"
+      onClose={() => SetRestoreTarget(null)}
+      footer={<>
+        <DialogButton onClick={() => SetRestoreTarget(null)}>取消</DialogButton>
+        <DialogButton tone="accent" onClick={() => void ConfirmRestoreRevision()}>确认还原</DialogButton>
+      </>}
+    >
+      将从 v{restoreTarget?.revision} 创建新的当前版本；不会降低版本号。
     </Modal>
   </div>;
 }

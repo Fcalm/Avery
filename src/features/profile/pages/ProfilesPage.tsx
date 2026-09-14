@@ -5,7 +5,7 @@ import { useProfiles, useSaveProfiles } from '../../../features/profile/api/prof
 import { ProfileEntryView, GetProfileCopyText } from '../components/ProfileEntryView';
 import { CompareProfileCategory, GetProfileSummary } from '../profileView';
 import { CreateEntityId } from '../../workspace/api/workspaceData';
-import { Button, FormField, Modal, Select } from '../../../shared/components/UI';
+import { DialogButton, FormField, Modal, Select } from '../../../shared/components/UI';
 import { Icon } from '../../../shared/components/Icon';
 import { FormatTime, ProfileCategoryLabel } from '../../../shared/utils/format';
 import type { ProfileCategory, ProfileItem } from '../../../types/domain';
@@ -201,7 +201,17 @@ function ProfilesPage() {
         </div>
       </aside>
     </div>, document.body)}
-    <Modal open={Boolean(deleteTarget)} title="删除这条资料？" onClose={() => SetDeleteTarget(null)}><p className="modal-copy">该操作不可撤销。</p><div className="modal-actions"><Button onClick={() => SetDeleteTarget(null)}>取消</Button><Button variant="danger" onClick={ConfirmDeleteProfile}>确认删除</Button></div></Modal>
+    <Modal
+      open={Boolean(deleteTarget)}
+      title="删除这条资料？"
+      onClose={() => SetDeleteTarget(null)}
+      footer={<>
+        <DialogButton onClick={() => SetDeleteTarget(null)}>取消</DialogButton>
+        <DialogButton tone="danger" onClick={ConfirmDeleteProfile}>确认删除</DialogButton>
+      </>}
+    >
+      该操作不可撤销。
+    </Modal>
   </div>;
 }
 

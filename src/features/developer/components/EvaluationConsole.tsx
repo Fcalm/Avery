@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type DragEvent, type KeyboardEvent } from 'react';
 import type { EvalCaseRun, EvalCaseRunDetail, EvalComparison, EvalEvent, EvalProject, EvalProjectInput, EvalPromptCandidate, EvalPromptPreview, EvalRun, EvalRunDetail, EvalTraceNodeType } from '@avery/contracts';
 import { useUiStore } from '../../../app/UiStore';
-import { Button, EmptyState, FormField, Modal, Select } from '../../../shared/components/UI';
+import { Button, DialogButton, EmptyState, FormField, Modal, Select } from '../../../shared/components/UI';
 import { Icon } from '../../../shared/components/Icon';
 import {
   CancelEvalRun, CompareEvalRuns, CreateEvalProject, DeleteEvalProject, ImportEvalDataset, ListEvalProjects, ListEvalRuns,
@@ -450,7 +450,29 @@ export function EvaluationConsole() {
         </>}
       </section>}
     </div>}
-    <Modal open={showCreate} title="新建测评项目" onClose={() => setShowCreate(false)}><div className="modal-form"><FormField label="项目名称"><input value={projectName} onChange={(event) => setProjectName(event.target.value)} /></FormField><FormField label="Runner"><Select value={runnerType} ariaLabel="测评 Runner" onChange={(value) => setRunnerType(value as 'prompt' | 'browser')} options={[{ value: 'prompt', label: 'System Prompt 测评' }, { value: 'browser', label: '拟真浏览器测评' }]} /></FormField></div><div className="modal-actions"><Button onClick={() => setShowCreate(false)}>取消</Button><Button variant="primary" disabled={busy} onClick={() => void CreateProject()}>创建</Button></div></Modal>
-    <Modal open={Boolean(deleteProjectId)} title="删除测评项目" onClose={() => setDeleteProjectId(null)}><p>将删除项目配置与项目数据集，历史 Run 和不可变快照会保留。此操作无法撤销。</p><div className="modal-actions"><Button onClick={() => setDeleteProjectId(null)}>取消</Button><Button variant="danger" disabled={busy} onClick={() => void DeleteProject()}>确认删除</Button></div></Modal>
+    <Modal
+      open={showCreate}
+      title="新建测评项目"
+      onClose={() => setShowCreate(false)}
+      variant="dialog"
+      footer={<>
+        <DialogButton onClick={() => setShowCreate(false)}>取消</DialogButton>
+        <DialogButton tone="accent" disabled={busy} onClick={() => void CreateProject()}>创建</DialogButton>
+      </>}
+    >
+      <FormField label="项目名称"><input value={projectName} onChange={(event) => setProjectName(event.target.value)} /></FormField>
+      <FormField label="Runner"><Select value={runnerType} ariaLabel="测评 Runner" onChange={(value) => setRunnerType(value as 'prompt' | 'browser')} options={[{ value: 'prompt', label: 'System Prompt 测评' }, { value: 'browser', label: '拟真浏览器测评' }]} /></FormField>
+    </Modal>
+    <Modal
+      open={Boolean(deleteProjectId)}
+      title="删除测评项目"
+      onClose={() => setDeleteProjectId(null)}
+      footer={<>
+        <DialogButton onClick={() => setDeleteProjectId(null)}>取消</DialogButton>
+        <DialogButton tone="danger" disabled={busy} onClick={() => void DeleteProject()}>确认删除</DialogButton>
+      </>}
+    >
+      将删除项目配置与项目数据集，历史 Run 和不可变快照会保留。此操作无法撤销。
+    </Modal>
   </div>;
 }

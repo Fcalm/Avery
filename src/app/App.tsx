@@ -12,7 +12,7 @@ import { ProfilesPage } from '../features/profile/pages/ProfilesPage';
 import { SettingsPage, type SettingTab } from '../features/settings/pages/SettingsPage';
 import { OnboardingPage } from '../features/settings/pages/OnboardingPage';
 import { DeveloperPage } from '../features/developer/pages/DeveloperPage';
-import { Button, EmptyState, Modal } from '../shared/components/UI';
+import { Button, DialogButton, EmptyState, Modal } from '../shared/components/UI';
 import { BackendRecoveryGate, IsBackendRecoveryError } from './BackendRecoveryGate';
 import { Icon } from '../shared/components/Icon';
 import type { PageId } from '../types/domain';
@@ -77,7 +77,17 @@ function AppContent() {
       <section className="assistant-page-presence" hidden={page !== 'assistant'}><AssistantPage onNavigate={setPage} /></section>
       {page === 'jobs' && <JobsPage onGoAssistant={() => setPage('assistant')} />}{page === 'applications' && <ApplicationsPage />}{page === 'resumes' && <ResumesPage onGoAssistant={() => setPage('assistant')} />}{page === 'profiles' && <ProfilesPage />}{page === 'settings' && <SettingsPage onNavigateDeveloper={() => setPage('developer')} tab={settingsTab} requestedTab={requestedSettingsTab} tabRequestVersion={settingsTabRequestVersion} onTabChange={setSettingsTab} />}{page === 'developer' && <DeveloperPage />}
     </AppShell>
-    <Modal open={profileConflict} title="档案文件已被外部修改" onClose={() => undefined}><p className="modal-copy">本地工作空间的档案文件（profile.json）已被其他程序修改。请选择保留磁盘版本，还是覆盖为应用中的最新版本。</p><div className="modal-actions"><Button onClick={() => void ResolveProfileConflict('reload')}>重新加载磁盘版本</Button><Button variant="primary" onClick={() => void ResolveProfileConflict('keep')}>保留应用版本</Button></div></Modal>
+    <Modal
+      open={profileConflict}
+      title="档案文件已被外部修改"
+      onClose={() => undefined}
+      footer={<>
+        <DialogButton onClick={() => void ResolveProfileConflict('reload')}>重新加载磁盘版本</DialogButton>
+        <DialogButton tone="accent" onClick={() => void ResolveProfileConflict('keep')}>保留应用版本</DialogButton>
+      </>}
+    >
+      本地工作空间的档案文件（profile.json）已被其他程序修改。请选择保留磁盘版本，还是覆盖为应用中的最新版本。
+    </Modal>
     {/* 原型同款通知：底部居中药丸，图标随语气区分；点击动作先收起再执行 */}
     {notice && <div key={notice.id} className={`app-toast${notice.action ? ' has-action' : ''}`} role="status" aria-live="polite">
       <Icon name={notice.tone === 'error' ? 'error' : notice.tone === 'pending' ? 'loading' : 'check-circle'} size={14} />

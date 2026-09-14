@@ -6,7 +6,7 @@ import { ClearAgentObservability, ClearBrowserProfile, ConfigureAgent, GetAgentM
 import { ApplyModelRuntime, CreateCatalogModel, DefaultContextWindow, DefaultMaxOutput, FindCatalogModel, FindCatalogProvider, FormatContextWindow, IsValidContextWindow, IsValidMaxOutput, LoadModelCatalog, MergeBackendProviders, MergeProviderModels, ModelApiFormats, SaveModelCatalog, type ModelApiFormat, type ModelCatalog, type ModelCatalogModel, type ModelCatalogProvider } from '../api/modelCatalog';
 import { CreateWorkspaceBackup, MigrateWorkspace } from '../../../features/workspace/api/workspaceActions';
 import { WORKSPACE_QUERY_KEY } from '../../../features/workspace/api/workspaceData';
-import { Button, FormField, Modal, PageHeader, Select } from '../../../shared/components/UI';
+import { Button, DialogButton, FormField, Modal, PageHeader, Select } from '../../../shared/components/UI';
 import { Icon } from '../../../shared/components/Icon';
 import type { SettingsDraft } from '../../../types/domain';
 import type { AgentBrowserRuntimeStatus, AgentModuleConfiguration, CronBrowserAccessStatus } from '@avery/contracts';
@@ -553,7 +553,16 @@ function SettingsPage({ onNavigateDeveloper, tab, requestedTab, tabRequestVersio
       </div>
 
       {/* 模型配置弹窗按原型：模型 ID、上下文窗口、最大输出 Token、思考模式与输入/输出类型都作用于单个模型。 */}
-      {modelDialog && <Modal open title={modelDialog.index >= 0 ? '编辑模型配置' : '添加模型'} onClose={CloseModelDialog}>
+      {modelDialog && <Modal
+        open
+        title={modelDialog.index >= 0 ? '编辑模型配置' : '添加模型'}
+        onClose={CloseModelDialog}
+        variant="dialog"
+        footer={<>
+          <DialogButton onClick={CloseModelDialog}>取消</DialogButton>
+          <DialogButton tone="accent" onClick={SaveModelDialog}>保存</DialogButton>
+        </>}
+      >
         <div className="model-dialog model-set-scope">
           <label className="set-field">
             <span className="lb">模型 ID</span>
@@ -589,27 +598,54 @@ function SettingsPage({ onNavigateDeveloper, tab, requestedTab, tabRequestVersio
             </div>
           </div>
         </div>
-        <div className="modal-actions">
-          <button className="ghost-btn" type="button" onClick={CloseModelDialog}>取消</button>
-          <button className="btn-accent" type="button" onClick={SaveModelDialog}>保存</button>
-        </div>
       </Modal>}
 
-      <Modal open={Boolean(providerDeleteTarget)} title="从模型目录移除这个供应商？" onClose={() => setProviderDeleteTarget(null)}>
-        <p className="modal-copy">移除后 {providerDeleteTarget?.name} 不再出现在设置页与对话的模型选择里；点页头的「重新加载配置」可以把它找回来。</p>
-        <div className="modal-actions">
-          <button className="ghost-btn" type="button" onClick={() => setProviderDeleteTarget(null)}>取消</button>
-          <button className="ghost-btn is-danger" type="button" onClick={() => providerDeleteTarget && RemoveProvider(providerDeleteTarget)}>移除供应商</button>
-        </div>
+      <Modal
+        open={Boolean(providerDeleteTarget)}
+        title="从模型目录移除这个供应商？"
+        onClose={() => setProviderDeleteTarget(null)}
+        footer={<>
+          <DialogButton onClick={() => setProviderDeleteTarget(null)}>取消</DialogButton>
+          <DialogButton tone="danger" onClick={() => providerDeleteTarget && RemoveProvider(providerDeleteTarget)}>移除供应商</DialogButton>
+        </>}
+      >
+        移除后 {providerDeleteTarget?.name} 不再出现在设置页与对话的模型选择里；点页头的「重新加载配置」可以把它找回来。
       </Modal>
     </div>;
   }
+
+  /** 「存在未保存的修改」确认框：模型配置页与常规设置页共用同一份版式与处理逻辑。 */
+  function RenderLeaveDialog() {
+    return <Modal
+      open={showLeave}
+      title="存在未保存的修改"
+      onClose={() => setShowLeave(false)}
+      footer={<>
+        <DialogButton onClick={() => setShowLeave(false)}>继续编辑</DialogButton>
+        <DialogButton onClick={DiscardAndSwitch}>放弃修改</DialogButton>
+        <DialogButton tone="accent" onClick={async () => { if (await SaveSettings() && nextTab) CommitTab(nextTab); setNextTab(null); setShowLeave(false); }}>保存并切换</DialogButton>
+      </>}
+    >
+      切换设置项前，请选择如何处理当前修改。
+    </Modal>;
+  }
+
   const current = SettingsTabs.find((item) => item.id === tab)!;
   const usesPersonalBrowser = (draft.browserEngine ?? 'edge') !== 'electron';
   const browserSelectionPending = Boolean(browserRuntime && browserRuntime.engine !== (draft.browserEngine ?? 'edge'));
-  if (tab === 'api') return <div className="settings-page is-model-set">{RenderModelConfiguration()}<Modal open={showLeave} title="存在未保存的修改" onClose={() => setShowLeave(false)}><p className="modal-copy">切换设置项前，请选择如何处理当前修改。</p><div className="modal-actions"><Button onClick={() => setShowLeave(false)}>继续编辑</Button><Button onClick={DiscardAndSwitch}>放弃修改</Button><Button variant="primary" onClick={async () => { if (await SaveSettings() && nextTab) CommitTab(nextTab); setNextTab(null); setShowLeave(false); }}>保存并切换</Button></div></Modal></div>;
+  if (tab === 'api') return <div className="settings-page is-model-set">{RenderModelConfiguration()}{RenderLeaveDialog()}</div>;
   return <div className="settings-page"><section className="settings-content"><PageHeader eyebrow="设置" title={current.label} description={current.description} actions={tab !== 'api' && tab !== 'browser' ? <Button variant="primary" onClick={() => void SaveSettings()}>保存更改</Button> : undefined} />
-    {tab === 'developer' && <><div className="setting-note module-settings"><b>本地模块</b><p>{moduleConfiguration?.status === 'active' ? `已启用：${moduleConfiguration.directoryName ?? '已选择目录'}。模块仅在启动会话前校验。` : '当前使用官方默认模块。选择本地模块目录前，请确认其来源可信。'}</p><div className="api-actions"><Button disabled={updatingModules} onClick={() => void SelectUserModules()}>{updatingModules ? '处理中…' : '选择本地模块'}</Button><Button variant="danger" disabled={updatingModules || moduleConfiguration?.status !== 'active'} onClick={() => setShowResetModules(true)}>恢复官方默认模块</Button></div></div><Modal open={showResetModules} title="恢复官方默认模块？" onClose={() => setShowResetModules(false)}><p className="modal-copy">当前本地模块配置将被移除，后续新会话将使用内置模块。运行中的助手任务不会被中断。</p><div className="modal-actions"><Button onClick={() => setShowResetModules(false)}>取消</Button><Button variant="danger" disabled={updatingModules} onClick={() => void ConfirmResetModules()}>确认恢复默认</Button></div></Modal></>}
+    {tab === 'developer' && <><div className="setting-note module-settings"><b>本地模块</b><p>{moduleConfiguration?.status === 'active' ? `已启用：${moduleConfiguration.directoryName ?? '已选择目录'}。模块仅在启动会话前校验。` : '当前使用官方默认模块。选择本地模块目录前，请确认其来源可信。'}</p><div className="api-actions"><Button disabled={updatingModules} onClick={() => void SelectUserModules()}>{updatingModules ? '处理中…' : '选择本地模块'}</Button><Button variant="danger" disabled={updatingModules || moduleConfiguration?.status !== 'active'} onClick={() => setShowResetModules(true)}>恢复官方默认模块</Button></div></div><Modal
+      open={showResetModules}
+      title="恢复官方默认模块？"
+      onClose={() => setShowResetModules(false)}
+      footer={<>
+        <DialogButton onClick={() => setShowResetModules(false)}>取消</DialogButton>
+        <DialogButton tone="danger" disabled={updatingModules} onClick={() => void ConfirmResetModules()}>确认恢复默认</DialogButton>
+      </>}
+    >
+      当前本地模块配置将被移除，后续新会话将使用内置模块。运行中的助手任务不会被中断。
+    </Modal></>}
      {tab === 'account' && <div className="settings-panel"><FormField label="账户昵称"><input value={draft.nickname} onChange={(event) => UpdateDraft({ nickname: event.target.value })} /><small>将显示在侧边栏与欢迎页面中。</small></FormField><FormField label="会话自定义上下文"><textarea rows={6} value={draft.customContext ?? ''} onChange={(event) => UpdateDraft({ customContext: event.target.value })} placeholder="例如：我偏好简洁直白的表达，简历经历需包含量化成果…" /><small>该上下文将注入每个 Avery 会话，不会读取你开发项目目录中的规则文档。</small></FormField></div>}
     {tab === 'workspace' && <div className="settings-panel"><FormField label="当前工作空间"><input value={draft.workspaceName ?? ''} readOnly disabled /><small>工作空间目录由本地服务管理；迁移时通过下方按钮选择目标空目录。</small></FormField><div className="setting-note"><b>迁移说明</b><p>迁移会复制数据库、档案、附件、导出和备份文件，校验后切换到目标空目录；原目录不会删除。Agent 运行中不可迁移。</p><Button onClick={() => setShowMigrate(true)}>迁移工作空间</Button></div><div className="setting-note"><b>本地备份</b><p>立即备份数据库与档案文件；系统仅保留最近 7 份每日备份。</p><Button onClick={() => void CreateWorkspaceBackupHandler()}>立即创建备份</Button></div></div>}
     {tab === 'browser' && <>
@@ -639,10 +675,53 @@ function SettingsPage({ onNavigateDeveloper, tab, requestedTab, tabRequestVersio
         <div className="setting-note browser-access-note is-personal"><small>定时任务授权</small><b>授权随任务创建确认保存</b><p>创建投递场景定时任务时，确认弹窗会同时授予该任务个人浏览器权限，无需在设置中再次配置。浏览器未连接或未登录 BOSS 时，任务仍会暂停并等待你处理。</p><div className="model-select-row"><Select value={cronBrowserTaskId} onChange={setCronBrowserTaskId} ariaLabel="查看投递定时任务授权" options={cronBrowserAccess?.tasks.length ? cronBrowserAccess.tasks.map((task) => ({ value: task.id, label: `${task.browserAuthorized ? '已授权' : '未授权'} · ${task.title}` })) : [{ value: '', label: '暂无活动的投递定时任务' }]} /></div>{cronBrowserAccess?.tasks.find((task) => task.id === cronBrowserTaskId)?.browserAuthorized && <div className="api-actions"><Button variant="danger" disabled={browserRuntimeBusy} onClick={() => void RevokeCronBrowserAccessHandler()}>撤销该任务授权</Button></div>}</div>
         <div className="api-actions"><Button variant="primary" onClick={() => void SaveSettings()}>保存浏览器设置</Button></div>
       </div>
-      <Modal open={!usesPersonalBrowser && showClearBrowserProfile} title="清除隔离浏览器登录数据" onClose={() => setShowClearBrowserProfile(false)}><p className="modal-copy">这会关闭 Avery 隔离浏览器并删除其专用 Profile，其中的 Cookie、站点存储和登录状态无法恢复。不会影响你的个人浏览器。</p><div className="modal-actions"><Button onClick={() => setShowClearBrowserProfile(false)}>取消</Button><Button variant="danger" disabled={browserRuntimeBusy} onClick={() => void ClearBrowserProfileHandler()}>确认清除</Button></div></Modal>
+      <Modal
+        open={!usesPersonalBrowser && showClearBrowserProfile}
+        title="清除隔离浏览器登录数据"
+        onClose={() => setShowClearBrowserProfile(false)}
+        variant="dialog"
+        size="sm"
+        footer={<>
+          <DialogButton onClick={() => setShowClearBrowserProfile(false)}>取消</DialogButton>
+          <DialogButton tone="danger" disabled={browserRuntimeBusy} onClick={() => void ClearBrowserProfileHandler()}>确认清除</DialogButton>
+        </>}
+      >
+        {/* 破坏性操作先逐条列出会被清掉的内容（原型 .cf-warn） */}
+        <div className="cf-warn">
+          <Icon name="error" size={18} />
+          <div>
+            <p>这会关闭 Avery 隔离浏览器并删除其专用 Profile，其中的这些内容会一并清空：</p>
+            <ul>
+              <li>Cookie 与登录状态</li>
+              <li>站点存储</li>
+            </ul>
+            <p>清空后无法恢复；不会影响你的个人浏览器。</p>
+          </div>
+        </div>
+      </Modal>
     </>}
     {tab === 'developer' && <div className="settings-panel developer-settings"><label className="switch-line"><span><b>启用开发者模式</b><small>开启后在侧边栏显示本地开发者工具。</small></span><input type="checkbox" checked={draft.developerMode} onChange={(event) => UpdateDraft({ developerMode: event.target.checked })} /></label><FormField label="Trace 保留数量" hint="默认 50，最多保留 100 条本地 Trace。"><input type="number" min="1" max="100" value={draft.traceRetention} aria-invalid={Boolean(fieldErrors.traceRetention)} aria-describedby={fieldErrors.traceRetention ? 'trace-retention-error' : undefined} onChange={(event) => UpdateDraft({ traceRetention: Number(event.target.value) })} />{fieldErrors.traceRetention && <small className="field-error" id="trace-retention-error" role="alert">{fieldErrors.traceRetention}</small>}</FormField><FormField label="自动压缩阈值"><div className="input-suffix"><input type="number" min="1" max="80" value={draft.compressionThreshold} aria-invalid={Boolean(fieldErrors.compressionThreshold)} aria-describedby={fieldErrors.compressionThreshold ? 'compression-threshold-error' : undefined} onChange={(event) => UpdateDraft({ compressionThreshold: Number(event.target.value) })} /><span>%</span></div>{fieldErrors.compressionThreshold && <small className="field-error" id="compression-threshold-error" role="alert">{fieldErrors.compressionThreshold}</small>}<small>按 System、Tools 和 Messages 的完整输入计算；只能配置为 1–80 的整数。</small></FormField><div className="setting-note"><b>Trace 隐私提示</b><p>真实 Trace 可能包含简历、JD 与附件片段，仅保存在本机；关闭开发者模式后不再新增 Trace。</p></div><div className="danger-zone"><div><b>清空 Trace</b><p>删除所有本地 Trace，不可撤销。</p></div><Button variant="danger" onClick={() => setShowClear(true)}>一键清空</Button></div>{draft.developerMode && <Button onClick={onNavigateDeveloper}>打开开发者工具</Button>}</div>}
-  </section><Modal open={showLeave} title="存在未保存的修改" onClose={() => setShowLeave(false)}><p className="modal-copy">切换设置项前，请选择如何处理当前修改。</p><div className="modal-actions"><Button onClick={() => setShowLeave(false)}>继续编辑</Button><Button onClick={DiscardAndSwitch}>放弃修改</Button><Button variant="primary" onClick={async () => { if (await SaveSettings() && nextTab) CommitTab(nextTab); setNextTab(null); setShowLeave(false); }}>保存并切换</Button></div></Modal><Modal open={showClear} title="确认清空全部 Trace？" onClose={() => setShowClear(false)}><p className="modal-copy">将删除本地全部运行日志、Trace 索引和事件。此操作不可撤销。</p><div className="modal-actions"><Button onClick={() => setShowClear(false)}>取消</Button><Button variant="danger" onClick={() => void ClearDeveloperObservability()}>确认清空</Button></div></Modal><Modal open={showMigrate} title="确认迁移工作空间？" onClose={() => setShowMigrate(false)}><p className="modal-copy">将复制并校验数据后切换到目标空目录，原工作空间会保留。Agent 运行期间无法迁移。</p><div className="modal-actions"><Button onClick={() => setShowMigrate(false)}>取消</Button><Button variant="primary" onClick={() => void MigrateWorkspaceHandler()}>确认迁移</Button></div></Modal>
+  </section>{RenderLeaveDialog()}<Modal
+    open={showClear}
+    title="确认清空全部 Trace？"
+    onClose={() => setShowClear(false)}
+    footer={<>
+      <DialogButton onClick={() => setShowClear(false)}>取消</DialogButton>
+      <DialogButton tone="danger" onClick={() => void ClearDeveloperObservability()}>确认清空</DialogButton>
+    </>}
+  >
+    将删除本地全部运行日志、Trace 索引和事件。此操作不可撤销。
+  </Modal><Modal
+    open={showMigrate}
+    title="确认迁移工作空间？"
+    onClose={() => setShowMigrate(false)}
+    footer={<>
+      <DialogButton onClick={() => setShowMigrate(false)}>取消</DialogButton>
+      <DialogButton tone="accent" onClick={() => void MigrateWorkspaceHandler()}>确认迁移</DialogButton>
+    </>}
+  >
+    将复制并校验数据后切换到目标空目录，原工作空间会保留。Agent 运行期间无法迁移。
+  </Modal>
   </div>;
 }
 

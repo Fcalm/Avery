@@ -6,7 +6,7 @@ import { AppendApplicationTimeline, GetApplicationTimeline, type ApplicationTime
 import { useJobs } from '../../../features/job/api/jobQueries';
 import { useResumes } from '../../../features/resume/api/resumeQueries';
 import { CreateEntityId } from '../../workspace/api/workspaceData';
-import { Button, FormField, Modal, Select } from '../../../shared/components/UI';
+import { DialogButton, FormField, Modal, Select } from '../../../shared/components/UI';
 import { Icon } from '../../../shared/components/Icon';
 import { ApplicationStatusLabel, ChannelLabel } from '../../../shared/utils/format';
 import type { Application, ApplicationStatus, Job } from '../../../types/domain';
@@ -450,7 +450,17 @@ function ApplicationsPage() {
         </div>
       </aside>
     </div>, document.body)}
-    <Modal open={Boolean(deleteTarget)} title="删除这条投递记录？" onClose={() => setDeleteTarget(null)}><p className="modal-copy">删除后投递记录及其进度事件将被移除，此操作不可撤销。</p><div className="modal-actions"><Button onClick={() => setDeleteTarget(null)}>取消</Button><Button variant="danger" onClick={ConfirmDeleteApplication}>确认删除</Button></div></Modal>
+    <Modal
+      open={Boolean(deleteTarget)}
+      title="删除这条投递记录？"
+      onClose={() => setDeleteTarget(null)}
+      footer={<>
+        <DialogButton onClick={() => setDeleteTarget(null)}>取消</DialogButton>
+        <DialogButton tone="danger" onClick={ConfirmDeleteApplication}>确认删除</DialogButton>
+      </>}
+    >
+      删除后投递记录及其进度事件将被移除，此操作不可撤销。
+    </Modal>
   </div>;
 }
 

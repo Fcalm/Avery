@@ -5,7 +5,7 @@ import { useConversations, useRenameConversation, useSetConversationArchived, us
 import { GetAgentSessionScenes } from '../features/assistant/api/agentQueries';
 import { useSettingsStore } from '../features/settings/api/settingsQueries';
 import type { Conversation, PageId } from '../types/domain';
-import { Button, Modal } from '../shared/components/UI';
+import { DialogButton, Modal } from '../shared/components/UI';
 import { Icon } from '../shared/components/Icon';
 import { GetAgentBalance, IsDesktopAgentAvailable } from '../features/assistant/api/agentQueries';
 import { ASSISTANT_MAIN_MIN_WIDTH } from '../shared/layoutConstants';
@@ -600,15 +600,41 @@ function AppShell({ page, onNavigate, onRestartOnboarding, settingsTab, onReques
       <button className="menu-item plain um-danger" type="button" onClick={() => ShowNotice('退出功能将在 Electron 客户端接入后启用')}><Icon name="logout" size={16} /><span className="mt">退出登录</span></button>
     </div>}
 
-    <Modal open={Boolean(archiveTarget)} title="归档这个对话？" onClose={() => SetArchiveTarget(null)}><p className="modal-copy">归档后，「{archiveTarget?.title}」会从"最近"里移出；会话与消息仍保留在本机，通知里可立即撤回。</p><div className="modal-actions"><Button onClick={() => SetArchiveTarget(null)}>取消</Button><Button variant="primary" onClick={() => void ConfirmArchiveConversation()}>归档</Button></div></Modal>
-    <Modal open={Boolean(renameGroupTarget)} title="重命名分组" onClose={() => SetRenameGroupTarget(null)}>
-      <input className="modal-input" value={renameGroupValue} maxLength={200} aria-label="分组名称" autoFocus onFocus={(event) => event.currentTarget.select()} onChange={(event) => SetRenameGroupValue(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); CommitGroupRename(); } }} />
-      <p className="modal-copy">只改侧栏里的分组显示名，不会改动磁盘上的项目目录名称。</p>
-      <div className="modal-actions"><Button onClick={() => SetRenameGroupTarget(null)}>取消</Button><Button variant="primary" onClick={CommitGroupRename}>保存</Button></div>
+    <Modal
+      open={Boolean(archiveTarget)}
+      title="归档这个对话？"
+      onClose={() => SetArchiveTarget(null)}
+      footer={<>
+        <DialogButton onClick={() => SetArchiveTarget(null)}>取消</DialogButton>
+        <DialogButton tone="accent" onClick={() => void ConfirmArchiveConversation()}>归档</DialogButton>
+      </>}
+    >
+      归档后，「{archiveTarget?.title}」会从"最近"里移出；会话与消息仍保留在本机，通知里可立即撤回。
     </Modal>
-    <Modal open={Boolean(removeGroupTarget)} title="删除这个分组？" onClose={() => SetRemoveGroupTarget(null)}>
-      <p className="modal-copy">「{removeGroupTarget?.name}」下的 {removeGroupTarget?.count} 个对话会回到「最近」列表；对话与消息保留，项目空间绑定不受影响。</p>
-      <div className="modal-actions"><Button onClick={() => SetRemoveGroupTarget(null)}>取消</Button><Button variant="danger" onClick={ConfirmRemoveGroup}>删除分组</Button></div>
+    <Modal
+      open={Boolean(renameGroupTarget)}
+      title="重命名分组"
+      onClose={() => SetRenameGroupTarget(null)}
+      variant="dialog"
+      size="sm"
+      footer={<>
+        <DialogButton onClick={() => SetRenameGroupTarget(null)}>取消</DialogButton>
+        <DialogButton tone="accent" onClick={CommitGroupRename}>保存</DialogButton>
+      </>}
+    >
+      <input value={renameGroupValue} maxLength={200} aria-label="分组名称" autoFocus onFocus={(event) => event.currentTarget.select()} onChange={(event) => SetRenameGroupValue(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); CommitGroupRename(); } }} />
+      <p className="md-note">只改侧栏里的分组显示名，不会改动磁盘上的项目目录名称。</p>
+    </Modal>
+    <Modal
+      open={Boolean(removeGroupTarget)}
+      title="删除这个分组？"
+      onClose={() => SetRemoveGroupTarget(null)}
+      footer={<>
+        <DialogButton onClick={() => SetRemoveGroupTarget(null)}>取消</DialogButton>
+        <DialogButton tone="danger" onClick={ConfirmRemoveGroup}>删除分组</DialogButton>
+      </>}
+    >
+      「{removeGroupTarget?.name}」下的 {removeGroupTarget?.count} 个对话会回到「最近」列表；对话与消息保留，项目空间绑定不受影响。
     </Modal>
   </div>;
 }

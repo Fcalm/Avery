@@ -87,18 +87,46 @@ function Drawer({ open, title, children, onClose }: { open: boolean; title: stri
   </div>;
 }
 
-function Modal({ open, title, children, onClose }: { open: boolean; title: string; children: ReactNode; onClose: () => void }) {
+/**
+ * 弹窗形态对应原型的两种对话框：
+ * - confirm：avery-prototype 的归档确认（.cf-*，392px）——标题 + 一句话说明 + 底部操作；
+ * - dialog：avery-settings 的模型编辑弹窗（.md-*，620px）——标题栏 + 可滚动内容区 + 底部操作；
+ *   size 取 sm 时按原型 .cf-modal 收窄到 440px，用于带警示块或多段说明的确认。
+ */
+type ModalVariant = 'confirm' | 'dialog';
+
+function Modal({ open, title, children, onClose, footer, variant = 'confirm', size = 'md' }: {
+  open: boolean;
+  title: string;
+  children: ReactNode;
+  onClose: () => void;
+  footer?: ReactNode;
+  variant?: ModalVariant;
+  size?: 'sm' | 'md';
+}) {
   const titleId = useId();
   const modalRef = useRef<HTMLElement>(null);
   useDialogKeyboard(open, onClose, modalRef);
   if (!open) return null;
+  const isConfirm = variant === 'confirm';
   return createPortal(<div className="modal-layer" role="presentation">
-    <button className="modal-backdrop" aria-label="关闭弹窗" onClick={onClose} />
-    <section ref={modalRef} className="modal" role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1}>
-      <div className="modal-header"><h2 id={titleId}>{title}</h2><Button variant="quiet" className="icon-close" aria-label="关闭" onClick={onClose}><Icon name="close" size={18} /></Button></div>
-      {children}
+    <button className="scrim" aria-label="关闭弹窗" onClick={onClose} />
+    <section ref={modalRef} className={isConfirm ? 'modal modal-confirm' : `modal modal-dialog is-${size}`} role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1}>
+      <div className={isConfirm ? 'cf-head' : 'md-head'}>
+        <span className={isConfirm ? 'cf-title' : 'md-title'} id={titleId}>{title}</span>
+        <button type="button" className={isConfirm ? 'icon-btn sm' : 'icon-btn md-x'} aria-label="关闭" title="关闭" onClick={onClose}><Icon name="close" size={isConfirm ? 14 : 17} /></button>
+      </div>
+      {/* 紧凑确认框的正文是单段说明，原型用 .cf-text；编辑弹窗的正文可含表单与列表，用 .md-body */}
+      {isConfirm ? <p className="cf-text">{children}</p> : <div className="md-body">{children}</div>}
+      {footer && <div className={isConfirm ? 'cf-foot' : 'md-foot'}>{footer}</div>}
     </section>
   </div>, document.body);
+}
+
+/** 弹窗底部按钮：对应原型的 .ghost-btn（次级）、.btn-accent（主操作）、.btn-danger（破坏性主操作）。 */
+function DialogButton({ tone = 'ghost', className = '', children, ...props }: ButtonHTMLAttributes<HTMLButtonElement> & { tone?: 'ghost' | 'accent' | 'danger' }) {
+  const base = tone === 'accent' ? 'btn-accent' : tone === 'danger' ? 'btn-danger' : 'ghost-btn';
+  return <button type="button" className={`${base} ${className}`.trim()} {...props}>{children}</button>;
 }
 
 function FormField({ label, children, hint }: { label: string; children: ReactNode; hint?: string }) {
@@ -150,4 +178,4 @@ function Select({ value, options, onChange, ariaLabel, disabled = false, classNa
   </div>;
 }
 
-export { Button, Drawer, EmptyState, FormField, Modal, PageHeader, Select };
+export { Button, DialogButton, Drawer, EmptyState, FormField, Modal, PageHeader, Select };

@@ -79,6 +79,9 @@
   /* 语义色保持克制：只保留破坏性红系 */
   --danger: #b4413c;
   --danger-hover: rgba(180, 65, 60, .08);
+  /* 破坏性主按钮的填充色单独成对：--danger 在深色主题会转浅，配白字对比不足 */
+  --danger-fill: #b4413c;
+  --danger-fill-hover: #a1382f;
   --scrim: rgba(24, 24, 27, .36);
 
   --ease: cubic-bezier(.16, 1, .3, 1);
@@ -220,5 +223,7 @@
 
   --danger: #e0796f;
   --danger-hover: rgba(180, 65, 60, .08);
+  --danger-fill: #b4413c;
+  --danger-fill-hover: #c9553f;
   --scrim: rgba(0, 0, 0, .56);
 }
