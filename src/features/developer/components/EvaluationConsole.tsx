@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState, type DragEvent, type KeyboardEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type DragEvent, type KeyboardEvent as ReactKeyboardEvent } from 'react';
+import { createPortal } from 'react-dom';
 import type { EvalCaseRun, EvalCaseRunDetail, EvalComparison, EvalDatasetVersion, EvalEvent, EvalPromptCandidate, EvalPromptPreview, EvalRunDetail } from '@avery/contracts';
 import { useUiStore } from '../../../app/UiStore';
 import { Button, DialogButton, FormField, Modal, Select } from '../../../shared/components/UI';
@@ -68,7 +69,7 @@ function TextFileUpload({ label, accept, hint, maxBytes, onLoad, onError }: { la
     void ReadFile(event.dataTransfer.files[0]);
   }
 
-  function HandleKeyDown(event: KeyboardEvent<HTMLDivElement>) {
+  function HandleKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
     if (event.key !== 'Enter' && event.key !== ' ') return;
     event.preventDefault();
     inputRef.current?.click();
@@ -155,7 +156,10 @@ export function EvaluationConsole() {
   const [deleteVersion, setDeleteVersion] = useState<string | null>(null);
   const [showPromptDrawer, setShowPromptDrawer] = useState(false);
   const [showJudgeDrawer, setShowJudgeDrawer] = useState(false);
+  /** Prompt 抽屉的候选页签：一次只编辑一个候选，保存时提交整份草稿。 */
+  const [drawerCandidateId, setDrawerCandidateId] = useState<string | null>(null);
   const [judgeDraft, setJudgeDraft] = useState('');
+  const [rubricDraft, setRubricDraft] = useState('');
   const [judgeStrictJsonDraft, setJudgeStrictJsonDraft] = useState(false);
 
   const [compare, setCompare] = useState<EvalComparison | null>(null);
@@ -209,6 +213,18 @@ export function EvaluationConsole() {
   }, [selected?.id]);
 
   useEffect(() => { void GetProviderCatalog().then((catalog) => setProviders(catalog.providers)).catch(() => undefined); }, []);
+
+  // 编辑抽屉打开期间 Escape 直接关闭（与投递记录抽屉一致）；草稿未保存会被丢弃，脚注有"未保存"提示兜底。
+  useEffect(() => {
+    if (!showPromptDrawer && !showJudgeDrawer) return undefined;
+    const CloseOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      if (showPromptDrawer) setShowPromptDrawer(false);
+      else setShowJudgeDrawer(false);
+    };
+    window.addEventListener('keydown', CloseOnEscape);
+    return () => window.removeEventListener('keydown', CloseOnEscape);
+  }, [showPromptDrawer, showJudgeDrawer]);
 
   const fragmentOptions = promptPreview?.fragments ?? [];
   const selectedCandidate = selected?.config.candidates.find((candidate) => candidate.id === selectedCandidateId) ?? null;
@@ -267,7 +283,7 @@ export function EvaluationConsole() {
   async function SaveJudgePrompt() {
     if (!selected) return;
     await WithBusy(async () => {
-      await UpdateEvalProject(selected.id, { name: selected.name, runnerType: selected.runnerType, rubric: selected.rubric, judgePrompt: judgeDraft, judgeStrictJson: judgeStrictJsonDraft, config: selected.config }, selected.revision);
+      await UpdateEvalProject(selected.id, { name: selected.name, runnerType: selected.runnerType, rubric: rubricDraft, judgePrompt: judgeDraft, judgeStrictJson: judgeStrictJsonDraft, config: selected.config }, selected.revision);
       setShowJudgeDrawer(false);
       await Refresh(); ShowNotice('评判提示词已保存，下次评测生效');
     });
@@ -390,14 +406,17 @@ export function EvaluationConsole() {
   const notExecutedCount = displayDetail ? displayDetail.caseRuns.filter((item) => item.status === 'cancelled' || item.status === 'queued').length : 0;
   const usage = summary?.usage;
   const compareLeft = compare?.left, compareRight = compare?.right;
+  /** 抽屉脚注的"未保存"标记与保存按钮的可用态：草稿与当前配置逐字节对比。 */
+  const judgeDirty = judgeDraft !== (selected?.judgePrompt ?? '') || rubricDraft !== (selected?.rubric ?? '') || judgeStrictJsonDraft !== (selected?.judgeStrictJson === true);
+  const promptDirty = JSON.stringify(candidateDraft) !== JSON.stringify(selected?.config.candidates ?? []);
 
   return <div className="evaluation-console">
     <div className="eval-main">
       {!selected ? <div className="ev-empty">
-        <span className="ev-empty-mark"><Icon name="flask" size={26} /></span>
+        <span className="ev-empty-mark"><Icon name="flask" size={21} /></span>
         <h2>还没有评测</h2>
         <p>创建一个评测，选择测试集与 Prompt 候选后开始运行；结果会按题目逐条落在右侧。</p>
-        <Button variant="primary" onClick={OpenCreate}><Icon name="plus" size={14} />新建评测</Button>
+        <Button variant="quiet" onClick={OpenCreate}><Icon name="plus" size={14} />新建评测</Button>
       </div> : view !== 'compare' ? <div className="eval-split">
         <section className="eval-config" aria-label="评测配置">
           <div className="ev-card">
@@ -430,7 +449,7 @@ export function EvaluationConsole() {
           </section>
 
           <section className="ev-sec">
-            <div className="ev-sec-h"><Icon name="resume" size={14} /><span>prompt 配置</span><span className="sp" /><Button variant="quiet" onClick={() => { setCandidateDraft(structuredClone(selected.config.candidates)); setShowPromptDrawer(true); }}><Icon name="pencil-simple" size={13} />编辑提示词</Button></div>
+            <div className="ev-sec-h"><Icon name="resume" size={14} /><span>prompt 配置</span><span className="sp" /><Button variant="quiet" onClick={() => { setCandidateDraft(structuredClone(selected.config.candidates)); setDrawerCandidateId(selectedCandidateId ?? selected.config.candidates[0]?.id ?? null); setShowPromptDrawer(true); }}><Icon name="pencil-simple" size={13} />编辑提示词</Button></div>
             <div role="radiogroup" aria-label="本次评测使用的 Prompt 候选" className="ev-cands">
               {selected.config.candidates.map((candidate) => {
                 const overrideCount = Object.keys(candidate.promptOverrides).length;
@@ -449,7 +468,7 @@ export function EvaluationConsole() {
 
           <section className="ev-sec">
             <div className="ev-sec-h"><Icon name="scales" size={14} /><span>{selected.runnerType === 'prompt' ? 'judge model 配置' : '执行模型'}</span>
-              {selected.runnerType === 'prompt' && <><span className="sp" /><Button variant="quiet" onClick={() => { setJudgeDraft(selected.judgePrompt); setJudgeStrictJsonDraft(selected.judgeStrictJson === true); setShowJudgeDrawer(true); }}><Icon name="pencil-simple" size={13} />编辑提示词</Button></>}
+              {selected.runnerType === 'prompt' && <><span className="sp" /><Button variant="quiet" onClick={() => { setJudgeDraft(selected.judgePrompt); setRubricDraft(selected.rubric); setJudgeStrictJsonDraft(selected.judgeStrictJson === true); setShowJudgeDrawer(true); }}><Icon name="pencil-simple" size={13} />编辑提示词</Button></>}
             </div>
             <FormField label="执行模型 · 被评测的一方">
               <Select value={selected.config.executionModel} ariaLabel="执行模型" onChange={(value) => void ChangeModel('executionModel', value)} options={modelOptions.some((option) => option.value === selected.config.executionModel) ? modelOptions : [{ value: selected.config.executionModel, label: selected.config.executionModel }, ...modelOptions]} />
@@ -464,10 +483,10 @@ export function EvaluationConsole() {
 
         <section className="eval-results" aria-label="评测结果">
           {!displayRun || !displayDetail || (!displayDetail.caseRuns.length && !activeRun) ? <div className="ev-empty">
-            <span className="ev-empty-mark"><Icon name="flask" size={26} /></span>
+            <span className="ev-empty-mark"><Icon name="flask" size={21} /></span>
             <h2>{displayRun?.status === 'cancelled' ? '本次评测没有产生结果' : '还没有评测结果'}</h2>
-            <p>{displayRun?.status === 'cancelled' ? '评测在首题完成前被终止，没有留下可评估的结果。可以重新发起一次评测。' : '确认左侧的测试集、Prompt 候选与模型后开始评测，结果会按题目逐条出现在这里。'}</p>
-            <Button variant="primary" disabled={busy || Boolean(activeRun)} onClick={() => void StartRun()}><Icon name="play" size={14} />开始评测</Button>
+            <p>{displayRun?.status === 'cancelled' ? '评测在首题完成前被终止，没有留下可评估的结果。可以重新发起一次评测。' : '确认左侧的评测集、prompt 版本与评判模型后开始评测，结果会按题目逐条出现在这里。'}</p>
+            <Button variant="quiet" disabled={busy || Boolean(activeRun)} onClick={() => void StartRun()}><Icon name="play" size={14} />开始评测</Button>
           </div> : <>
             <div className="ev-results-head">
               <h1>评测结果</h1>
@@ -539,7 +558,7 @@ export function EvaluationConsole() {
           </FormField>
           <Button disabled={busy} onClick={() => void RunCompare()}>对比</Button>
         </div>
-        {!compare ? <div className="ev-empty"><span className="ev-empty-mark"><Icon name="scales" size={26} /></span><h2>选择两侧的运行记录</h2><p>对比读的是两次评测已经落盘的题目结果。prompt 候选是实验变量；其余条件任意不一致，都会被标注为非严格 A/B。</p></div> : <>
+        {!compare ? <div className="ev-empty"><span className="ev-empty-mark"><Icon name="scales" size={21} /></span><h2>选择两侧的运行记录</h2><p>对比读的是两次评测已经落盘的题目结果。prompt 候选是实验变量；其余条件任意不一致，都会被标注为非严格 A/B。</p></div> : <>
           <div className={`ev-cmp-banner ${compare.strictComparison ? 'is-strict' : 'is-warn'}`}>
             <Icon name={compare.strictComparison ? 'seal-check' : 'warning-circle'} size={16} />
             <b>{compare.strictComparison ? '严格可比' : '非严格 A/B'}</b>
@@ -626,31 +645,104 @@ export function EvaluationConsole() {
     <Modal open={Boolean(deleteVersion)} title="删除测试集版本" onClose={() => setDeleteVersion(null)} footer={<><DialogButton onClick={() => setDeleteVersion(null)}>取消</DialogButton><DialogButton tone="danger" disabled={busy} onClick={() => void ConfirmDeleteVersion()}>删除这个版本</DialogButton></>}>
       「{ShortHash(deleteVersion)}」会从列表里移除并删除版本文件。已经跑完的评测读取当时的冻结快照，结果不受影响。
     </Modal>
-    <Modal open={showJudgeDrawer} title="编辑评判提示词" onClose={() => setShowJudgeDrawer(false)} footer={<><DialogButton onClick={() => setShowJudgeDrawer(false)}>取消</DialogButton><DialogButton tone="accent" disabled={busy} onClick={() => void SaveJudgePrompt()}>保存</DialogButton></>}>
-      <p className="ev-manage-note">这一段会拼进固定的评判框架，作为额外的评判关注点；框架本身的防注入约束与输出契约不受影响。</p>
-      <div className="ev-drawer-toolbar">
-        <Button variant={judgeStrictJsonDraft ? 'primary' : 'quiet'} aria-pressed={judgeStrictJsonDraft} onClick={() => setJudgeStrictJsonDraft((current) => !current)}>
-          <Icon name={judgeStrictJsonDraft ? 'check-circle' : 'seal-check'} size={14} />严格 JSON 输出
-        </Button>
-        <span className="ev-drawer-hint">按 DeepSeek 官方建议请求 json_object 模式、在提示词附加 JSON 样例并设置输出上限，减少评分被截断或夹带散文；仅 DeepSeek 通道发送 API 参数，其他供应商只附加提示词约束。</span>
-      </div>
-      <FormField label="评判提示词附加段" hint={`当前 ${judgeDraft.length} 字，最多 100000 字。`}><textarea rows={9} value={judgeDraft} onChange={(event) => setJudgeDraft(event.target.value)} /></FormField>
-    </Modal>
-    <Modal open={showPromptDrawer} title="编辑 Prompt 候选" onClose={() => setShowPromptDrawer(false)} footer={<><DialogButton onClick={() => setShowPromptDrawer(false)}>取消</DialogButton><DialogButton tone="accent" disabled={busy} onClick={() => void SaveCandidates()}>保存候选</DialogButton></>}>
-      <div className="ev-cand-editor">
-        {candidateDraft.map((candidate, candidateIndex) => <article key={candidate.id}>
-          <FormField label={`版本名称-${String.fromCharCode(65 + candidateIndex)}`}><input value={candidate.name} onChange={(event) => UpdateCandidate(candidate.id, (current) => ({ ...current, name: event.target.value }))} /></FormField>
-          {Object.entries(candidate.promptOverrides).map(([fragmentId, content], index) => {
-            const usedIds = new Set(Object.keys(candidate.promptOverrides));
-            const options = fragmentOptions.filter((fragment) => fragment.id === fragmentId || !usedIds.has(fragment.id)).map((fragment) => ({ value: fragment.id, label: FragmentLabels[fragment.id] ?? fragment.id }));
-            return <div className="ev-override-row" key={fragmentId}>
-              <div className="ev-override-toolbar"><b>替换项 {index + 1}</b><Select value={fragmentId} ariaLabel={`${candidate.name} 替换位置 ${index + 1}`} onChange={(nextId) => ChangePromptOverride(candidate.id, fragmentId, nextId)} options={options} /><Button variant="quiet" aria-label={`删除替换项 ${index + 1}`} onClick={() => RemovePromptOverride(candidate.id, fragmentId)}>删除</Button></div>
-              <textarea rows={6} aria-label={`${FragmentLabels[fragmentId] ?? fragmentId} 提示词内容`} value={content} onChange={(event) => UpdateCandidate(candidate.id, (current) => ({ ...current, promptOverrides: { ...current.promptOverrides, [fragmentId]: event.target.value } }))} />
-            </div>;
-          })}
-          <Button variant="quiet" disabled={!fragmentOptions.length || Object.keys(candidate.promptOverrides).length >= fragmentOptions.length} onClick={() => AddPromptOverride(candidate.id)}>+ 添加替换位置</Button>
-        </article>)}
-      </div>
-    </Modal>
+    {showJudgeDrawer && createPortal(<div className="dw-layer" role="presentation">
+      <div className="dw-scrim" onClick={() => setShowJudgeDrawer(false)} />
+      <aside className="dw-drawer is-eval ev-drawer" role="dialog" aria-modal="true" aria-label="编辑评判提示词">
+        <div className="dw-head">
+          <div className="dw-head-main">
+            <div className="dw-title">编辑评判提示词</div>
+            <div className="dw-meta"><span>评判模型：{selected?.config.judgeModel ?? '—'}</span><span>改动保存后下次评测生效</span></div>
+          </div>
+          <button className="icon-btn" type="button" aria-label="关闭" title="关闭" onClick={() => setShowJudgeDrawer(false)}><Icon name="close" size={15} /></button>
+        </div>
+        <div className="dw-body">
+          <div className="ev-drawer-toolbar">
+            <Button variant={judgeStrictJsonDraft ? 'primary' : 'quiet'} aria-pressed={judgeStrictJsonDraft} onClick={() => setJudgeStrictJsonDraft((current) => !current)}>
+              <Icon name={judgeStrictJsonDraft ? 'check-circle' : 'seal-check'} size={14} />严格 JSON 输出
+            </Button>
+            <span className="ev-drawer-hint">按 DeepSeek 官方建议请求 json_object 模式、在提示词附加 JSON 样例并设置输出上限，减少评分被截断或夹带散文；仅 DeepSeek 通道发送 API 参数，其他供应商只附加提示词约束。</span>
+          </div>
+          <label className="dw-field">
+            <span className="lab">评判提示词附加段</span>
+            <textarea rows={9} spellCheck={false} value={judgeDraft} onChange={(event) => setJudgeDraft(event.target.value)} />
+            <small>当前 {judgeDraft.length} 字，最多 100000 字。</small>
+          </label>
+          <label className="dw-field">
+            <span className="lab">评分标准 Rubric</span>
+            <textarea rows={6} spellCheck={false} value={rubricDraft} onChange={(event) => setRubricDraft(event.target.value)} />
+          </label>
+          <p className="ev-drawer-note">评判模型只读取题目、期望约束与模型回答，以及这里的提示词与评分标准。附加段会拼进固定的评判框架，防注入约束与输出契约不受影响；浏览器测评不使用评判模型，改为读取断言结果。</p>
+        </div>
+        <div className="dw-foot">
+          <span className="dw-note">{judgeDirty ? '有未保存的修改' : '尚未修改'}</span>
+          <span className="dw-foot-spacer" />
+          <DialogButton onClick={() => setShowJudgeDrawer(false)}>取消</DialogButton>
+          <DialogButton tone="accent" disabled={busy || !judgeDirty} onClick={() => void SaveJudgePrompt()}>保存修改</DialogButton>
+        </div>
+      </aside>
+    </div>, document.body)}
+    {showPromptDrawer && createPortal(<div className="dw-layer" role="presentation">
+      <div className="dw-scrim" onClick={() => setShowPromptDrawer(false)} />
+      <aside className="dw-drawer is-eval ev-drawer" role="dialog" aria-modal="true" aria-label="编辑 prompt">
+        <div className="dw-head">
+          <div className="dw-head-main">
+            <div className="dw-title">编辑 prompt</div>
+            <div className="dw-meta"><span>共 {candidateDraft.length} 个版本</span><span>只替换列出的片段，其余沿用生产提示词</span></div>
+          </div>
+          <button className="icon-btn" type="button" aria-label="关闭" title="关闭" onClick={() => setShowPromptDrawer(false)}><Icon name="close" size={15} /></button>
+        </div>
+        <div className="dw-body">
+          {(() => {
+            const tab = candidateDraft.find((candidate) => candidate.id === drawerCandidateId) ?? candidateDraft[0] ?? null;
+            if (!tab) return null;
+            const tabEntries = Object.entries(tab.promptOverrides);
+            const usedIds = new Set(tabEntries.map(([fragmentId]) => fragmentId));
+            const full = tabEntries.length >= fragmentOptions.length;
+            return <>
+              <div className="seg" role="tablist" aria-label="prompt 版本">
+                {candidateDraft.map((candidate) => <button key={candidate.id} type="button" role="tab" aria-selected={candidate.id === tab.id} className={`seg-i ${candidate.id === tab.id ? 'sel' : ''}`} title={candidate.name} onClick={() => setDrawerCandidateId(candidate.id)}>{candidate.name.replace(/^候选 [A-Z] · /, '')}</button>)}
+              </div>
+              <label className="dw-field">
+                <span className="lab">版本名称</span>
+                <input value={tab.name} onChange={(event) => UpdateCandidate(tab.id, (current) => ({ ...current, name: event.target.value }))} />
+              </label>
+              <div className="ev-drawer-row">
+                <span className="lab">替换位置</span>
+                <span className="ev-tag">{tabEntries.length} / {fragmentOptions.length}</span>
+                <span className="sp" />
+                <DialogButton disabled={full || !fragmentOptions.length} onClick={() => AddPromptOverride(tab.id)}><Icon name="plus" size={13} />添加替换位置</DialogButton>
+              </div>
+              {tabEntries.length ? tabEntries.map(([fragmentId, content], index) => {
+                const base = fragmentOptions.find((fragment) => fragment.id === fragmentId)?.content ?? '';
+                const changed = content.trim() !== base.trim();
+                const options = fragmentOptions.filter((fragment) => fragment.id === fragmentId || !usedIds.has(fragment.id)).map((fragment) => ({ value: fragment.id, label: FragmentLabels[fragment.id] ?? fragment.id }));
+                return <section className="frag" key={fragmentId}>
+                  <div className="frag-h">
+                    <span className="n">{String(index + 1).padStart(2, '0')}</span>
+                    <Select className="frag-pick" value={fragmentId} ariaLabel={`替换位置 ${index + 1}`} onChange={(nextId) => ChangePromptOverride(tab.id, fragmentId, nextId)} options={options} />
+                    {changed ? <span className="ev-tag is-accent">已改写</span> : <span className="ev-tag">未改动</span>}
+                    <button className="icon-btn sm" type="button" aria-label="移除这个替换位置" title="移除" onClick={() => RemovePromptOverride(tab.id, fragmentId)}><Icon name="trash-simple" size={13} /></button>
+                  </div>
+                  <label className="dw-field">
+                    <span className="lab">替换后的内容</span>
+                    <textarea rows={7} spellCheck={false} value={content} onChange={(event) => UpdateCandidate(tab.id, (current) => ({ ...current, promptOverrides: { ...current.promptOverrides, [fragmentId]: event.target.value } }))} />
+                  </label>
+                  <details className="dw-base">
+                    <summary><Icon name="eye" size={13} />对照生产提示词</summary>
+                    <pre>{base || '（生产提示词里没有这个片段的原文）'}</pre>
+                  </details>
+                </section>;
+              }) : <p className="ev-drawer-note">这个版本没有替换任何片段，会完整使用生产提示词。</p>}
+            </>;
+          })()}
+        </div>
+        <div className="dw-foot">
+          <span className="dw-note">{promptDirty ? '有未保存的修改' : '尚未修改'}</span>
+          <span className="dw-foot-spacer" />
+          <DialogButton onClick={() => setShowPromptDrawer(false)}>取消</DialogButton>
+          <DialogButton tone="accent" disabled={busy || !promptDirty} onClick={() => void SaveCandidates()}>保存修改</DialogButton>
+        </div>
+      </aside>
+    </div>, document.body)}
   </div>;
 }

@@ -123,11 +123,12 @@ function AppShell({ page, onNavigate, onRestartOnboarding, settingsTab, onReques
 
   const windowControls = (window as Window & { averyWindow?: WindowControls }).averyWindow;
   const minimumContentWidth = page === 'assistant' ? ASSISTANT_MAIN_MIN_WIDTH : MinContentWidth;
-  // 原型导航顺序与命名：对话、岗位、简历、投递记录、档案；开发者入口仅在开启后出现。
-  const navRouteOrder: PageId[] = ['assistant', 'jobs', 'resumes', 'applications', 'profiles', 'developer'];
+  // 原型导航顺序与命名：对话、岗位、简历、投递记录、档案；开发者工具不走侧栏导航，
+  // 入口在账户菜单（对应原型 umDeveloper），且仅在开启开发者模式后出现。
+  const navRouteOrder: PageId[] = ['assistant', 'jobs', 'resumes', 'applications', 'profiles'];
   const navRoutes = navRouteOrder.flatMap((id) => {
     const route = MainRoutes.find((item) => item.id === id);
-    return route && (route.id !== 'developer' || settings.developerMode) ? [route] : [];
+    return route ? [route] : [];
   });
   // "最近"与会话切换菜单只展示未归档会话；置顶会话排最前，组内保持最近使用顺序（排序稳定）。
   const liveConversations = conversations.filter((item) => !(item.archived ?? false)).slice().sort((a, b) => Number(b.pinned ?? false) - Number(a.pinned ?? false));
@@ -638,6 +639,7 @@ function AppShell({ page, onNavigate, onRestartOnboarding, settingsTab, onReques
         <input className="menu-switch-input" type="checkbox" role="switch" aria-label="深色模式" checked={theme === 'dark'} onChange={(event) => SetTheme(event.target.checked ? 'dark' : 'light')} />
       </label>
       <button className="menu-item plain" type="button" onClick={onRestartOnboarding}><Icon name="recovery" size={16} /><span className="mt">重新体验启动页</span></button>
+      {settings.developerMode && <button className="menu-item plain" type="button" onClick={() => { SetUserMenuPosition(null); onNavigate('developer'); }}><Icon name="code" size={16} /><span className="mt">开发者工具</span></button>}
       <div className="menu-sep" aria-hidden="true" />
       <button className="menu-item plain um-danger" type="button" onClick={() => ShowNotice('退出功能将在 Electron 客户端接入后启用')}><Icon name="logout" size={16} /><span className="mt">退出登录</span></button>
     </div>}

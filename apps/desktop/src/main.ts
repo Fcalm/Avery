@@ -264,21 +264,38 @@ async function runInstalledVisualScenario(outputDirectory: string): Promise<Reco
     window.setContentSize(width, height);
     for (const label of pageLabels) {
       const metrics = await window.webContents.executeJavaScript(`(async () => {
-        const button = [...document.querySelectorAll('button[title]')].find((item) => item.getAttribute('title') === ${JSON.stringify(label)});
-        if (!button) return { label: ${JSON.stringify(label)}, selected: false, reason: 'navigation_button_missing' };
-        button.click();
-        const end = Date.now() + 1500;
-        while (button.getAttribute('aria-current') !== 'page' && Date.now() < end) await new Promise((resolve) => setTimeout(resolve, 25));
-        if (${JSON.stringify(label)} === '开发者工具') {
-          // 开发者页默认视图就是评估；等待评估控制台挂载即可，无需再点二级切换
+        const openDeveloperViaUserMenu = async () => {
+          // 开发者工具不走侧栏导航：入口在账户菜单（原型 umDeveloper），点击后等待评估控制台挂载。
+          const userCard = document.querySelector('button[data-menu-trigger="user"]');
+          if (!userCard) return 'user_card_missing';
+          userCard.click();
+          const menuEnd = Date.now() + 1500;
+          while (!document.querySelector('.user-menu') && Date.now() < menuEnd) await new Promise((resolve) => setTimeout(resolve, 25));
+          const entry = [...document.querySelectorAll('.user-menu .menu-item')].find((item) => item.textContent?.trim() === '开发者工具');
+          if (!entry) return 'developer_entry_missing';
+          entry.click();
           const evaluationEnd = Date.now() + 1500;
           while (!document.querySelector('.evaluation-console') && Date.now() < evaluationEnd) await new Promise((resolve) => setTimeout(resolve, 25));
+          return null;
+        };
+        let selected = false;
+        if (${JSON.stringify(label)} === '开发者工具') {
+          const failure = await openDeveloperViaUserMenu();
+          if (failure) return { label: ${JSON.stringify(label)}, selected: false, reason: failure };
+          selected = document.querySelector('.sidebar')?.getAttribute('aria-label') === '开发者工具';
+        } else {
+          const button = [...document.querySelectorAll('button[title]')].find((item) => item.getAttribute('title') === ${JSON.stringify(label)});
+          if (!button) return { label: ${JSON.stringify(label)}, selected: false, reason: 'navigation_button_missing' };
+          button.click();
+          const end = Date.now() + 1500;
+          while (button.getAttribute('aria-current') !== 'page' && Date.now() < end) await new Promise((resolve) => setTimeout(resolve, 25));
+          selected = button.getAttribute('aria-current') === 'page';
         }
         const visible = (element) => { const style = getComputedStyle(element); const rect = element.getBoundingClientRect(); return style.visibility !== 'hidden' && style.display !== 'none' && rect.width > 0 && rect.height > 0; };
         const critical = [...document.querySelectorAll('.page-header-actions button, .onboarding-actions button, .composer-dock button, [role="dialog"] button')].filter(visible);
         const offscreenCritical = critical.filter((element) => { const rect = element.getBoundingClientRect(); return rect.left < 0 || rect.right > innerWidth || rect.top < 0 || rect.bottom > innerHeight; }).map((element) => element.textContent?.trim() || element.getAttribute('aria-label'));
         return {
-          label: ${JSON.stringify(label)}, selected: button.getAttribute('aria-current') === 'page',
+          label: ${JSON.stringify(label)}, selected,
           horizontalOverflow: document.documentElement.scrollWidth > document.documentElement.clientWidth || document.body.scrollWidth > document.body.clientWidth,
           offscreenCritical,
           evaluationNavVisible: ${JSON.stringify(label)} !== '开发者工具' || [...document.querySelectorAll('.sidebar .nav-item')].some((item) => item.getAttribute('title') === '评估'),
@@ -304,12 +321,31 @@ async function runInstalledVisualScenario(outputDirectory: string): Promise<Reco
     if (window.webContents.debugger.isAttached()) window.webContents.debugger.detach();
   }
   const keyboardNavigation = await window.webContents.executeJavaScript(`new Promise((resolve)=>{const end=Date.now()+1000;const wait=()=>document.querySelector('button[title="岗位"]')?.getAttribute('aria-current')==='page'?resolve(true):Date.now()>=end?resolve(false):setTimeout(wait,25);wait();})`, true);
+  // 开发者工具入口位于账户菜单（菜单关闭时不在 DOM 中）：每次检查先打开菜单读取条目，再收起菜单。
+  const TryDeveloperEntryVisible = async (): Promise<boolean> => {
+    const deadline = Date.now() + 5000;
+    while (Date.now() < deadline) {
+      const visible = await window.webContents.executeJavaScript(`(async () => {
+        const card = document.querySelector('button[data-menu-trigger="user"]');
+        if (!card) return false;
+        card.click();
+        const end = Date.now() + 1500;
+        while (!document.querySelector('.user-menu') && Date.now() < end) await new Promise((resolve) => setTimeout(resolve, 25));
+        const visible = [...document.querySelectorAll('.user-menu .menu-item')].some((item) => item.textContent?.trim() === '开发者工具');
+        card.click();
+        return visible;
+      })()`, true) as boolean;
+      if (visible) return true;
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    return false;
+  };
   await callBackend('workspace:save-settings', { ...originalSettings, developerMode: false, onboardingCompleted: true });
   await ReloadRenderer();
-  const hiddenWhenDisabled = await window.webContents.executeJavaScript(`new Promise((resolve)=>{const end=Date.now()+5000;const wait=()=>{const hidden=![...document.querySelectorAll('button[title]')].some((item)=>item.getAttribute('title')==='开发者工具');hidden?resolve(true):Date.now()>=end?resolve(false):setTimeout(wait,25)};wait();})`, true);
+  const hiddenWhenDisabled = !(await TryDeveloperEntryVisible());
   await callBackend('workspace:save-settings', { ...originalSettings, developerMode: true, onboardingCompleted: true });
   await ReloadRenderer();
-  const visibleWhenEnabled = await window.webContents.executeJavaScript(`new Promise((resolve)=>{const end=Date.now()+5000;const wait=()=>{const visible=[...document.querySelectorAll('button[title]')].some((item)=>item.getAttribute('title')==='开发者工具');visible?resolve(true):Date.now()>=end?resolve(false):setTimeout(wait,25)};wait();})`, true);
+  const visibleWhenEnabled = await TryDeveloperEntryVisible();
   const developerModeGate = hiddenWhenDisabled === true && visibleWhenEnabled === true;
   const pagesPassed = pages.every((page) => page.selected === true && page.horizontalOverflow !== true && Array.isArray(page.offscreenCritical) && page.offscreenCritical.length === 0 && page.evaluationNavVisible === true && page.evaluationPanelVisible === true);
   return { rendererNavigationReady: true, consoleErrors, pages, keyboardTargetFocused, keyboardNavigation, developerModeGate, passed: pagesPassed && keyboardTargetFocused === true && keyboardNavigation === true && developerModeGate && consoleErrors.length === 0 };

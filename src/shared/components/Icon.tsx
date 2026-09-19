@@ -3,7 +3,7 @@ import type { CSSProperties, ImgHTMLAttributes } from 'react';
 /** 图标字重：对应 Phosphor 的 Regular / Light / Fill 三套本地字体。 */
 type IconWeight = 'regular' | 'light' | 'fill';
 
-type IconName = 'assistant' | 'jobs' | 'applications' | 'resumes' | 'profiles' | 'developer' | 'plus' | 'resume' | 'resume-panel' | 'browser' | 'panel-expand' | 'panel-shrink' | 'brand' | 'more' | 'settings' | 'developer-mode' | 'balance' | 'logout' | 'sidebar-expand' | 'sidebar-collapse' | 'chevron-down' | 'chevron-up' | 'chevron-right' | 'send' | 'edit' | 'delete' | 'archive' | 'heart' | 'map-pin' | 'arrow-right' | 'arrow-left' | 'loading' | 'error' | 'warning' | 'recovery' | 'refresh' | 'close' | 'stop' | 'music' | 'user-check' | 'user-x' | 'deepseek' | 'window-minimize' | 'window-restore' | 'window-maximize' | 'trace' | 'logs' | 'search' | 'moon' | 'sun' | 'check' | 'check-circle' | 'pin' | 'account' | 'workspace' | 'sliders' | 'paperclip' | 'brain' | 'gauge' | 'folder-simple' | 'folder-open' | 'shield-check' | 'pencil-simple' | 'robot' | 'lightning' | 'briefcase' | 'clock' | 'copy' | 'info' | 'cpu' | 'list-bullets' | 'sparkle' | 'user' | 'wrench' | 'download-simple' | 'upload-simple' | 'eye' | 'eye-slash' | 'lock-simple' | 'plugs-connected' | 'trash-simple' | 'flask' | 'database' | 'scales' | 'selection' | 'play' | 'hash' | 'warning-circle' | 'seal-check' | 'lock-key' | 'list-checks';
+type IconName = 'assistant' | 'jobs' | 'applications' | 'resumes' | 'profiles' | 'developer' | 'plus' | 'resume' | 'resume-panel' | 'browser' | 'panel-expand' | 'panel-shrink' | 'brand' | 'more' | 'settings' | 'developer-mode' | 'balance' | 'logout' | 'sidebar-expand' | 'sidebar-collapse' | 'chevron-down' | 'chevron-up' | 'chevron-right' | 'send' | 'edit' | 'delete' | 'archive' | 'heart' | 'map-pin' | 'arrow-right' | 'arrow-left' | 'loading' | 'error' | 'warning' | 'recovery' | 'refresh' | 'close' | 'stop' | 'music' | 'user-check' | 'user-x' | 'deepseek' | 'window-minimize' | 'window-restore' | 'window-maximize' | 'trace' | 'logs' | 'search' | 'moon' | 'sun' | 'check' | 'check-circle' | 'pin' | 'account' | 'workspace' | 'sliders' | 'paperclip' | 'brain' | 'gauge' | 'folder-simple' | 'folder-open' | 'shield-check' | 'pencil-simple' | 'robot' | 'lightning' | 'briefcase' | 'clock' | 'copy' | 'info' | 'cpu' | 'list-bullets' | 'sparkle' | 'user' | 'wrench' | 'download-simple' | 'upload-simple' | 'eye' | 'eye-slash' | 'lock-simple' | 'plugs-connected' | 'trash-simple' | 'flask' | 'database' | 'scales' | 'selection' | 'play' | 'hash' | 'warning-circle' | 'seal-check' | 'lock-key' | 'list-checks' | 'code';
 
 /**
  * IconName 到 Phosphor 字形的映射。深松绿设计系统的图标统一来自
@@ -33,6 +33,8 @@ const glyphs: Record<IconName, string> = {
   // 评估页（原型一比一）：评测视图分区、动作与对比视图徽标
   flask: 'flask', database: 'database', scales: 'scales', selection: 'selection', play: 'play', hash: 'hash',
   'warning-circle': 'warning-circle', 'seal-check': 'seal-check', 'lock-key': 'lock-key', 'list-checks': 'list-checks',
+  // 账户菜单（原型 umDeveloper）：开发者工具入口
+  code: 'code',
 };
 
 /** 未收录于 Phosphor 的品牌图标继续走本地 PNG 资源。 */
