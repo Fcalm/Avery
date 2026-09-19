@@ -6,9 +6,12 @@ export const CreateEvalProject = (input: EvalProjectInput) => Unwrap(platformCli
 export const UpdateEvalProject = (id: string, input: EvalProjectInput, revision: number) => Unwrap(platformClient.evaluation.UpdateProject(id, input, revision));
 export const DeleteEvalProject = (id: string) => Unwrap(platformClient.evaluation.DeleteProject(id));
 export const ImportEvalDataset = (id: string, jsonl: string, rubric: string, revision: number) => Unwrap(platformClient.evaluation.ImportDataset(id, jsonl, rubric, revision));
+export const ListEvalDatasetVersions = (id: string) => Unwrap(platformClient.evaluation.ListDatasetVersions(id));
+export const SelectEvalDatasetVersion = (id: string, version: string, revision: number) => Unwrap(platformClient.evaluation.SelectDatasetVersion(id, version, revision));
+export const DeleteEvalDatasetVersion = (id: string, version: string, revision: number) => Unwrap(platformClient.evaluation.DeleteDatasetVersion(id, version, revision));
 export const ValidateEvalProject = (id: string) => Unwrap(platformClient.evaluation.ValidateProject(id));
 export const PreviewEvalProject = (id: string) => Unwrap(platformClient.evaluation.PreviewProject(id));
-export const StartEvalRun = (id: string) => Unwrap(platformClient.evaluation.StartRun(id));
+export const StartEvalRun = (id: string, candidateId?: string) => Unwrap(platformClient.evaluation.StartRun(id, candidateId));
 export const CancelEvalRun = (id: string) => Unwrap(platformClient.evaluation.CancelRun(id));
 export const ListEvalRuns = (projectId?: string) => Unwrap(platformClient.evaluation.ListRuns(projectId));
 export const ReadEvalRun = (id: string) => Unwrap(platformClient.evaluation.ReadRun(id));

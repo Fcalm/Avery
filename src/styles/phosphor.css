@@ -120,3 +120,14 @@
 /* 浏览器控制（原型一比一）：检测状态按钮与清除登录数据；码点经官方 2.1.1 style.css 比对确认 */
 .ph-plugs-connected::before { content: "\eb5a"; }
 .ph-trash-simple::before { content: "\e4a8"; }
+/* 评估页（原型一比一）：评测视图分区、动作与对比视图徽标；码点经官方 2.1.1 style.css 比对确认 */
+.ph-flask::before { content: "\e79e"; }
+.ph-database::before { content: "\e1de"; }
+.ph-scales::before { content: "\e750"; }
+.ph-selection::before { content: "\e69a"; }
+.ph-play::before { content: "\e3d0"; }
+.ph-hash::before { content: "\e2a2"; }
+.ph-warning-circle::before { content: "\e4e2"; }
+.ph-seal-check::before { content: "\e606"; }
+.ph-lock-key::before { content: "\e2fe"; }
+.ph-list-checks::before { content: "\eadc"; }
