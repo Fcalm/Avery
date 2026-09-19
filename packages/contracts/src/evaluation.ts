@@ -81,6 +81,8 @@ export interface EvalProject {
   datasetVersion: string | null;
   datasetCaseCount: number;
   rubric: string;
+  /** 评判提示词附加段：拼进固定的防注入评判框架，空字符串表示不追加。 */
+  judgePrompt: string;
   revision: number;
   createdAt: number;
   updatedAt: number;
@@ -92,6 +94,20 @@ export interface EvalProjectInput {
   runnerType: EvalRunnerType;
   config: EvalProjectConfig;
   rubric?: string;
+  judgePrompt?: string;
+}
+
+/** 测试集版本库的一行：导入即冻结，删除不影响已落盘 Run 的快照。 */
+export interface EvalDatasetVersion {
+  version: string;
+  caseCount: number;
+  /** 案例类别取首题的 category，作为评测记录的"评估类别"展示。 */
+  category: string;
+  importedAt: number;
+  /** 项目当前指针是否指向该版本。 */
+  isCurrent: boolean;
+  /** 使用该版本跑过的 Run 数量；Run 快照已冻结，删除版本不改变历史结果。 */
+  runCount: number;
 }
 
 export interface EvalDatasetImportResult {
@@ -261,9 +277,16 @@ export interface DesktopEvaluationBridge {
   ListProjects: () => Promise<EvalProject[]>;
   DeleteProject: (id: string) => Promise<{ deleted: boolean }>;
   ImportDataset: (projectId: string, jsonl: string, rubric: string, expectedRevision: number) => Promise<EvalDatasetImportResult>;
+  /** 版本库读取：按导入时间倒序列出项目的全部测试集版本。 */
+  ListDatasetVersions: (projectId: string) => Promise<EvalDatasetVersion[]>;
+  /** 把项目指针切到历史版本；版本文件缺失时拒绝，避免指向不可运行的数据集。 */
+  SelectDatasetVersion: (projectId: string, version: string, expectedRevision: number) => Promise<EvalProject>;
+  /** 删除一个版本并删除其文件；删除当前版本时项目自动切回最近的剩余版本。 */
+  DeleteDatasetVersion: (projectId: string, version: string, expectedRevision: number) => Promise<EvalProject>;
+  /** candidateId 提供时只运行该候选（单选候选语义），省略时保持旧行为运行全部候选。 */
+  StartRun: (projectId: string, candidateId?: string) => Promise<EvalRun>;
   ValidateProject: (id: string) => Promise<{ valid: boolean; errors: string[] }>;
   PreviewProject: (id: string) => Promise<EvalPromptPreview>;
-  StartRun: (projectId: string) => Promise<EvalRun>;
   CancelRun: (runId: string) => Promise<{ cancelled: boolean }>;
   ReadRun: (runId: string) => Promise<EvalRunDetail>;
   ListRuns: (projectId?: string) => Promise<EvalRun[]>;

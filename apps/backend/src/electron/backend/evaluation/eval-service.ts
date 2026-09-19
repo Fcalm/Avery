@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { z } from 'zod';
 import type { CompiledInstructions } from '@avery/agent-sdk';
 import type {
-  EvalCaseRun, EvalCaseRunDetail, EvalDatasetCase, EvalEvent, EvalProject, EvalProjectInput, EvalPromptCandidate,
+  EvalCaseRun, EvalCaseRunDetail, EvalDatasetCase, EvalDatasetVersion, EvalEvent, EvalProject, EvalProjectInput, EvalPromptCandidate,
   EvalRun, EvalRunDetail, EvalRunSummary,
 } from '@avery/contracts';
 import { ApplicationScenario, BuildApplicationPromptFragments, BuildDefaultPromptFragments, CompilePrompt, CreateDefaultModules, DefaultScenario } from '@avery/agent-modules-defaults';
@@ -39,6 +39,7 @@ const ProjectInputSchema = z.object({
   runnerType: z.enum(['prompt', 'browser']),
   config: ConfigSchema,
   rubric: z.string().max(100000).optional(),
+  judgePrompt: z.string().max(100000).optional(),
 }).strict();
 const DatasetCaseSchema = z.object({
   id: Id,
@@ -239,7 +240,10 @@ export class EvalService {
     Id.parse(id);
     const parsed = ProjectInputSchema.parse(input);
     ValidateProjectConfig(parsed.config, parsed.runnerType);
-    return this.PublicProject(await this.store.UpdateEvalProjectRecord(id, { ...parsed, updatedAt: Date.now() }, expectedRevision));
+    // 输入未携带 judgePrompt 时沿用现值：旧调用方不传该字段不应清空评判附加段。
+    const current = await this.store.ReadEvalProjectRecord(id);
+    const judgePrompt = parsed.judgePrompt ?? current.judgePrompt ?? '';
+    return this.PublicProject(await this.store.UpdateEvalProjectRecord(id, { ...parsed, judgePrompt, updatedAt: Date.now() }, expectedRevision));
   }
 
   async ReadProject(id: string): Promise<EvalProject> { await this.RequireDeveloperMode(); return this.PublicProject(await this.store.ReadEvalProjectRecord(Id.parse(id))); }
@@ -260,8 +264,56 @@ export class EvalService {
     const normalized = cases.map((testCase) => JSON.stringify(testCase)).join('\n');
     const datasetVersion = createHash('sha256').update(normalized).digest('hex');
     const datasetKey = await this.artifacts.WriteDataset(projectId, datasetVersion, normalized);
-    const project = await this.store.ImportEvalDatasetRecord(projectId, datasetKey, rubric, datasetVersion, cases.length, expectedRevision, Date.now());
+    // 类别取首题的 category：版本库用它展示"评估类别"，与单题类别字段保持同源。
+    const project = await this.store.ImportEvalDatasetRecord(projectId, datasetKey, rubric, datasetVersion, cases.length, cases[0]?.category ?? 'general', expectedRevision, Date.now());
     return { projectId, datasetVersion, caseCount: cases.length, revision: project.revision };
+  }
+
+  /** 版本库读取：登记行 + 当前指针 + 引用计数一次给全，供评测集选择器直接渲染。 */
+  async ListDatasetVersions(projectId: string): Promise<EvalDatasetVersion[]> {
+    await this.RequireDeveloperMode();
+    Id.parse(projectId);
+    const project = await this.store.ReadEvalProjectRecord(projectId);
+    const rows = await this.store.ListEvalDatasetVersionRecords(projectId);
+    return rows.map((row: any) => ({
+      version: row.version,
+      caseCount: row.case_count,
+      category: row.category ?? 'general',
+      importedAt: row.created_at,
+      isCurrent: row.version === project.datasetVersion,
+      runCount: this.store.CountEvalRunsForDatasetVersion(projectId, row.version),
+    }));
+  }
+
+  /** 项目指针切到历史版本；文件缺失说明登记与磁盘漂移，拒绝指向不可运行的数据集。 */
+  async SelectDatasetVersion(projectId: string, version: string, expectedRevision: number): Promise<EvalProject> {
+    await this.RequireDeveloperMode();
+    Id.parse(projectId);
+    if (!/^[A-Za-z0-9._-]{1,200}$/.test(version)) throw Object.assign(new Error('Evaluation dataset version is invalid.'), { code: 'VALIDATION_ERROR' });
+    const row = (await this.store.ListEvalDatasetVersionRecords(projectId)).find((item: any) => item.version === version);
+    if (!row) throw Object.assign(new Error('Evaluation dataset version was not found.'), { code: 'NOT_FOUND' });
+    await this.artifacts.ReadDataset(projectId, version);
+    const datasetKey = `datasets/${projectId}/${version}.jsonl`;
+    return this.PublicProject(await this.store.SelectEvalDatasetVersionRecord(projectId, datasetKey, version, row.case_count, expectedRevision, Date.now()));
+  }
+
+  /** 删除一个版本：登记行与文件一起删；删的是当前版本时自动切回最近的剩余版本。 */
+  async DeleteDatasetVersion(projectId: string, version: string, expectedRevision: number): Promise<EvalProject> {
+    await this.RequireDeveloperMode();
+    Id.parse(projectId);
+    if (!/^[A-Za-z0-9._-]{1,200}$/.test(version)) throw Object.assign(new Error('Evaluation dataset version is invalid.'), { code: 'VALIDATION_ERROR' });
+    const rows = await this.store.ListEvalDatasetVersionRecords(projectId);
+    if (rows.length <= 1) throw Object.assign(new Error('至少保留一个测试集版本。'), { code: 'VALIDATION_ERROR' });
+    const target = rows.find((item: any) => item.version === version);
+    if (!target) throw Object.assign(new Error('Evaluation dataset version was not found.'), { code: 'NOT_FOUND' });
+    await this.store.DeleteEvalDatasetVersionRecord(projectId, version);
+    await this.artifacts.DeleteDataset(projectId, version);
+    const project = await this.store.ReadEvalProjectRecord(projectId);
+    if (project.datasetVersion !== version) return this.PublicProject(project);
+    // 已跑过的 Run 读取自己的冻结快照，指针回退只影响之后的评测，结果不受影响。
+    const fallback = (await this.store.ListEvalDatasetVersionRecords(projectId))[0];
+    const datasetKey = `datasets/${projectId}/${fallback.version}.jsonl`;
+    return this.PublicProject(await this.store.SelectEvalDatasetVersionRecord(projectId, datasetKey, fallback.version, fallback.case_count, expectedRevision, Date.now()));
   }
 
   async ValidateProject(id: string): Promise<{ valid: boolean; errors: string[] }> {
@@ -306,7 +358,7 @@ export class EvalService {
     });
     return {
       schemaVersion: 1, createdAt: Date.now(), projectId: project.id, projectRevision: project.revision,
-      runnerType: project.runnerType, config: { ...runConfig, candidates }, rubric: project.rubric,
+      runnerType: project.runnerType, config: { ...runConfig, candidates }, rubric: project.rubric, judgePrompt: project.judgePrompt ?? '',
       datasetVersion: project.datasetVersion, cases, toolDefinitions: definitions, toolsetHash,
       versions: { snapshot: 2, promptRunner: 2, browserRunner: 2, scorer: project.runnerType === 'browser' ? 'browser-deterministic-2' : 'prompt-judge-3', assertions: 1, trace: 1, application: '0.1.0' },
       environment: { repeatCount: runConfig.repeatCount, maxConcurrency: project.runnerType === 'browser' ? 1 : 2 },
@@ -357,13 +409,22 @@ export class EvalService {
     };
   }
 
-  async StartRun(projectId: string): Promise<EvalRun> {
+  async StartRun(projectId: string, candidateId?: string): Promise<EvalRun> {
     await this.RequireDeveloperMode();
     const validation = await this.ValidateProject(projectId);
     if (!validation.valid) throw Object.assign(new Error(validation.errors.join('；')), { code: 'VALIDATION_ERROR', details: { errors: validation.errors } });
     const project = await this.store.ReadEvalProjectRecord(projectId);
+    const runConfig = await this.ResolveRunConfig(project);
+    let candidates = runConfig.candidates as Array<EvalPromptCandidate>;
+    if (candidateId !== undefined) {
+      // 单选候选语义：快照只冻结本次运行的候选，快照哈希因此随候选不同而不同。
+      if (!candidates.some((candidate) => candidate.id === candidateId)) {
+        throw Object.assign(new Error('指定的 Prompt 候选不存在。'), { code: 'VALIDATION_ERROR' });
+      }
+      candidates = candidates.filter((candidate) => candidate.id === candidateId);
+    }
     const cases = ParseEvalDataset(await this.artifacts.ReadDataset(project.id, project.datasetVersion));
-    const snapshot = this.BuildSnapshot(project, cases, await this.ResolveRunConfig(project));
+    const snapshot = this.BuildSnapshot(project, cases, { ...runConfig, candidates });
     const snapshotHash = createHash('sha256').update(JSON.stringify(snapshot)).digest('hex');
     const id = `run-${randomUUID()}`;
     const record = await this.store.CreateEvalRunRecord({ id, projectId, projectName: project.name, runnerType: project.runnerType, status: 'queued', snapshotHash, snapshot, createdAt: Date.now() });
@@ -461,7 +522,7 @@ export class EvalService {
                   ? ScoreBrowserCase({ testCase, events: result.events, finalState: result.finalState, metrics: result.metrics })
                   : await this.scorer.Score({
                     testCase, finalResponse: result.finalResponse, events: result.events, finalState: result.finalState, metrics: result.metrics,
-                    rubric: snapshot.rubric, judgeModel: projectConfig.judgeModel!, signal: controller.signal,
+                    rubric: snapshot.rubric, judgePrompt: snapshot.judgePrompt, judgeModel: projectConfig.judgeModel!, signal: controller.signal,
                   });
                 this.ThrowIfCancelled(controller.signal);
                 const judgeUsage = 'usage' in scoreResult ? scoreResult.usage : undefined;

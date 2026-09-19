@@ -24,7 +24,7 @@ export const ReadOnlyChannels = new Set<string>([
   'workspace:recovery-status',
   'workspace:database-recovery-status',
   'agent:status', 'agent:observability', 'agent:trace-events', 'agent:test-connection', 'agent:get-balance', 'agent:get-models', 'agent:get-provider-catalog', 'agent:get-session-assistant-state', 'agent:browser-runtime-status', 'agent:cron-browser-access', 'cron:status',
-  'evaluation:projects-list', 'evaluation:project-read', 'evaluation:project-validate', 'evaluation:project-preview', 'evaluation:runs-list', 'evaluation:run-read', 'evaluation:case-read', 'evaluation:runs-compare',
+  'evaluation:projects-list', 'evaluation:project-read', 'evaluation:project-validate', 'evaluation:project-preview', 'evaluation:dataset-versions-list', 'evaluation:runs-list', 'evaluation:run-read', 'evaluation:case-read', 'evaluation:runs-compare',
 ]);
 
 /**
@@ -84,6 +84,9 @@ export const MethodRoutes: Record<string, MethodRoute> = {
   'evaluation:projects-list': { service: 'evaluation', method: 'ListProjects' },
   'evaluation:project-delete': { service: 'evaluation', method: 'DeleteProject' },
   'evaluation:dataset-import': { service: 'evaluation', method: 'ImportDataset' },
+  'evaluation:dataset-versions-list': { service: 'evaluation', method: 'ListDatasetVersions' },
+  'evaluation:dataset-version-select': { service: 'evaluation', method: 'SelectDatasetVersion' },
+  'evaluation:dataset-version-delete': { service: 'evaluation', method: 'DeleteDatasetVersion' },
   'evaluation:project-validate': { service: 'evaluation', method: 'ValidateProject' },
   'evaluation:project-preview': { service: 'evaluation', method: 'PreviewProject' },
   'evaluation:run-start': { service: 'evaluation', method: 'StartRun' },
@@ -146,8 +149,10 @@ const Revision = z.number().int().nonnegative().optional();
 const RequiredRevision = z.number().int().positive();
 const EvalProjectInputSchema = z.object({
   id: EntityId.optional(), name: z.string().min(1).max(200), runnerType: z.enum(['prompt', 'browser']),
-  config: z.record(z.string(), z.unknown()), rubric: z.string().max(100000).optional(),
+  config: z.record(z.string(), z.unknown()), rubric: z.string().max(100000).optional(), judgePrompt: z.string().max(100000).optional(),
 }).strict();
+/** 测试集版本号是内容哈希：64 位十六进制，防止任意字符串进入文件路径。 */
+const EvalDatasetVersionHash = z.string().regex(/^[a-f0-9]{64}$/);
 
 /** 写通道负载的整数组形状校验表（阶段 6 A2 收口）：键为通道，值为对该通道 args 的整体 tuple 校验。 */
 const WriteArgsSchemas: Record<string, z.ZodTuple> = {
@@ -158,7 +163,9 @@ const WriteArgsSchemas: Record<string, z.ZodTuple> = {
   'evaluation:project-update': z.tuple([EntityId, EvalProjectInputSchema, RequiredRevision]),
   'evaluation:project-delete': z.tuple([EntityId]),
   'evaluation:dataset-import': z.tuple([EntityId, z.string().max(8 * 1024 * 1024), z.string().max(100000), RequiredRevision]),
-  'evaluation:run-start': z.tuple([EntityId]),
+  'evaluation:dataset-version-select': z.tuple([EntityId, EvalDatasetVersionHash, RequiredRevision]),
+  'evaluation:dataset-version-delete': z.tuple([EntityId, EvalDatasetVersionHash, RequiredRevision]),
+  'evaluation:run-start': z.tuple([EntityId, EntityId.optional()]),
   'evaluation:run-cancel': z.tuple([EntityId]),
   'workspace:save-settings': z.tuple([SettingsSubmitSchema]),
   'workspace:conversations-create': z.tuple([ConversationCreateSchema]),

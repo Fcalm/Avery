@@ -67,6 +67,14 @@ export class ObservabilityStore {
         updated_at INTEGER NOT NULL
       );
       CREATE INDEX IF NOT EXISTS idx_evaluation_projects_updated ON evaluation_projects(updated_at DESC);
+      CREATE TABLE IF NOT EXISTS evaluation_dataset_versions (
+        project_id TEXT NOT NULL,
+        version TEXT NOT NULL,
+        case_count INTEGER NOT NULL,
+        category TEXT NOT NULL DEFAULT 'general',
+        created_at INTEGER NOT NULL,
+        PRIMARY KEY(project_id, version)
+      );
       CREATE TABLE IF NOT EXISTS evaluation_runs (
         id TEXT PRIMARY KEY,
         project_id TEXT NOT NULL,
@@ -102,6 +110,12 @@ export class ObservabilityStore {
     `);
     try {
       this.db.exec('ALTER TABLE agent_trace_events ADD COLUMN token_count INTEGER NOT NULL DEFAULT 0');
+    } catch {
+      // Existing databases already include the column.
+    }
+    try {
+      // 评判提示词附加段：2026-09 新增，空字符串表示沿用纯固定评判框架。
+      this.db.exec("ALTER TABLE evaluation_projects ADD COLUMN judge_prompt TEXT NOT NULL DEFAULT ''");
     } catch {
       // Existing databases already include the column.
     }
@@ -247,17 +261,17 @@ export class ObservabilityStore {
   /** 创建开发者测评项目索引；配置与测试集仍由 EvalService 完成 Schema 校验。 */
   CreateEvalProjectRecord(record: any): any {
     this.db.prepare(`INSERT INTO evaluation_projects(
-      id, name, runner_type, config_json, dataset_jsonl, dataset_version, dataset_case_count, rubric, revision, created_at, updated_at
-    ) VALUES(?, ?, ?, ?, '', NULL, 0, ?, 1, ?, ?)`)
-      .run(record.id, record.name, record.runnerType, JSON.stringify(record.config), record.rubric ?? '', record.createdAt, record.updatedAt);
+      id, name, runner_type, config_json, dataset_jsonl, dataset_version, dataset_case_count, rubric, judge_prompt, revision, created_at, updated_at
+    ) VALUES(?, ?, ?, ?, '', NULL, 0, ?, ?, 1, ?, ?)`)
+      .run(record.id, record.name, record.runnerType, JSON.stringify(record.config), record.rubric ?? '', record.judgePrompt ?? '', record.createdAt, record.updatedAt);
     return this.ReadEvalProjectRecord(record.id);
   }
 
   /** 以 revision 乐观锁更新项目，防止两个开发者页面互相覆盖候选和 Rubric。 */
   UpdateEvalProjectRecord(id: string, record: any, expectedRevision: number): any {
-    const result = this.db.prepare(`UPDATE evaluation_projects SET name = ?, runner_type = ?, config_json = ?, rubric = ?, revision = revision + 1, updated_at = ?
+    const result = this.db.prepare(`UPDATE evaluation_projects SET name = ?, runner_type = ?, config_json = ?, rubric = ?, judge_prompt = ?, revision = revision + 1, updated_at = ?
       WHERE id = ? AND revision = ?`)
-      .run(record.name, record.runnerType, JSON.stringify(record.config), record.rubric ?? '', record.updatedAt, id, expectedRevision);
+      .run(record.name, record.runnerType, JSON.stringify(record.config), record.rubric ?? '', record.judgePrompt ?? '', record.updatedAt, id, expectedRevision);
     if (result.changes !== 1) {
       const exists = this.db.prepare('SELECT revision FROM evaluation_projects WHERE id = ?').get(id);
       if (!exists) throw Object.assign(new Error('Evaluation project was not found.'), { code: 'NOT_FOUND' });
@@ -267,7 +281,7 @@ export class ObservabilityStore {
   }
 
   /** 原子替换测试集索引；正文只保存在受控 Artifact 目录，数据库不承载大文本。 */
-  ImportEvalDatasetRecord(id: string, datasetKey: string, rubric: string, datasetVersion: string, caseCount: number, expectedRevision: number, updatedAt: number): any {
+  ImportEvalDatasetRecord(id: string, datasetKey: string, rubric: string, datasetVersion: string, caseCount: number, category: string, expectedRevision: number, updatedAt: number): any {
     const result = this.db.prepare(`UPDATE evaluation_projects SET dataset_jsonl = ?, dataset_version = ?, dataset_case_count = ?, rubric = ?, revision = revision + 1, updated_at = ?
       WHERE id = ? AND revision = ?`)
       .run(datasetKey, datasetVersion, caseCount, rubric, updatedAt, id, expectedRevision);
@@ -276,7 +290,39 @@ export class ObservabilityStore {
       if (!exists) throw Object.assign(new Error('Evaluation project was not found.'), { code: 'NOT_FOUND' });
       throw Object.assign(new Error('Evaluation project revision conflict.'), { code: 'REVISION_CONFLICT', details: { expectedRevision, actualRevision: exists.revision } });
     }
+    // 版本库登记：导入即冻结一个版本，正文由 Artifact 目录按版本哈希落盘。
+    this.db.prepare('INSERT OR REPLACE INTO evaluation_dataset_versions(project_id, version, case_count, category, created_at) VALUES(?, ?, ?, ?, ?)')
+      .run(id, datasetVersion, caseCount, category, updatedAt);
     return this.ReadEvalProjectRecord(id);
+  }
+
+  /** 版本库列表：按导入时间倒序，供评测集选择器与管理对话框使用。 */
+  ListEvalDatasetVersionRecords(projectId: string): any[] {
+    return this.db.prepare('SELECT * FROM evaluation_dataset_versions WHERE project_id = ? ORDER BY created_at DESC, version DESC').all(projectId);
+  }
+
+  /** 指向某版本的 Run 数量：Run 快照冻结了 datasetVersion，用 JSON1 直接读取，不展开快照正文。 */
+  CountEvalRunsForDatasetVersion(projectId: string, version: string): number {
+    const row = this.db.prepare("SELECT COUNT(*) AS count FROM evaluation_runs WHERE project_id = ? AND json_extract(snapshot_json, '$.datasetVersion') = ?").get(projectId, version);
+    return Number(row?.count ?? 0);
+  }
+
+  /** 把项目数据集指针切到历史版本；与导入一样走 revision 乐观锁。 */
+  SelectEvalDatasetVersionRecord(id: string, datasetKey: string, datasetVersion: string, caseCount: number, expectedRevision: number, updatedAt: number): any {
+    const result = this.db.prepare(`UPDATE evaluation_projects SET dataset_jsonl = ?, dataset_version = ?, dataset_case_count = ?, revision = revision + 1, updated_at = ?
+      WHERE id = ? AND revision = ?`)
+      .run(datasetKey, datasetVersion, caseCount, updatedAt, id, expectedRevision);
+    if (result.changes !== 1) {
+      const exists = this.db.prepare('SELECT revision FROM evaluation_projects WHERE id = ?').get(id);
+      if (!exists) throw Object.assign(new Error('Evaluation project was not found.'), { code: 'NOT_FOUND' });
+      throw Object.assign(new Error('Evaluation project revision conflict.'), { code: 'REVISION_CONFLICT', details: { expectedRevision, actualRevision: exists.revision } });
+    }
+    return this.ReadEvalProjectRecord(id);
+  }
+
+  /** 只删除版本登记行；版本文件与项目指针回退由 EvalService 编排。 */
+  DeleteEvalDatasetVersionRecord(projectId: string, version: string): void {
+    this.db.prepare('DELETE FROM evaluation_dataset_versions WHERE project_id = ? AND version = ?').run(projectId, version);
   }
 
   /** 返回项目配置及内部数据集逻辑键；Renderer DTO 由 EvalService 剔除 datasetJsonl。 */
@@ -286,14 +332,14 @@ export class ObservabilityStore {
     return {
       schemaVersion: 1, id: row.id, name: row.name, runnerType: row.runner_type, config: JSON.parse(row.config_json),
       datasetJsonl: row.dataset_jsonl, datasetVersion: row.dataset_version, datasetCaseCount: row.dataset_case_count,
-      rubric: row.rubric, revision: row.revision, createdAt: row.created_at, updatedAt: row.updated_at,
+      rubric: row.rubric, judgePrompt: row.judge_prompt ?? '', revision: row.revision, createdAt: row.created_at, updatedAt: row.updated_at,
     };
   }
 
   ListEvalProjectRecords(): any[] {
     return this.db.prepare('SELECT * FROM evaluation_projects ORDER BY updated_at DESC, id').all().map((row: any) => ({
       schemaVersion: 1, id: row.id, name: row.name, runnerType: row.runner_type, config: JSON.parse(row.config_json),
-      datasetVersion: row.dataset_version, datasetCaseCount: row.dataset_case_count, rubric: row.rubric,
+      datasetVersion: row.dataset_version, datasetCaseCount: row.dataset_case_count, rubric: row.rubric, judgePrompt: row.judge_prompt ?? '',
       revision: row.revision, createdAt: row.created_at, updatedAt: row.updated_at,
     }));
   }
@@ -302,6 +348,8 @@ export class ObservabilityStore {
     const active = this.db.prepare("SELECT 1 FROM evaluation_runs WHERE project_id = ? AND status NOT IN ('completed', 'failed', 'cancelled')").get(id);
     if (active) throw Object.assign(new Error('Evaluation project has an active run.'), { code: 'RESOURCE_LOCKED' });
     const result = this.db.prepare('DELETE FROM evaluation_projects WHERE id = ?').run(id);
+    // 项目删除后版本登记随之清空；版本文件由 EvalService 的 DeleteProjectDatasets 统一清理。
+    this.db.prepare('DELETE FROM evaluation_dataset_versions WHERE project_id = ?').run(id);
     return { deleted: result.changes === 1 };
   }
 

@@ -113,6 +113,14 @@ export class EvalArtifactStore {
     await rm(target, { recursive: true, force: true });
   }
 
+  /** 删除单个版本文件；Run 快照已冻结 cases，删除不影响已跑完的结果。 */
+  async DeleteDataset(projectId: string, version: string): Promise<void> {
+    if (![projectId, version].every((value) => /^[A-Za-z0-9._-]{1,200}$/.test(value))) throw Object.assign(new Error('Evaluation dataset identifier is invalid.'), { code: 'VALIDATION_ERROR' });
+    const target = resolve(this.dataRoot, 'datasets', projectId, `${version}.jsonl`);
+    if (!target.startsWith(`${this.dataRoot}${sep}`)) throw Object.assign(new Error('Evaluation dataset path escapes its root.'), { code: 'PERMISSION_DENIED' });
+    await rm(target, { force: true });
+  }
+
   /** 测试辅助：证明根目录为已解析的真实目录，不把外部路径作为删除目标。 */
   async ResolveRoot(): Promise<string> {
     await this.Initialize();

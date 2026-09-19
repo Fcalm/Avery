@@ -100,4 +100,28 @@ describe('evaluation scorers', () => {
     controller.abort(); release();
     await expect(scoring).rejects.toMatchObject({ code: 'CANCELLED' });
   });
+
+  it('评判提示词附加段插入固定框架与 Rubric 之间，输出契约保持在末尾', async () => {
+    const completion = vi.fn(async () => ({ content: judged() }));
+    const scorer = new EvalScorer({ credentialPort: {}, provider: { StreamCompletion: completion } });
+    await scorer.Score({ testCase: baseCase as any, finalResponse: 'React', events: [], finalState: {}, rubric: '评分目标', judgePrompt: '重点关注指令遵循。', judgeModel: 'deepseek-v4-pro', signal: new AbortController().signal });
+    const compiled = completion.mock.calls[0][0].instructions.compiled as string;
+    const frameworkEnd = compiled.indexOf('never mere appearances inside a refusal or quotation.');
+    const segment = compiled.indexOf('Developer judging instructions');
+    const rubric = compiled.indexOf('Evaluation goal and rubric');
+    const contract = compiled.indexOf('Output contract (mandatory)');
+    expect(segment).toBeGreaterThan(frameworkEnd);
+    expect(rubric).toBeGreaterThan(segment);
+    expect(contract).toBeGreaterThan(rubric);
+    expect(compiled).toContain('重点关注指令遵循。');
+  });
+
+  it('未提供评判提示词时编译结果不出现附加段', async () => {
+    const completion = vi.fn(async () => ({ content: judged() }));
+    const scorer = new EvalScorer({ credentialPort: {}, provider: { StreamCompletion: completion } });
+    await scorer.Score({ testCase: baseCase as any, finalResponse: 'React', events: [], finalState: {}, rubric: '评分目标', judgeModel: 'deepseek-v4-pro', signal: new AbortController().signal });
+    const compiled = completion.mock.calls[0][0].instructions.compiled as string;
+    expect(compiled).not.toContain('Developer judging instructions');
+    expect(compiled).toContain('Evaluation goal and rubric:\n评分目标');
+  });
 });

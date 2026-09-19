@@ -305,4 +305,83 @@ describe('Agent evaluation service', () => {
     await service.Close();
     store.Close();
   });
+
+  it('测试集版本库支持列表、切换与删除，删除当前版本时自动回退', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'avery-eval-ds-versions-')); roots.push(root);
+    const store = new ObservabilityStore(root);
+    const service = new EvalService({ userDataPath: root, store, credentialPort: {}, getStoredSettings: async () => ({ developerMode: true }), Emit: vi.fn(), promptRunner: { Execute: vi.fn() } as any, scorer: scorer as any });
+    await service.Initialize();
+    let project = await service.CreateProject(projectInput);
+    const datasetB = JSON.stringify({ ...JSON.parse(dataset), id: 'case-2' });
+    await service.ImportDataset(project.id, dataset, project.rubric, project.revision); project = await service.ReadProject(project.id);
+    const firstVersion = project.datasetVersion!;
+    await service.ImportDataset(project.id, datasetB, project.rubric, project.revision); project = await service.ReadProject(project.id);
+    const secondVersion = project.datasetVersion!;
+    expect(firstVersion).not.toBe(secondVersion);
+
+    // 直接登记一个引用第一版的 Run，验证引用计数；快照冻结意味着删除版本后历史结果不受影响。
+    store.CreateEvalRunRecord({ id: 'run-ref', projectId: project.id, projectName: project.name, runnerType: 'prompt', status: 'completed', snapshotHash: 'h', snapshot: { datasetVersion: firstVersion }, createdAt: Date.now() });
+
+    let versions = await service.ListDatasetVersions(project.id);
+    expect(versions.map((item) => item.version)).toEqual([secondVersion, firstVersion]);
+    expect(versions.find((item) => item.version === secondVersion)).toMatchObject({ isCurrent: true, caseCount: 1, runCount: 0 });
+    expect(versions.find((item) => item.version === firstVersion)?.runCount).toBe(1);
+
+    project = await service.SelectDatasetVersion(project.id, firstVersion, project.revision);
+    expect(project.datasetVersion).toBe(firstVersion);
+    expect(project.datasetCaseCount).toBe(1);
+    await expect(service.SelectDatasetVersion(project.id, 'f'.repeat(64), project.revision)).rejects.toMatchObject({ code: 'NOT_FOUND' });
+
+    project = await service.DeleteDatasetVersion(project.id, firstVersion, project.revision);
+    expect(project.datasetVersion).toBe(secondVersion);
+    versions = await service.ListDatasetVersions(project.id);
+    expect(versions).toHaveLength(1);
+    await expect(service.DeleteDatasetVersion(project.id, secondVersion, project.revision)).rejects.toThrow(/至少保留一个/);
+    await service.Close();
+    store.Close();
+  });
+
+  it('单候选运行只冻结并执行指定的 Prompt 候选', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'avery-eval-single-candidate-')); roots.push(root);
+    const store = new ObservabilityStore(root);
+    const execute = vi.fn(async () => ({ finalResponse: 'answer', events: [], finalState: {}, metrics: { modelTurns: 1, toolCalls: 0, toolErrors: 0, promptTokens: 1, completionTokens: 1, totalTokens: 2, completed: true } }));
+    const service = new EvalService({ userDataPath: root, store, credentialPort: {}, getStoredSettings: async () => ({ developerMode: true }), Emit: vi.fn(), promptRunner: { Execute: execute } as any, scorer: scorer as any });
+    await service.Initialize();
+    let project = await service.CreateProject(projectInput);
+    await service.ImportDataset(project.id, dataset, project.rubric, project.revision);
+    project = await service.ReadProject(project.id);
+    await expect(service.StartRun(project.id, 'missing')).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
+    const run = await service.StartRun(project.id, 'b');
+    const completed = await WaitForTerminal(service, run.id);
+    expect((completed.snapshot as any).config.candidates.map((candidate: any) => candidate.id)).toEqual(['b']);
+    const detail = await service.ReadRun(run.id);
+    expect(detail.caseRuns).toHaveLength(1);
+    expect(detail.caseRuns.every((item) => item.candidateId === 'b')).toBe(true);
+    await service.Close();
+    store.Close();
+  });
+
+  it('评判提示词附加段随项目保存并冻结进 Run 快照', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'avery-eval-judge-prompt-')); roots.push(root);
+    const store = new ObservabilityStore(root);
+    const scoreSpy = vi.fn(async () => ({ score: { deterministicScore: null, judgeScore: 80, totalScore: 80, dimensions: {}, hardFailures: [], reason: 'ok', confidence: 0.9 }, details: { objective: {}, judgeRaw: [] } }));
+    const service = new EvalService({
+      userDataPath: root, store, credentialPort: {}, getStoredSettings: async () => ({ developerMode: true }), Emit: vi.fn(),
+      promptRunner: { Execute: vi.fn(async () => ({ finalResponse: 'answer', events: [], finalState: {}, metrics: { modelTurns: 1, toolCalls: 0, toolErrors: 0, promptTokens: 1, completionTokens: 1, totalTokens: 2, completed: true } })) } as any,
+      scorer: { Score: scoreSpy } as any,
+    });
+    await service.Initialize();
+    let project = await service.CreateProject({ ...projectInput, judgePrompt: '重点关注指令遵循。', config: { ...projectInput.config, candidates: [projectInput.config.candidates[0]] } });
+    expect(project.judgePrompt).toBe('重点关注指令遵循。');
+    // 旧调用方不携带 judgePrompt 时不得清空现值。
+    project = await service.UpdateProject(project.id, { name: project.name, runnerType: project.runnerType, config: project.config, rubric: project.rubric }, project.revision);
+    expect(project.judgePrompt).toBe('重点关注指令遵循。');
+    await service.ImportDataset(project.id, dataset, project.rubric, project.revision);
+    project = await service.ReadProject(project.id);
+    const run = await service.StartRun(project.id);
+    await WaitForTerminal(service, run.id);
+    expect(scoreSpy.mock.calls[0][0]).toMatchObject({ judgePrompt: '重点关注指令遵循。' });
+    await service.Close();
+    store.Close();
+  });
 });
