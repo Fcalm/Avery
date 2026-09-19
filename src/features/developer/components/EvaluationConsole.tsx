@@ -657,10 +657,11 @@ export function EvaluationConsole() {
         </div>
         <div className="dw-body">
           <div className="ev-drawer-toolbar">
-            <Button variant={judgeStrictJsonDraft ? 'primary' : 'quiet'} aria-pressed={judgeStrictJsonDraft} onClick={() => setJudgeStrictJsonDraft((current) => !current)}>
-              <Icon name={judgeStrictJsonDraft ? 'check-circle' : 'seal-check'} size={14} />严格 JSON 输出
-            </Button>
-            <span className="ev-drawer-hint">按 DeepSeek 官方建议请求 json_object 模式、在提示词附加 JSON 样例并设置输出上限，减少评分被截断或夹带散文；仅 DeepSeek 通道发送 API 参数，其他供应商只附加提示词约束。</span>
+            <span className="ev-switch-row">
+              严格 JSON 输出
+              <button className="switch" type="button" role="switch" aria-checked={judgeStrictJsonDraft} aria-label="严格 JSON 输出" onClick={() => setJudgeStrictJsonDraft((current) => !current)}><span className="knob" /></button>
+            </span>
+            <span className="ev-drawer-hint">支持结构化输出的模型可以开启，将输出严格限制为 JSON 格式。</span>
           </div>
           <label className="dw-field">
             <span className="lab">评判提示词附加段</span>

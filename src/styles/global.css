@@ -1938,12 +1938,13 @@ select:focus, select:focus-visible,
 
 /* 弹窗内：终止说明、测试集版本管理、候选编辑 */
 .ev-drawer-toolbar { display: flex; align-items: flex-start; gap: 10px; margin-bottom: 10px; }
-.ev-drawer-toolbar .button { flex: none; min-height: 30px; }
-/* 严格 JSON 开关：关闭态是描边胶囊（btn-xs），开启态用主色绿，与开始按钮一致 */
-.ev-drawer-toolbar .button-quiet { border: 1px solid var(--border); border-radius: var(--r-pill); background: transparent; color: var(--text-2); font-weight: 550; }
-.ev-drawer-toolbar .button-quiet:hover:not(:disabled) { background: var(--raised); border-color: var(--border-2); color: var(--text); }
-.ev-drawer-toolbar .button-primary { background: var(--accent); }
-.ev-drawer-toolbar .button-primary:hover:not(:disabled) { background: var(--accent-hover); }
+/* 严格 JSON 滑块开关：沿用 shell 的 .switch/.knob 控件规格，开启态与开始按钮同用主色绿 */
+.ev-switch-row { display: inline-flex; flex: none; align-items: center; gap: 7px; color: var(--text-2); font-size: 12px; font-weight: 550; }
+.ev-switch-row .switch { position: relative; width: 34px; height: 20px; flex: none; cursor: pointer; border: 0; border-radius: var(--r-pill); background: var(--border-2); transition: background-color .22s var(--ease); }
+.ev-switch-row .switch .knob { position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: var(--raised); box-shadow: 0 1px 2px rgba(0, 0, 0, .2); transition: transform .24s var(--ease); }
+.ev-switch-row .switch[aria-checked="true"] { background: var(--accent); }
+.ev-switch-row .switch[aria-checked="true"] .knob { transform: translateX(14px); }
+.ev-switch-row .switch:hover { box-shadow: 0 0 0 3px var(--accent-soft); }
 .ev-drawer-hint { flex: 1; color: var(--text-3); font-size: 11.5px; line-height: 1.55; }
 .ev-stop-list { margin: 0; padding-left: 18px; color: var(--text-2); font-size: 12.5px; line-height: 1.8; }
 .ev-manage-note { margin: 0 0 10px; color: var(--text-3); font-size: 12px; line-height: 1.6; }
