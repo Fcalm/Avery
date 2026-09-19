@@ -1523,6 +1523,36 @@ body.settings-has-configured-api-key .model-set-scope .set-field:has(input[type=
 .gn-card .switch:not([aria-disabled="true"]):hover { box-shadow: 0 0 0 3px var(--accent-soft); }
 .gn-card .switch[aria-disabled="true"] { opacity: .45; cursor: default; }
 
+/* ------------------------------------------------------------- 设置·浏览器控制
+   原型 avery-settings 的浏览器页：状态 pill（未检测/检测中/已连接/未连接）、
+   归属于小节标题的 bw-hint 说明条、以及破坏性的低强调按钮。 */
+.set-root .gn-card + .gn-card { margin-top: 16px; }
+.set-root .pill {
+  display: inline-flex; height: 26px; flex: none; align-items: center; padding: 0 12px;
+  border-radius: var(--r-pill); font-size: 12.5px; font-weight: 600; white-space: nowrap;
+}
+.set-root .pill.on { background: var(--accent); color: var(--accent-on); }
+.set-root .pill.off { background: var(--surface-2); color: var(--text-3); }
+/* 检测中：标签左侧带一枚旋转的加载圈，与原型 .pill.busy 一致 */
+.set-root .pill.busy { gap: 6px; padding: 0 11px; }
+.set-root .pill.busy i { font-size: 13px; animation: bwSpin .8s linear infinite; }
+@keyframes bwSpin { to { transform: rotate(360deg); } }
+/* bw-hint 紧跟小节标题：与 gn-cap 同底色连成一条完整的带 */
+.set-root .bw-hint {
+  display: flex; align-items: flex-start; gap: 7px;
+  padding: 0 20px 13px; background: var(--surface);
+  font-size: 12.5px; color: var(--text-3); line-height: 1.5;
+}
+.set-root .bw-hint i { flex: none; margin-top: 2px; font-size: 14px; }
+.set-root .quiet-btn:disabled { opacity: .5; cursor: default; }
+.set-root .quiet-btn:disabled:hover { background: var(--surface-2); color: var(--text-2); }
+/* 破坏性低强调按钮（原型 .quiet-btn.danger）：静态红色、悬停淡红底 */
+.set-root .quiet-btn.danger { color: #b4413c; }
+.set-root .quiet-btn.danger:hover { background: rgba(180, 65, 60, .08); color: #b4413c; }
+.set-root .quiet-btn.danger:disabled:hover { background: var(--surface-2); }
+[data-theme="dark"] .set-root .quiet-btn.danger { color: #e0796f; }
+[data-theme="dark"] .set-root .quiet-btn.danger:hover { background: rgba(224, 121, 111, .1); }
+
 /* --------------------------------------------------------------- 个性化
    头像底色挂在 .avatar 本体上：设置页预览与侧栏用户卡共用同一套样式。 */
 .avatar.lg { width: 52px; height: 52px; flex-basis: 52px; font-size: 18px; font-weight: 680; }

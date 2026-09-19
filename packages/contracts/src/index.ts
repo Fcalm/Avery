@@ -30,7 +30,7 @@ export type {
 export { BridgeNamespaces } from './bridge';
 export type { BridgeNamespaceName } from './bridge';
 export type {
-  AgentBrowserRuntimeStatus, AgentConfiguration, AgentModuleConfiguration, AgentObservability, AgentSendRequest, AgentSessionAssistantState, AgentStreamEvent, AgentTraceEvent, BrowserActionState, ConfirmationMode, ReasoningEffort,
+  AgentBrowserRuntimeStatus, AgentConfiguration, AgentModuleConfiguration, AgentObservability, AgentSendRequest, AgentSessionAssistantState, AgentStreamEvent, AgentTraceEvent, BrowserActionState, ConfirmationMode, CronBrowserAccessStatus, ReasoningEffort,
   DesktopAgentBridge, WorkspaceBridge,
 } from './bridge';
 export type {

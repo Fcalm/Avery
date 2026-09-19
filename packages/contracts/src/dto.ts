@@ -147,6 +147,8 @@ export interface SettingsDto {
   accentColor?: 'pine' | 'indigo' | 'plum' | 'amber';
   /** 个性化-外观：简历模板偏好；模板渲染接入前仅记录选择。 */
   resumeTemplate?: 'classic' | 'compact' | 'timeline';
+  /** 浏览器控制-行为：任务结束时是否自动关闭 Avery 自己打开的标签页；真实关闭策略接入前仅记录选择。 */
+  closeTaskTabs?: boolean;
 }
 
 /** 附件导入结果 DTO；只返回虚拟 URI，绝不暴露源文件物理路径。 */

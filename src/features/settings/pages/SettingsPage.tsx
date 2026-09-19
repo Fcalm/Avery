@@ -17,10 +17,11 @@ export const SettingsTabs: Array<{ id: SettingTab; label: string; description: s
   { id: 'general', label: '常规', description: '语言、工作空间、通知与更新的默认行为，改完就生效。' },
   { id: 'persona', label: '个性化', description: '头像、昵称、说话方式和界面外观，都按你的习惯来。' },
   { id: 'api', label: '模型配置', description: '管理模型供应商、默认模型与上下文能力；凭据加密存储在本机。' },
-  { id: 'browser', label: '浏览器设置', description: '选择 Avery 隔离浏览器，或安全连接已登录 BOSS 的个人浏览器。' },
+  { id: 'browser', label: '浏览器控制', description: '连接日常使用的 Chrome 或 Edge，查看连接状态，管理隔离浏览器留下的数据。' },
   { id: 'developer', label: '开发者模式', description: '查看本地日志、Trace 和上下文用量界面。' },
 ];
-const BrowserEngineLabels = { electron: 'Avery 隔离浏览器', chrome: 'Google Chrome', edge: 'Microsoft Edge' } as const;
+/** 浏览器显示名：选择项只保留 Chrome/Edge（隔离浏览器已整体迁移），electron 仅用于展示运行时上报的旧引擎。 */
+const BrowserEngineLabels = { electron: 'Avery 隔离浏览器（兼容）', chrome: 'Google Chrome', edge: 'Microsoft Edge' } as const;
 /** 模型配置侧栏的分组：推荐 = 官方供应商，自定义供应商可删除并改用自定义端点。 */
 const ProviderGroups = ['推荐', '自定义供应商'];
 /** 模型标记：与原型一致，推荐供应商用字母，自定义供应商用加号。 */
@@ -51,7 +52,8 @@ function NormalizeProviderSettings(settings: SettingsDraft): SettingsDraft {
   const contextLength = settings.provider === 'DeepSeek' && contextLimitMode === 'default' && settings.contextLength === '64K' ? '256K' : settings.contextLength;
   const model = settings.provider === 'Z.AI' ? 'glm-5.3-flash' : settings.provider === 'DeepSeek' && (!settings.model.startsWith('deepseek-') || settings.model === 'deepseek-chat' || settings.model === 'deepseek-reasoner') ? 'deepseek-v4-flash' : settings.model;
   const baseUrl = settings.provider === 'Z.AI' ? 'https://open.bigmodel.cn/api/paas/v4' : settings.provider === 'DeepSeek' ? 'https://api.deepseek.com' : settings.baseUrl;
-  const browserEngine = settings.browserEngine === 'electron' || settings.browserEngine === 'chrome' ? settings.browserEngine : 'edge';
+  // 隔离浏览器已整体迁移到 Chrome/Edge：设置里残留的 electron 不再是可选项，草稿统一按 Edge 处理。
+  const browserEngine = settings.browserEngine === 'chrome' ? 'chrome' : 'edge';
   return { ...settings, model, baseUrl, contextLength, contextLimitMode, browserEngine, thinkingEnabled: settings.provider === 'Z.AI' ? true : settings.thinkingEnabled };
 }
 
@@ -250,6 +252,10 @@ function SettingsPage({ onNavigateDeveloper, tab, requestedTab, tabRequestVersio
   useEffect(() => {
     if (tab === 'browser') { void RefreshBrowserRuntime(); void RefreshCronBrowserAccess(); }
   }, [tab]);
+  // 隔离浏览器已整体迁移到 Chrome/Edge：旧设置里的 electron 没有对应选项，进入设置页时静默迁到 Edge。
+  useEffect(() => {
+    if (settings.browserEngine === 'electron') ApplySettings({ browserEngine: 'edge' });
+  }, [settings.browserEngine]);
   useEffect(() => {
     if (tab !== 'general') return;
     let cancelled = false;
@@ -316,7 +322,6 @@ function SettingsPage({ onNavigateDeveloper, tab, requestedTab, tabRequestVersio
     const { apiKey: _apiKey, ...safeDraft } = draft;
     try {
       await saveSettingsNow({ ...safeDraft, apiKey: '' });
-      if (tab === 'browser') await Promise.all([RefreshBrowserRuntime(), RefreshCronBrowserAccess()]);
     } catch (error) {
       ShowNotice(error instanceof Error ? error.message : '设置持久化失败', 'error');
       return false;
@@ -838,50 +843,63 @@ function SettingsPage({ onNavigateDeveloper, tab, requestedTab, tabRequestVersio
       </div>}
     </div>{RenderLeaveDialog()}</div>;
   }
-  const usesPersonalBrowser = (draft.browserEngine ?? 'edge') !== 'electron';
-  const browserSelectionPending = Boolean(browserRuntime && browserRuntime.engine !== (draft.browserEngine ?? 'edge'));
-  if (tab === 'api') return <div className="settings-page is-model-set">{RenderModelConfiguration()}{RenderLeaveDialog()}</div>;
-  return <div className="settings-page"><section className="settings-content"><PageHeader eyebrow="设置" title={current.label} description={current.description} actions={tab === 'developer' ? <Button variant="primary" onClick={() => void SaveSettings()}>保存更改</Button> : undefined} />
-    {tab === 'developer' && <><div className="setting-note module-settings"><b>本地模块</b><p>{moduleConfiguration?.status === 'active' ? `已启用：${moduleConfiguration.directoryName ?? '已选择目录'}。模块仅在启动会话前校验。` : '当前使用官方默认模块。选择本地模块目录前，请确认其来源可信。'}</p><div className="api-actions"><Button disabled={updatingModules} onClick={() => void SelectUserModules()}>{updatingModules ? '处理中…' : '选择本地模块'}</Button><Button variant="danger" disabled={updatingModules || moduleConfiguration?.status !== 'active'} onClick={() => setShowResetModules(true)}>恢复官方默认模块</Button></div></div><Modal
-      open={showResetModules}
-      title="恢复官方默认模块？"
-      onClose={() => setShowResetModules(false)}
-      footer={<>
-        <DialogButton onClick={() => setShowResetModules(false)}>取消</DialogButton>
-        <DialogButton tone="danger" disabled={updatingModules} onClick={() => void ConfirmResetModules()}>确认恢复默认</DialogButton>
-      </>}
-    >
-      当前本地模块配置将被移除，后续新会话将使用内置模块。运行中的助手任务不会被中断。
-    </Modal></>}
-    {tab === 'browser' && <>
-      <div className="settings-panel browser-settings-panel">
-        <FormField label="Agent 使用的浏览器" hint="Chrome 和 Edge 使用轻量连接复用你已打开并登录 BOSS 的浏览器；Avery 不创建独立 Profile，也不读取其他标签页。">
-          <Select
-            value={draft.browserEngine ?? 'edge'}
-            onChange={(value) => UpdateDraft({ browserEngine: value as NonNullable<SettingsDraft['browserEngine']> })}
-            ariaLabel="Agent 使用的浏览器"
-            options={Object.entries(BrowserEngineLabels).map(([value, label]) => ({ value, label }))}
-          />
-        </FormField>
-        <div className={`browser-runtime-bar ${browserRuntime?.running ? 'is-running' : ''} ${browserRuntime?.state === 'unhealthy' ? 'is-unhealthy' : ''} ${browserRuntimeBusy || browserSelectionPending ? 'is-pending' : ''}`}>
-          <div className="browser-runtime-summary">
-            <span className="browser-runtime-icon"><Icon name="browser" size={16} /></span>
-            <span className="browser-runtime-copy">
-              <small className="browser-runtime-label">运行状态</small>
-              <b>{!browserRuntime ? '浏览器状态未知' : browserRuntime.state === 'not_installed' ? `${BrowserEngineLabels[browserRuntime.engine]} 未安装` : browserRuntime.state === 'unhealthy' ? '浏览器连接异常' : browserRuntime.running ? 'Agent 浏览器运行中' : browserRuntime.state === 'ready' ? '浏览器可以附着' : usesPersonalBrowser ? '等待浏览器连接' : 'Agent 浏览器已就绪'}</b>
-              <small className="browser-runtime-detail" title={browserRuntime?.message ?? (usesPersonalBrowser ? '使用受限轻量连接，只操作专用 BOSS 任务标签页' : '招聘网页运行在独立的受控浏览器进程中')}>{browserRuntimeBusy && usesPersonalBrowser ? `正在请求 ${BrowserEngineLabels[draft.browserEngine ?? 'edge']} 授权，请切换到浏览器并点击“允许”` : browserRuntime?.message ?? browserRuntime?.currentUrl ?? (usesPersonalBrowser ? `${BrowserEngineLabels[browserRuntime?.engine ?? draft.browserEngine ?? 'edge']} · 等待连接已登录的 BOSS 页面` : 'Avery 隔离浏览器 · 专用 Profile')}</small>
-            </span>
-          </div>
-          <div><Button variant="quiet" disabled={browserRuntimeBusy || browserSelectionPending} onClick={() => void RefreshBrowserRuntime(usesPersonalBrowser)}>{browserSelectionPending ? '请先保存' : browserRuntimeBusy ? usesPersonalBrowser ? '连接中…' : '刷新中…' : usesPersonalBrowser ? '检测并连接' : '刷新状态'}</Button></div>
+  if (tab === 'browser') {
+    // 可选项只剩 Chrome/Edge；electron 只可能短暂存在于迁移 effect 生效前，这里统一按 Edge 兜底。
+    const engine = settings.browserEngine === 'chrome' ? 'chrome' : 'edge';
+    const engineLabel = BrowserEngineLabels[engine];
+    // 未连接时告诉用户如何建立连接（原型 statusDesc 的 need 文案，按扩展模型改写）。
+    const needCopy = `在 ${engineLabel} 里加载 Avery Browser 扩展，再点击“检测状态”；Avery 只操作自己创建的任务标签页，不读取其他个人页面，关闭任务也不会关闭浏览器。`;
+    let statusCopy: string;
+    let pill: 'busy' | 'on' | 'off' | 'undetected';
+    if (browserRuntimeBusy) { statusCopy = `正在连接 ${engineLabel}，完成扩展配对前不会操作任何页面。`; pill = 'busy'; }
+    else if (!browserRuntime) { statusCopy = `还没有检测过。${needCopy}`; pill = 'undetected'; }
+    else if (browserRuntime.running) { statusCopy = `已连接。${browserRuntime.message || browserRuntime.currentUrl || `已经连上 ${BrowserEngineLabels[browserRuntime.engine]}，可以接管任务标签页。`}`; pill = 'on'; }
+    else if (browserRuntime.state === 'not_installed') { statusCopy = `没有连上。${BrowserEngineLabels[browserRuntime.engine]} 未安装或无法启动。`; pill = 'off'; }
+    else if (browserRuntime.state === 'unhealthy') { statusCopy = `连接异常。${browserRuntime.message || '可以再检测一次。'}`; pill = 'off'; }
+    else { statusCopy = `还没有连接。${browserRuntime.message || needCopy}`; pill = 'off'; }
+    const pillClass = pill === 'on' ? 'on' : pill === 'busy' ? 'busy' : 'off';
+    const pillText = pill === 'busy' ? '检测中' : pill === 'on' ? '已连接' : pill === 'undetected' ? '未检测' : '未连接';
+    return <div className="settings-page is-set-page"><div className="set-root">
+      <div className="set-head"><div><h1>浏览器控制</h1><p>连接日常使用的 Chrome 或 Edge，查看连接状态，管理隔离浏览器留下的数据。</p></div></div>
+      <div className="gn-card">
+        <div className="gn-cap">浏览器</div>
+        <div className="gn-row">
+          <div className="gn-txt"><span className="gn-t">使用的浏览器</span><span className="gn-d">执行网页任务时打开哪一个，切换后立刻生效。</span></div>
+          <div className="gn-ctl"><Select value={engine} onChange={(value) => {
+            // 切换引擎后旧状态不再代表当前选择：作废在途刷新并把状态复位为未检测。
+            browserRuntimeRequest.current += 1;
+            ApplySettings({ browserEngine: value as 'chrome' | 'edge' });
+            setBrowserRuntime(null);
+          }} ariaLabel="使用的浏览器" options={(['chrome', 'edge'] as const).map((value) => ({ value, label: BrowserEngineLabels[value] }))} /></div>
         </div>
-        {usesPersonalBrowser
-          ? <div className="setting-note browser-access-note is-personal"><small>个人浏览器</small><b>轻量连接现有登录状态</b><p>请先在所选浏览器中开启仅限本机的远程调试，并打开、登录 BOSS 直聘。首次连接时浏览器会弹出远程调试授权，请点击“允许”。Avery 会新建并只操作一个 BOSS 任务标签页，不会显示或切换到其他个人页面；关闭任务也不会关闭你的浏览器。</p></div>
-          : <div className="setting-note browser-access-note is-isolated"><small>本地隔离</small><b>隔离浏览器登录数据</b><p>Cookie、站点存储和登录状态保存在 Avery 专用 Profile 中；清除后不会影响你的个人浏览器数据。</p><Button variant="danger" disabled={browserRuntimeBusy || !browserRuntime?.profileExists} onClick={() => setShowClearBrowserProfile(true)}>清除登录数据</Button></div>}
-        <div className="setting-note browser-access-note is-personal"><small>定时任务授权</small><b>授权随任务创建确认保存</b><p>创建投递场景定时任务时，确认弹窗会同时授予该任务个人浏览器权限，无需在设置中再次配置。浏览器未连接或未登录 BOSS 时，任务仍会暂停并等待你处理。</p><div className="model-select-row"><Select value={cronBrowserTaskId} onChange={setCronBrowserTaskId} ariaLabel="查看投递定时任务授权" options={cronBrowserAccess?.tasks.length ? cronBrowserAccess.tasks.map((task) => ({ value: task.id, label: `${task.browserAuthorized ? '已授权' : '未授权'} · ${task.title}` })) : [{ value: '', label: '暂无活动的投递定时任务' }]} /></div>{cronBrowserAccess?.tasks.find((task) => task.id === cronBrowserTaskId)?.browserAuthorized && <div className="api-actions"><Button variant="danger" disabled={browserRuntimeBusy} onClick={() => void RevokeCronBrowserAccessHandler()}>撤销该任务授权</Button></div>}</div>
-        <div className="api-actions"><Button variant="primary" onClick={() => void SaveSettings()}>保存浏览器设置</Button></div>
+        <div className="gn-row">
+          <div className="gn-txt"><span className="gn-t">连接状态</span><span className="gn-d">{statusCopy}</span></div>
+          <div className="gn-ctl">
+            <span className={`pill ${pillClass}`}>{pill === 'busy' && <Icon name="loading" size={13} />}{pillText}</span>
+            <button className="quiet-btn" type="button" disabled={browserRuntimeBusy} onClick={() => void RefreshBrowserRuntime(true)}><Icon name="plugs-connected" size={14} />检测状态</button>
+          </div>
+        </div>
+        <div className="gn-cap">隔离浏览器数据</div>
+        <div className="bw-hint"><Icon name="info" size={14} /><span>下面的清理只作用于 Avery 隔离浏览器留下的数据，和当前选用的浏览器没有关系。</span></div>
+        <div className="gn-row">
+          <div className="gn-txt"><span className="gn-t">登录数据</span><span className="gn-d">Cookie、站点存储和登录状态保存在 Avery 专用 Profile 中；清除后不会影响你的个人浏览器数据。</span></div>
+          <div className="gn-ctl"><button className="quiet-btn danger" type="button" disabled={browserRuntimeBusy || !browserRuntime?.profileExists} onClick={() => setShowClearBrowserProfile(true)}><Icon name="trash-simple" size={14} />清除登录数据</button></div>
+        </div>
+        <div className="gn-cap">行为</div>
+        <RenderGeneralSwitch label="任务结束后自动关闭标签页" description="Avery 自己打开的标签页在任务结束时关掉，你自己开的窗口不动；真实关闭策略暂未接入，先记录你的选择。" checked={settings.closeTaskTabs ?? true} onToggle={() => ApplySettings({ closeTaskTabs: !(settings.closeTaskTabs ?? true) })} />
+      </div>
+      <div className="gn-card">
+        <div className="gn-cap">定时任务授权</div>
+        <div className="gn-row stack">
+          <div className="gn-txt"><span className="gn-t">投递定时任务的浏览器授权</span><span className="gn-d">创建投递场景定时任务时，确认弹窗会同时授予该任务个人浏览器权限。到期后 Avery 可在后台启动浏览器并创建任务标签页；BOSS 或企业官网登录失效、验证码或站点风控仍会暂停任务。</span></div>
+          <div className="gn-ctl">
+            <Select value={cronBrowserTaskId} onChange={setCronBrowserTaskId} ariaLabel="查看投递定时任务授权" options={cronBrowserAccess?.tasks.length ? cronBrowserAccess.tasks.map((task) => ({ value: task.id, label: `${task.browserAuthorized ? '已授权' : '未授权'} · ${task.title}` })) : [{ value: '', label: '暂无活动的投递定时任务' }]} />
+            {cronBrowserAccess?.tasks.find((task) => task.id === cronBrowserTaskId)?.browserAuthorized && <button className="quiet-btn danger" type="button" disabled={browserRuntimeBusy} onClick={() => void RevokeCronBrowserAccessHandler()}>撤销该任务授权</button>}
+          </div>
+        </div>
       </div>
       <Modal
-        open={!usesPersonalBrowser && showClearBrowserProfile}
+        open={showClearBrowserProfile}
         title="清除隔离浏览器登录数据"
         onClose={() => setShowClearBrowserProfile(false)}
         variant="dialog"
@@ -904,7 +922,21 @@ function SettingsPage({ onNavigateDeveloper, tab, requestedTab, tabRequestVersio
           </div>
         </div>
       </Modal>
-    </>}
+    </div></div>;
+  }
+  if (tab === 'api') return <div className="settings-page is-model-set">{RenderModelConfiguration()}{RenderLeaveDialog()}</div>;
+  return <div className="settings-page"><section className="settings-content"><PageHeader eyebrow="设置" title={current.label} description={current.description} actions={tab === 'developer' ? <Button variant="primary" onClick={() => void SaveSettings()}>保存更改</Button> : undefined} />
+    {tab === 'developer' && <><div className="setting-note module-settings"><b>本地模块</b><p>{moduleConfiguration?.status === 'active' ? `已启用：${moduleConfiguration.directoryName ?? '已选择目录'}。模块仅在启动会话前校验。` : '当前使用官方默认模块。选择本地模块目录前，请确认其来源可信。'}</p><div className="api-actions"><Button disabled={updatingModules} onClick={() => void SelectUserModules()}>{updatingModules ? '处理中…' : '选择本地模块'}</Button><Button variant="danger" disabled={updatingModules || moduleConfiguration?.status !== 'active'} onClick={() => setShowResetModules(true)}>恢复官方默认模块</Button></div></div><Modal
+      open={showResetModules}
+      title="恢复官方默认模块？"
+      onClose={() => setShowResetModules(false)}
+      footer={<>
+        <DialogButton onClick={() => setShowResetModules(false)}>取消</DialogButton>
+        <DialogButton tone="danger" disabled={updatingModules} onClick={() => void ConfirmResetModules()}>确认恢复默认</DialogButton>
+      </>}
+    >
+      当前本地模块配置将被移除，后续新会话将使用内置模块。运行中的助手任务不会被中断。
+    </Modal></>}
     {tab === 'developer' && <div className="settings-panel developer-settings"><label className="switch-line"><span><b>启用开发者模式</b><small>开启后在侧边栏显示本地开发者工具。</small></span><input type="checkbox" checked={draft.developerMode} onChange={(event) => UpdateDraft({ developerMode: event.target.checked })} /></label><FormField label="Trace 保留数量" hint="默认 50，最多保留 100 条本地 Trace。"><input type="number" min="1" max="100" value={draft.traceRetention} aria-invalid={Boolean(fieldErrors.traceRetention)} aria-describedby={fieldErrors.traceRetention ? 'trace-retention-error' : undefined} onChange={(event) => UpdateDraft({ traceRetention: Number(event.target.value) })} />{fieldErrors.traceRetention && <small className="field-error" id="trace-retention-error" role="alert">{fieldErrors.traceRetention}</small>}</FormField><FormField label="自动压缩阈值"><div className="input-suffix"><input type="number" min="1" max="80" value={draft.compressionThreshold} aria-invalid={Boolean(fieldErrors.compressionThreshold)} aria-describedby={fieldErrors.compressionThreshold ? 'compression-threshold-error' : undefined} onChange={(event) => UpdateDraft({ compressionThreshold: Number(event.target.value) })} /><span>%</span></div>{fieldErrors.compressionThreshold && <small className="field-error" id="compression-threshold-error" role="alert">{fieldErrors.compressionThreshold}</small>}<small>按 System、Tools 和 Messages 的完整输入计算；只能配置为 1–80 的整数。</small></FormField><div className="setting-note"><b>Trace 隐私提示</b><p>真实 Trace 可能包含简历、JD 与附件片段，仅保存在本机；关闭开发者模式后不再新增 Trace。</p></div><div className="danger-zone"><div><b>清空 Trace</b><p>删除所有本地 Trace，不可撤销。</p></div><Button variant="danger" onClick={() => setShowClear(true)}>一键清空</Button></div>{draft.developerMode && <Button onClick={onNavigateDeveloper}>打开开发者工具</Button>}</div>}
   </section>{RenderLeaveDialog()}<Modal
     open={showClear}

@@ -117,3 +117,6 @@
 .ph-eye::before { content: "\e220"; }
 .ph-eye-slash::before { content: "\e224"; }
 .ph-lock-simple::before { content: "\e308"; }
+/* 浏览器控制（原型一比一）：检测状态按钮与清除登录数据；码点经官方 2.1.1 style.css 比对确认 */
+.ph-plugs-connected::before { content: "\eb5a"; }
+.ph-trash-simple::before { content: "\e4a8"; }

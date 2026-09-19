@@ -34,6 +34,8 @@ export const DefaultSettings: SettingsDraft = {
   chatFontSize: 'md',
   accentColor: 'pine',
   resumeTemplate: 'classic',
+  // 浏览器控制-行为默认值与原型 bstate.closeTabs 一致：任务结束自动关闭 Avery 自己的标签页。
+  closeTaskTabs: true,
   notifyOnComplete: true,
   notifySound: true,
   autoUpdate: true,
