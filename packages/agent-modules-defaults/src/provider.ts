@@ -420,7 +420,14 @@ export function CreateProviderModule(ports: AgentDefaultPorts): ModelProviderMod
             ? { thinking: { type: 'enabled' }, reasoning_effort: ResolveDeepSeekReasoningEffort(request.reasoningEffort) }
             : { thinking: { type: 'disabled' } }
           : {};
-      const body = SerializeCompletionBody({ model: requestModel, stream: true, ...thinking, ...(selected.provider === 'DeepSeek' ? { stream_options: { include_usage: true } } : {}), messages: providerMessages, tools: request.tools.map((tool) => tool.definition), tool_choice: 'auto' }, selected.provider === 'DeepSeek');
+      const body = SerializeCompletionBody({
+        model: requestModel, stream: true, ...thinking,
+        ...(selected.provider === 'DeepSeek' ? { stream_options: { include_usage: true } } : {}),
+        // 严格 JSON 输出仅 DeepSeek 通道发送 API 参数；调用方负责提示词侧的 JSON 样例约束。
+        ...(selected.provider === 'DeepSeek' && request.responseFormat ? { response_format: request.responseFormat } : {}),
+        ...(request.maxTokens ? { max_tokens: request.maxTokens } : {}),
+        messages: providerMessages, tools: request.tools.map((tool) => tool.definition), tool_choice: 'auto',
+      }, selected.provider === 'DeepSeek');
       request.onRequest?.({ kind: 'completion', model: requestModel, messages: providerMessages, toolCount: request.tools.length });
       const response = await providerFetch(`${selected.baseUrl}/chat/completions`, {
         method: 'POST',
