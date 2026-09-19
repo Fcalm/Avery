@@ -1287,6 +1287,10 @@ button { background: none; border: 0; }
 /* 页面本体自带原型 .set 的留白与最大宽度，设置外壳不再追加内边距。 */
 .settings-page.is-model-set, .settings-page.is-set-page { padding: 0; }
 .set-root { max-width: 1120px; margin: 0 auto; padding: 34px 30px 46px; }
+/* 常规/个性化/浏览器控制的内容度量：原型 .gn 让标题与卡片共用 860px（.gn .set-head{max-width:860px}），
+   只有模型配置才用满 1120。860 的卡片放在 1120 容器里会整体偏左，
+   故这三个页面把容器收窄为 860+左右内边距，靠 set-root 自身的 margin:auto 居中。 */
+.settings-page.is-set-page .set-root { max-width: 920px; }
 
 /* 设置页头部（模型配置与常规/个性化共用）：标题行底部对齐，右侧留给页面级操作 */
 .set-head { display: flex; align-items: flex-end; gap: 18px; }
