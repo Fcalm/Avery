@@ -4,19 +4,18 @@ import { useUiStore } from '../../../app/UiStore';
 import { useSettingsStore } from '../../../features/settings/api/settingsQueries';
 import { ClearAgentObservability, ClearBrowserProfile, ConfigureAgent, GetAgentModuleConfiguration, GetAgentStatus, GetBrowserRuntimeStatus, GetCronBrowserAccess, GetDeepSeekModels, GetProviderCatalog, IsDesktopAgentAvailable, ResetAgentModules, RevokeCronBrowserAccess, SelectAgentModuleDirectory, SetAgentTraceRetention, TestAgentConnection } from '../../../features/assistant/api/agentQueries';
 import { ApplyModelRuntime, CreateCatalogModel, DefaultContextWindow, DefaultMaxOutput, FindCatalogModel, FindCatalogProvider, FormatContextWindow, IsValidContextWindow, IsValidMaxOutput, LoadModelCatalog, MergeBackendProviders, MergeProviderModels, ModelApiFormats, SaveModelCatalog, type ModelApiFormat, type ModelCatalog, type ModelCatalogModel, type ModelCatalogProvider } from '../api/modelCatalog';
-import { CreateWorkspaceBackup, MigrateWorkspace } from '../../../features/workspace/api/workspaceActions';
+import { MigrateWorkspace } from '../../../features/workspace/api/workspaceActions';
 import { WORKSPACE_QUERY_KEY } from '../../../features/workspace/api/workspaceData';
 import { Button, DialogButton, FormField, Modal, PageHeader, Select } from '../../../shared/components/UI';
 import { Icon } from '../../../shared/components/Icon';
 import type { SettingsDraft } from '../../../types/domain';
 import type { AgentBrowserRuntimeStatus, AgentModuleConfiguration, CronBrowserAccessStatus } from '@avery/contracts';
 
-export type SettingTab = 'general' | 'persona' | 'workspace' | 'api' | 'browser' | 'developer';
+export type SettingTab = 'general' | 'persona' | 'api' | 'browser' | 'developer';
 type FieldErrors = Partial<Record<'traceRetention' | 'compressionThreshold', string>>;
 export const SettingsTabs: Array<{ id: SettingTab; label: string; description: string }> = [
   { id: 'general', label: '常规', description: '管理语言、启动页、通知与系统的默认行为。' },
   { id: 'persona', label: '个性化', description: '头像、昵称、说话方式和界面外观，都按你的习惯来。' },
-  { id: 'workspace', label: '工作空间', description: '管理档案、简历版本和导出文件的存放目录。' },
   { id: 'api', label: '模型配置', description: '管理模型供应商、默认模型与上下文能力；凭据加密存储在本机。' },
   { id: 'browser', label: '浏览器设置', description: '选择 Avery 隔离浏览器，或安全连接已登录 BOSS 的个人浏览器。' },
   { id: 'developer', label: '开发者模式', description: '查看本地日志、Trace 和上下文用量界面。' },
@@ -362,14 +361,6 @@ function SettingsPage({ onNavigateDeveloper, tab, requestedTab, tabRequestVersio
       UpdateDraft({ avatarImage: await CreateAvatarDataUrl(file) });
     } catch (error) {
       ShowNotice(error instanceof Error ? error.message : '头像处理失败', 'error');
-    }
-  }
-  async function CreateWorkspaceBackupHandler() {
-    try {
-      await CreateWorkspaceBackup();
-      ShowNotice('工作空间备份已创建，系统将保留最近 7 份');
-    } catch (error) {
-      ShowNotice(error instanceof Error ? error.message : '创建工作空间备份失败');
     }
   }
   async function MigrateWorkspaceHandler() {
@@ -834,7 +825,6 @@ function SettingsPage({ onNavigateDeveloper, tab, requestedTab, tabRequestVersio
         <div className="gn-ctl"><Select value={draft.resumeTemplate ?? 'classic'} onChange={(value) => UpdateDraft({ resumeTemplate: value as NonNullable<SettingsDraft['resumeTemplate']> })} ariaLabel="简历模板" options={ResumeTemplates.map((item) => ({ value: item.key, label: item.label }))} /></div>
       </div>
     </div></div>}
-    {tab === 'workspace' && <div className="settings-panel"><FormField label="当前工作空间"><input value={draft.workspaceName ?? ''} readOnly disabled /><small>工作空间目录由本地服务管理；迁移时通过下方按钮选择目标空目录。</small></FormField><div className="setting-note"><b>迁移说明</b><p>迁移会复制数据库、档案、附件、导出和备份文件，校验后切换到目标空目录；原目录不会删除。Agent 运行中不可迁移。</p><Button onClick={() => setShowMigrate(true)}>迁移工作空间</Button></div><div className="setting-note"><b>本地备份</b><p>立即备份数据库与档案文件；系统仅保留最近 7 份每日备份。</p><Button onClick={() => void CreateWorkspaceBackupHandler()}>立即创建备份</Button></div></div>}
     {tab === 'browser' && <>
       <div className="settings-panel browser-settings-panel">
         <FormField label="Agent 使用的浏览器" hint="Chrome 和 Edge 使用轻量连接复用你已打开并登录 BOSS 的浏览器；Avery 不创建独立 Profile，也不读取其他标签页。">

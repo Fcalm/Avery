@@ -477,7 +477,7 @@ function AppShell({ page, onNavigate, onRestartOnboarding, settingsTab, onReques
             <nav className="nav" ref={navRef} role="tablist" aria-label="设置分类">
               <div className="nav-ind" ref={navIndicatorRef} aria-hidden="true" />
               {SettingsTabs.map((item) => <button key={item.id} className={`nav-item ${settingsTab === item.id ? 'is-active' : ''}`} type="button" role="tab" aria-selected={settingsTab === item.id} title={item.label} onClick={() => onRequestSettingsTab(item.id)}>
-                <Icon name={item.id === 'general' ? 'settings' : item.id === 'persona' ? 'account' : item.id === 'workspace' ? 'workspace' : item.id === 'api' ? 'sliders' : item.id === 'browser' ? 'browser' : 'developer-mode'} size={17} />
+                <Icon name={item.id === 'general' ? 'settings' : item.id === 'persona' ? 'account' : item.id === 'api' ? 'sliders' : item.id === 'browser' ? 'browser' : 'developer-mode'} size={17} />
                 <span>{item.label}</span>
               </button>)}
             </nav>
