@@ -29,6 +29,63 @@ const FragmentLabels: Record<string, string> = {
   'user/preferences': '用户偏好边界',
 };
 
+type PromptDiffKind = 'unchanged' | 'removed' | 'added';
+interface PromptDiffLine { content: string; kind: PromptDiffKind; }
+
+/**
+ * 以生产片段原文为基线生成稳定的行级差异（LCS）。删除行与新增行分别保留，便于审核替换内容的实际变化。
+ * 仅在用户展开对照时运行；矩阵规模设上限，异常长 Prompt 退化为全量删增，避免阻塞渲染进程。
+ */
+function CreatePromptLineDiff(productionPrompt: string, candidatePrompt: string): PromptDiffLine[] {
+  const productionLines = productionPrompt.split('\n');
+  const candidateLines = candidatePrompt.split('\n');
+  const matrixCells = (productionLines.length + 1) * (candidateLines.length + 1);
+  if (matrixCells > 2_000_000) {
+    return [
+      ...productionLines.map((content) => ({ content, kind: 'removed' as const })),
+      ...candidateLines.map((content) => ({ content, kind: 'added' as const })),
+    ];
+  }
+
+  const width = candidateLines.length + 1;
+  const matrix = new Uint32Array(matrixCells);
+  for (let productionIndex = productionLines.length - 1; productionIndex >= 0; productionIndex -= 1) {
+    for (let candidateIndex = candidateLines.length - 1; candidateIndex >= 0; candidateIndex -= 1) {
+      const current = productionIndex * width + candidateIndex;
+      matrix[current] = productionLines[productionIndex] === candidateLines[candidateIndex]
+        ? matrix[(productionIndex + 1) * width + candidateIndex + 1] + 1
+        : Math.max(matrix[(productionIndex + 1) * width + candidateIndex], matrix[productionIndex * width + candidateIndex + 1]);
+    }
+  }
+
+  const lines: PromptDiffLine[] = [];
+  let productionIndex = 0;
+  let candidateIndex = 0;
+  while (productionIndex < productionLines.length || candidateIndex < candidateLines.length) {
+    if (productionIndex < productionLines.length && candidateIndex < candidateLines.length && productionLines[productionIndex] === candidateLines[candidateIndex]) {
+      lines.push({ content: productionLines[productionIndex], kind: 'unchanged' });
+      productionIndex += 1;
+      candidateIndex += 1;
+    } else if (candidateIndex >= candidateLines.length || (productionIndex < productionLines.length && matrix[(productionIndex + 1) * width + candidateIndex] >= matrix[productionIndex * width + candidateIndex + 1])) {
+      lines.push({ content: productionLines[productionIndex], kind: 'removed' });
+      productionIndex += 1;
+    } else {
+      lines.push({ content: candidateLines[candidateIndex], kind: 'added' });
+      candidateIndex += 1;
+    }
+  }
+  return lines;
+}
+
+/** 对照视图只渲染相对生产片段有变化的行：红底为删除、绿底为新增；完全一致（含无原文）时退回原文或占位展示。 */
+function PromptDiffPreview({ productionPrompt, candidatePrompt }: { productionPrompt: string; candidatePrompt: string }) {
+  if (candidatePrompt === productionPrompt) return <>{productionPrompt || '（生产提示词里没有这个片段的原文）'}</>;
+  const changedLines = CreatePromptLineDiff(productionPrompt, candidatePrompt).filter((line) => line.kind !== 'unchanged');
+  return <>{changedLines.length
+    ? changedLines.map((line, index) => <span className={`prompt-diff-line is-${line.kind}`} key={`${line.kind}-${index}-${line.content}`}>{line.content || ' '}</span>)
+    : <span className="prompt-diff-empty">与生产提示词一致</span>}</>;
+}
+
 /** 结果中的结构化数据使用键值视图，避免把 JSON 源码和引号暴露给阅读者。 */
 function EvaluationValue({ value }: { value: unknown }) {
   if (value === null || value === undefined) return <span className="ev-kv-empty">无</span>;
@@ -730,7 +787,7 @@ export function EvaluationConsole() {
                   </label>
                   <details className="dw-base">
                     <summary><Icon name="eye" size={13} />对照生产提示词</summary>
-                    <pre>{base || '（生产提示词里没有这个片段的原文）'}</pre>
+                    <pre><PromptDiffPreview productionPrompt={base} candidatePrompt={content} /></pre>
                   </details>
                 </section>;
               }) : <p className="ev-drawer-note">这个版本没有替换任何片段，会完整使用生产提示词。</p>}
