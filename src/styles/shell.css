@@ -1480,11 +1480,12 @@ body.settings-has-configured-api-key .model-set-scope .set-field:has(input[type=
 /* ------------------------------------------------------------- 设置·常规
    原型 avery-settings 的 gn-card：分组条 + 行列表，左文案右控件，
    行间只用一根发丝线分隔；开关与低强调按钮沿用模型弹窗同款视觉。
-   页面外壳复用模型配置的 set-root/set-head 留白，卡片按用户要求去掉描线框。 */
+   页面外壳复用模型配置的 set-root/set-head 留白；卡片描边保留，
+   此前用户指的「最外层描线框」是旧版 settings-panel 套在卡片外的另一层框，已随外壳重构移除。 */
 .gn-card {
   max-width: 860px; margin-top: 20px; overflow: hidden;
-  border-radius: var(--r-card); background: var(--raised);
-  transition: background-color .3s var(--ease);
+  border: 1px solid var(--border); border-radius: var(--r-card); background: var(--raised);
+  transition: background-color .3s var(--ease), border-color .3s var(--ease);
 }
 .gn-cap {
   padding: 18px 20px 7px; background: var(--surface);
