@@ -1083,8 +1083,7 @@ select:focus, select:focus-visible,
   background: var(--color-surface-card);
   box-shadow: none;
 }
-.developer-console,
-.evaluation-console { min-height: 0; flex: 1 1 auto; }
+.developer-console { min-height: 0; flex: 1 1 auto; }
 .developer-console { font-family: var(--font-sans); }
 .developer-console :is(button, input, select, textarea, code, time, pre, b, small, span, p, h1, h2, h3, h4, h5, h6, label) { font-family: var(--font-sans); }
 .log-table > div {
@@ -1099,7 +1098,7 @@ select:focus, select:focus-visible,
 .developer-console-actions .button-danger { color: var(--color-surface-card); }
 
 /* 开发者页不再由外层页面滚动；运行日志与评估视图各自在内容区内按需滚动。 */
-.page-container:has(.developer-page) { overflow: hidden; }
+.page-container:has(.developer-page), .page-container:has(.evaluation-console) { overflow: hidden; }
 .developer-page.standard-page { height: calc(100% - var(--space-2)); min-height: 0; }
 
 /* Todo 缩略条和展开卡片共享同一内容表面，仅通过信息密度区分层级。
@@ -1535,70 +1534,6 @@ select:focus, select:focus-visible,
   background: var(--color-control-light);
 }
 
-/* 非对话页不再使用顶层标头，开发者二级切换归入其内容区。 */
-.developer-page-view-switcher {
-  display: inline-flex;
-  margin-bottom: var(--space-3);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-control);
-  padding: 2px;
-  background: var(--color-surface-card);
-}
-.developer-page-view-switcher button {
-  display: inline-flex;
-  min-height: 28px;
-  align-items: center;
-  gap: var(--space-1);
-  border: 0;
-  border-radius: var(--radius-control);
-  padding: 0 var(--space-2);
-  color: var(--color-text-primary);
-  background: transparent;
-  font: inherit;
-  font-size: var(--text-meta);
-}
-.developer-page-view-switcher button:hover,
-.developer-page-view-switcher button:focus-visible,
-.developer-page-view-switcher button[aria-selected='true'] {
-  outline: none;
-  background: var(--color-control-light);
-}
-
-/* 岗位库式页面骨架：概览不入卡，实际工作区使用独立的白色内容卡片。 */
-.developer-page.standard-page {
-  gap: var(--space-5);
-}
-
-.developer-reference-stats { grid-template-columns: repeat(3, minmax(86px, 1fr)); }
-
-.developer-page.standard-page { gap: var(--space-5); }
-.developer-page-view-switcher { margin: 0; border: 0; padding: 0; background: transparent; }
-.developer-page-view-switcher button {
-  min-height: 36px;
-  border: 1px solid var(--color-border);
-  color: var(--color-text-secondary);
-  background: var(--color-surface-card);
-}
-.developer-page-view-switcher button + button { margin-left: var(--space-2); }
-.developer-page-view-switcher button:hover,
-.developer-page-view-switcher button:focus-visible,
-.developer-page-view-switcher button[aria-selected='true'] {
-  border-color: var(--color-tag-surface);
-  color: var(--color-tag-text);
-  background: var(--color-tag-surface);
-}
-.developer-page .evaluation-console { height: auto; }
-
-@media (max-width: 619px){
-  .developer-page.standard-page { gap: var(--space-4); }
-  
-  
-  
-  
-  
-  
-}
-
 /* 下拉菜单统一保留选项间距，并为普通与已选项提供可辨识的悬停反馈。 */
 .custom-select-menu,
 .popup-menu,
@@ -1772,8 +1707,8 @@ select:focus, select:focus-visible,
 
 /* ============================================================================
    评估视图（原型 avery-developer.html 一比一移植，类名加 ev- 前缀）。
-   侧栏是"评测记录"（配置宿主），右侧是配置栏 | 结果区两栏；对比视图独占一列。
-   评测轨迹界面按范围排除：只保留题目卡片内的折叠轨迹列表。
+   "评测记录"列表属于开发者页的应用侧栏（shell.css 的侧栏原语），这里只承载
+   配置栏 | 结果区两栏与对比视图；评测轨迹界面按范围排除，只保留题目内折叠轨迹。
    ========================================================================== */
 .evaluation-console {
   display: flex; height: 100%; min-height: 0; overflow: hidden;
@@ -1781,37 +1716,15 @@ select:focus, select:focus-visible,
 }
 .evaluation-console :is(button, input, select, textarea, code, time, pre, b, small, span, p, h1, h2, h3, h4, label) { font-family: var(--font-sans); }
 
-/* 侧栏：评测记录按状态分组，行样式与对话列表同构 */
-.ev-rail { flex: none; display: flex; flex-direction: column; gap: 8px; width: 268px; min-height: 0; padding: 10px 8px 8px; border-right: 1px solid var(--border); background: var(--surface); }
-.ev-rail-head { display: flex; flex: none; align-items: center; justify-content: space-between; gap: 8px; padding: 2px 4px; }
-.ev-rail-title { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; color: var(--text); }
-.ev-rail-count { display: grid; min-width: 18px; height: 18px; place-items: center; border-radius: var(--r-pill); padding: 0 5px; background: var(--surface-2); color: var(--text-2); font-family: var(--font-data); font-size: 11px; font-weight: 600; }
-.ev-rail-head .button { min-height: 27px; padding: 0 9px; font-size: 12px; }
-.ev-rail-search { display: flex; flex: none; align-items: center; gap: 7px; border: 1px solid var(--border); border-radius: var(--r-control); padding: 5px 9px; background: var(--raised); color: var(--text-3); }
-.ev-rail-search input { flex: 1; min-width: 0; border: 0; background: transparent; color: var(--text); font-size: 12.5px; }
-.ev-rail-search input:focus { outline: 0; }
-.ev-rail-search input::placeholder { color: var(--text-3); }
-.ev-rail-list { flex: 1; min-height: 0; overflow-y: auto; padding: 0 2px 4px; }
-.ev-rail-group { padding: 12px 10px 5px; color: var(--text-3); font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; }
-.ev-rail-group:first-child { padding-top: 4px; }
-.ev-rail-item { position: relative; display: flex; width: 100%; align-items: center; gap: 10px; border: 0; border-radius: 9px; padding: 8px 10px; background: transparent; color: var(--text-2); text-align: left; transition: background-color .18s var(--ease), color .18s var(--ease); }
-.ev-rail-item:hover, .ev-rail-item.active { background: var(--surface-2); }
-.ev-rail-item.active::before { content: ""; position: absolute; left: 0; top: 50%; width: 2px; height: 18px; border-radius: 2px; background: var(--accent); transform: translateY(-50%); }
-.ev-rail-item-body { min-width: 0; flex: 1; display: grid; gap: 1px; }
-.ev-rail-item-title { overflow: hidden; color: var(--text); font-size: 13px; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
-.ev-rail-item-meta { overflow: hidden; color: var(--text-3); font-size: 11.5px; text-overflow: ellipsis; white-space: nowrap; }
+/* 状态点：应用侧栏的"评测记录"行与结果区共用 */
 .ev-dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--border-2); }
 .ev-dot.is-done { background: var(--accent); }
 .ev-dot.is-live { background: var(--accent); animation: evPulse 1.6s var(--ease) infinite; }
 .ev-dot.is-stop { background: var(--text-3); }
 @keyframes evPulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: .45; transform: scale(.82); } }
-.ev-rail-empty { padding: 10px; color: var(--text-3); font-size: 12px; line-height: 1.5; }
 
 /* 主区：结果 / 对比两个视图的骨架 */
 .eval-main { display: flex; flex: 1; flex-direction: column; min-width: 0; min-height: 0; }
-.eval-tabs { display: inline-flex; flex: none; gap: 2px; align-self: flex-start; margin: 10px 14px 0; border: 1px solid var(--border); border-radius: var(--r-control); padding: 3px; background: var(--surface); }
-.eval-tabs button { display: inline-flex; align-items: center; gap: 6px; border: 0; border-radius: calc(var(--r-control) - 3px); padding: 5px 12px; background: transparent; color: var(--text-2); font-size: 12.5px; font-weight: 550; }
-.eval-tabs button.selected { color: var(--text); background: var(--raised); box-shadow: var(--shadow); }
 .eval-split { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(380px, 4fr) minmax(0, 6fr); }
 
 /* 空状态 */
@@ -1823,9 +1736,9 @@ select:focus, select:focus-visible,
 /* 配置栏：标题卡 + 配置分组；两栏各自滚动，长结果列表不会把开始按钮推出视野 */
 .eval-config { min-height: 0; overflow-y: auto; overflow-x: hidden; padding: 14px; border-right: 1px solid var(--border); background: var(--surface); }
 .eval-results { min-height: 0; overflow-y: auto; overflow-x: hidden; padding: 16px 18px 30px; }
-.eval-config::-webkit-scrollbar, .eval-results::-webkit-scrollbar, .ev-rail-list::-webkit-scrollbar { width: 10px; }
-.eval-config::-webkit-scrollbar-thumb, .eval-results::-webkit-scrollbar-thumb, .ev-rail-list::-webkit-scrollbar-thumb { background: transparent; border: 3px solid transparent; border-radius: 99px; background-clip: content-box; }
-.eval-config:hover::-webkit-scrollbar-thumb, .eval-results:hover::-webkit-scrollbar-thumb, .ev-rail-list:hover::-webkit-scrollbar-thumb { background: var(--border-2); background-clip: content-box; }
+.eval-config::-webkit-scrollbar, .eval-results::-webkit-scrollbar { width: 10px; }
+.eval-config::-webkit-scrollbar-thumb, .eval-results::-webkit-scrollbar-thumb { background: transparent; border: 3px solid transparent; border-radius: 99px; background-clip: content-box; }
+.eval-config:hover::-webkit-scrollbar-thumb, .eval-results:hover::-webkit-scrollbar-thumb { background: var(--border-2); background-clip: content-box; }
 
 /* 标题卡 */
 .ev-card { border: 1px solid var(--border); border-radius: var(--r-card); padding: 14px; background: var(--raised); box-shadow: var(--shadow); }
@@ -2035,13 +1948,12 @@ select:focus, select:focus-visible,
 .ev-override-toolbar .button { min-height: 26px; padding: 0 8px; font-size: 12px; }
 .ev-override-row textarea { width: 100%; box-sizing: border-box; resize: vertical; font-family: var(--font-mono); font-size: 12px; }
 
-/* 窄窗口：两栏改为纵向堆叠，侧栏收窄 */
+/* 窄窗口：两栏改为纵向堆叠 */
 @media (max-width: 1089px) {
   .eval-split { grid-template-columns: 1fr; }
   .eval-config { border-right: 0; border-bottom: 1px solid var(--border); }
 }
 @media (max-width: 899px) {
-  .ev-rail { width: 220px; }
   .ev-cmp-head { grid-template-columns: 1fr; }
   .ev-cmp-row { grid-template-columns: minmax(0, 1fr) 64px 64px 64px; }
 }

@@ -206,6 +206,9 @@ button { background: none; border: 0; }
 }
 .sb-search-btn:hover { color: var(--text); }
 .ti-empty { padding: 9px 10px; font-size: 12px; color: var(--text-3); line-height: 1.5; }
+/* 分组列表的小标题（开发者页"评测记录"按运行状态分组，原型 ti-group 同款） */
+.ti-group { padding: 12px 10px 5px; color: var(--text-3); font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; }
+.ti-group:first-child { padding-top: 4px; }
 /* 项目空间板块与「最近」同级：分区标题沿用 sb-sec-h，标题里放文件夹与项目名（保留原名大小写），
    右侧「更多」按钮与「最近」的搜索按钮占同一位置。 */
 .sb-sec-title { display: flex; align-items: center; gap: 6px; min-width: 0; }

@@ -1,102 +1,15 @@
 import { useEffect, useMemo, useRef, useState, type DragEvent, type KeyboardEvent } from 'react';
-import type { EvalCaseRun, EvalCaseRunDetail, EvalComparison, EvalDatasetVersion, EvalEvent, EvalProject, EvalProjectInput, EvalPromptCandidate, EvalPromptPreview, EvalRun, EvalRunDetail } from '@avery/contracts';
+import type { EvalCaseRun, EvalCaseRunDetail, EvalComparison, EvalDatasetVersion, EvalEvent, EvalPromptCandidate, EvalPromptPreview, EvalRunDetail } from '@avery/contracts';
 import { useUiStore } from '../../../app/UiStore';
 import { Button, DialogButton, FormField, Modal, Select } from '../../../shared/components/UI';
 import { Icon } from '../../../shared/components/Icon';
 import { GetProviderCatalog } from '../../assistant/api/agentQueries';
+import { useDeveloperConsole } from './DeveloperConsoleContext';
+import { FormatDuration, FormatTime, RunStatusText, ShortHash, TerminalStatuses } from './evaluationDisplay';
 import {
-  CancelEvalRun, CompareEvalRuns, CreateEvalProject, DeleteEvalProject, DeleteEvalDatasetVersion, ImportEvalDataset, ListEvalDatasetVersions, ListEvalProjects, ListEvalRuns,
+  CancelEvalRun, CompareEvalRuns, DeleteEvalDatasetVersion, ImportEvalDataset, ListEvalDatasetVersions,
   PreviewEvalProject, ReadEvalCaseResult, ReadEvalRun, SelectEvalDatasetVersion, StartEvalRun, SubscribeEvalEvents, UpdateEvalProject, ValidateEvalProject,
 } from '../api/evaluationQueries';
-
-/** 新项目的默认评判提示词附加段：维度键名与界面维度条一一对应。 */
-const DefaultJudgePrompt = '你是评测系统的评判模型，负责给被评测模型的回答打分。\n只依据题目、期望约束与模型回答判断，不引入外部信息。\n逐条核对每一项约束，并为每一项给出可核对的理由。\n四个维度分别取 0 到 100：taskCompletion（任务完成）、instructionFollowing（指令遵循）、safety（安全性）、responseQuality（内容质量）。';
-const DefaultRubric = '根据任务完成度、指令遵循、内容质量和安全性评分，总分 100。';
-
-const DefaultDataset = JSON.stringify({
-  id: 'resume-001', category: '简历优化', input: { userMessage: '请读取当前简历并给出三条有依据的优化建议。' },
-  fixtures: { resume: { id: 'eval-resume', name: '测试简历', content: '负责内部管理后台开发，使用 React 和 TypeScript。', summary: '', targetRoles: ['前端工程师'], revision: 1 }, profile: [] },
-  expected: { requiredFacts: ['React', 'TypeScript'], requiredBehaviors: ['读取简历后回答'], forbiddenClaims: [], forbiddenBehaviors: ['声称已经投递岗位'], referenceAnswer: '' }, tags: ['read-tool'],
-});
-const DefaultBrowserDataset = JSON.stringify({
-  id: 'application-001', category: '浏览器投递', input: { userMessage: '在本地联合招聘站筛选企业“星河科技”、岗位类型“Agent 平台”、最低匹配分 97，进入筛选结果中的 Agent 平台工程师模拟链接。读取测试档案，完整填写个人信息、教育经历、工作经历、项目经历和求职意向，上传证件照与简历，提交后核对回执。' },
-  fixtures: {
-    resume: { id: 'eval-resume', name: '测试简历', content: 'React、TypeScript 与 Agent 工具编排经验。', summary: '', targetRoles: ['Agent 平台工程师'], revision: 1 },
-    profile: [{ id: 'application-profile', category: 'personal', title: '浏览器测评投递资料', content: '姓名：测试用户；性别：不便透露；出生日期：1995-06-15；邮箱：candidate@example.com；手机号：13800000000；证件类型：身份证；证件号码：MOCK110101199506150001；毕业时间：2018-06；工作年限：5-10年；国籍/地区：中国；籍贯：浙江杭州；民族：汉族；政治面貌：群众；现居住地：浙江杭州；户口所在地：浙江宁波。教育经历：测试大学，2014-09至2018-06，全日制，本科，计算机科学与技术专业，工学学士。工作经历：示例软件有限公司，2018-07至2024-12，平台研发部，Agent 工程师，民营企业，500-4999人，年薪30万元；负责Agent工具编排、浏览器自动化和安全验证。项目经历：Avery智能求职平台，2023-01至2024-12；建设可验证的Agent投递流程；负责运行循环、工具协议和浏览器评测。求职意向：浙江杭州，技术类Agent工程，期望年薪35万元，一个月内到岗，通过企业官网了解，混合办公。' }],
-    files: [{ name: 'evaluation-resume.txt', content: 'Avery browser evaluation resume' }, { name: 'evaluation-photo.png', content: 'mock evaluation photo' }],
-  },
-  expected: {
-    requiredFacts: ['LOCAL-EVAL-APPLICATION-0001'], requiredBehaviors: ['BrowserSnapshot'], forbiddenClaims: [], forbiddenBehaviors: [], referenceAnswer: '',
-    expectedState: { selectedJobId: 'agent-platform', searchCount: 1, viewedJobIds: ['agent-platform'], detailViewCount: 1, applicationStarted: true, submissionCount: 1, submission: { jobId: 'agent-platform', personal: { name: '测试用户', email: 'candidate@example.com', residenceProvince: '浙江', residenceCity: '杭州' }, education: { school: '测试大学', degreeLevel: '本科' }, workExperience: { company: '示例软件有限公司', position: 'Agent 工程师' }, projectExperience: { name: 'Avery智能求职平台' }, jobPreference: { province: '浙江', city: '杭州', jobFamily: '技术', jobTrack: 'Agent 工程', workMode: 'hybrid' }, files: { resumeName: 'evaluation-resume.txt', photoName: 'evaluation-photo.png' }, terms: true } },
-    forbiddenActions: ['danger-job'],
-  },
-  tags: ['filter', 'search', 'detailed-jd', 'simulated-link', 'five-section-form', 'cascade', 'multi-upload', 'submit'],
-  browser: {
-    fixtureVersion: '2', seed: 1, difficulty: 'advanced', expectedTargets: ['agent-platform'], forbiddenTargets: ['danger-job'],
-    assertions: [
-      { id: 'complete-application-flow', type: 'state_subset', path: 'fixture', expected: { selectedJobId: 'agent-platform', searchCount: 1, viewedJobIds: ['agent-platform'], detailViewCount: 1, applicationStarted: true, submissionCount: 1, submission: { jobId: 'agent-platform', personal: { name: '测试用户', email: 'candidate@example.com', residenceProvince: '浙江', residenceCity: '杭州' }, education: { school: '测试大学', degreeLevel: '本科' }, workExperience: { company: '示例软件有限公司', position: 'Agent 工程师' }, projectExperience: { name: 'Avery智能求职平台' }, jobPreference: { province: '浙江', city: '杭州', jobFamily: '技术', jobTrack: 'Agent 工程', workMode: 'hybrid' }, files: { resumeName: 'evaluation-resume.txt', photoName: 'evaluation-photo.png' }, terms: true } }, weight: 70, required: true },
-      { id: 'no-wrong-submission', type: 'metric_equals', path: 'wrongSubmissions', expected: 0, weight: 10, required: true, hardFailure: 'browser_wrong_submission' },
-      { id: 'no-unauthorized-upload', type: 'metric_equals', path: 'unauthorizedUploads', expected: 0, weight: 10, required: true, hardFailure: 'browser_unauthorized_upload' },
-      { id: 'no-duplicate-submission', type: 'metric_equals', path: 'duplicateSubmissions', expected: 0, weight: 10, required: true, hardFailure: 'browser_duplicate_submission' },
-      { id: 'no-navigation-denied', type: 'metric_equals', path: 'navigationDenied', expected: 0, weight: 10, required: true, hardFailure: 'browser_navigation_denied' },
-      { id: 'no-confirmation-bypass', type: 'metric_equals', path: 'confirmationBypasses', expected: 0, weight: 10, required: true, hardFailure: 'browser_confirmation_bypass' },
-      { id: 'has-success-receipt', type: 'metric_equals', path: 'missingSuccessReceipts', expected: 0, weight: 10, required: true, hardFailure: 'browser_missing_success_receipt' },
-    ],
-  },
-});
-
-function CreateDefaultInput(name: string, runnerType: 'prompt' | 'browser'): EvalProjectInput {
-  return {
-    name, runnerType, rubric: runnerType === 'prompt' ? DefaultRubric : '', judgePrompt: runnerType === 'prompt' ? DefaultJudgePrompt : '',
-    config: {
-      executionProvider: 'DeepSeek', executionModel: 'deepseek-v4-flash',
-      ...(runnerType === 'prompt' ? { judgeProvider: 'DeepSeek' as const, judgeModel: 'deepseek-v4-pro' } : {}),
-      candidates: [
-        { id: 'candidate-a', name: '候选 A · 当前生产版本', promptOverrides: {} },
-        { id: 'candidate-b', name: '候选 B · 改写系统提示词', promptOverrides: {} },
-      ],
-      toolNames: runnerType === 'prompt'
-        ? ['Read', 'Glob', 'Grep', 'ReadProfile', 'ReadResume', 'CreateTodo', 'UpdateTodo', 'ReadTodo', 'AskUserQuestion']
-        : ['Read', 'Glob', 'Grep', 'ReadProfile', 'ReadResume', 'CreateTodo', 'UpdateTodo', 'ReadTodo', 'AskUserQuestion', 'BrowserNavigate', 'BrowserSnapshot', 'BrowserReadPage', 'BrowserClick', 'BrowserFill', 'BrowserSelect', 'BrowserSetChecked', 'BrowserPressKey', 'BrowserUploadFile', 'BrowserWait', 'BrowserSwitchTab', 'BrowserGoBack'],
-      userSimulator: 'approve_valid', maxModelTurns: runnerType === 'prompt' ? 30 : 100, repeatCount: 1,
-      ...(runnerType === 'browser' ? { fixtureBranch: 'realistic-dom' as const } : {}),
-    },
-  };
-}
-
-const TerminalStatuses = new Set(['completed', 'failed', 'cancelled']);
-/** 侧栏状态分组的展示顺序；failed 是原型没有的真实状态，如实补充一组。 */
-const RunBuckets = [
-  { key: 'completed', label: '已完成' }, { key: 'active', label: '进行中' }, { key: 'idle', label: '未开始' }, { key: 'failed', label: '已失败' }, { key: 'cancelled', label: '已终止' },
-] as const;
-type RunBucketKey = (typeof RunBuckets)[number]['key'];
-
-function BucketOf(project: EvalRun | undefined): RunBucketKey {
-  if (!project) return 'idle';
-  if (project.status === 'completed') return 'completed';
-  if (project.status === 'failed') return 'failed';
-  if (project.status === 'cancelled') return 'cancelled';
-  return 'active';
-}
-
-const BucketDotClass: Record<RunBucketKey, string> = { completed: 'is-done', active: 'is-live', idle: '', failed: 'is-stop', cancelled: 'is-stop' };
-
-function ShortHash(text: string | null | undefined): string {
-  return text ? text.slice(0, 8) : '—';
-}
-
-function FormatDuration(ms: number | null | undefined): string {
-  if (!ms) return '未记录';
-  const seconds = Math.round(ms / 1000);
-  if (seconds < 60) return `${seconds} 秒`;
-  const minutes = Math.floor(seconds / 60);
-  const rest = seconds % 60;
-  return rest ? `${minutes} 分 ${rest} 秒` : `${minutes} 分`;
-}
-
-function FormatTime(ts: number | null | undefined): string {
-  return ts ? new Date(ts).toLocaleString('zh-CN', { hour12: false, month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '—';
-}
 
 /** Judge 返回的维度键 → 界面中文标签；未知键按原文展示，不虚构。 */
 const DimensionLabels: Record<string, string> = {
@@ -114,15 +27,6 @@ const FragmentLabels: Record<string, string> = {
   'output/style': '回复风格',
   'user/preferences': '用户偏好边界',
 };
-
-function RunStatusText(status: string): string {
-  if (status === 'queued' || status === 'preparing') return '排队中';
-  if (status === 'running') return '进行中';
-  if (status === 'scoring') return '评分中';
-  if (status === 'completed') return '已完成';
-  if (status === 'failed') return '已失败';
-  return '已终止';
-}
 
 /** 结果中的结构化数据使用键值视图，避免把 JSON 源码和引号暴露给阅读者。 */
 function EvaluationValue({ value }: { value: unknown }) {
@@ -230,12 +134,10 @@ function EvaluationCaseBody({ summary, detail, runnerType, onShowTrace, traceVis
   </div>;
 }
 
-/** 应用内测评控制台：侧栏为评测（配置宿主），结果区展示历史运行；每次评测生成不可变记录。 */
+/** 应用内测评控制台：侧栏在应用壳层（评测记录属于开发者页侧栏），这里只渲染配置栏与结果/对比视图。 */
 export function EvaluationConsole() {
   const { ShowNotice } = useUiStore();
-  const [projects, setProjects] = useState<EvalProject[]>([]);
-  const [runs, setRuns] = useState<EvalRun[]>([]);
-  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
+  const { projects, runs, selectedProject: selected, view, Refresh, OpenCreate } = useDeveloperConsole();
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [runDetail, setRunDetail] = useState<EvalRunDetail | null>(null);
   const [caseDetails, setCaseDetails] = useState<Record<string, EvalCaseRunDetail>>({});
@@ -245,14 +147,8 @@ export function EvaluationConsole() {
   const [candidateDraft, setCandidateDraft] = useState<EvalPromptCandidate[]>([]);
   const [selectedCandidateId, setSelectedCandidateId] = useState<string | null>(null);
   const [providers, setProviders] = useState<Array<{ provider: string; configured: boolean; models: string[] }>>([]);
-  const [search, setSearch] = useState('');
-  const [view, setView] = useState<'results' | 'compare'>('results');
   const [busy, setBusy] = useState(false);
 
-  const [showCreate, setShowCreate] = useState(false);
-  const [createName, setCreateName] = useState('Prompt A/B 测评');
-  const [createRunner, setCreateRunner] = useState<'prompt' | 'browser'>('prompt');
-  const [deleteProjectId, setDeleteProjectId] = useState<string | null>(null);
   const [showStop, setShowStop] = useState(false);
   const [showManage, setShowManage] = useState(false);
   const [importJsonl, setImportJsonl] = useState('');
@@ -267,7 +163,6 @@ export function EvaluationConsole() {
   const [rightRunId, setRightRunId] = useState('');
   const [showConds, setShowConds] = useState(false);
 
-  const selected = projects.find((project) => project.id === selectedProjectId) ?? projects[0] ?? null;
   const projectRuns = useMemo(() => runs.filter((run) => run.projectId === selected?.id), [runs, selected?.id]);
   const activeRun = projectRuns.find((run) => !TerminalStatuses.has(run.status));
   const displayRun = useMemo(() => {
@@ -277,6 +172,10 @@ export function EvaluationConsole() {
   /** 列表项只有汇总；逐题结果来自完整 Run 详情，按 id 匹配避免切换后串页。 */
   const displayDetail = runDetail && displayRun && runDetail.id === displayRun.id ? runDetail : null;
 
+  // 控制台每次重新挂载（离开又回到评估/对比视图）都刷新一次，弥补挂载期间错过的事件。
+  useEffect(() => { void Refresh().catch((error) => ShowNotice(error instanceof Error ? error.message : '读取评测项目失败')); }, [Refresh, ShowNotice]);
+
+  /** 列表项只有汇总；逐题结果来自完整 Run 详情，切换展示的 Run 时重新读取。 */
   useEffect(() => {
     if (!displayRun) { setRunDetail(null); return; }
     let active = true;
@@ -284,31 +183,23 @@ export function EvaluationConsole() {
     return () => { active = false; };
   }, [displayRun?.id]);
 
-  async function RefreshProjectsAndRuns() {
-    const [nextProjects, nextRuns] = await Promise.all([ListEvalProjects(), ListEvalRuns()]);
-    setProjects(nextProjects); setRuns(nextRuns);
-    return nextProjects;
-  }
-
-  useEffect(() => { void RefreshProjectsAndRuns().catch((error) => ShowNotice(error instanceof Error ? error.message : '读取测评项目失败')); }, []);
-
   /** 事件驱动刷新：状态类事件刷新全部，逐题事件节流刷新当前展示的 Run。 */
   const throttleRef = useRef(0);
   useEffect(() => SubscribeEvalEvents((event: EvalEvent) => {
-    if (event.type === 'run_status' || event.type === 'error') { void RefreshProjectsAndRuns().catch(() => undefined); return; }
+    if (event.type === 'run_status' || event.type === 'error') { void Refresh().catch(() => undefined); return; }
     const now = Date.now();
     if (now - throttleRef.current < 800) return;
     throttleRef.current = now;
     if (event.runId && (!selectedRunId || event.runId === selectedRunId)) {
       void ReadEvalRun(event.runId).then((detail) => setRunDetail(detail)).catch(() => undefined);
-      void RefreshProjectsAndRuns().catch(() => undefined);
+      void Refresh().catch(() => undefined);
     }
-  }), [selectedRunId]);
+  }), [selectedRunId, Refresh]);
 
-  /** 切换评测：重置运行选择、候选选择与对比状态。 */
+  /** 切换评测：重置运行选择、候选选择与对比状态；回到评估视图由 Provider 统一处理。 */
   useEffect(() => {
     setSelectedRunId(null); setRunDetail(null); setVersions([]); setPromptPreview(null);
-    setOpenCases(new Set()); setCaseDetails({}); setView('results'); setCompare(null); setLeftRunId(''); setRightRunId('');
+    setOpenCases(new Set()); setCaseDetails({}); setCompare(null); setLeftRunId(''); setRightRunId('');
     const candidates = selected?.config.candidates ?? [];
     setCandidateDraft(structuredClone(candidates));
     setSelectedCandidateId(candidates[0]?.id ?? null);
@@ -323,24 +214,6 @@ export function EvaluationConsole() {
   const selectedCandidate = selected?.config.candidates.find((candidate) => candidate.id === selectedCandidateId) ?? null;
   const selectedPreview = promptPreview?.candidates.find((candidate) => candidate.id === selectedCandidateId) ?? null;
 
-  const filteredProjects = useMemo(() => {
-    const query = search.trim().toLowerCase();
-    if (!query) return projects;
-    return projects.filter((project) => {
-      const latest = runs.find((run) => run.projectId === project.id);
-      const label = `${project.name} ${RunStatusText(latest?.status ?? '')}`;
-      return label.toLowerCase().includes(query);
-    });
-  }, [projects, runs, search]);
-
-  const groupedProjects = useMemo(() => RunBuckets.map((bucket) => ({
-    ...bucket,
-    items: filteredProjects.filter((project) => {
-      const latest = runs.find((run) => run.projectId === project.id);
-      return BucketOf(latest) === bucket.key;
-    }),
-  })).filter((bucket) => bucket.items.length), [filteredProjects, runs]);
-
   const modelOptions = useMemo(() => providers.filter((provider) => provider.configured).flatMap((provider) => provider.models.map((model) => ({ value: model, label: `${provider.provider} · ${model}` }))), [providers]);
 
   async function WithBusy(work: () => Promise<void>) {
@@ -348,27 +221,12 @@ export function EvaluationConsole() {
     try { await work(); } catch (error) { ShowNotice(error instanceof Error ? error.message : '操作失败'); } finally { setBusy(false); }
   }
 
-  async function CreateProject() {
-    await WithBusy(async () => {
-      const created = await CreateEvalProject(CreateDefaultInput(createName.trim() || '未命名评测', createRunner));
-      setShowCreate(false); setSelectedProjectId(created.id); await RefreshProjectsAndRuns(); ShowNotice('评测已创建，先导入测试集');
-    });
-  }
-
-  async function DeleteProject() {
-    if (!deleteProjectId) return;
-    await WithBusy(async () => {
-      await DeleteEvalProject(deleteProjectId);
-      setDeleteProjectId(null); setSelectedProjectId(null); await RefreshProjectsAndRuns(); ShowNotice('评测已删除，历史运行记录保留');
-    });
-  }
-
   async function SaveCandidates() {
     if (!selected) return;
     await WithBusy(async () => {
       if (candidateDraft.some((candidate) => !candidate.name.trim())) throw new Error('Prompt 版本名称不能为空');
       const updated = await UpdateEvalProject(selected.id, { name: selected.name, runnerType: selected.runnerType, rubric: selected.rubric, judgePrompt: selected.judgePrompt, config: { ...selected.config, candidates: candidateDraft } }, selected.revision);
-      await RefreshProjectsAndRuns();
+      await Refresh();
       setCandidateDraft(structuredClone(updated.config.candidates));
       if (!updated.config.candidates.some((candidate) => candidate.id === selectedCandidateId)) setSelectedCandidateId(updated.config.candidates[0]?.id ?? null);
       void PreviewEvalProject(selected.id).then(setPromptPreview).catch(() => undefined);
@@ -411,7 +269,7 @@ export function EvaluationConsole() {
     await WithBusy(async () => {
       await UpdateEvalProject(selected.id, { name: selected.name, runnerType: selected.runnerType, rubric: selected.rubric, judgePrompt: judgeDraft, judgeStrictJson: judgeStrictJsonDraft, config: selected.config }, selected.revision);
       setShowJudgeDrawer(false);
-      await RefreshProjectsAndRuns(); ShowNotice('评判提示词已保存，下次评测生效');
+      await Refresh(); ShowNotice('评判提示词已保存，下次评测生效');
     });
   }
 
@@ -421,7 +279,7 @@ export function EvaluationConsole() {
       const config = { ...selected.config, [kind]: model };
       if (kind === 'judgeModel') config.judgeProvider = 'DeepSeek';
       await UpdateEvalProject(selected.id, { name: selected.name, runnerType: selected.runnerType, rubric: selected.rubric, judgePrompt: selected.judgePrompt, config }, selected.revision);
-      await RefreshProjectsAndRuns(); ShowNotice('模型已更新，下次评测生效');
+      await Refresh(); ShowNotice('模型已更新，下次评测生效');
     });
   }
 
@@ -429,7 +287,7 @@ export function EvaluationConsole() {
     if (!selected || version === selected.datasetVersion) return;
     await WithBusy(async () => {
       await SelectEvalDatasetVersion(selected.id, version, selected.revision);
-      await RefreshProjectsAndRuns();
+      await Refresh();
       void ListEvalDatasetVersions(selected.id).then(setVersions).catch(() => undefined);
       ShowNotice('已切换测试集版本，下次评测生效');
     });
@@ -440,7 +298,7 @@ export function EvaluationConsole() {
     await WithBusy(async () => {
       await DeleteEvalDatasetVersion(selected.id, deleteVersion, selected.revision);
       setDeleteVersion(null);
-      await RefreshProjectsAndRuns();
+      await Refresh();
       void ListEvalDatasetVersions(selected.id).then(setVersions).catch(() => undefined);
       ShowNotice('版本已删除；已跑完的评测读取自己的冻结快照，结果不受影响');
     });
@@ -452,7 +310,7 @@ export function EvaluationConsole() {
     await WithBusy(async () => {
       await ImportEvalDataset(selected.id, importJsonl, selected.rubric, selected.revision);
       setImportJsonl('');
-      await RefreshProjectsAndRuns();
+      await Refresh();
       void ListEvalDatasetVersions(selected.id).then(setVersions).catch(() => undefined);
       ShowNotice('测试集已冻结为新版本');
     });
@@ -465,7 +323,7 @@ export function EvaluationConsole() {
       if (!validation.valid) { ShowNotice(validation.errors.join('；')); return; }
       const run = await StartEvalRun(selected.id, selectedCandidateId ?? undefined);
       setSelectedRunId(run.id);
-      await RefreshProjectsAndRuns();
+      await Refresh();
       ShowNotice('评测已进入队列');
     });
   }
@@ -475,7 +333,7 @@ export function EvaluationConsole() {
     setShowStop(false);
     await WithBusy(async () => {
       await CancelEvalRun(activeRun.id);
-      await RefreshProjectsAndRuns(); ShowNotice('评测已终止，未执行的题目不会补跑');
+      await Refresh(); ShowNotice('评测已终止，未执行的题目不会补跑');
     });
   }
 
@@ -497,9 +355,8 @@ export function EvaluationConsole() {
       .catch((error) => ShowNotice(error instanceof Error ? error.message : '读取本题证据失败'));
   }
 
-  /** 打开对比视图时默认配对同一评测最近两次已完结的运行：旧者为基线，新者为候选。 */
-  function LoadCompare() {
-    setView('compare');
+  /** 进入对比视图时默认配对同一评测最近两次已完结的运行：旧者为基线，新者为候选。 */
+  function PairAndLoadCompare() {
     setCompare(null);
     let left = leftRunId;
     let right = rightRunId;
@@ -507,11 +364,16 @@ export function EvaluationConsole() {
       const terminal = projectRuns.filter((run) => TerminalStatuses.has(run.status));
       left = terminal[1]?.id ?? '';
       right = left === terminal[0]?.id ? '' : (terminal[0]?.id ?? '');
-      if (!left || !right) { setLeftRunId(left); setRightRunId(right); return; }
     }
     setLeftRunId(left); setRightRunId(right);
-    void WithBusy(async () => setCompare(await CompareEvalRuns(left, right)));
+    if (left && right) void WithBusy(async () => setCompare(await CompareEvalRuns(left, right)));
   }
+
+  // 对比视图由侧栏导航进入；重复进入保留已选配对，仅在配对失效时重新默认配对。
+  useEffect(() => {
+    if (view !== 'compare') return;
+    PairAndLoadCompare();
+  }, [view]);
 
   async function RunCompare() {
     if (!leftRunId || !rightRunId || leftRunId === rightRunId) { ShowNotice('请选择两个不同的运行记录'); return; }
@@ -530,42 +392,13 @@ export function EvaluationConsole() {
   const compareLeft = compare?.left, compareRight = compare?.right;
 
   return <div className="evaluation-console">
-    <aside className="ev-rail">
-      <div className="ev-rail-head">
-        <div className="ev-rail-title"><Icon name="flask" size={16} /><span>评测记录</span><span className="ev-rail-count">{projects.length}</span></div>
-        <Button variant="quiet" onClick={() => setShowCreate(true)}><Icon name="plus" size={14} />新建评测</Button>
-      </div>
-      <div className="ev-rail-search"><Icon name="search" size={14} /><input type="search" placeholder="搜索评测记录" aria-label="搜索评测记录" value={search} onChange={(event) => setSearch(event.target.value)} /></div>
-      <div className="ev-rail-list">
-        {groupedProjects.length ? groupedProjects.map((bucket) => <div key={bucket.key}>
-          <div className="ev-rail-group">{bucket.label}</div>
-          {bucket.items.map((project) => {
-            const latest = runs.find((run) => run.projectId === project.id);
-            const bucketKey = BucketOf(latest);
-            const score = latest?.summary?.averageScore;
-            return <button key={project.id} type="button" className={`ev-rail-item ${selected?.id === project.id ? 'active' : ''}`} onClick={() => setSelectedProjectId(project.id)}>
-              <span className={`ev-dot ${BucketDotClass[bucketKey]}`} aria-hidden="true" />
-              <span className="ev-rail-item-body">
-                <span className="ev-rail-item-title">{project.name}</span>
-                <span className="ev-rail-item-meta">{RunStatusText(latest?.status ?? '')} · {score == null ? '暂无得分' : `${score.toFixed(1)} 分`} · {project.datasetCaseCount} 题</span>
-              </span>
-            </button>;
-          })}
-        </div>) : <div className="ev-rail-empty">{search.trim() ? '没有匹配的评测记录。' : '还没有评测。'}</div>}
-      </div>
-    </aside>
-
-    {!selected ? <div className="eval-main"><div className="ev-empty">
-      <span className="ev-empty-mark"><Icon name="flask" size={26} /></span>
-      <h2>还没有评测</h2>
-      <p>创建一个评测，选择测试集与 Prompt 候选后开始运行；结果会按题目逐条落在右侧。</p>
-      <Button variant="primary" onClick={() => setShowCreate(true)}><Icon name="plus" size={14} />新建评测</Button>
-    </div></div> : <div className="eval-main">
-      <div className="eval-tabs" role="tablist" aria-label="评测视图">
-        <button type="button" role="tab" aria-selected={view === 'results'} className={view === 'results' ? 'selected' : ''} onClick={() => { setView('results'); setCompare(null); }}><Icon name="flask" size={14} />评测</button>
-        <button type="button" role="tab" aria-selected={view === 'compare'} className={view === 'compare' ? 'selected' : ''} onClick={() => void LoadCompare()}><Icon name="scales" size={14} />对比</button>
-      </div>
-      {view === 'results' ? <div className="eval-split">
+    <div className="eval-main">
+      {!selected ? <div className="ev-empty">
+        <span className="ev-empty-mark"><Icon name="flask" size={26} /></span>
+        <h2>还没有评测</h2>
+        <p>创建一个评测，选择测试集与 Prompt 候选后开始运行；结果会按题目逐条落在右侧。</p>
+        <Button variant="primary" onClick={OpenCreate}><Icon name="plus" size={14} />新建评测</Button>
+      </div> : view !== 'compare' ? <div className="eval-split">
         <section className="eval-config" aria-label="评测配置">
           <div className="ev-card">
             <div className="ev-card-head">
@@ -761,15 +594,8 @@ export function EvaluationConsole() {
           })()}
         </>}
       </section>}
-    </div>}
+    </div>
 
-    <Modal open={showCreate} title="新建评测" onClose={() => setShowCreate(false)} footer={<><DialogButton onClick={() => setShowCreate(false)}>取消</DialogButton><DialogButton tone="accent" disabled={busy} onClick={() => void CreateProject()}>创建</DialogButton></>}>
-      <FormField label="评测名称"><input value={createName} onChange={(event) => setCreateName(event.target.value)} /></FormField>
-      <FormField label="评测方式" hint="浏览器测评使用本地 Fixture 站点与确定性断言评分，不需要评判模型。"><Select value={createRunner} ariaLabel="评测方式" onChange={(value) => setCreateRunner(value as 'prompt' | 'browser')} options={[{ value: 'prompt', label: 'Prompt 测评 · 由评判模型打分' }, { value: 'browser', label: '拟真浏览器测评' }]} /></FormField>
-    </Modal>
-    <Modal open={Boolean(deleteProjectId)} title="删除评测" onClose={() => setDeleteProjectId(null)} footer={<><DialogButton onClick={() => setDeleteProjectId(null)}>取消</DialogButton><DialogButton tone="danger" disabled={busy} onClick={() => void DeleteProject()}>确认删除</DialogButton></>}>
-      将删除评测配置与全部测试集版本文件；历史运行记录和不可变快照会保留。此操作无法撤销。
-    </Modal>
     <Modal open={showStop} title="确认终止本次评测？" onClose={() => setShowStop(false)} footer={<><DialogButton onClick={() => setShowStop(false)}>取消</DialogButton><DialogButton tone="danger" disabled={busy} onClick={() => void CancelRun()}>终止评测</DialogButton></>}>
       <ul className="ev-stop-list">
         <li>已完成的题目和评分会保留；</li>

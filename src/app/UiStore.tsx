@@ -23,8 +23,6 @@ interface UiStoreValue {
   setResumePanelOpen: (open: boolean) => void;
   assistantView: 'chat' | 'trace';
   setAssistantView: (view: 'chat' | 'trace') => void;
-  developerView: 'logs' | 'evaluation';
-  setDeveloperView: (view: 'logs' | 'evaluation') => void;
   notice: Notice | null;
   ShowNotice: (message: string, tone?: NoticeTone, options?: { action?: NoticeAction; duration?: number }) => void;
   HideNotice: () => void;
@@ -42,7 +40,6 @@ function UiStoreProvider({ children }: { children: ReactNode }) {
   const [currentResumeId, setCurrentResumeId] = useState<string | null>(null);
   const [resumePanelOpen, setResumePanelOpen] = useState(false);
   const [assistantView, setAssistantView] = useState<'chat' | 'trace'>('chat');
-  const [developerView, setDeveloperView] = useState<'logs' | 'evaluation'>('logs');
   const [notice, setNotice] = useState<Notice | null>(null);
   const noticeTimerRef = useRef<number | null>(null);
   const noticeIdRef = useRef(0);
@@ -71,10 +68,9 @@ function UiStoreProvider({ children }: { children: ReactNode }) {
     currentResumeId, setCurrentResumeId,
     resumePanelOpen, setResumePanelOpen,
     assistantView, setAssistantView,
-    developerView, setDeveloperView,
     notice, ShowNotice, HideNotice, profileConflict, setProfileConflict,
     composerSeed, setComposerSeed,
-  }), [activeConversationId, currentResumeId, resumePanelOpen, assistantView, developerView, notice, profileConflict, composerSeed, ShowNotice, HideNotice]);
+  }), [activeConversationId, currentResumeId, resumePanelOpen, assistantView, notice, profileConflict, composerSeed, ShowNotice, HideNotice]);
 
   return <UiStoreContext.Provider value={value}>{children}</UiStoreContext.Provider>;
 }

@@ -13,6 +13,7 @@ import { ProfilesPage } from '../features/profile/pages/ProfilesPage';
 import { SettingsPage, ChatFontSizes, type SettingTab } from '../features/settings/pages/SettingsPage';
 import { OnboardingPage } from '../features/settings/pages/OnboardingPage';
 import { DeveloperPage } from '../features/developer/pages/DeveloperPage';
+import { DeveloperConsoleProvider } from '../features/developer/components/DeveloperConsoleContext';
 import { Button, DialogButton, EmptyState, Modal } from '../shared/components/UI';
 import { BackendRecoveryGate, IsBackendRecoveryError } from './BackendRecoveryGate';
 import { Icon } from '../shared/components/Icon';
@@ -106,11 +107,14 @@ function AppContent() {
   if (workspace.isLoading || !workspace.data) return <LoadingScreen />;
   if (!settings.onboardingCompleted) return <OnboardingPage onComplete={() => setSettings((current) => ({ ...current, onboardingCompleted: true }))} />;
   return <>
-    <AppShell page={page} onNavigate={setPage} onRestartOnboarding={() => setSettings((current) => ({ ...current, onboardingCompleted: false }))} settingsTab={settingsTab} onRequestSettingsTab={RequestSettingsTab}>
-      {/* 在途 Agent 依赖 Renderer 流订阅写回消息终态；导航时隐藏而非卸载，避免遗漏流事件。 */}
-      <section className="assistant-page-presence" hidden={page !== 'assistant'}><AssistantPage onNavigate={setPage} /></section>
-      {page === 'jobs' && <JobsPage onGoAssistant={() => setPage('assistant')} />}{page === 'applications' && <ApplicationsPage />}{page === 'resumes' && <ResumesPage onGoAssistant={() => setPage('assistant')} />}{page === 'profiles' && <ProfilesPage />}{page === 'settings' && <SettingsPage onNavigateDeveloper={() => setPage('developer')} tab={settingsTab} requestedTab={requestedSettingsTab} tabRequestVersion={settingsTabRequestVersion} onTabChange={setSettingsTab} />}{page === 'developer' && <DeveloperPage />}
-    </AppShell>
+    {/* 开发者页的侧栏与主区共享评测配置状态；Provider 常驻挂载，仅在开发者页激活时拉取数据 */}
+    <DeveloperConsoleProvider active={page === 'developer'}>
+      <AppShell page={page} onNavigate={setPage} onRestartOnboarding={() => setSettings((current) => ({ ...current, onboardingCompleted: false }))} settingsTab={settingsTab} onRequestSettingsTab={RequestSettingsTab}>
+        {/* 在途 Agent 依赖 Renderer 流订阅写回消息终态；导航时隐藏而非卸载，避免遗漏流事件。 */}
+        <section className="assistant-page-presence" hidden={page !== 'assistant'}><AssistantPage onNavigate={setPage} /></section>
+        {page === 'jobs' && <JobsPage onGoAssistant={() => setPage('assistant')} />}{page === 'applications' && <ApplicationsPage />}{page === 'resumes' && <ResumesPage onGoAssistant={() => setPage('assistant')} />}{page === 'profiles' && <ProfilesPage />}{page === 'settings' && <SettingsPage onNavigateDeveloper={() => setPage('developer')} tab={settingsTab} requestedTab={requestedSettingsTab} tabRequestVersion={settingsTabRequestVersion} onTabChange={setSettingsTab} />}{page === 'developer' && <DeveloperPage />}
+      </AppShell>
+    </DeveloperConsoleProvider>
     <Modal
       open={profileConflict}
       title="档案文件已被外部修改"

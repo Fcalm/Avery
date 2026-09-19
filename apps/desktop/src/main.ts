@@ -270,8 +270,7 @@ async function runInstalledVisualScenario(outputDirectory: string): Promise<Reco
         const end = Date.now() + 1500;
         while (button.getAttribute('aria-current') !== 'page' && Date.now() < end) await new Promise((resolve) => setTimeout(resolve, 25));
         if (${JSON.stringify(label)} === '开发者工具') {
-          const evaluationTab = [...document.querySelectorAll('button[role="tab"]')].find((item) => item.getAttribute('aria-label') === 'Agent 测评' || item.getAttribute('title') === 'Agent 测评');
-          evaluationTab?.click();
+          // 开发者页默认视图就是评估；等待评估控制台挂载即可，无需再点二级切换
           const evaluationEnd = Date.now() + 1500;
           while (!document.querySelector('.evaluation-console') && Date.now() < evaluationEnd) await new Promise((resolve) => setTimeout(resolve, 25));
         }
@@ -282,7 +281,7 @@ async function runInstalledVisualScenario(outputDirectory: string): Promise<Reco
           label: ${JSON.stringify(label)}, selected: button.getAttribute('aria-current') === 'page',
           horizontalOverflow: document.documentElement.scrollWidth > document.documentElement.clientWidth || document.body.scrollWidth > document.body.clientWidth,
           offscreenCritical,
-          evaluationTabVisible: ${JSON.stringify(label)} !== '开发者工具' || [...document.querySelectorAll('button[role="tab"]')].some((item) => item.getAttribute('aria-label') === 'Agent 测评' || item.getAttribute('title') === 'Agent 测评'),
+          evaluationNavVisible: ${JSON.stringify(label)} !== '开发者工具' || [...document.querySelectorAll('.sidebar .nav-item')].some((item) => item.getAttribute('title') === '评估'),
           evaluationPanelVisible: ${JSON.stringify(label)} !== '开发者工具' || Boolean(document.querySelector('.evaluation-console')),
         };
       })()`, true) as Record<string, unknown>;
@@ -312,7 +311,7 @@ async function runInstalledVisualScenario(outputDirectory: string): Promise<Reco
   await ReloadRenderer();
   const visibleWhenEnabled = await window.webContents.executeJavaScript(`new Promise((resolve)=>{const end=Date.now()+5000;const wait=()=>{const visible=[...document.querySelectorAll('button[title]')].some((item)=>item.getAttribute('title')==='开发者工具');visible?resolve(true):Date.now()>=end?resolve(false):setTimeout(wait,25)};wait();})`, true);
   const developerModeGate = hiddenWhenDisabled === true && visibleWhenEnabled === true;
-  const pagesPassed = pages.every((page) => page.selected === true && page.horizontalOverflow !== true && Array.isArray(page.offscreenCritical) && page.offscreenCritical.length === 0 && page.evaluationTabVisible === true && page.evaluationPanelVisible === true);
+  const pagesPassed = pages.every((page) => page.selected === true && page.horizontalOverflow !== true && Array.isArray(page.offscreenCritical) && page.offscreenCritical.length === 0 && page.evaluationNavVisible === true && page.evaluationPanelVisible === true);
   return { rendererNavigationReady: true, consoleErrors, pages, keyboardTargetFocused, keyboardNavigation, developerModeGate, passed: pagesPassed && keyboardTargetFocused === true && keyboardNavigation === true && developerModeGate && consoleErrors.length === 0 };
 }
 

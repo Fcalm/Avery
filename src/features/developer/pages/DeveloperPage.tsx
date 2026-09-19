@@ -1,17 +1,16 @@
 import { useEffect, useState } from 'react';
 import type { AgentObservability } from '@avery/contracts';
 import { GetAgentObservability } from '../../../features/assistant/api/agentQueries';
-import { useUiStore } from '../../../app/UiStore';
 import { Icon } from '../../../shared/components/Icon';
 import { Button } from '../../../shared/components/UI';
+import { useDeveloperConsole } from '../components/DeveloperConsoleContext';
 import { EvaluationConsole } from '../components/EvaluationConsole';
 
 const EmptyObservability: AgentObservability = { configured: false, model: '—', historySessions: 0, taskCount: 0, contextUsage: { inputTokens: 0, contextLimit: 256000, compressionCount: 0, compressionThreshold: 80 }, logs: [], traces: [] };
 
-/** 开发者工具仅保留本地运行日志；会话轨迹统一在求职助手中查看。 */
-function DeveloperPage() {
+/** 运行日志面板：沿用旧的卡片版式；评估与对比视图由 EvaluationConsole 渲染。会话轨迹统一在求职助手中查看。 */
+function LogsPanel() {
   const [observability, setObservability] = useState<AgentObservability>(EmptyObservability);
-  const { developerView, setDeveloperView } = useUiStore();
 
   async function RefreshObservability() {
     setObservability((await GetAgentObservability()) ?? EmptyObservability);
@@ -20,18 +19,7 @@ function DeveloperPage() {
   useEffect(() => { void RefreshObservability(); }, []);
 
   return <div className="standard-page developer-page">
-    <section className="developer-reference-overview">
-      <header className="developer-reference-heading"><div><h1>开发者工具</h1><p>查看 Avery 的本地运行记录，并管理 Agent 测评。</p></div><div className="developer-reference-stats" aria-label="开发者工具数据概览"><span><b>{observability.historySessions}</b><small>历史会话</small></span><span><b>{observability.taskCount}</b><small>任务总数</small></span><span><b>{observability.contextUsage.inputTokens}</b><small>上下文输入</small></span></div></header>
-    </section>
-    <div className="developer-page-view-switcher" role="tablist" aria-label="开发者工具次级页面">
-      <button type="button" role="tab" aria-selected={developerView === 'logs'} className={developerView === 'logs' ? 'selected' : ''} onClick={() => setDeveloperView('logs')}>
-        <Icon name="logs" size={16} />运行日志
-      </button>
-      <button type="button" role="tab" aria-selected={developerView === 'evaluation'} className={developerView === 'evaluation' ? 'selected' : ''} onClick={() => setDeveloperView('evaluation')}>
-        <Icon name="trace" size={16} />Agent 测评
-      </button>
-    </div>
-    {developerView === 'logs' ? <section className="developer-console" aria-label="本地运行记录">
+    <section className="developer-console" aria-label="本地运行记录">
       <header className="developer-console-header">
         <div className="developer-console-title"><Icon name="logs" size={16} /><span>运行日志</span></div>
         <div className="developer-console-actions">
@@ -41,8 +29,14 @@ function DeveloperPage() {
       <div className="log-table">{observability.logs.length
         ? observability.logs.map((item, index) => <div key={`${item.time}-${item.event}-${index}`}><time>{item.time}</time><b className={item.level.toLowerCase()}>{item.level}</b><code>{item.event}</code><span>{item.detail}</span></div>)
         : <p className="empty-copy">暂无本地运行日志。</p>}</div>
-    </section> : <EvaluationConsole />}
+    </section>
   </div>;
+}
+
+/** 开发者页主区：评估/对比视图由侧栏导航切换（状态在 DeveloperConsoleProvider），运行日志是独立的次级视图。 */
+function DeveloperPage() {
+  const { view } = useDeveloperConsole();
+  return view === 'logs' ? <LogsPanel /> : <EvaluationConsole />;
 }
 
 export { DeveloperPage };

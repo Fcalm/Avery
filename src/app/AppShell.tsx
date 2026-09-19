@@ -10,6 +10,8 @@ import { Icon } from '../shared/components/Icon';
 import { GetAgentBalance, IsDesktopAgentAvailable } from '../features/assistant/api/agentQueries';
 import { ASSISTANT_MAIN_MIN_WIDTH } from '../shared/layoutConstants';
 import { ListEvalRuns } from '../features/developer/api/evaluationQueries';
+import { DeveloperSidebar } from '../features/developer/components/DeveloperSidebar';
+import { useDeveloperConsole } from '../features/developer/components/DeveloperConsoleContext';
 import { SettingsTabs, type SettingTab } from '../features/settings/pages/SettingsPage';
 
 const MinContentWidth = 800;
@@ -71,6 +73,8 @@ function AppShell({ page, onNavigate, onRestartOnboarding, settingsTab, onReques
   const pinConversation = useSetConversationPinned({ onConflict: () => ShowNotice('会话已在其他窗口被修改，已刷新为最新版本'), onFailure: () => ShowNotice('会话置顶失败，请稍后重试。') });
   const archiveConversation = useSetConversationArchived({ onConflict: () => ShowNotice('会话已在其他窗口被修改，已刷新为最新版本'), onFailure: () => ShowNotice('会话归档失败，请稍后重试。') });
   const { settings, setSettings, saveSettingsNow } = useSettingsStore();
+  // 开发者页是带独立侧栏的顶级页面：面包屑、Ctrl K 与导航指示器都要读取评测域的共享状态。
+  const { projects: evalProjects, selectedProject: selectedEvalProject, SelectProject: SelectEvalProject, view: developerView, OpenCreate: OpenCreateEval } = useDeveloperConsole();
   const { activeConversationId, setActiveConversationId, resumePanelOpen, setResumePanelOpen, assistantView, setAssistantView, ShowNotice } = useUiStore();
   const activeConversation = conversations.find((item) => item.id === activeConversationId);
 
@@ -189,19 +193,20 @@ function AppShell({ page, onNavigate, onRestartOnboarding, settingsTab, onReques
     return () => { window.removeEventListener('keydown', CloseOnEscape); document.removeEventListener('pointerdown', CloseOnOutsidePointer); };
   }, [anyMenuOpen]);
 
-  // 原型同款 Ctrl K：聚焦侧栏"新建对话"，输入场景中不拦截。
+  // 原型同款 Ctrl K：工作区聚焦"新建对话"，开发者页聚焦"新建评测"；输入场景中不拦截。
   useEffect(() => {
     const HandleNewChatShortcut = (event: KeyboardEvent) => {
       if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== 'k') return;
       const target = event.target as HTMLElement | null;
       if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) return;
       event.preventDefault();
+      if (page === 'developer') { OpenCreateEval(); return; }
       setActiveConversationId(null);
       onNavigate('assistant');
     };
     window.addEventListener('keydown', HandleNewChatShortcut);
     return () => window.removeEventListener('keydown', HandleNewChatShortcut);
-  }, [onNavigate, setActiveConversationId]);
+  }, [page, onNavigate, setActiveConversationId, OpenCreateEval]);
 
   // 导航滑动指示器：测量当前项的位置，折叠动画结束后再校准一次。
   // settingsTab 变化时设置侧栏的指示器也要跟随移动。
@@ -222,7 +227,7 @@ function AppShell({ page, onNavigate, onRestartOnboarding, settingsTab, onReques
     const timer = window.setTimeout(MoveNavIndicator, 420);
     document.fonts?.ready.then(MoveNavIndicator).catch(() => undefined);
     return () => { window.removeEventListener('resize', MoveNavIndicator); window.clearTimeout(timer); };
-  }, [MoveNavIndicator, page, settingsTab, collapsed, settings.developerMode]);
+  }, [MoveNavIndicator, page, settingsTab, collapsed, settings.developerMode, developerView]);
 
   function HandleNewConversation() {
     // 仅切换到未保存草稿；首次发送时由助手页创建实际会话，避免空会话进入历史列表。
@@ -425,6 +430,26 @@ function AppShell({ page, onNavigate, onRestartOnboarding, settingsTab, onReques
             <span className="crumb-root">设置</span>
             <Icon name="chevron-right" size={12} className="crumb-sep" />
             <b className="crumb-last">{SettingsTabs.find((item) => item.id === settingsTab)?.label}</b>
+          </> : page === 'developer' ? <>
+            {/* 与原型的开发者页一致：面包屑根是页面名，叶子下拉用于快速切换评测记录 */}
+            <span className="crumb-root">开发者工具</span>
+            <Icon name="chevron-right" size={12} className="crumb-sep" />
+            <div className="menu-wrap">
+              <button className="crumb-btn" type="button" data-menu-trigger="crumb" aria-expanded={showCrumbMenu} aria-haspopup="menu" title="切换评测记录" onClick={() => SetShowCrumbMenu((value) => !value)}>
+                <b className="crumb-last">{selectedEvalProject?.name ?? '评测记录'}</b>
+                <Icon name="chevron-down" size={12} className="chev" />
+              </button>
+              {showCrumbMenu && <div className="menu drop lg open" data-floating-menu role="menu" aria-label="切换评测记录">
+                <button className="menu-item plain" type="button" onClick={() => { SetShowCrumbMenu(false); OpenCreateEval(); }}><Icon name="plus" size={16} /><span className="mt">新建评测</span></button>
+                <div className="menu-sep" aria-hidden="true" />
+                {evalProjects.map((project) => <button key={project.id} type="button" role="menuitemradio" aria-checked={project.id === selectedEvalProject?.id} className={`menu-item ${project.id === selectedEvalProject?.id ? 'sel' : ''}`} title={project.name} onClick={() => { SelectEvalProject(project.id); SetShowCrumbMenu(false); }}>
+                  <Icon name="flask" size={16} />
+                  <span><span className="mt">{project.name}</span></span>
+                  <Icon name="check" size={14} className="tick" />
+                </button>)}
+                {!evalProjects.length && <div className="menu-label">还没有评测</div>}
+              </div>}
+            </div>
           </> : <>
             <span className="crumb-root">{page === 'assistant' ? '求职' : '工作区'}</span>
             <Icon name="chevron-right" size={12} className="crumb-sep" />
@@ -466,7 +491,7 @@ function AppShell({ page, onNavigate, onRestartOnboarding, settingsTab, onReques
     </header>
 
     <div className="app-body">
-      <aside className="sidebar" aria-label={page === 'settings' ? '设置导航' : '主导航'}>
+      <aside className="sidebar" aria-label={page === 'settings' ? '设置导航' : page === 'developer' ? '开发者工具' : '主导航'}>
         {page === 'settings' ? <div className="sb-inner">
           {/* 原型设置侧栏：主色返回入口 + 带指示器的分类导航 + 用户卡 */}
           <button className="sb-new-chat" type="button" onClick={() => onNavigate('assistant')} title="返回工作区">
@@ -489,6 +514,19 @@ function AppShell({ page, onNavigate, onRestartOnboarding, settingsTab, onReques
                 <span className="uc-body"><span className="uc-name">{settings.nickname}</span></span>
                 <Icon name="chevron-up" size={12} className="chev" />
               </button>
+            </div>
+          </div>
+        </div> : page === 'developer' ? <div className="sb-inner">
+          {/* 开发者页专属侧栏：新建评测 + 评估/对比/运行日志导航 + 评测记录列表；用户卡与"返回工作区"留在壳层 */}
+          <DeveloperSidebar navRef={navRef} indicatorRef={navIndicatorRef} />
+          <div className="sb-foot">
+            <div className="uc-row">
+              <button className="user-card" type="button" data-menu-trigger="user" aria-expanded={userMenuPosition !== null} aria-haspopup="menu" title="账户" onClick={(event) => OpenUserMenu(event.currentTarget)}>
+                <RenderUserAvatar />
+                <span className="uc-body"><span className="uc-name">{settings.nickname}</span></span>
+                <Icon name="chevron-up" size={12} className="chev" />
+              </button>
+              <button className="icon-btn" type="button" aria-label="返回工作区" title="返回工作区" onClick={() => onNavigate('assistant')}><Icon name="arrow-left" size={17} /></button>
             </div>
           </div>
         </div> : <div className="sb-inner">
