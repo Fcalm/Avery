@@ -1557,6 +1557,22 @@ body.settings-has-configured-api-key .model-set-scope .set-field:has(input[type=
 [data-theme="dark"] .set-root .quiet-btn.danger { color: #e0796f; }
 [data-theme="dark"] .set-root .quiet-btn.danger:hover { background: rgba(224, 121, 111, .1); }
 
+/* 开发者页的数值输入：定宽跟随 set-inp 视觉；压缩阈值带 % 后缀连成一体 */
+.set-root .gn-num {
+  width: 96px; height: 34px; padding: 0 10px;
+  border: 1px solid var(--border); border-radius: var(--r-control); background: var(--raised);
+  color: var(--text); font-family: var(--font-data); font-size: 13px;
+}
+.set-root .gn-num:focus { outline: 0; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.set-root .gn-num-wrap { display: inline-flex; align-items: stretch; }
+.set-root .gn-num-wrap .gn-num { border-radius: var(--r-control) 0 0 var(--r-control); }
+.set-root .gn-num-suffix {
+  display: grid; width: 34px; place-items: center;
+  border: 1px solid var(--border); border-left: 0;
+  border-radius: 0 var(--r-control) var(--r-control) 0;
+  background: var(--surface-2); color: var(--text-3); font-size: 12.5px;
+}
+
 /* --------------------------------------------------------------- 个性化
    头像底色挂在 .avatar 本体上：设置页预览与侧栏用户卡共用同一套样式。 */
 .avatar.lg { width: 52px; height: 52px; flex-basis: 52px; font-size: 18px; font-weight: 680; }

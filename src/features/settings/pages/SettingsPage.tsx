@@ -6,13 +6,12 @@ import { ClearAgentObservability, ClearBrowserProfile, ConfigureAgent, GetAgentM
 import { ApplyModelRuntime, CreateCatalogModel, DefaultContextWindow, DefaultMaxOutput, FindCatalogModel, FindCatalogProvider, FormatContextWindow, IsValidContextWindow, IsValidMaxOutput, LoadModelCatalog, MergeBackendProviders, MergeProviderModels, ModelApiFormats, SaveModelCatalog, type ModelApiFormat, type ModelCatalog, type ModelCatalogModel, type ModelCatalogProvider } from '../api/modelCatalog';
 import { MigrateWorkspace } from '../../../features/workspace/api/workspaceActions';
 import { WORKSPACE_QUERY_KEY } from '../../../features/workspace/api/workspaceData';
-import { Button, DialogButton, FormField, Modal, PageHeader, Select } from '../../../shared/components/UI';
+import { Button, DialogButton, Modal, Select } from '../../../shared/components/UI';
 import { Icon } from '../../../shared/components/Icon';
 import type { SettingsDraft } from '../../../types/domain';
 import type { AgentBrowserRuntimeStatus, AgentModuleConfiguration, CronBrowserAccessStatus } from '@avery/contracts';
 
 export type SettingTab = 'general' | 'persona' | 'api' | 'browser' | 'developer';
-type FieldErrors = Partial<Record<'traceRetention' | 'compressionThreshold', string>>;
 export const SettingsTabs: Array<{ id: SettingTab; label: string; description: string }> = [
   { id: 'general', label: '常规', description: '语言、工作空间、通知与更新的默认行为，改完就生效。' },
   { id: 'persona', label: '个性化', description: '头像、昵称、说话方式和界面外观，都按你的习惯来。' },
@@ -118,7 +117,10 @@ function SettingsPage({ onNavigateDeveloper, tab, requestedTab, tabRequestVersio
   const [cronBrowserTaskId, setCronBrowserTaskId] = useState('');
   const browserRuntimeRequest = useRef(0);
   const [showClearBrowserProfile, setShowClearBrowserProfile] = useState(false);
-  const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
+  // 开发者页的数值输入草稿：失焦或回车才提交，避免逐键把 1、15 这类过渡值发给后端。
+  const [traceDraft, setTraceDraft] = useState(() => String(settings.traceRetention));
+  const [thresholdDraft, setThresholdDraft] = useState(() => String(settings.compressionThreshold));
+  useEffect(() => { setTraceDraft(String(settings.traceRetention)); setThresholdDraft(String(settings.compressionThreshold)); }, [settings.traceRetention, settings.compressionThreshold]);
   /** 工作空间的实际存放路径：只在常规页展示与打开，后端设置里不含绝对路径。 */
   const [workspacePath, setWorkspacePath] = useState<string | null>(null);
   /** 头像上传用的隐藏文件选择器；上传结果经压缩后写入设置的 avatarImage。 */
@@ -279,19 +281,14 @@ function SettingsPage({ onNavigateDeveloper, tab, requestedTab, tabRequestVersio
         ...(patch.provider && patch.provider !== current.provider ? { apiKey: '' } : {}),
       };
     });
-    if (patch.traceRetention !== undefined || patch.compressionThreshold !== undefined || patch.contextLength !== undefined || patch.contextLimitMode !== undefined) setFieldErrors((current) => ({ ...current, ...(patch.traceRetention !== undefined ? { traceRetention: undefined } : {}), ...(patch.compressionThreshold !== undefined ? { compressionThreshold: undefined } : {}), ...(patch.contextLength !== undefined || patch.contextLimitMode !== undefined ? { contextLength: undefined } : {}) }));
     setDirty(true);
   }
+  // 只剩模型配置页还走显式保存：常规/个性化/浏览器控制/开发者页都是即改即存，不经过这里。
   async function SaveSettings() {
-    const nextErrors: FieldErrors = {};
-    if (draft.compressionThreshold < 1 || draft.compressionThreshold > 80 || !Number.isInteger(draft.compressionThreshold)) nextErrors.compressionThreshold = '请输入 1–80 之间的整数。';
-    if (draft.traceRetention < 1 || draft.traceRetention > 100 || !Number.isInteger(draft.traceRetention)) nextErrors.traceRetention = '请输入 1–100 之间的整数。';
     const activeParameters = ResolveActiveModelParameters();
     if (!activeParameters) { ShowNotice('请先在模型列表里添加或选择一个模型'); return false; }
-    setFieldErrors(nextErrors);
-    if (Object.keys(nextErrors).length) { ShowNotice('请修正标记的设置项后再保存'); return false; }
-    ShowNotice(tab === 'api' ? '正在保存 API 配置…' : '正在保存设置…', 'pending');
-    if (tab === 'api' && IsDesktopAgentAvailable()) {
+    ShowNotice('正在保存 API 配置…', 'pending');
+    if (IsDesktopAgentAvailable()) {
       try {
         await ConfigureAgent({ provider: draft.provider, apiKey: draft.apiKey, baseUrl: draft.baseUrl, model: draft.model, thinkingEnabled: activeParameters.thinkingEnabled, contextLength: activeParameters.contextLength, contextLimitMode: activeParameters.contextLimitMode, compressionThreshold: draft.compressionThreshold });
         setApiKeyConfigured(true);
@@ -310,14 +307,6 @@ function SettingsPage({ onNavigateDeveloper, tab, requestedTab, tabRequestVersio
         return false;
       }
     }
-    if (tab === 'developer' && IsDesktopAgentAvailable()) {
-      try {
-        await SetAgentTraceRetention(draft.traceRetention);
-      } catch (error) {
-        ShowNotice(error instanceof Error ? error.message : 'Trace 留存设置保存失败', 'error');
-        return false;
-      }
-    }
     // API Key 只保留在当前表单内存与主进程 safeStorage，不能写入全局工作空间缓存。
     const { apiKey: _apiKey, ...safeDraft } = draft;
     try {
@@ -326,7 +315,7 @@ function SettingsPage({ onNavigateDeveloper, tab, requestedTab, tabRequestVersio
       ShowNotice(error instanceof Error ? error.message : '设置持久化失败', 'error');
       return false;
     }
-    setDirty(false); setFieldErrors({}); ShowNotice(tab === 'api' ? 'API 配置与上下文限制已保存' : '设置已保存', 'success');
+    setDirty(false); ShowNotice('API 配置与上下文限制已保存', 'success');
     return true;
   }
   function CommitTab(target: SettingTab) { onTabChange(target); }
@@ -458,6 +447,33 @@ function SettingsPage({ onNavigateDeveloper, tab, requestedTab, tabRequestVersio
       await RefreshBrowserRuntime();
     } catch (error) { ShowNotice(error instanceof Error ? error.message : '浏览器登录数据清理失败'); }
     finally { setBrowserRuntimeBusy(false); }
+  }
+  /** 失焦提交 Trace 保留数量：合法才写后端与设置；非法恢复原值并明确提示，不静默吞掉。 */
+  async function CommitTraceRetention() {
+    const value = Number(traceDraft);
+    if (!Number.isInteger(value) || value < 1 || value > 100) {
+      setTraceDraft(String(settings.traceRetention));
+      ShowNotice('Trace 保留数量需为 1–100 的整数，已恢复原值', 'error');
+      return;
+    }
+    if (value === settings.traceRetention) return;
+    try {
+      if (IsDesktopAgentAvailable()) await SetAgentTraceRetention(value);
+      ApplySettings({ traceRetention: value });
+    } catch (error) {
+      setTraceDraft(String(settings.traceRetention));
+      ShowNotice(error instanceof Error ? error.message : 'Trace 留存设置保存失败', 'error');
+    }
+  }
+  /** 失焦提交自动压缩阈值：只落设置，压缩发生在会话装配时按此值读取。 */
+  function CommitCompressionThreshold() {
+    const value = Number(thresholdDraft);
+    if (!Number.isInteger(value) || value < 1 || value > 80) {
+      setThresholdDraft(String(settings.compressionThreshold));
+      ShowNotice('自动压缩阈值需为 1–80 的整数，已恢复原值', 'error');
+      return;
+    }
+    if (value !== settings.compressionThreshold) ApplySettings({ compressionThreshold: value });
   }
   async function SelectUserModules() {
     setUpdatingModules(true);
@@ -841,6 +857,18 @@ function SettingsPage({ onNavigateDeveloper, tab, requestedTab, tabRequestVersio
           <div className="gn-ctl"><Select value={settings.resumeTemplate ?? 'classic'} onChange={(value) => ApplySettings({ resumeTemplate: value as NonNullable<SettingsDraft['resumeTemplate']> })} ariaLabel="简历模板" dropUp options={ResumeTemplates.map((item) => ({ value: item.key, label: item.label }))} /></div>
         </div>
       </div>}
+      {/* 迁移确认弹窗跟着常规页渲染：触发按钮在常规页的工作空间行，此前被留在旧版最终 return 里导致点「更改」无响应。 */}
+      <Modal
+        open={showMigrate}
+        title="确认迁移工作空间？"
+        onClose={() => setShowMigrate(false)}
+        footer={<>
+          <DialogButton onClick={() => setShowMigrate(false)}>取消</DialogButton>
+          <DialogButton tone="accent" onClick={() => void MigrateWorkspaceHandler()}>确认迁移</DialogButton>
+        </>}
+      >
+        将复制并校验数据后切换到目标空目录，原工作空间会保留。Agent 运行期间无法迁移。
+      </Modal>
     </div>{RenderLeaveDialog()}</div>;
   }
   if (tab === 'browser') {
@@ -925,41 +953,66 @@ function SettingsPage({ onNavigateDeveloper, tab, requestedTab, tabRequestVersio
     </div></div>;
   }
   if (tab === 'api') return <div className="settings-page is-model-set">{RenderModelConfiguration()}{RenderLeaveDialog()}</div>;
-  return <div className="settings-page"><section className="settings-content"><PageHeader eyebrow="设置" title={current.label} description={current.description} actions={tab === 'developer' ? <Button variant="primary" onClick={() => void SaveSettings()}>保存更改</Button> : undefined} />
-    {tab === 'developer' && <><div className="setting-note module-settings"><b>本地模块</b><p>{moduleConfiguration?.status === 'active' ? `已启用：${moduleConfiguration.directoryName ?? '已选择目录'}。模块仅在启动会话前校验。` : '当前使用官方默认模块。选择本地模块目录前，请确认其来源可信。'}</p><div className="api-actions"><Button disabled={updatingModules} onClick={() => void SelectUserModules()}>{updatingModules ? '处理中…' : '选择本地模块'}</Button><Button variant="danger" disabled={updatingModules || moduleConfiguration?.status !== 'active'} onClick={() => setShowResetModules(true)}>恢复官方默认模块</Button></div></div><Modal
-      open={showResetModules}
-      title="恢复官方默认模块？"
-      onClose={() => setShowResetModules(false)}
-      footer={<>
-        <DialogButton onClick={() => setShowResetModules(false)}>取消</DialogButton>
-        <DialogButton tone="danger" disabled={updatingModules} onClick={() => void ConfirmResetModules()}>确认恢复默认</DialogButton>
-      </>}
-    >
-      当前本地模块配置将被移除，后续新会话将使用内置模块。运行中的助手任务不会被中断。
-    </Modal></>}
-    {tab === 'developer' && <div className="settings-panel developer-settings"><label className="switch-line"><span><b>启用开发者模式</b><small>开启后在侧边栏显示本地开发者工具。</small></span><input type="checkbox" checked={draft.developerMode} onChange={(event) => UpdateDraft({ developerMode: event.target.checked })} /></label><FormField label="Trace 保留数量" hint="默认 50，最多保留 100 条本地 Trace。"><input type="number" min="1" max="100" value={draft.traceRetention} aria-invalid={Boolean(fieldErrors.traceRetention)} aria-describedby={fieldErrors.traceRetention ? 'trace-retention-error' : undefined} onChange={(event) => UpdateDraft({ traceRetention: Number(event.target.value) })} />{fieldErrors.traceRetention && <small className="field-error" id="trace-retention-error" role="alert">{fieldErrors.traceRetention}</small>}</FormField><FormField label="自动压缩阈值"><div className="input-suffix"><input type="number" min="1" max="80" value={draft.compressionThreshold} aria-invalid={Boolean(fieldErrors.compressionThreshold)} aria-describedby={fieldErrors.compressionThreshold ? 'compression-threshold-error' : undefined} onChange={(event) => UpdateDraft({ compressionThreshold: Number(event.target.value) })} /><span>%</span></div>{fieldErrors.compressionThreshold && <small className="field-error" id="compression-threshold-error" role="alert">{fieldErrors.compressionThreshold}</small>}<small>按 System、Tools 和 Messages 的完整输入计算；只能配置为 1–80 的整数。</small></FormField><div className="setting-note"><b>Trace 隐私提示</b><p>真实 Trace 可能包含简历、JD 与附件片段，仅保存在本机；关闭开发者模式后不再新增 Trace。</p></div><div className="danger-zone"><div><b>清空 Trace</b><p>删除所有本地 Trace，不可撤销。</p></div><Button variant="danger" onClick={() => setShowClear(true)}>一键清空</Button></div>{draft.developerMode && <Button onClick={onNavigateDeveloper}>打开开发者工具</Button>}</div>}
-  </section>{RenderLeaveDialog()}<Modal
-    open={showClear}
-    title="确认清空全部 Trace？"
-    onClose={() => setShowClear(false)}
-    footer={<>
-      <DialogButton onClick={() => setShowClear(false)}>取消</DialogButton>
-      <DialogButton tone="danger" onClick={() => void ClearDeveloperObservability()}>确认清空</DialogButton>
-    </>}
-  >
-    将删除本地全部运行日志、Trace 索引和事件。此操作不可撤销。
-  </Modal><Modal
-    open={showMigrate}
-    title="确认迁移工作空间？"
-    onClose={() => setShowMigrate(false)}
-    footer={<>
-      <DialogButton onClick={() => setShowMigrate(false)}>取消</DialogButton>
-      <DialogButton tone="accent" onClick={() => void MigrateWorkspaceHandler()}>确认迁移</DialogButton>
-    </>}
-  >
-    将复制并校验数据后切换到目标空目录，原工作空间会保留。Agent 运行期间无法迁移。
-  </Modal>
-  </div>;
+  if (tab === 'developer') {
+    return <div className="settings-page is-set-page"><div className="set-root">
+      <div className="set-head"><div><h1>开发者模式</h1><p>查看本地日志、Trace 和上下文用量界面。</p></div></div>
+      <div className="gn-card">
+        <div className="gn-cap">开发者工具</div>
+        <RenderGeneralSwitch label="启用开发者模式" description="开启后在侧边栏显示本地开发者工具。" checked={settings.developerMode} onToggle={() => ApplySettings({ developerMode: !settings.developerMode })} />
+        <div className="gn-row">
+          <div className="gn-txt"><span className="gn-t">打开开发者工具</span><span className="gn-d">查看本地日志、Trace 轨迹与上下文用量界面。</span></div>
+          <div className="gn-ctl"><button className="quiet-btn" type="button" disabled={!settings.developerMode} onClick={onNavigateDeveloper}><Icon name="developer-mode" size={14} />打开</button></div>
+        </div>
+        <div className="gn-cap">Trace 与上下文</div>
+        <div className="bw-hint"><Icon name="info" size={14} /><span>真实 Trace 可能包含简历、JD 与附件片段，仅保存在本机；关闭开发者模式后不再新增 Trace。</span></div>
+        <div className="gn-row">
+          <div className="gn-txt"><span className="gn-t">Trace 保留数量</span><span className="gn-d">默认 50，最多保留 100 条本地 Trace，失焦或回车保存。</span></div>
+          <div className="gn-ctl"><input className="gn-num" type="number" min="1" max="100" value={traceDraft} aria-label="Trace 保留数量" onChange={(event) => setTraceDraft(event.target.value)} onBlur={() => void CommitTraceRetention()} onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); void CommitTraceRetention(); } }} /></div>
+        </div>
+        <div className="gn-row">
+          <div className="gn-txt"><span className="gn-t">自动压缩阈值</span><span className="gn-d">按 System、Tools 和 Messages 的完整输入计算，只能配置为 1–80 的整数。</span></div>
+          <div className="gn-ctl"><div className="gn-num-wrap"><input className="gn-num" type="number" min="1" max="80" value={thresholdDraft} aria-label="自动压缩阈值" onChange={(event) => setThresholdDraft(event.target.value)} onBlur={CommitCompressionThreshold} onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); CommitCompressionThreshold(); } }} /><span className="gn-num-suffix">%</span></div></div>
+        </div>
+        <div className="gn-cap">本地模块</div>
+        <div className="gn-row stack">
+          <div className="gn-txt"><span className="gn-t">本地模块目录</span><span className="gn-d">{moduleConfiguration?.status === 'active' ? `已启用：${moduleConfiguration.directoryName ?? '已选择目录'}。模块仅在启动会话前校验。` : '当前使用官方默认模块。选择本地模块目录前，请确认其来源可信。'}</span></div>
+          <div className="gn-ctl">
+            <button className="quiet-btn" type="button" disabled={updatingModules} onClick={() => void SelectUserModules()}><Icon name="folder-open" size={14} />{updatingModules ? '处理中…' : '选择本地模块'}</button>
+            <button className="quiet-btn danger" type="button" disabled={updatingModules || moduleConfiguration?.status !== 'active'} onClick={() => setShowResetModules(true)}>恢复官方默认模块</button>
+          </div>
+        </div>
+        <div className="gn-cap">危险操作</div>
+        <div className="gn-row">
+          <div className="gn-txt"><span className="gn-t">清空 Trace</span><span className="gn-d">删除所有本地 Trace，不可撤销。</span></div>
+          <div className="gn-ctl"><button className="quiet-btn danger" type="button" onClick={() => setShowClear(true)}><Icon name="trash-simple" size={14} />一键清空</button></div>
+        </div>
+      </div>
+      <Modal
+        open={showResetModules}
+        title="恢复官方默认模块？"
+        onClose={() => setShowResetModules(false)}
+        footer={<>
+          <DialogButton onClick={() => setShowResetModules(false)}>取消</DialogButton>
+          <DialogButton tone="danger" disabled={updatingModules} onClick={() => void ConfirmResetModules()}>确认恢复默认</DialogButton>
+        </>}
+      >
+        当前本地模块配置将被移除，后续新会话将使用内置模块。运行中的助手任务不会被中断。
+      </Modal>
+      <Modal
+        open={showClear}
+        title="确认清空全部 Trace？"
+        onClose={() => setShowClear(false)}
+        footer={<>
+          <DialogButton onClick={() => setShowClear(false)}>取消</DialogButton>
+          <DialogButton tone="danger" onClick={() => void ClearDeveloperObservability()}>确认清空</DialogButton>
+        </>}
+      >
+        将删除本地全部运行日志、Trace 索引和事件。此操作不可撤销。
+      </Modal>
+    </div></div>;
+  }
+  // 页签是封闭联合，全部在前置分支返回；走到这里说明状态异常，不渲染内容。
+  return null;
 }
 
 export { SettingsPage };
