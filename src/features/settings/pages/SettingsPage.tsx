@@ -822,7 +822,7 @@ function SettingsPage({ onNavigateDeveloper, tab, requestedTab, tabRequestVersio
       </div>
       <div className="gn-row">
         <div className="gn-txt"><span className="gn-t">简历模板</span><span className="gn-d">Avery 改简历时用的版式；模板渲染暂未接入，先记录你的选择。</span></div>
-        <div className="gn-ctl"><Select value={draft.resumeTemplate ?? 'classic'} onChange={(value) => UpdateDraft({ resumeTemplate: value as NonNullable<SettingsDraft['resumeTemplate']> })} ariaLabel="简历模板" options={ResumeTemplates.map((item) => ({ value: item.key, label: item.label }))} /></div>
+        <div className="gn-ctl"><Select value={draft.resumeTemplate ?? 'classic'} onChange={(value) => UpdateDraft({ resumeTemplate: value as NonNullable<SettingsDraft['resumeTemplate']> })} ariaLabel="简历模板" dropUp options={ResumeTemplates.map((item) => ({ value: item.key, label: item.label }))} /></div>
       </div>
     </div></div>}
     {tab === 'browser' && <>

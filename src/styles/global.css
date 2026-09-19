@@ -1007,6 +1007,8 @@ input:focus, textarea:focus, select:focus { background: var(--color-surface-card
   background: var(--raised);
   box-shadow: var(--shadow-lg);
 }
+/* 向上展开变体：overflow 卡片内靠近底部的下拉（个性化-简历模板）改为向上弹出，避免菜单被卡片裁切 */
+.custom-select-menu.drop-up { top: auto; bottom: calc(100% + var(--space-1)); }
 .custom-select-option {
   display: flex;
   align-items: center;
