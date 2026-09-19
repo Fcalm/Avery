@@ -1000,6 +1000,10 @@ input:focus, textarea:focus, select:focus { background: var(--color-surface-card
   left: 0;
   display: grid;
   max-height: 240px;
+  /* 菜单宽度=触发器宽度，而选项行固定开销（对勾+间距+行内边距+菜单内边距）比触发器大，
+     选项与触发器等长时会临界横向溢出；overflow-y:auto 会让 overflow-x 一并变成可滚，
+     故显式禁止横向滚动，配合选项 .mt 的省略号兜底。 */
+  overflow-x: hidden;
   overflow-y: auto;
   border: 1px solid var(--border);
   border-radius: var(--r-card);
@@ -1017,7 +1021,10 @@ input:focus, textarea:focus, select:focus { background: var(--color-surface-card
   min-height: 32px;
   border: 0;
   border-radius: 9px;
-  padding: 8px 10px;
+  /* 水平内边距 7px 使选项文案区与触发器文案区恰好等宽：
+     触发器文本左缘 = 边框1+内边距12 = 13px，选项文本左缘 = 菜单内边距6+行内边距7 = 13px，
+     右侧同理抵消对勾与间距的固定开销，等长选项不再触发省略号或横向溢出。 */
+  padding: 8px 7px;
   color: var(--ink);
   background: transparent;
   font: inherit;
