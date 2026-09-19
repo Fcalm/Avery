@@ -14,7 +14,7 @@ import type { AgentBrowserRuntimeStatus, AgentModuleConfiguration, CronBrowserAc
 export type SettingTab = 'general' | 'persona' | 'api' | 'browser' | 'developer';
 type FieldErrors = Partial<Record<'traceRetention' | 'compressionThreshold', string>>;
 export const SettingsTabs: Array<{ id: SettingTab; label: string; description: string }> = [
-  { id: 'general', label: '常规', description: '管理语言、启动页、通知与系统的默认行为。' },
+  { id: 'general', label: '常规', description: '语言、工作空间、通知与更新的默认行为，改完就生效。' },
   { id: 'persona', label: '个性化', description: '头像、昵称、说话方式和界面外观，都按你的习惯来。' },
   { id: 'api', label: '模型配置', description: '管理模型供应商、默认模型与上下文能力；凭据加密存储在本机。' },
   { id: 'browser', label: '浏览器设置', description: '选择 Avery 隔离浏览器，或安全连接已登录 BOSS 的个人浏览器。' },
@@ -101,7 +101,7 @@ function RenderGeneralSwitch({ label, description, checked, disabled = false, on
 function SettingsPage({ onNavigateDeveloper, tab, requestedTab, tabRequestVersion, onTabChange }: { onNavigateDeveloper: () => void; tab: SettingTab; requestedTab: SettingTab; tabRequestVersion: number; onTabChange: (tab: SettingTab) => void }) {
   const { ShowNotice } = useUiStore();
   const queryClient = useQueryClient();
-  const { settings, saveSettingsNow } = useSettingsStore();
+  const { settings, setSettings, saveSettingsNow } = useSettingsStore();
   const [draft, setDraft] = useState<SettingsDraft>(() => NormalizeProviderSettings(settings));
   const [refreshingModels, setRefreshingModels] = useState(false);
   const [dirty, setDirty] = useState(false);
@@ -119,8 +119,11 @@ function SettingsPage({ onNavigateDeveloper, tab, requestedTab, tabRequestVersio
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
   /** 工作空间的实际存放路径：只在常规页展示与打开，后端设置里不含绝对路径。 */
   const [workspacePath, setWorkspacePath] = useState<string | null>(null);
-  /** 头像上传用的隐藏文件选择器；上传结果经压缩后写入草稿的 avatarImage。 */
+  /** 头像上传用的隐藏文件选择器；上传结果经压缩后写入设置的 avatarImage。 */
   const avatarFileRef = useRef<HTMLInputElement>(null);
+  /** 自定义上下文的本地草稿：与原型一致保留显式保存，未保存前切换页签会被确认框拦下。 */
+  const [contextDraft, setContextDraft] = useState(() => settings.customContext ?? '');
+  useEffect(() => { setContextDraft(settings.customContext ?? ''); }, [settings.customContext]);
   const [moduleConfiguration, setModuleConfiguration] = useState<AgentModuleConfiguration | null>(null);
   const [updatingModules, setUpdatingModules] = useState(false);
   const [apiKeyConfigured, setApiKeyConfigured] = useState(false);
@@ -314,10 +317,6 @@ function SettingsPage({ onNavigateDeveloper, tab, requestedTab, tabRequestVersio
     try {
       await saveSettingsNow({ ...safeDraft, apiKey: '' });
       if (tab === 'browser') await Promise.all([RefreshBrowserRuntime(), RefreshCronBrowserAccess()]);
-      if (tab === 'general' && window.averyWindow) {
-        try { await window.averyWindow.SetLoginItemSettings(draft.autoLaunch === true); }
-        catch { ShowNotice('设置已保存，但开机自启未能在系统生效', 'error'); }
-      }
     } catch (error) {
       ShowNotice(error instanceof Error ? error.message : '设置持久化失败', 'error');
       return false;
@@ -326,8 +325,9 @@ function SettingsPage({ onNavigateDeveloper, tab, requestedTab, tabRequestVersio
     return true;
   }
   function CommitTab(target: SettingTab) { onTabChange(target); }
-  function SwitchTab(target: SettingTab) { if (target === tab) return; if (!dirty) { CommitTab(target); return; } setNextTab(target); setShowLeave(true); }
-  function DiscardAndSwitch() { if (!nextTab) return; setDraft(NormalizeProviderSettings(settings)); setDirty(false); CommitTab(nextTab); setNextTab(null); setShowLeave(false); }
+  // 个性化页的自定义上下文是显式保存的草稿：与手动保存页签一起纳入离开确认。
+  function SwitchTab(target: SettingTab) { if (target === tab) return; if (!dirty && !contextDirty) { CommitTab(target); return; } setNextTab(target); setShowLeave(true); }
+  function DiscardAndSwitch() { if (!nextTab) return; setDraft(NormalizeProviderSettings(settings)); setContextDraft(settings.customContext ?? ''); setDirty(false); CommitTab(nextTab); setNextTab(null); setShowLeave(false); }
   useEffect(() => {
     if (tabRequestVersion > 0) SwitchTab(requestedTab);
   }, [tabRequestVersion]);
@@ -348,17 +348,34 @@ function SettingsPage({ onNavigateDeveloper, tab, requestedTab, tabRequestVersio
   function CheckForUpdatesNotice() {
     ShowNotice(`当前版本 v${__APP_VERSION__}；自动更新通道尚未接入`);
   }
-  /** 恢复默认只重置常规页的草稿字段；工作空间路径由本地服务管理，不属于草稿。 */
-  function ResetGeneralDefaults() {
-    UpdateDraft({ language: 'zh', startPage: 'last', notifyOnComplete: true, notifySound: true, autoUpdate: true, autoLaunch: false, closeToTray: true });
+  /** 常规/个性化页即改即存：直接写入设置存储（乐观更新 + 300ms 防抖持久化），没有页头保存按钮。 */
+  function ApplySettings(patch: Partial<SettingsDraft>) {
+    setSettings((current) => ({ ...current, ...patch }));
   }
-  /** 头像上传：只收图片文件，先在本地压缩成小图再入草稿；失败时如实提示，不写半成品数据。 */
+  /** 恢复默认（原型标题行右侧的 quiet 按钮）：常规项回到默认值，开机自启同步从系统登录项移除。 */
+  async function ResetGeneralDefaults() {
+    ApplySettings({ language: 'zh', startPage: 'last', notifyOnComplete: true, notifySound: true, autoUpdate: true, autoLaunch: false, closeToTray: true });
+    try { await window.averyWindow?.SetLoginItemSettings(false); }
+    catch { ShowNotice('已恢复默认，但开机自启未能在系统移除', 'error'); }
+  }
+  /** 开机自启：写入设置的同时同步系统登录项，两处状态保持一致；失败时如实提示。 */
+  async function ToggleAutoLaunch() {
+    const next = !(settings.autoLaunch ?? false);
+    ApplySettings({ autoLaunch: next });
+    try { await window.averyWindow?.SetLoginItemSettings(next); }
+    catch { ShowNotice('设置已保存，但开机自启未能在系统生效', 'error'); }
+  }
+  /** 自定义上下文（原型 pf-save）：显式保存草稿，保存后与已存值一致。 */
+  function CommitContext() {
+    ApplySettings({ customContext: contextDraft });
+  }
+  /** 头像上传：只收图片文件，先在本地压缩成小图再写入设置；失败时如实提示，不写半成品数据。 */
   async function UploadAvatarHandler(file: File | undefined) {
     if (!file) return;
     if (!file.type.startsWith('image/')) { ShowNotice('请选择图片文件', 'error'); return; }
     if (file.size > 8 * 1024 * 1024) { ShowNotice('图片太大，请选择 8MB 以内的文件', 'error'); return; }
     try {
-      UpdateDraft({ avatarImage: await CreateAvatarDataUrl(file) });
+      ApplySettings({ avatarImage: await CreateAvatarDataUrl(file) });
     } catch (error) {
       ShowNotice(error instanceof Error ? error.message : '头像处理失败', 'error');
     }
@@ -703,7 +720,7 @@ function SettingsPage({ onNavigateDeveloper, tab, requestedTab, tabRequestVersio
       footer={<>
         <DialogButton onClick={() => setShowLeave(false)}>继续编辑</DialogButton>
         <DialogButton onClick={DiscardAndSwitch}>放弃修改</DialogButton>
-        <DialogButton tone="accent" onClick={async () => { if (await SaveSettings() && nextTab) CommitTab(nextTab); setNextTab(null); setShowLeave(false); }}>保存并切换</DialogButton>
+        <DialogButton tone="accent" onClick={async () => { if (contextDirty) CommitContext(); if (await SaveSettings() && nextTab) CommitTab(nextTab); setNextTab(null); setShowLeave(false); }}>保存并切换</DialogButton>
       </>}
     >
       切换设置项前，请选择如何处理当前修改。
@@ -711,47 +728,120 @@ function SettingsPage({ onNavigateDeveloper, tab, requestedTab, tabRequestVersio
   }
 
   const current = SettingsTabs.find((item) => item.id === tab)!;
+  // 个性化页：上下文是否相对已保存值有改动；预览字号取当前档位的像素值。
+  const contextDirty = contextDraft !== (settings.customContext ?? '');
+  const replyFontSizePx = (ChatFontSizes.find((size) => size.key === (settings.chatFontSize ?? 'md')) ?? ChatFontSizes[1]).px;
+  // 常规与个性化与模型配置同一版式：set-root 自带留白与最大宽度，标题行右侧放常规页的恢复默认。
+  if (tab === 'general' || tab === 'persona') {
+    return <div className="settings-page is-set-page"><div className="set-root">
+      <div className="set-head">
+        <div>
+          <h1>{current.label}</h1>
+          <p>{current.description}</p>
+        </div>
+        {tab === 'general' && <button className="quiet-btn gn-reset" type="button" onClick={() => void ResetGeneralDefaults()}><Icon name="recovery" size={14} />恢复默认</button>}
+      </div>
+      {tab === 'general' ? <div className="gn-card">
+        <div className="gn-cap">通用</div>
+        <div className="gn-row">
+          <div className="gn-txt"><span className="gn-t">语言</span><span className="gn-d">界面与系统通知的语言；当前版本界面文案仅提供中文。</span></div>
+          <div className="gn-ctl"><Select value={settings.language ?? 'zh'} onChange={(value) => ApplySettings({ language: value as 'zh' | 'en' })} ariaLabel="语言" options={[{ value: 'zh', label: '简体中文' }, { value: 'en', label: 'English' }]} /></div>
+        </div>
+        <div className="gn-row">
+          <div className="gn-txt"><span className="gn-t">启动时打开</span><span className="gn-d">每次打开应用先停在哪里。</span></div>
+          <div className="gn-ctl"><Select value={settings.startPage ?? 'last'} onChange={(value) => ApplySettings({ startPage: value as 'last' | 'home' })} ariaLabel="启动时打开" options={[{ value: 'last', label: '恢复上次的对话' }, { value: 'home', label: '打开工作区首页' }]} /></div>
+        </div>
+        <div className="gn-cap">工作空间</div>
+        <div className="gn-row">
+          <div className="gn-txt">
+            <span className="gn-line"><span className="gn-t">内容存放路径</span>{workspacePath && <span className="gn-path" title={workspacePath}>{workspacePath}</span>}</span>
+            <span className="gn-d">对话记录、附件和导出的文件都放在这个目录下；更改会走工作空间迁移流程。</span>
+          </div>
+          <div className="gn-ctl">
+            <button className="icon-btn" type="button" aria-label="打开目录" title="打开目录" onClick={() => void OpenWorkspaceDirectoryHandler()}><Icon name="folder-open" size={16} /></button>
+            <button className="quiet-btn" type="button" onClick={() => setShowMigrate(true)}><Icon name="folder-simple" size={15} />更改</button>
+          </div>
+        </div>
+        <div className="gn-cap">通知</div>
+        <RenderGeneralSwitch label="任务完成通知" description="长任务跑完后弹一条系统通知，切到别的窗口也不会错过。" checked={settings.notifyOnComplete ?? true} onToggle={() => ApplySettings({ notifyOnComplete: !(settings.notifyOnComplete ?? true) })} />
+        <RenderGeneralSwitch label="完成时播放提示音" description="通知出现时带一声轻提示。关掉上面的通知，这一项也不再生效。" checked={settings.notifySound ?? true} disabled={!(settings.notifyOnComplete ?? true)} onToggle={() => ApplySettings({ notifySound: !(settings.notifySound ?? true) })} />
+        <div className="gn-cap">更新</div>
+        <RenderGeneralSwitch label="自动下载更新" description="检测到新版本就在后台下载，下次启动时装上。" checked={settings.autoUpdate ?? true} onToggle={() => ApplySettings({ autoUpdate: !(settings.autoUpdate ?? true) })} />
+        <div className="gn-row">
+          <div className="gn-txt"><span className="gn-t">当前版本</span><span className="gn-d">Avery {__APP_VERSION__}</span></div>
+          <div className="gn-ctl"><button className="quiet-btn" type="button" onClick={CheckForUpdatesNotice}><Icon name="refresh" size={14} />检查更新</button></div>
+        </div>
+        <div className="gn-cap">系统</div>
+        <RenderGeneralSwitch label="开机时自动启动" description="登录系统后在后台启动，随时可以唤起。" checked={settings.autoLaunch ?? false} onToggle={() => void ToggleAutoLaunch()} />
+        <RenderGeneralSwitch label="关闭主窗口时最小化到托盘" description="点关闭按钮不退出应用，正在跑的任务继续。" checked={settings.closeToTray ?? true} onToggle={() => ApplySettings({ closeToTray: !(settings.closeToTray ?? true) })} />
+      </div> : <div className="gn-card">
+        <div className="gn-cap">头像与昵称</div>
+        <div className="gn-row">
+          <span className="avatar lg persona-avatar" data-av={settings.avatarStyle ?? 'default'} aria-hidden="true">{settings.avatarImage ? <img src={settings.avatarImage} alt="" /> : InitialOf(settings.nickname)}</span>
+          <div className="gn-txt">
+            <span className="gn-t">头像</span>
+            <span className="gn-d">不上传图片时，用昵称的首个字做默认头像，挑一套底色就行。</span>
+          </div>
+          <div className="gn-ctl pf-avs">
+            {AvatarStyles.map((style) => <button key={style.key} className="av-sw" type="button" data-av={style.key} aria-pressed={style.key === (settings.avatarStyle ?? 'default')} aria-label={style.label} title={style.label} onClick={() => ApplySettings({ avatarStyle: style.key })} />)}
+            <button className="quiet-btn" type="button" onClick={() => avatarFileRef.current?.click()}><Icon name="upload-simple" size={14} />上传图片</button>
+            {settings.avatarImage ? <button className="quiet-btn" type="button" onClick={() => ApplySettings({ avatarImage: '' })}>移除</button> : null}
+          </div>
+          <input ref={avatarFileRef} type="file" accept="image/*" className="pf-file" aria-hidden="true" tabIndex={-1} onChange={(event) => { void UploadAvatarHandler(event.target.files?.[0]); event.target.value = ''; }} />
+        </div>
+        <div className="gn-row">
+          <div className="gn-txt">
+            <span className="gn-t">昵称</span>
+            <span className="gn-d">侧边栏和欢迎页显示的名字，改完即生效。</span>
+          </div>
+          <div className="gn-ctl"><input className="set-inp pf-name" value={settings.nickname} maxLength={20} spellCheck={false} autoComplete="off" aria-label="昵称" onChange={(event) => ApplySettings({ nickname: event.target.value })} /></div>
+        </div>
+        <div className="gn-cap">自定义上下文</div>
+        <div className="gn-row stack">
+          <div className="gn-txt">
+            <span className="gn-t">语气与说话方式</span>
+            <span className="gn-d">写下希望 Avery 保持的语气、称呼和回答习惯，每次聊天都会带上这段内容。最多 {ContextMax} 字。</span>
+          </div>
+          <textarea className="set-inp pf-ctx" maxLength={ContextMax} rows={6} aria-label="自定义上下文" placeholder="例如：先给结论，再讲理由，语气像一个熟悉的同事。" value={contextDraft} onChange={(event) => setContextDraft(event.target.value)} onKeyDown={(event) => { if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') { event.preventDefault(); CommitContext(); } }} />
+          <div className="pf-ctx-foot">
+            <span className={`pf-count${contextDraft.length >= ContextMax ? ' full' : ''}`}>{contextDraft.length} / {ContextMax}</span>
+            <span className={`pf-state${contextDirty ? ' dirty' : ''}`}>{contextDirty ? '有改动还没保存' : '已保存'}</span>
+            <button className="pf-save" type="button" disabled={!contextDirty} onClick={CommitContext}>保存</button>
+          </div>
+        </div>
+        <div className="gn-cap">外观</div>
+        <div className="gn-row">
+          <div className="gn-txt"><span className="gn-t">字号大小</span><span className="gn-d">对话里 Avery 回复的字号，选完下面的预览跟着变。</span></div>
+          <div className="gn-ctl">
+            <div className="seg pf-seg" role="radiogroup" aria-label="字号大小">
+              {ChatFontSizes.map((size) => <button key={size.key} className={`seg-i${size.key === (settings.chatFontSize ?? 'md') ? ' sel' : ''}`} type="button" role="radio" aria-checked={size.key === (settings.chatFontSize ?? 'md')} aria-label={size.label} onClick={() => ApplySettings({ chatFontSize: size.key })}>{size.label}</button>)}
+            </div>
+          </div>
+        </div>
+        <div className="gn-preview" style={{ '--gp-fs': `${replyFontSizePx}px` } as CSSProperties}>
+          <div className="gp-head"><span className="lb">预览</span><span className="gp-size">{replyFontSizePx}px</span></div>
+          <div className="gp-msg">
+            <span className="avatar" aria-hidden="true">{InitialOf(settings.nickname)}</span>
+            <p>我把这份简历的实习经历按时间倒序重排了一遍，删掉了两处重复的描述。要我再压到一页吗？</p>
+          </div>
+        </div>
+        <div className="gn-row">
+          <div className="gn-txt"><span className="gn-t">主题颜色</span><span className="gn-d">按钮和强调色跟着变；真实换肤暂未接入，先记录你的选择。</span></div>
+          <div className="gn-ctl pf-accs">
+            {AccentColors.map((color) => <button key={color.key} className="acc-sw" type="button" style={{ background: color.hex }} aria-pressed={color.key === (settings.accentColor ?? 'pine')} aria-label={color.label} title={color.label} onClick={() => ApplySettings({ accentColor: color.key })} />)}
+          </div>
+        </div>
+        <div className="gn-row">
+          <div className="gn-txt"><span className="gn-t">简历模板</span><span className="gn-d">Avery 改简历时用的版式；模板渲染暂未接入，先记录你的选择。</span></div>
+          <div className="gn-ctl"><Select value={settings.resumeTemplate ?? 'classic'} onChange={(value) => ApplySettings({ resumeTemplate: value as NonNullable<SettingsDraft['resumeTemplate']> })} ariaLabel="简历模板" dropUp options={ResumeTemplates.map((item) => ({ value: item.key, label: item.label }))} /></div>
+        </div>
+      </div>}
+    </div>{RenderLeaveDialog()}</div>;
+  }
   const usesPersonalBrowser = (draft.browserEngine ?? 'edge') !== 'electron';
   const browserSelectionPending = Boolean(browserRuntime && browserRuntime.engine !== (draft.browserEngine ?? 'edge'));
-  // 个性化页：上下文是否相对已保存值有改动；预览字号取当前档位的像素值。
-  const contextDirty = (draft.customContext ?? '') !== (settings.customContext ?? '');
-  const replyFontSizePx = (ChatFontSizes.find((size) => size.key === (draft.chatFontSize ?? 'md')) ?? ChatFontSizes[1]).px;
   if (tab === 'api') return <div className="settings-page is-model-set">{RenderModelConfiguration()}{RenderLeaveDialog()}</div>;
-  return <div className="settings-page"><section className="settings-content"><PageHeader eyebrow="设置" title={current.label} description={current.description} actions={tab === 'general' ? <><Button variant="quiet" onClick={ResetGeneralDefaults}>恢复默认</Button><Button variant="primary" onClick={() => void SaveSettings()}>保存更改</Button></> : tab !== 'api' && tab !== 'browser' ? <Button variant="primary" onClick={() => void SaveSettings()}>保存更改</Button> : undefined} />
-    {tab === 'general' && <div className="settings-panel gn-panel"><div className="gn-card">
-      <div className="gn-cap">通用</div>
-      <div className="gn-row">
-        <div className="gn-txt"><span className="gn-t">语言</span><span className="gn-d">界面与系统通知的语言；当前版本界面文案仅提供中文。</span></div>
-        <div className="gn-ctl"><Select value={draft.language ?? 'zh'} onChange={(value) => UpdateDraft({ language: value as 'zh' | 'en' })} ariaLabel="语言" options={[{ value: 'zh', label: '简体中文' }, { value: 'en', label: 'English' }]} /></div>
-      </div>
-      <div className="gn-row">
-        <div className="gn-txt"><span className="gn-t">启动时打开</span><span className="gn-d">每次打开应用先停在哪里。</span></div>
-        <div className="gn-ctl"><Select value={draft.startPage ?? 'last'} onChange={(value) => UpdateDraft({ startPage: value as 'last' | 'home' })} ariaLabel="启动时打开" options={[{ value: 'last', label: '恢复上次的对话' }, { value: 'home', label: '打开工作区首页' }]} /></div>
-      </div>
-      <div className="gn-cap">工作空间</div>
-      <div className="gn-row">
-        <div className="gn-txt">
-          <span className="gn-line"><span className="gn-t">内容存放路径</span>{workspacePath && <span className="gn-path" title={workspacePath}>{workspacePath}</span>}</span>
-          <span className="gn-d">对话记录、附件和导出的文件都放在这个目录下；更改会走工作空间迁移流程。</span>
-        </div>
-        <div className="gn-ctl">
-          <button className="icon-btn" type="button" aria-label="打开目录" title="打开目录" onClick={() => void OpenWorkspaceDirectoryHandler()}><Icon name="folder-open" size={16} /></button>
-          <button className="quiet-btn" type="button" onClick={() => setShowMigrate(true)}><Icon name="folder-simple" size={15} />更改</button>
-        </div>
-      </div>
-      <div className="gn-cap">通知</div>
-      <RenderGeneralSwitch label="任务完成通知" description="长任务跑完后弹一条系统通知，切到别的窗口也不会错过。" checked={draft.notifyOnComplete ?? true} onToggle={() => UpdateDraft({ notifyOnComplete: !(draft.notifyOnComplete ?? true) })} />
-      <RenderGeneralSwitch label="完成时播放提示音" description="通知出现时带一声轻提示。关掉上面的通知，这一项也不再生效。" checked={draft.notifySound ?? true} disabled={!(draft.notifyOnComplete ?? true)} onToggle={() => UpdateDraft({ notifySound: !(draft.notifySound ?? true) })} />
-      <div className="gn-cap">更新</div>
-      <RenderGeneralSwitch label="自动下载更新" description="检测到新版本就在后台下载，下次启动时装上。" checked={draft.autoUpdate ?? true} onToggle={() => UpdateDraft({ autoUpdate: !(draft.autoUpdate ?? true) })} />
-      <div className="gn-row">
-        <div className="gn-txt"><span className="gn-t">当前版本</span><span className="gn-d">Avery {__APP_VERSION__}</span></div>
-        <div className="gn-ctl"><button className="quiet-btn" type="button" onClick={CheckForUpdatesNotice}><Icon name="refresh" size={14} />检查更新</button></div>
-      </div>
-      <div className="gn-cap">系统</div>
-      <RenderGeneralSwitch label="开机时自动启动" description="登录系统后在后台启动，随时可以唤起。" checked={draft.autoLaunch ?? false} onToggle={() => UpdateDraft({ autoLaunch: !(draft.autoLaunch ?? false) })} />
-      <RenderGeneralSwitch label="关闭主窗口时最小化到托盘" description="点关闭按钮不退出应用，正在跑的任务继续。" checked={draft.closeToTray ?? true} onToggle={() => UpdateDraft({ closeToTray: !(draft.closeToTray ?? true) })} />
-    </div></div>}
+  return <div className="settings-page"><section className="settings-content"><PageHeader eyebrow="设置" title={current.label} description={current.description} actions={tab === 'developer' ? <Button variant="primary" onClick={() => void SaveSettings()}>保存更改</Button> : undefined} />
     {tab === 'developer' && <><div className="setting-note module-settings"><b>本地模块</b><p>{moduleConfiguration?.status === 'active' ? `已启用：${moduleConfiguration.directoryName ?? '已选择目录'}。模块仅在启动会话前校验。` : '当前使用官方默认模块。选择本地模块目录前，请确认其来源可信。'}</p><div className="api-actions"><Button disabled={updatingModules} onClick={() => void SelectUserModules()}>{updatingModules ? '处理中…' : '选择本地模块'}</Button><Button variant="danger" disabled={updatingModules || moduleConfiguration?.status !== 'active'} onClick={() => setShowResetModules(true)}>恢复官方默认模块</Button></div></div><Modal
       open={showResetModules}
       title="恢复官方默认模块？"
@@ -763,68 +853,6 @@ function SettingsPage({ onNavigateDeveloper, tab, requestedTab, tabRequestVersio
     >
       当前本地模块配置将被移除，后续新会话将使用内置模块。运行中的助手任务不会被中断。
     </Modal></>}
-    {tab === 'persona' && <div className="settings-panel gn-panel"><div className="gn-card">
-      <div className="gn-cap">头像与昵称</div>
-      <div className="gn-row">
-        <span className="avatar lg persona-avatar" data-av={draft.avatarStyle ?? 'default'} aria-hidden="true">{draft.avatarImage ? <img src={draft.avatarImage} alt="" /> : InitialOf(draft.nickname)}</span>
-        <div className="gn-txt">
-          <span className="gn-t">头像</span>
-          <span className="gn-d">不上传图片时，用昵称的首个字做默认头像，挑一套底色就行。</span>
-        </div>
-        <div className="gn-ctl pf-avs">
-          {AvatarStyles.map((style) => <button key={style.key} className="av-sw" type="button" data-av={style.key} aria-pressed={style.key === (draft.avatarStyle ?? 'default')} aria-label={style.label} title={style.label} onClick={() => UpdateDraft({ avatarStyle: style.key })} />)}
-          <button className="quiet-btn" type="button" onClick={() => avatarFileRef.current?.click()}><Icon name="upload-simple" size={14} />上传图片</button>
-          {draft.avatarImage ? <button className="quiet-btn" type="button" onClick={() => UpdateDraft({ avatarImage: '' })}>移除</button> : null}
-        </div>
-        <input ref={avatarFileRef} type="file" accept="image/*" className="pf-file" aria-hidden="true" tabIndex={-1} onChange={(event) => { void UploadAvatarHandler(event.target.files?.[0]); event.target.value = ''; }} />
-      </div>
-      <div className="gn-row">
-        <div className="gn-txt">
-          <span className="gn-t">昵称</span>
-          <span className="gn-d">侧边栏和欢迎页显示的名字；点击右上角「保存更改」后生效。</span>
-        </div>
-        <div className="gn-ctl"><input className="set-inp pf-name" value={draft.nickname} maxLength={20} spellCheck={false} autoComplete="off" aria-label="昵称" onChange={(event) => UpdateDraft({ nickname: event.target.value })} /></div>
-      </div>
-      <div className="gn-cap">自定义上下文</div>
-      <div className="gn-row stack">
-        <div className="gn-txt">
-          <span className="gn-t">语气与说话方式</span>
-          <span className="gn-d">写下希望 Avery 保持的语气、称呼和回答习惯，每次聊天都会带上这段内容。最多 {ContextMax} 字。</span>
-        </div>
-        <textarea className="set-inp pf-ctx" maxLength={ContextMax} rows={6} aria-label="自定义上下文" placeholder="例如：先给结论，再讲理由，语气像一个熟悉的同事。" value={draft.customContext ?? ''} onChange={(event) => UpdateDraft({ customContext: event.target.value })} onKeyDown={(event) => { if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') { event.preventDefault(); void SaveSettings(); } }} />
-        <div className="pf-ctx-foot">
-          <span className={`pf-count${(draft.customContext ?? '').length >= ContextMax ? ' full' : ''}`}>{(draft.customContext ?? '').length} / {ContextMax}</span>
-          <span className={`pf-state${contextDirty ? ' dirty' : ''}`}>{contextDirty ? '有改动还没保存' : '已保存'}</span>
-          <button className="pf-save" type="button" disabled={!contextDirty} onClick={() => void SaveSettings()}>保存</button>
-        </div>
-      </div>
-      <div className="gn-cap">外观</div>
-      <div className="gn-row">
-        <div className="gn-txt"><span className="gn-t">字号大小</span><span className="gn-d">对话里 Avery 回复的字号，选完下面的预览跟着变。</span></div>
-        <div className="gn-ctl">
-          <div className="seg pf-seg" role="radiogroup" aria-label="字号大小">
-            {ChatFontSizes.map((size) => <button key={size.key} className={`seg-i${size.key === (draft.chatFontSize ?? 'md') ? ' sel' : ''}`} type="button" role="radio" aria-checked={size.key === (draft.chatFontSize ?? 'md')} aria-label={size.label} onClick={() => UpdateDraft({ chatFontSize: size.key })}>{size.label}</button>)}
-          </div>
-        </div>
-      </div>
-      <div className="gn-preview" style={{ '--gp-fs': `${replyFontSizePx}px` } as CSSProperties}>
-        <div className="gp-head"><span className="lb">预览</span><span className="gp-size">{replyFontSizePx}px</span></div>
-        <div className="gp-msg">
-          <span className="avatar" aria-hidden="true">{InitialOf(draft.nickname)}</span>
-          <p>我把这份简历的实习经历按时间倒序重排了一遍，删掉了两处重复的描述。要我再压到一页吗？</p>
-        </div>
-      </div>
-      <div className="gn-row">
-        <div className="gn-txt"><span className="gn-t">主题颜色</span><span className="gn-d">按钮和强调色跟着变；真实换肤暂未接入，先记录你的选择。</span></div>
-        <div className="gn-ctl pf-accs">
-          {AccentColors.map((color) => <button key={color.key} className="acc-sw" type="button" style={{ background: color.hex }} aria-pressed={color.key === (draft.accentColor ?? 'pine')} aria-label={color.label} title={color.label} onClick={() => UpdateDraft({ accentColor: color.key })} />)}
-        </div>
-      </div>
-      <div className="gn-row">
-        <div className="gn-txt"><span className="gn-t">简历模板</span><span className="gn-d">Avery 改简历时用的版式；模板渲染暂未接入，先记录你的选择。</span></div>
-        <div className="gn-ctl"><Select value={draft.resumeTemplate ?? 'classic'} onChange={(value) => UpdateDraft({ resumeTemplate: value as NonNullable<SettingsDraft['resumeTemplate']> })} ariaLabel="简历模板" dropUp options={ResumeTemplates.map((item) => ({ value: item.key, label: item.label }))} /></div>
-      </div>
-    </div></div>}
     {tab === 'browser' && <>
       <div className="settings-panel browser-settings-panel">
         <FormField label="Agent 使用的浏览器" hint="Chrome 和 Edge 使用轻量连接复用你已打开并登录 BOSS 的浏览器；Avery 不创建独立 Profile，也不读取其他标签页。">

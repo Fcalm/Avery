@@ -1285,12 +1285,13 @@ button { background: none; border: 0; }
 
 /* ============================== 模型配置（原型一比一） ============================== */
 /* 页面本体自带原型 .set 的留白与最大宽度，设置外壳不再追加内边距。 */
-.settings-page.is-model-set { padding: 0; }
+.settings-page.is-model-set, .settings-page.is-set-page { padding: 0; }
 .set-root { max-width: 1120px; margin: 0 auto; padding: 34px 30px 46px; }
 
-.model-set-scope .set-head { display: flex; align-items: flex-end; gap: 18px; }
-.model-set-scope .set-head h1 { margin: 0; font-size: 30px; font-weight: 680; letter-spacing: -.025em; line-height: 1.15; }
-.model-set-scope .set-head p { margin: 7px 0 0; max-width: 72ch; font-size: 13.5px; color: var(--text-2); }
+/* 设置页头部（模型配置与常规/个性化共用）：标题行底部对齐，右侧留给页面级操作 */
+.set-head { display: flex; align-items: flex-end; gap: 18px; }
+.set-head h1 { margin: 0; font-size: 30px; font-weight: 680; letter-spacing: -.025em; line-height: 1.15; }
+.set-head p { margin: 7px 0 0; max-width: 72ch; font-size: 13.5px; color: var(--text-2); }
 .model-set-scope .set-refresh { margin-left: auto; color: var(--text-3); }
 .model-set-scope .set-refresh:hover { color: var(--text); }
 .model-set-scope .set-refresh.is-spinning i { animation: setSpin .6s var(--ease); }
@@ -1465,7 +1466,7 @@ body.settings-has-configured-api-key .model-set-scope .set-field:has(input[type=
   .model-set-scope .set-card { grid-template-columns: minmax(0, 1fr); }
   .model-set-scope .set-side { border-right: 0; border-bottom: 1px solid var(--border); border-radius: calc(var(--r-card) - 1px) calc(var(--r-card) - 1px) 0 0; }
   .model-set-scope .set-pane { padding: 20px 18px 24px; }
-  .model-set-scope .set-head h1 { font-size: 26px; }
+  .set-head h1 { font-size: 26px; }
 }
 @media (max-width: 619px){
   .set-root { padding: 24px 17px 36px; }
@@ -1478,12 +1479,12 @@ body.settings-has-configured-api-key .model-set-scope .set-field:has(input[type=
 
 /* ------------------------------------------------------------- 设置·常规
    原型 avery-settings 的 gn-card：分组条 + 行列表，左文案右控件，
-   行间只用一根发丝线分隔；开关与低强调按钮沿用模型弹窗同款视觉。 */
-.gn-panel { max-width: 860px; }
+   行间只用一根发丝线分隔；开关与低强调按钮沿用模型弹窗同款视觉。
+   页面外壳复用模型配置的 set-root/set-head 留白，卡片按用户要求去掉描线框。 */
 .gn-card {
-  overflow: hidden;
-  border: 1px solid var(--border); border-radius: var(--r-card); background: var(--raised);
-  transition: background-color .3s var(--ease), border-color .3s var(--ease);
+  max-width: 860px; margin-top: 20px; overflow: hidden;
+  border-radius: var(--r-card); background: var(--raised);
+  transition: background-color .3s var(--ease);
 }
 .gn-cap {
   padding: 18px 20px 7px; background: var(--surface);
@@ -1500,14 +1501,16 @@ body.settings-has-configured-api-key .model-set-scope .set-field:has(input[type=
 .gn-line { display: flex; align-items: baseline; gap: 10px; min-width: 0; flex-wrap: wrap; }
 .gn-path { min-width: 0; font-family: var(--font-data); font-size: 12.5px; color: var(--text-2); overflow-wrap: anywhere; }
 .gn-ctl { flex: none; display: flex; align-items: center; gap: 8px; }
-.gn-panel .quiet-btn {
+.set-root .quiet-btn {
   display: inline-flex; height: 34px; align-items: center; gap: 7px; padding: 0 13px; cursor: pointer;
   border-radius: var(--r-control); background: var(--surface-2);
   color: var(--text-2); font-size: 13px; font-weight: 550;
   transition: background-color .16s var(--ease), color .16s var(--ease), transform .12s var(--ease);
 }
-.gn-panel .quiet-btn:hover { background: var(--border); color: var(--text); }
-.gn-panel .quiet-btn:active { transform: scale(.98); }
+/* 原型 gn-reset：恢复默认固定在 set-head 标题行右侧 */
+.set-root .quiet-btn.gn-reset { margin-left: auto; flex: none; }
+.set-root .quiet-btn:hover { background: var(--border); color: var(--text); }
+.set-root .quiet-btn:active { transform: scale(.98); }
 .gn-card .switch {
   position: relative; width: 34px; height: 20px; flex: none; cursor: pointer;
   border: 0; border-radius: var(--r-pill); background: var(--border-2);
@@ -1526,13 +1529,13 @@ body.settings-has-configured-api-key .model-set-scope .set-field:has(input[type=
 .avatar[data-av="ink"] { color: var(--raised); background: var(--text); border-color: var(--text); }
 .avatar img { width: 100%; height: 100%; border-radius: inherit; object-fit: cover; }
 
-.gn-panel .set-inp {
+.gn-card .set-inp {
   width: 100%; height: 40px; padding: 0 12px; border: 1px solid var(--border-2); border-radius: var(--r-control);
   background: var(--panel); color: var(--text); font-family: inherit; font-size: 13.5px;
   transition: border-color .18s var(--ease), box-shadow .18s var(--ease);
 }
-.gn-panel .set-inp::placeholder { color: var(--text-3); }
-.gn-panel .set-inp:focus { outline: 0; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.gn-card .set-inp::placeholder { color: var(--text-3); }
+.gn-card .set-inp:focus { outline: 0; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
 
 .pf-avs { display: flex; align-items: center; gap: 8px; }
 .pf-file { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
