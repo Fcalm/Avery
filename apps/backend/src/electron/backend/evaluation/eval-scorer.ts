@@ -24,7 +24,7 @@ interface EvalScoreInput {
   rubric: string;
   /** 开发者评判提示词附加段：只补充评判关注点；防注入框架与输出契约固定在代码里。 */
   judgePrompt?: string;
-  /** 严格 JSON 输出：按 DeepSeek 官方建议请求 json_object 模式、提示词附 JSON 样例并设置输出上限。 */
+  /** 严格 JSON 输出：请求 json_object 模式、提示词附 JSON 样例并设置输出上限；response_format 仅由 Provider 在支持结构化输出的官方通道发送。 */
   strictJson?: boolean;
   judgeModel: string;
   signal: AbortSignal;
@@ -130,7 +130,7 @@ export class EvalScorer {
       const completion = await this.provider.StreamCompletion({
         requestId: `eval-judge-${randomUUID()}`, model: judgeModel, history, tools: [], signal: input.signal,
         instructions: this.Instructions(input.rubric, input.judgePrompt ?? '', input.strictJson === true), onDelta: () => undefined,
-        // 严格 JSON：API 参数与输出上限只在开启时发送；response_format 由 Provider 按 DeepSeek 通道透传。
+        // 严格 JSON：API 参数与输出上限只在开启时发送；response_format 由 Provider 按通道透传（DeepSeek 与智谱发送，自定义通道仅提示词约束）。
         ...(input.strictJson ? { responseFormat: { type: 'json_object' } as const, maxTokens: JudgeMaximumOutputTokens } : {}),
       });
       if (input.signal.aborted) throw Object.assign(new Error('Evaluation scoring was cancelled.'), { code: 'CANCELLED' });

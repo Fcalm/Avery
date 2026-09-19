@@ -423,8 +423,9 @@ export function CreateProviderModule(ports: AgentDefaultPorts): ModelProviderMod
       const body = SerializeCompletionBody({
         model: requestModel, stream: true, ...thinking,
         ...(selected.provider === 'DeepSeek' ? { stream_options: { include_usage: true } } : {}),
-        // 严格 JSON 输出仅 DeepSeek 通道发送 API 参数；调用方负责提示词侧的 JSON 样例约束。
-        ...(selected.provider === 'DeepSeek' && request.responseFormat ? { response_format: request.responseFormat } : {}),
+        // 严格 JSON 输出：DeepSeek 与智谱官方文档均支持 response_format json_object，两家通道发送 API 参数；
+        // 自定义通道的端点能力未知，仅保留提示词侧的 JSON 样例约束，避免不支持的端点报 400。
+        ...((selected.provider === 'DeepSeek' || selected.provider === 'Z.AI') && request.responseFormat ? { response_format: request.responseFormat } : {}),
         ...(request.maxTokens ? { max_tokens: request.maxTokens } : {}),
         messages: providerMessages, tools: request.tools.map((tool) => tool.definition), tool_choice: 'auto',
       }, selected.provider === 'DeepSeek');

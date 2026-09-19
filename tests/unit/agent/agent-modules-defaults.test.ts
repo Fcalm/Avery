@@ -890,7 +890,7 @@ describe('agent-modules-defaults', () => {
     expect(requestBodies[1]).not.toHaveProperty('reasoning_effort');
   });
 
-  it('严格 JSON 输出仅在 DeepSeek 通道发送 response_format，并对所有通道透传输出上限', async () => {
+  it('严格 JSON 输出在 DeepSeek 与智谱通道发送 response_format，自定义通道仅透传输出上限', async () => {
     const requestBodies: Array<Record<string, unknown>> = [];
     vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
       requestBodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
@@ -900,19 +900,23 @@ describe('agent-modules-defaults', () => {
     const { CreateProviderModule } = await import('../../../packages/agent-modules-defaults/src/provider');
     const deepseek = CreateProviderModule(CreatePorts({ getConfig: vi.fn(async () => ({ provider: 'DeepSeek', baseUrl: 'https://api.deepseek.com', model: 'deepseek-v4-flash', contextLimit: 256_000, contextLimitMode: 'default' as const, compressionThreshold: 80, apiKey: 'test-key', thinkingEnabled: false })) }));
     const zai = CreateProviderModule(CreatePorts({ getConfig: vi.fn(async () => ({ provider: 'Z.AI', baseUrl: 'https://open.bigmodel.cn/api/paas/v4', model: 'glm-5.3-flash', contextLimit: 256_000, contextLimitMode: 'default' as const, compressionThreshold: 80, apiKey: 'test-key', thinkingEnabled: false })) }));
+    const custom = CreateProviderModule(CreatePorts({ getConfig: vi.fn(async () => ({ provider: '自定义', baseUrl: 'https://example.com/v1', model: 'my-model', contextLimit: 256_000, contextLimitMode: 'default' as const, compressionThreshold: 80, apiKey: 'test-key', thinkingEnabled: false })) }));
     const strict = { responseFormat: { type: 'json_object' } as const, maxTokens: 8192 };
     const common = { history: [], tools: [], signal: new AbortController().signal, instructions: BuildDefaultCompiledInstructions(), onDelta: vi.fn() };
 
     await deepseek.StreamCompletion({ ...common, requestId: 'strict-deepseek', model: 'deepseek-v4-flash', reasoningEffort: 'medium', ...strict });
     await deepseek.StreamCompletion({ ...common, requestId: 'plain-deepseek', model: 'deepseek-v4-flash', reasoningEffort: 'medium' });
     await zai.StreamCompletion({ ...common, requestId: 'strict-zai', model: 'glm-5.3-flash', reasoningEffort: 'medium', ...strict });
+    await custom.StreamCompletion({ ...common, requestId: 'strict-custom', model: 'my-model', reasoningEffort: 'medium', ...strict });
 
     expect(requestBodies[0]).toMatchObject({ response_format: { type: 'json_object' }, max_tokens: 8192 });
     expect(requestBodies[1]).not.toHaveProperty('response_format');
     expect(requestBodies[1]).not.toHaveProperty('max_tokens');
-    // Z.AI 的 json_object 支持未经验证：只透传输出上限，不发送 response_format，避免 400。
-    expect(requestBodies[2]).toMatchObject({ max_tokens: 8192 });
-    expect(requestBodies[2]).not.toHaveProperty('response_format');
+    // 智谱官方文档同样支持 response_format json_object，与 DeepSeek 一样发送 API 参数。
+    expect(requestBodies[2]).toMatchObject({ response_format: { type: 'json_object' }, max_tokens: 8192 });
+    // 自定义通道端点能力未知：只透传输出上限，不发送 response_format，避免不支持的端点报 400。
+    expect(requestBodies[3]).toMatchObject({ max_tokens: 8192 });
+    expect(requestBodies[3]).not.toHaveProperty('response_format');
   });
 
   it('GLM-5.3-Flash 按官方参数流式输出思考、工具调用与真实 usage', async () => {
