@@ -1757,6 +1757,9 @@ select:focus, select:focus-visible,
 .ev-acts > * { flex: 1; justify-content: center; }
 /* 原型 btn-accent/btn-danger 的规格：32px 高；终止是描边红而非实心红 */
 .ev-acts .button { min-height: 32px; font-size: 12.5px; }
+/* 全局样式把 primary 覆盖成了深灰；评估视图按原型 btn-accent 恢复主色绿 */
+.ev-acts .button-primary { background: var(--accent); }
+.ev-acts .button-primary:hover:not(:disabled) { background: var(--accent-hover); }
 .ev-acts .button-danger { border: 1px solid var(--border-2); background: transparent; color: #b4413c; }
 .ev-acts .button-danger:hover { background: rgba(180, 65, 60, .08); border-color: rgba(180, 65, 60, .42); }
 [data-theme="dark"] .ev-acts .button-danger { color: #e0796f; }
@@ -1769,7 +1772,9 @@ select:focus, select:focus-visible,
 .ev-sec-h { display: flex; align-items: center; gap: 7px; padding: 0 2px 8px; color: var(--text-3); font-size: 11px; font-weight: 600; letter-spacing: .07em; text-transform: uppercase; }
 .ev-sec-h i { font-size: 13px; }
 .ev-sec-h .sp { flex: 1; }
-.ev-sec-h .button { min-height: 26px; padding: 0 8px; font-size: 12px; text-transform: none; letter-spacing: 0; }
+/* 原型的次级动作统一是 btn-xs：描边胶囊小按钮；应用的 quiet/secondary 变体没有描边，这里补齐 */
+.ev-sec-h .button { min-height: 24px; padding: 0 9px; border: 1px solid var(--border); border-radius: var(--r-pill); background: transparent; color: var(--text-2); font-size: 11.5px; font-weight: 550; text-transform: none; letter-spacing: 0; }
+.ev-sec-h .button:hover:not(:disabled) { background: var(--raised); border-color: var(--border-2); color: var(--text); }
 .ev-sec .form-field { margin-top: 8px; }
 .ev-sec .custom-select { width: 100%; }
 .ev-hash { display: flex; align-items: center; gap: 6px; margin-top: 9px; color: var(--text-3); font-family: var(--font-data); font-size: 11px; }
@@ -1846,7 +1851,8 @@ select:focus, select:focus-visible,
 .ev-meta-line span { display: inline-flex; align-items: center; gap: 5px; }
 .ev-meta-line i { font-size: 12px; }
 .ev-case-foot { margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--border); display: flex; justify-content: flex-end; }
-.ev-case-foot .button { min-height: 26px; padding: 0 8px; font-size: 12px; }
+.ev-case-foot .button { min-height: 24px; padding: 0 9px; border: 1px solid var(--border); border-radius: var(--r-pill); background: transparent; color: var(--text-2); font-size: 11.5px; font-weight: 550; }
+.ev-case-foot .button:hover:not(:disabled) { background: var(--raised); border-color: var(--border-2); color: var(--text); }
 
 /* 题内折叠轨迹：评估轨迹界面不做，这里只保留可读的节点列表 */
 .ev-trace-list { display: grid; gap: 8px; margin-top: 9px; }
@@ -1891,6 +1897,9 @@ select:focus, select:focus-visible,
 .eval-compare > * { flex: none; }
 .ev-cmp-head { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr) auto; align-items: center; gap: 12px; margin: 12px 14px 0; border: 1px solid var(--border); border-radius: var(--r-card); padding: 13px 15px; background: var(--raised); }
 .ev-cmp-head .form-field { margin: 0; }
+/* 对比按钮：原型 ghost-btn 的描边形态 */
+.ev-cmp-head .button-secondary { min-height: 32px; border: 1px solid var(--border); background: transparent; color: var(--text-2); font-size: 12.5px; font-weight: 550; }
+.ev-cmp-head .button-secondary:hover:not(:disabled) { background: var(--surface-2); border-color: var(--border-2); color: var(--text); }
 .ev-cmp-delta { display: grid; justify-items: center; }
 .ev-delta-pill { display: inline-flex; flex-direction: column; align-items: center; gap: 1px; border: 1px solid var(--border); border-radius: 12px; padding: 6px 11px; background: var(--surface); color: var(--accent); font-family: var(--font-data); font-size: 15px; font-weight: 650; letter-spacing: -.01em; line-height: 1.3; }
 .ev-delta-pill .k { color: var(--text-3); font-family: var(--font-sans); font-size: 10px; font-weight: 600; letter-spacing: .05em; }
@@ -1903,7 +1912,8 @@ select:focus, select:focus-visible,
 .ev-cmp-banner.is-strict > i, .ev-cmp-banner.is-strict b { color: var(--accent); }
 .ev-cmp-banner.is-warn > i, .ev-cmp-banner.is-warn b { color: #b4413c; }
 [data-theme="dark"] .ev-cmp-banner.is-warn > i, [data-theme="dark"] .ev-cmp-banner.is-warn b { color: #e0796f; }
-.ev-cmp-banner .button { min-height: 26px; padding: 0 8px; font-size: 12px; }
+.ev-cmp-banner .button { min-height: 24px; padding: 0 9px; border: 1px solid var(--border); border-radius: var(--r-pill); background: transparent; color: var(--text-2); font-size: 11.5px; font-weight: 550; }
+.ev-cmp-banner .button:hover:not(:disabled) { background: var(--raised); border-color: var(--border-2); color: var(--text); }
 .ev-cmp-conds { margin: 12px 14px 0; border: 1px solid var(--border); border-radius: var(--r-card); padding: 13px 15px; background: var(--raised); }
 .ev-cmp-conds-h { display: flex; align-items: center; gap: 8px; font-size: 12.5px; font-weight: 600; }
 .ev-cmp-conds-h i { color: var(--text-3); font-size: 15px; }
@@ -1929,6 +1939,11 @@ select:focus, select:focus-visible,
 /* 弹窗内：终止说明、测试集版本管理、候选编辑 */
 .ev-drawer-toolbar { display: flex; align-items: flex-start; gap: 10px; margin-bottom: 10px; }
 .ev-drawer-toolbar .button { flex: none; min-height: 30px; }
+/* 严格 JSON 开关：关闭态是描边胶囊（btn-xs），开启态用主色绿，与开始按钮一致 */
+.ev-drawer-toolbar .button-quiet { border: 1px solid var(--border); border-radius: var(--r-pill); background: transparent; color: var(--text-2); font-weight: 550; }
+.ev-drawer-toolbar .button-quiet:hover:not(:disabled) { background: var(--raised); border-color: var(--border-2); color: var(--text); }
+.ev-drawer-toolbar .button-primary { background: var(--accent); }
+.ev-drawer-toolbar .button-primary:hover:not(:disabled) { background: var(--accent-hover); }
 .ev-drawer-hint { flex: 1; color: var(--text-3); font-size: 11.5px; line-height: 1.55; }
 .ev-stop-list { margin: 0; padding-left: 18px; color: var(--text-2); font-size: 12.5px; line-height: 1.8; }
 .ev-manage-note { margin: 0 0 10px; color: var(--text-3); font-size: 12px; line-height: 1.6; }

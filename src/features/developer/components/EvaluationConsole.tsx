@@ -471,10 +471,10 @@ export function EvaluationConsole() {
               {selected.runnerType === 'prompt' && <><span className="sp" /><Button variant="quiet" onClick={() => { setJudgeDraft(selected.judgePrompt); setRubricDraft(selected.rubric); setJudgeStrictJsonDraft(selected.judgeStrictJson === true); setShowJudgeDrawer(true); }}><Icon name="pencil-simple" size={13} />编辑提示词</Button></>}
             </div>
             <FormField label="执行模型 · 被评测的一方">
-              <Select value={selected.config.executionModel} ariaLabel="执行模型" onChange={(value) => void ChangeModel('executionModel', value)} options={modelOptions.some((option) => option.value === selected.config.executionModel) ? modelOptions : [{ value: selected.config.executionModel, label: selected.config.executionModel }, ...modelOptions]} />
+              <Select value={selected.config.executionModel} dropUp ariaLabel="执行模型" onChange={(value) => void ChangeModel('executionModel', value)} options={modelOptions.some((option) => option.value === selected.config.executionModel) ? modelOptions : [{ value: selected.config.executionModel, label: selected.config.executionModel }, ...modelOptions]} />
             </FormField>
             {selected.runnerType === 'prompt' && <FormField label="评判模型 · 负责打分">
-              <Select value={selected.config.judgeModel ?? ''} ariaLabel="评判模型" onChange={(value) => void ChangeModel('judgeModel', value)} options={modelOptions.some((option) => option.value === selected.config.judgeModel) ? modelOptions : [{ value: selected.config.judgeModel ?? '', label: selected.config.judgeModel ?? '未设置' }, ...modelOptions]} />
+              <Select value={selected.config.judgeModel ?? ''} dropUp ariaLabel="评判模型" onChange={(value) => void ChangeModel('judgeModel', value)} options={modelOptions.some((option) => option.value === selected.config.judgeModel) ? modelOptions : [{ value: selected.config.judgeModel ?? '', label: selected.config.judgeModel ?? '未设置' }, ...modelOptions]} />
             </FormField>}
             {selected.runnerType === 'prompt' && <div className="ev-hash"><Icon name="info" size={13} /><span>评判提示词 {selected.judgePrompt.length + selected.rubric.length} 字 · {selected.judgeStrictJson ? '严格 JSON 输出' : '附加段'} 拼进固定评判框架</span></div>}
             <div className="ev-hash"><Icon name="info" size={13} /><span>运行时按模型配置页当前生效的供应商校准；实际使用的模型以快照为准</span></div>
