@@ -26,6 +26,14 @@ export const DefaultSettings: SettingsDraft = {
   onboardingCompleted: false,
   customContext: '',
   browserEngine: 'edge',
+  // 常规设置的默认值与原型 GENERAL_DEFAULTS 一致：托盘驻留与完成通知默认开启。
+  language: 'zh',
+  startPage: 'last',
+  notifyOnComplete: true,
+  notifySound: true,
+  autoUpdate: true,
+  autoLaunch: false,
+  closeToTray: true,
 };
 
 /** 生成带业务前缀的本地实体 ID；仅用于乐观创建后由后端确认，不用于跨进程安全边界。 */

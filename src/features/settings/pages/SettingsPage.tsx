@@ -11,9 +11,10 @@ import { Icon } from '../../../shared/components/Icon';
 import type { SettingsDraft } from '../../../types/domain';
 import type { AgentBrowserRuntimeStatus, AgentModuleConfiguration, CronBrowserAccessStatus } from '@avery/contracts';
 
-export type SettingTab = 'account' | 'workspace' | 'api' | 'browser' | 'developer';
+export type SettingTab = 'general' | 'account' | 'workspace' | 'api' | 'browser' | 'developer';
 type FieldErrors = Partial<Record<'traceRetention' | 'compressionThreshold', string>>;
 export const SettingsTabs: Array<{ id: SettingTab; label: string; description: string }> = [
+  { id: 'general', label: '常规', description: '管理语言、启动页、通知与系统的默认行为。' },
   { id: 'account', label: '账户', description: '管理应用内的显示名称。' },
   { id: 'workspace', label: '工作空间', description: '管理档案、简历版本和导出文件的存放目录。' },
   { id: 'api', label: '模型配置', description: '管理模型供应商、默认模型与上下文能力；凭据加密存储在本机。' },
@@ -51,6 +52,14 @@ function FormatContextLength(value: number): string {
   return value % 1000 === 0 ? `${value / 1000}K` : String(value);
 }
 
+/** 常规页的开关行：左标题与说明，右开关；依赖上级开关的行以 disabled 呈现。 */
+function RenderGeneralSwitch({ label, description, checked, disabled = false, onToggle }: { label: string; description: string; checked: boolean; disabled?: boolean; onToggle: () => void }) {
+  return <div className="gn-row">
+    <div className="gn-txt"><span className="gn-t">{label}</span><span className="gn-d">{description}</span></div>
+    <div className="gn-ctl"><button className="switch" type="button" role="switch" aria-checked={checked} aria-label={label} aria-disabled={disabled || undefined} disabled={disabled} onClick={onToggle}><span className="knob" /></button></div>
+  </div>;
+}
+
 function SettingsPage({ onNavigateDeveloper, tab, requestedTab, tabRequestVersion, onTabChange }: { onNavigateDeveloper: () => void; tab: SettingTab; requestedTab: SettingTab; tabRequestVersion: number; onTabChange: (tab: SettingTab) => void }) {
   const { ShowNotice } = useUiStore();
   const queryClient = useQueryClient();
@@ -70,6 +79,8 @@ function SettingsPage({ onNavigateDeveloper, tab, requestedTab, tabRequestVersio
   const browserRuntimeRequest = useRef(0);
   const [showClearBrowserProfile, setShowClearBrowserProfile] = useState(false);
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
+  /** 工作空间的实际存放路径：只在常规页展示与打开，后端设置里不含绝对路径。 */
+  const [workspacePath, setWorkspacePath] = useState<string | null>(null);
   const [moduleConfiguration, setModuleConfiguration] = useState<AgentModuleConfiguration | null>(null);
   const [updatingModules, setUpdatingModules] = useState(false);
   const [apiKeyConfigured, setApiKeyConfigured] = useState(false);
@@ -196,6 +207,12 @@ function SettingsPage({ onNavigateDeveloper, tab, requestedTab, tabRequestVersio
   useEffect(() => {
     if (tab === 'browser') { void RefreshBrowserRuntime(); void RefreshCronBrowserAccess(); }
   }, [tab]);
+  useEffect(() => {
+    if (tab !== 'general') return;
+    let cancelled = false;
+    window.averyWindow?.GetWorkspaceDirectory().then((path) => { if (!cancelled && path) setWorkspacePath(path); }).catch(() => { if (!cancelled) setWorkspacePath(null); });
+    return () => { cancelled = true; };
+  }, [tab]);
   function UpdateDraft(patch: Partial<SettingsDraft>) {
     setDraft((current) => {
       const saved = patch.provider && patch.provider !== current.provider ? providerConfigurations[patch.provider] : undefined;
@@ -257,6 +274,10 @@ function SettingsPage({ onNavigateDeveloper, tab, requestedTab, tabRequestVersio
     try {
       await saveSettingsNow({ ...safeDraft, apiKey: '' });
       if (tab === 'browser') await Promise.all([RefreshBrowserRuntime(), RefreshCronBrowserAccess()]);
+      if (tab === 'general' && window.averyWindow) {
+        try { await window.averyWindow.SetLoginItemSettings(draft.autoLaunch === true); }
+        catch { ShowNotice('设置已保存，但开机自启未能在系统生效', 'error'); }
+      }
     } catch (error) {
       ShowNotice(error instanceof Error ? error.message : '设置持久化失败', 'error');
       return false;
@@ -274,6 +295,22 @@ function SettingsPage({ onNavigateDeveloper, tab, requestedTab, tabRequestVersio
     if (IsDesktopAgentAvailable()) await ClearAgentObservability();
     setShowClear(false);
     ShowNotice('运行日志与 Trace 已清空');
+  }
+  async function OpenWorkspaceDirectoryHandler() {
+    try {
+      const opened = await window.averyWindow?.OpenWorkspaceDirectory();
+      if (opened !== true) ShowNotice('无法打开工作空间目录');
+    } catch (error) {
+      ShowNotice(error instanceof Error ? error.message : '无法打开工作空间目录');
+    }
+  }
+  /** 更新发布通道尚未接入：只如实报告当前版本，不伪造「已是最新」的检查结果。 */
+  function CheckForUpdatesNotice() {
+    ShowNotice(`当前版本 v${__APP_VERSION__}；自动更新通道尚未接入`);
+  }
+  /** 恢复默认只重置常规页的草稿字段；工作空间路径由本地服务管理，不属于草稿。 */
+  function ResetGeneralDefaults() {
+    UpdateDraft({ language: 'zh', startPage: 'last', notifyOnComplete: true, notifySound: true, autoUpdate: true, autoLaunch: false, closeToTray: true });
   }
   async function CreateWorkspaceBackupHandler() {
     try {
@@ -634,7 +671,41 @@ function SettingsPage({ onNavigateDeveloper, tab, requestedTab, tabRequestVersio
   const usesPersonalBrowser = (draft.browserEngine ?? 'edge') !== 'electron';
   const browserSelectionPending = Boolean(browserRuntime && browserRuntime.engine !== (draft.browserEngine ?? 'edge'));
   if (tab === 'api') return <div className="settings-page is-model-set">{RenderModelConfiguration()}{RenderLeaveDialog()}</div>;
-  return <div className="settings-page"><section className="settings-content"><PageHeader eyebrow="设置" title={current.label} description={current.description} actions={tab !== 'api' && tab !== 'browser' ? <Button variant="primary" onClick={() => void SaveSettings()}>保存更改</Button> : undefined} />
+  return <div className="settings-page"><section className="settings-content"><PageHeader eyebrow="设置" title={current.label} description={current.description} actions={tab === 'general' ? <><Button variant="quiet" onClick={ResetGeneralDefaults}>恢复默认</Button><Button variant="primary" onClick={() => void SaveSettings()}>保存更改</Button></> : tab !== 'api' && tab !== 'browser' ? <Button variant="primary" onClick={() => void SaveSettings()}>保存更改</Button> : undefined} />
+    {tab === 'general' && <div className="settings-panel gn-panel"><div className="gn-card">
+      <div className="gn-cap">通用</div>
+      <div className="gn-row">
+        <div className="gn-txt"><span className="gn-t">语言</span><span className="gn-d">界面与系统通知的语言；当前版本界面文案仅提供中文。</span></div>
+        <div className="gn-ctl"><Select value={draft.language ?? 'zh'} onChange={(value) => UpdateDraft({ language: value as 'zh' | 'en' })} ariaLabel="语言" options={[{ value: 'zh', label: '简体中文' }, { value: 'en', label: 'English' }]} /></div>
+      </div>
+      <div className="gn-row">
+        <div className="gn-txt"><span className="gn-t">启动时打开</span><span className="gn-d">每次打开应用先停在哪里。</span></div>
+        <div className="gn-ctl"><Select value={draft.startPage ?? 'last'} onChange={(value) => UpdateDraft({ startPage: value as 'last' | 'home' })} ariaLabel="启动时打开" options={[{ value: 'last', label: '恢复上次的对话' }, { value: 'home', label: '打开工作区首页' }]} /></div>
+      </div>
+      <div className="gn-cap">工作空间</div>
+      <div className="gn-row">
+        <div className="gn-txt">
+          <span className="gn-line"><span className="gn-t">内容存放路径</span>{workspacePath && <span className="gn-path" title={workspacePath}>{workspacePath}</span>}</span>
+          <span className="gn-d">对话记录、附件和导出的文件都放在这个目录下；更改会走工作空间迁移流程。</span>
+        </div>
+        <div className="gn-ctl">
+          <button className="icon-btn" type="button" aria-label="打开目录" title="打开目录" onClick={() => void OpenWorkspaceDirectoryHandler()}><Icon name="folder-open" size={16} /></button>
+          <button className="quiet-btn" type="button" onClick={() => setShowMigrate(true)}><Icon name="folder-simple" size={15} />更改</button>
+        </div>
+      </div>
+      <div className="gn-cap">通知</div>
+      <RenderGeneralSwitch label="任务完成通知" description="长任务跑完后弹一条系统通知，切到别的窗口也不会错过。" checked={draft.notifyOnComplete ?? true} onToggle={() => UpdateDraft({ notifyOnComplete: !(draft.notifyOnComplete ?? true) })} />
+      <RenderGeneralSwitch label="完成时播放提示音" description="通知出现时带一声轻提示。关掉上面的通知，这一项也不再生效。" checked={draft.notifySound ?? true} disabled={!(draft.notifyOnComplete ?? true)} onToggle={() => UpdateDraft({ notifySound: !(draft.notifySound ?? true) })} />
+      <div className="gn-cap">更新</div>
+      <RenderGeneralSwitch label="自动下载更新" description="检测到新版本就在后台下载，下次启动时装上。" checked={draft.autoUpdate ?? true} onToggle={() => UpdateDraft({ autoUpdate: !(draft.autoUpdate ?? true) })} />
+      <div className="gn-row">
+        <div className="gn-txt"><span className="gn-t">当前版本</span><span className="gn-d">Avery {__APP_VERSION__}</span></div>
+        <div className="gn-ctl"><button className="quiet-btn" type="button" onClick={CheckForUpdatesNotice}><Icon name="refresh" size={14} />检查更新</button></div>
+      </div>
+      <div className="gn-cap">系统</div>
+      <RenderGeneralSwitch label="开机时自动启动" description="登录系统后在后台启动，随时可以唤起。" checked={draft.autoLaunch ?? false} onToggle={() => UpdateDraft({ autoLaunch: !(draft.autoLaunch ?? false) })} />
+      <RenderGeneralSwitch label="关闭主窗口时最小化到托盘" description="点关闭按钮不退出应用，正在跑的任务继续。" checked={draft.closeToTray ?? true} onToggle={() => UpdateDraft({ closeToTray: !(draft.closeToTray ?? true) })} />
+    </div></div>}
     {tab === 'developer' && <><div className="setting-note module-settings"><b>本地模块</b><p>{moduleConfiguration?.status === 'active' ? `已启用：${moduleConfiguration.directoryName ?? '已选择目录'}。模块仅在启动会话前校验。` : '当前使用官方默认模块。选择本地模块目录前，请确认其来源可信。'}</p><div className="api-actions"><Button disabled={updatingModules} onClick={() => void SelectUserModules()}>{updatingModules ? '处理中…' : '选择本地模块'}</Button><Button variant="danger" disabled={updatingModules || moduleConfiguration?.status !== 'active'} onClick={() => setShowResetModules(true)}>恢复官方默认模块</Button></div></div><Modal
       open={showResetModules}
       title="恢复官方默认模块？"

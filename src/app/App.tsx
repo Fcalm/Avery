@@ -1,9 +1,10 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { AppShell } from './AppShell';
 import { UiStoreProvider, useUiStore } from './UiStore';
 import { useWorkspaceData } from '../features/workspace/api/useWorkspaceData';
 import { useSettingsStore } from '../features/settings/api/settingsQueries';
 import { useKeepProfiles, useProfiles, useReloadProfiles } from '../features/profile/api/profileQueries';
+import { useConversations } from '../features/conversation/api/conversationQueries';
 import { AssistantPage } from '../features/assistant/pages/AssistantPage';
 import { ApplicationsPage } from '../features/application/pages/ApplicationsPage';
 import { JobsPage } from '../features/job/pages/JobsPage';
@@ -16,6 +17,9 @@ import { Button, DialogButton, EmptyState, Modal } from '../shared/components/UI
 import { BackendRecoveryGate, IsBackendRecoveryError } from './BackendRecoveryGate';
 import { Icon } from '../shared/components/Icon';
 import type { PageId } from '../types/domain';
+
+/** 「启动时打开-恢复上次的对话」用的本机记录：只存会话 id，随工作空间之外的本机偏好保存。 */
+const LastConversationKey = 'avery-last-conversation-id';
 
 function App() {
   return <UiStoreProvider><AppContent /></UiStoreProvider>;
@@ -34,14 +38,31 @@ function ErrorScreen({ onRetry }: { onRetry: () => void }) {
 function AppContent() {
   const workspace = useWorkspaceData();
   const { settings, setSettings } = useSettingsStore();
-  const { profileConflict, setProfileConflict, notice, ShowNotice, HideNotice } = useUiStore();
+  const { profileConflict, setProfileConflict, notice, ShowNotice, HideNotice, activeConversationId, setActiveConversationId } = useUiStore();
   const profiles = useProfiles();
   const reloadProfiles = useReloadProfiles({ onFailure: ShowNotice });
   const keepProfiles = useKeepProfiles({ onFailure: ShowNotice });
+  const conversations = useConversations();
   const [page, setPage] = useState<PageId>('assistant');
-  const [settingsTab, setSettingsTab] = useState<SettingTab>('account');
-  const [requestedSettingsTab, setRequestedSettingsTab] = useState<SettingTab>('account');
+  const [settingsTab, setSettingsTab] = useState<SettingTab>('general');
+  const [requestedSettingsTab, setRequestedSettingsTab] = useState<SettingTab>('general');
   const [settingsTabRequestVersion, setSettingsTabRequestVersion] = useState(0);
+
+  // 「启动时打开」：会话数据就绪后回到上次活跃会话（设置选 last 时）；一次性执行，之后才允许持久化写入。
+  const startRestoreDoneRef = useRef(false);
+  useEffect(() => {
+    if (!workspace.data || startRestoreDoneRef.current) return;
+    startRestoreDoneRef.current = true;
+    if (settings.startPage !== 'last') return;
+    const lastId = localStorage.getItem(LastConversationKey) ?? '';
+    const target = conversations.find((item) => item.id === lastId && !(item.archived ?? false));
+    if (target) setActiveConversationId(target.id);
+  }, [workspace.data, conversations, setActiveConversationId, settings.startPage]);
+  // 上次会话 id 随切换实时落盘；恢复完成前不写入，避免空值覆盖已保存的 id。
+  useEffect(() => {
+    if (!startRestoreDoneRef.current) return;
+    localStorage.setItem(LastConversationKey, activeConversationId ?? '');
+  }, [activeConversationId]);
 
   function RequestSettingsTab(tab: SettingTab) {
     setRequestedSettingsTab(tab);
