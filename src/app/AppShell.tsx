@@ -382,6 +382,10 @@ function AppShell({ page, onNavigate, onRestartOnboarding, settingsTab, onReques
     const rect = trigger.getBoundingClientRect();
     SetUserMenuPosition({ left: Math.round(rect.left), bottom: Math.round(window.innerHeight - rect.top + 7) });
   }
+  /** 侧栏用户头像：上传过图片直接渲染；否则显示昵称首字并应用个性化底色（设置页与侧栏共用同一份设置）。 */
+  function RenderUserAvatar() {
+    return <span className="avatar" data-av={settings.avatarStyle ?? 'default'} aria-hidden="true">{settings.avatarImage ? <img src={settings.avatarImage} alt="" /> : settings.nickname.slice(0, 1) || 'A'}</span>;
+  }
   function ToggleSearch() {
     SetSearchOpen((open) => {
       if (!open) window.setTimeout(() => searchInputRef.current?.focus(), 120);
@@ -473,7 +477,7 @@ function AppShell({ page, onNavigate, onRestartOnboarding, settingsTab, onReques
             <nav className="nav" ref={navRef} role="tablist" aria-label="设置分类">
               <div className="nav-ind" ref={navIndicatorRef} aria-hidden="true" />
               {SettingsTabs.map((item) => <button key={item.id} className={`nav-item ${settingsTab === item.id ? 'is-active' : ''}`} type="button" role="tab" aria-selected={settingsTab === item.id} title={item.label} onClick={() => onRequestSettingsTab(item.id)}>
-                <Icon name={item.id === 'general' ? 'settings' : item.id === 'account' ? 'account' : item.id === 'workspace' ? 'workspace' : item.id === 'api' ? 'sliders' : item.id === 'browser' ? 'browser' : 'developer-mode'} size={17} />
+                <Icon name={item.id === 'general' ? 'settings' : item.id === 'persona' ? 'account' : item.id === 'workspace' ? 'workspace' : item.id === 'api' ? 'sliders' : item.id === 'browser' ? 'browser' : 'developer-mode'} size={17} />
                 <span>{item.label}</span>
               </button>)}
             </nav>
@@ -481,7 +485,7 @@ function AppShell({ page, onNavigate, onRestartOnboarding, settingsTab, onReques
           <div className="sb-foot">
             <div className="uc-row">
               <button className="user-card" type="button" data-menu-trigger="user" aria-expanded={userMenuPosition !== null} aria-haspopup="menu" title="账户" onClick={(event) => OpenUserMenu(event.currentTarget)}>
-                <span className="avatar" aria-hidden="true">{settings.nickname.slice(0, 1)}</span>
+                <RenderUserAvatar />
                 <span className="uc-body"><span className="uc-name">{settings.nickname}</span></span>
                 <Icon name="chevron-up" size={12} className="chev" />
               </button>
@@ -532,7 +536,7 @@ function AppShell({ page, onNavigate, onRestartOnboarding, settingsTab, onReques
           <div className="sb-foot">
             <div className="uc-row">
               <button className="user-card" type="button" data-menu-trigger="user" aria-expanded={userMenuPosition !== null} aria-haspopup="menu" title="账户" onClick={(event) => OpenUserMenu(event.currentTarget)}>
-                <span className="avatar" aria-hidden="true">{settings.nickname.slice(0, 1)}</span>
+                <RenderUserAvatar />
                 <span className="uc-body"><span className="uc-name">{settings.nickname}</span></span>
                 <Icon name="chevron-up" size={12} className="chev" />
               </button>

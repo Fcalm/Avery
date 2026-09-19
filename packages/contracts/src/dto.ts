@@ -137,6 +137,16 @@ export interface SettingsDto {
   autoLaunch?: boolean;
   /** 常规-系统：关闭主窗口改为隐藏到托盘，正在运行的任务继续；主进程在关闭窗口时读取。 */
   closeToTray?: boolean;
+  /** 个性化-头像：未上传图片时昵称首字头像的底色样式。 */
+  avatarStyle?: 'default' | 'accent' | 'ink';
+  /** 个性化-头像：上传后居中裁切压缩的方形小图 data URL；空串表示未上传，走首字头像。 */
+  avatarImage?: string;
+  /** 个性化-外观：对话里 Avery 回复的字号档位；默认档跟随样式表原值。 */
+  chatFontSize?: 'sm' | 'md' | 'lg';
+  /** 个性化-外观：主题颜色偏好；真实换肤接入前仅记录选择。 */
+  accentColor?: 'pine' | 'indigo' | 'plum' | 'amber';
+  /** 个性化-外观：简历模板偏好；模板渲染接入前仅记录选择。 */
+  resumeTemplate?: 'classic' | 'compact' | 'timeline';
 }
 
 /** 附件导入结果 DTO；只返回虚拟 URI，绝不暴露源文件物理路径。 */

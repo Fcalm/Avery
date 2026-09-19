@@ -29,6 +29,11 @@ export const DefaultSettings: SettingsDraft = {
   // 常规设置的默认值与原型 GENERAL_DEFAULTS 一致：托盘驻留与完成通知默认开启。
   language: 'zh',
   startPage: 'last',
+  // 个性化默认值与原型 pstate 一致：首字头像默认底色、默认字号、松绿主题、经典模板。
+  avatarStyle: 'default',
+  chatFontSize: 'md',
+  accentColor: 'pine',
+  resumeTemplate: 'classic',
   notifyOnComplete: true,
   notifySound: true,
   autoUpdate: true,

@@ -272,6 +272,8 @@ input:focus, textarea:focus, select:focus { background: var(--titlebar-control);
 /* 用户气泡对齐原型 .msg-bubble：次级底色 + 1px 描边 + 统一 r-card 圆角 */
 .chat-message.user > .markdown-text { border: 1px solid var(--border); border-radius: var(--r-card); padding: 10px 14px; background: var(--surface-2); }
 .markdown-text { color: var(--ink); font-size: var(--text-body); line-height: 28px; }
+/* 个性化-字号大小：只作用于对话里 Avery 的回复；变量未注入（默认档）时保持上方原值。 */
+.chat-message.assistant > .markdown-text { font-size: var(--avery-reply-fs, var(--text-body)); line-height: var(--avery-reply-lh, 28px); }
 .markdown-text > :first-child { margin-top: 0; }
 .markdown-text > :last-child { margin-bottom: 0; }
 .markdown-text p { margin: 0 0 var(--space-3); }

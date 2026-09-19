@@ -10,7 +10,7 @@ import { ApplicationsPage } from '../features/application/pages/ApplicationsPage
 import { JobsPage } from '../features/job/pages/JobsPage';
 import { ResumesPage } from '../features/resume/pages/ResumesPage';
 import { ProfilesPage } from '../features/profile/pages/ProfilesPage';
-import { SettingsPage, type SettingTab } from '../features/settings/pages/SettingsPage';
+import { SettingsPage, ChatFontSizes, type SettingTab } from '../features/settings/pages/SettingsPage';
 import { OnboardingPage } from '../features/settings/pages/OnboardingPage';
 import { DeveloperPage } from '../features/developer/pages/DeveloperPage';
 import { Button, DialogButton, EmptyState, Modal } from '../shared/components/UI';
@@ -78,6 +78,19 @@ function AppContent() {
       setSettings((current) => ({ ...current, model: 'deepseek-v4-flash' }));
     }
   }, [setSettings, settings.model, settings.provider]);
+
+  // 个性化-字号大小：把回复字号挂到根元素，聊天气泡与设置页预览共用同一变量；默认档不注入，跟随样式表原值。
+  useEffect(() => {
+    const root = document.documentElement;
+    const size = ChatFontSizes.find((item) => item.key === (settings.chatFontSize ?? 'md')) ?? ChatFontSizes[1];
+    if (size.key === 'md') {
+      root.style.removeProperty('--avery-reply-fs');
+      root.style.removeProperty('--avery-reply-lh');
+    } else {
+      root.style.setProperty('--avery-reply-fs', `${size.px}px`);
+      root.style.setProperty('--avery-reply-lh', '2em');
+    }
+  }, [settings.chatFontSize]);
 
   /** 处理档案外部修改冲突：重新加载磁盘版本或强制保留应用版本。 */
   function ResolveProfileConflict(action: 'reload' | 'keep') {

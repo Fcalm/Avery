@@ -111,6 +111,8 @@
 .ph-info::before { content: "\e2ce"; }
 /* 简历抽屉（原型一比一）：下载 PDF */
 .ph-download-simple::before { content: "\e20c"; }
+/* 个性化（原型一比一）：头像上传图片；码点经本地字体字形轮廓与官方 2.1.1 比对确认 */
+.ph-upload-simple::before { content: "\e4c0"; }
 /* 模型配置（原型一比一）：API Key 显示与隐藏、弹窗里固定输入类型的锁标记 */
 .ph-eye::before { content: "\e220"; }
 .ph-eye-slash::before { content: "\e224"; }
