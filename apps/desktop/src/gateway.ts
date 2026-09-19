@@ -1,10 +1,11 @@
-import { ipcMain } from 'electron';
+import { app, ipcMain, Notification, shell } from 'electron';
 import type { BrowserWindow, IpcMain, IpcMainInvokeEvent } from 'electron';
 import { FunctionRouteChannels, MethodRoutes, WriteCommandChannels } from '@avery/backend/dist/router';
 import { WriteCommandEnvelopeSchema } from '@avery/contracts';
 
 export const MaxGatewayPayloadBytes = 10 * 1024 * 1024;
 export const WindowControlChannels = ['window:minimize', 'window:toggle-maximize', 'window:close'] as const;
+export const GeneralControlChannels = ['app:get-workspace-directory', 'app:open-workspace-directory', 'app:set-login-item'] as const;
 
 type ResultEnvelope = { ok: boolean; data?: unknown; error?: { code: string; message: string; retryable: boolean; details?: unknown } };
 type BackendHostPort = { Command: (channel: string, idempotencyKey: string | undefined, ...args: unknown[]) => Promise<unknown>; OnEvent: (listener: (event: unknown) => void) => void; state: () => string };
@@ -35,7 +36,7 @@ export function ValidateSender(event: IpcMainInvokeEvent, getWindow: () => Brows
 }
 
 /** 所有命令先通过来源、频率、大小和写信封校验，再进入 Backend Utility Process。 */
-export function RegisterGateway({ backendHost, webContentsGetter, ipcMainApi = ipcMain }: { backendHost: BackendHostPort; webContentsGetter: () => BrowserWindow | undefined; ipcMainApi?: IpcMainPort }): void {
+export function RegisterGateway({ backendHost, webContentsGetter, notificationIconPath, ipcMainApi = ipcMain }: { backendHost: BackendHostPort; webContentsGetter: () => BrowserWindow | undefined; notificationIconPath?: string; ipcMainApi?: IpcMainPort }): void {
   const limiter = CreateGatewayLimiter();
   for (const channel of [...Object.keys(MethodRoutes), ...FunctionRouteChannels]) {
     ipcMainApi.handle(channel, async (event, ...args: unknown[]): Promise<ResultEnvelope> => {
@@ -63,6 +64,7 @@ export function RegisterGateway({ backendHost, webContentsGetter, ipcMainApi = i
     });
   }
   backendHost.OnEvent((event) => {
+    if (IsRunCompletedEvent(event)) void NotifyRunCompleted({ backendHost, webContentsGetter, iconPath: notificationIconPath }, event);
     const window = webContentsGetter();
     if (!window || window.isDestroyed()) return;
     if (event && typeof event === 'object' && (event as { type?: unknown }).type === 'evaluation_event') {
@@ -71,6 +73,72 @@ export function RegisterGateway({ backendHost, webContentsGetter, ipcMainApi = i
     }
     window.webContents.send('agent:stream', event);
   });
+}
+
+/** Agent 流的完成事件：只有它触发系统通知，其余事件仍原样转发渲染层。 */
+function IsRunCompletedEvent(event: unknown): boolean {
+  return Boolean(event && typeof event === 'object' && (event as { type?: unknown }).type === 'completed');
+}
+
+type SettingsReader = { Command: (channel: string, idempotencyKey: string | undefined, ...args: unknown[]) => Promise<unknown> };
+
+async function ReadGeneralSettings(backendHost: SettingsReader): Promise<{ notifyOnComplete?: boolean; notifySound?: boolean } | undefined> {
+  const envelope = await backendHost.Command('workspace:get-settings', undefined) as { ok?: boolean; data?: { notifyOnComplete?: boolean; notifySound?: boolean } } | undefined;
+  return envelope?.ok === true ? envelope.data : undefined;
+}
+
+async function ResolveConversationTitle(backendHost: SettingsReader, sessionId: string): Promise<string> {
+  const envelope = await backendHost.Command('workspace:get-view-model', undefined) as { ok?: boolean; data?: { conversations?: Array<{ id?: string; title?: string }> } } | undefined;
+  const conversation = envelope?.ok === true ? envelope.data?.conversations?.find((item) => item.id === sessionId) : undefined;
+  return conversation?.title ?? 'Avery 任务';
+}
+
+/** 长任务完成后，只在用户没有盯着窗口时弹系统通知；托盘里隐藏的窗口同样会收到。 */
+async function NotifyRunCompleted({ backendHost, webContentsGetter, iconPath }: { backendHost: SettingsReader; webContentsGetter: () => BrowserWindow | undefined; iconPath?: string }, event: unknown): Promise<void> {
+  try {
+    const window = webContentsGetter();
+    if (!window || window.isDestroyed()) return;
+    if (window.isVisible() && window.isFocused()) return;
+    const settings = await ReadGeneralSettings(backendHost);
+    if (settings?.notifyOnComplete !== true) return;
+    const sessionId = (event as { sessionId?: unknown }).sessionId;
+    const title = typeof sessionId === 'string' && sessionId ? await ResolveConversationTitle(backendHost, sessionId) : 'Avery 任务';
+    const notification = new Notification({ title: '任务已完成', body: `「${title}」已完成。`, silent: settings.notifySound !== true, ...(iconPath ? { icon: iconPath } : {}) });
+    notification.on('click', () => {
+      const target = webContentsGetter();
+      if (!target || target.isDestroyed()) return;
+      if (target.isMinimized()) target.restore();
+      target.show();
+      target.focus();
+    });
+    notification.show();
+  } catch {
+    // 通知是锦上添花：读取设置或弹通知失败都不影响任务完成流程，也不向渲染层抛错。
+  }
+}
+
+/** 常规设置的系统能力通道：工作空间目录展示/打开与开机自启；每条通道都要通过来源校验。 */
+export function RegisterGeneralControls({ webContentsGetter, workspacePath, ipcMainApi = ipcMain }: { webContentsGetter: () => BrowserWindow | undefined; workspacePath: string; ipcMainApi?: IpcMainPort }): void {
+  const handlers: Record<(typeof GeneralControlChannels)[number], (input: unknown) => Promise<unknown> | unknown> = {
+    'app:get-workspace-directory': () => workspacePath,
+    'app:open-workspace-directory': async () => {
+      const error = await shell.openPath(workspacePath);
+      if (error) throw new Error(error);
+      return true;
+    },
+    'app:set-login-item': (openAtLogin: unknown) => {
+      // 布尔之外一律按关闭处理，防止 Renderer 传入意外结构改写系统登录项。
+      app.setLoginItemSettings({ openAtLogin: openAtLogin === true });
+      return true;
+    },
+  };
+  for (const channel of GeneralControlChannels) {
+    ipcMainApi.handle(channel, async (event, ...args: unknown[]) => {
+      if (!ValidateSender(event, webContentsGetter)) return false;
+      if (channel === 'app:set-login-item' && args.length !== 1) return false;
+      return handlers[channel](args[0]);
+    });
+  }
 }
 
 /** 无边框窗口控制也必须经过相同来源验证，绝不把 BrowserWindow 暴露给 Renderer。 */

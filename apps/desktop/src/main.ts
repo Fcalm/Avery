@@ -1,10 +1,10 @@
-import { app, BrowserWindow, Menu, session } from 'electron';
+import { app, BrowserWindow, Menu, nativeImage, session, Tray } from 'electron';
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { join, resolve } from 'node:path';
 import { CreateBackendHost } from '@avery/backend/dist/host';
 import { CreateDesktopAdapters } from './adapters';
-import { RegisterGateway, RegisterWindowControls } from './gateway';
+import { RegisterGateway, RegisterGeneralControls, RegisterWindowControls } from './gateway';
 import { IsBrowserCompanionProcess, StartBrowserCompanion } from './browser-companion';
 import { MigrateLegacyUserData } from './brand-migration';
 
@@ -15,6 +15,9 @@ let rendererLoaded = false;
 let lifecycleRunning = false;
 let lifecycleStep: string | null = null;
 const consoleErrors: string[] = [];
+let tray: Tray | undefined;
+let forceCloseAfterTrayDecision = false;
+let quitting = false;
 
 /** 仅解析应用固定依赖中的原生 CLI，不回退到 PATH 或用户全局安装。 */
 function resolveAgentBrowserExecutablePath(): string {
@@ -74,6 +77,59 @@ function configureSecurityPolicies(): void {
   });
 }
 
+/** 托盘与系统通知共用的应用图标：开发态取仓库 dist，打包态取安装目录内资源；找不到返回空串。 */
+function resolveAppIconPath(): string {
+  const fileName = join('dist', 'assets', 'avery-guiding-elf-icon-v2.png');
+  const candidates = app.isPackaged
+    ? [join(process.resourcesPath, 'app.asar', fileName), join(process.resourcesPath, fileName)]
+    : [join(__dirname, '..', '..', '..', fileName)];
+  return candidates.find((candidate) => existsSync(candidate)) ?? '';
+}
+
+/** 关闭请求：托盘模式隐藏窗口并创建托盘图标，否则真正关闭；设置读取失败按直接关闭处理。 */
+async function ResolveWindowClose(): Promise<void> {
+  const window = mainWindow;
+  if (!window || window.isDestroyed()) return;
+  let closeToTray = false;
+  try {
+    const envelope = await backendHost?.Command('workspace:get-settings', undefined) as { ok?: boolean; data?: { closeToTray?: boolean } } | undefined;
+    closeToTray = envelope?.ok === true && envelope.data?.closeToTray === true;
+  } catch { closeToTray = false; }
+  const iconPath = resolveAppIconPath();
+  if (!closeToTray || !iconPath) {
+    // 无图标资源时托盘无法创建，若已隐藏窗口用户将失去入口，因此退回直接关闭。
+    forceCloseAfterTrayDecision = true;
+    window.close();
+    return;
+  }
+  window.hide();
+  EnsureTray(iconPath);
+}
+
+function EnsureTray(iconPath: string): void {
+  if (tray) return;
+  tray = new Tray(nativeImage.createFromPath(iconPath));
+  tray.setToolTip('Avery');
+  tray.setContextMenu(Menu.buildFromTemplate([
+    { label: '显示主窗口', click: () => ShowMainWindowFromTray() },
+    { label: '退出', click: () => app.quit() },
+  ]));
+  tray.on('click', () => ShowMainWindowFromTray());
+}
+
+function ShowMainWindowFromTray(): void {
+  const window = mainWindow;
+  if (!window || window.isDestroyed()) createWindow();
+  else { if (window.isMinimized()) window.restore(); window.show(); window.focus(); }
+  DestroyTray();
+}
+
+function DestroyTray(): void {
+  if (!tray) return;
+  tray.destroy();
+  tray = undefined;
+}
+
 /** 创建唯一主窗口，明确维持 Renderer 与 Node/Electron 能力隔离。 */
 function createWindow(): BrowserWindow {
   // Acrylic 负责模糊桌面；显式启用原生圆角，让 DWM 同时裁剪系统材质与 Renderer 根层。
@@ -90,6 +146,14 @@ function createWindow(): BrowserWindow {
   else void window.loadURL(process.env.VITE_DEV_SERVER_URL || 'http://127.0.0.1:5173');
   window.webContents.once('did-finish-load', () => { rendererLoaded = true; });
   window.webContents.on('console-message', (_event, level, message) => { if (level >= 3) consoleErrors.push(String(message).slice(0, 300)); });
+  // 托盘驻留是常规设置的默认行为：关闭窗口先读设置决定隐藏还是退出；冒烟与已决定退出的场景直接放行。
+  window.on('close', (event) => {
+    if (quitting || forceCloseAfterTrayDecision || process.env.AVERY_DESKTOP_SMOKE === '1' || !backendHost) return;
+    event.preventDefault();
+    void ResolveWindowClose();
+  });
+  // 重新显示窗口时重置关闭决策并撤掉托盘图标，下一次关闭重新按设置判断。
+  window.on('show', () => { forceCloseAfterTrayDecision = false; DestroyTray(); });
   window.on('closed', () => { if (mainWindow === window) mainWindow = undefined; });
   return window;
 }
@@ -283,8 +347,11 @@ if (IsBrowserCompanionProcess()) {
       },
       desktopCapabilities: adapters,
     });
-    RegisterGateway({ backendHost, webContentsGetter: () => mainWindow });
+    RegisterGateway({ backendHost, webContentsGetter: () => mainWindow, notificationIconPath: resolveAppIconPath() || undefined });
     RegisterWindowControls({ webContentsGetter: () => mainWindow });
+    RegisterGeneralControls({ webContentsGetter: () => mainWindow, workspacePath });
+    // Windows 系统通知按 AppUserModelId 归组到 Avery；与打包配置 appId 保持一致。
+    app.setAppUserModelId('com.avery.app');
     Menu.setApplicationMenu(null);
     if (!cronRunnerLaunch) createWindow();
     else void runDueCronTasksWhenReady(true).catch((error) => { console.error('CronTask runner failed:', error); app.exit(1); });
@@ -321,6 +388,7 @@ if (IsBrowserCompanionProcess()) {
   });
   app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
   app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
-  app.on('before-quit', () => { backendHost?.Shutdown(); });
+  // before-quit 先于窗口关闭事件：托盘「退出」触发的关闭必须放行，不再被托盘决策拦截。
+  app.on('before-quit', () => { quitting = true; DestroyTray(); backendHost?.Shutdown(); });
   }
 }

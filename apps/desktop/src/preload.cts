@@ -128,4 +128,7 @@ contextBridge.exposeInMainWorld('averyWorkspace', workspaceBridge);
 contextBridge.exposeInMainWorld('averyEvaluation', evaluationBridge);
 contextBridge.exposeInMainWorld('averyWindow', {
   Minimize: () => invoke('window:minimize'), ToggleMaximize: () => invoke('window:toggle-maximize'), Close: () => invoke('window:close'),
+  GetWorkspaceDirectory: () => invoke('app:get-workspace-directory') as Promise<string>,
+  OpenWorkspaceDirectory: () => invoke('app:open-workspace-directory') as Promise<boolean>,
+  SetLoginItemSettings: (openAtLogin: boolean) => invoke('app:set-login-item', openAtLogin) as Promise<boolean>,
 });

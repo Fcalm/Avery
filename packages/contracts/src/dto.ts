@@ -123,6 +123,20 @@ export interface SettingsDto {
   customContext?: string;
   /** Agent 浏览器内核；Electron 使用专用 Profile，Chrome/Edge 轻量连接用户已登录的 BOSS 页面。 */
   browserEngine?: 'electron' | 'chrome' | 'edge';
+  /** 常规-通用：界面语言；当前版本界面文案仅提供中文，英文选项先持久化偏好供后续 i18n 使用。 */
+  language?: 'zh' | 'en';
+  /** 常规-通用：启动时打开「上次的对话」或停留在工作区首页（新对话页）。 */
+  startPage?: 'last' | 'home';
+  /** 常规-通知：窗口未聚焦时长任务完成时弹出系统通知；主进程在收到完成事件时读取。 */
+  notifyOnComplete?: boolean;
+  /** 常规-通知：完成通知附带系统提示音；仅在 notifyOnComplete 开启时生效。 */
+  notifySound?: boolean;
+  /** 常规-更新：有新版本时在后台自动下载；更新发布通道接入前仅保存偏好。 */
+  autoUpdate?: boolean;
+  /** 常规-系统：开机时自动启动，保存时经主进程 setLoginItemSettings 写入系统。 */
+  autoLaunch?: boolean;
+  /** 常规-系统：关闭主窗口改为隐藏到托盘，正在运行的任务继续；主进程在关闭窗口时读取。 */
+  closeToTray?: boolean;
 }
 
 /** 附件导入结果 DTO；只返回虚拟 URI，绝不暴露源文件物理路径。 */
