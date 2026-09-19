@@ -260,6 +260,7 @@ export function EvaluationConsole() {
   const [showPromptDrawer, setShowPromptDrawer] = useState(false);
   const [showJudgeDrawer, setShowJudgeDrawer] = useState(false);
   const [judgeDraft, setJudgeDraft] = useState('');
+  const [judgeStrictJsonDraft, setJudgeStrictJsonDraft] = useState(false);
 
   const [compare, setCompare] = useState<EvalComparison | null>(null);
   const [leftRunId, setLeftRunId] = useState('');
@@ -408,7 +409,7 @@ export function EvaluationConsole() {
   async function SaveJudgePrompt() {
     if (!selected) return;
     await WithBusy(async () => {
-      await UpdateEvalProject(selected.id, { name: selected.name, runnerType: selected.runnerType, rubric: selected.rubric, judgePrompt: judgeDraft, config: selected.config }, selected.revision);
+      await UpdateEvalProject(selected.id, { name: selected.name, runnerType: selected.runnerType, rubric: selected.rubric, judgePrompt: judgeDraft, judgeStrictJson: judgeStrictJsonDraft, config: selected.config }, selected.revision);
       setShowJudgeDrawer(false);
       await RefreshProjectsAndRuns(); ShowNotice('评判提示词已保存，下次评测生效');
     });
@@ -615,7 +616,7 @@ export function EvaluationConsole() {
 
           <section className="ev-sec">
             <div className="ev-sec-h"><Icon name="scales" size={14} /><span>{selected.runnerType === 'prompt' ? 'judge model 配置' : '执行模型'}</span>
-              {selected.runnerType === 'prompt' && <><span className="sp" /><Button variant="quiet" onClick={() => { setJudgeDraft(selected.judgePrompt); setShowJudgeDrawer(true); }}><Icon name="pencil-simple" size={13} />编辑提示词</Button></>}
+              {selected.runnerType === 'prompt' && <><span className="sp" /><Button variant="quiet" onClick={() => { setJudgeDraft(selected.judgePrompt); setJudgeStrictJsonDraft(selected.judgeStrictJson === true); setShowJudgeDrawer(true); }}><Icon name="pencil-simple" size={13} />编辑提示词</Button></>}
             </div>
             <FormField label="执行模型 · 被评测的一方">
               <Select value={selected.config.executionModel} ariaLabel="执行模型" onChange={(value) => void ChangeModel('executionModel', value)} options={modelOptions.some((option) => option.value === selected.config.executionModel) ? modelOptions : [{ value: selected.config.executionModel, label: selected.config.executionModel }, ...modelOptions]} />
@@ -623,7 +624,7 @@ export function EvaluationConsole() {
             {selected.runnerType === 'prompt' && <FormField label="评判模型 · 负责打分">
               <Select value={selected.config.judgeModel ?? ''} ariaLabel="评判模型" onChange={(value) => void ChangeModel('judgeModel', value)} options={modelOptions.some((option) => option.value === selected.config.judgeModel) ? modelOptions : [{ value: selected.config.judgeModel ?? '', label: selected.config.judgeModel ?? '未设置' }, ...modelOptions]} />
             </FormField>}
-            {selected.runnerType === 'prompt' && <div className="ev-hash"><Icon name="info" size={13} /><span>评判提示词 {selected.judgePrompt.length + selected.rubric.length} 字 · 附加段拼进固定评判框架</span></div>}
+            {selected.runnerType === 'prompt' && <div className="ev-hash"><Icon name="info" size={13} /><span>评判提示词 {selected.judgePrompt.length + selected.rubric.length} 字 · {selected.judgeStrictJson ? '严格 JSON 输出' : '附加段'} 拼进固定评判框架</span></div>}
             <div className="ev-hash"><Icon name="info" size={13} /><span>运行时按模型配置页当前生效的供应商校准；实际使用的模型以快照为准</span></div>
           </section>
         </section>
@@ -801,6 +802,12 @@ export function EvaluationConsole() {
     </Modal>
     <Modal open={showJudgeDrawer} title="编辑评判提示词" onClose={() => setShowJudgeDrawer(false)} footer={<><DialogButton onClick={() => setShowJudgeDrawer(false)}>取消</DialogButton><DialogButton tone="accent" disabled={busy} onClick={() => void SaveJudgePrompt()}>保存</DialogButton></>}>
       <p className="ev-manage-note">这一段会拼进固定的评判框架，作为额外的评判关注点；框架本身的防注入约束与输出契约不受影响。</p>
+      <div className="ev-drawer-toolbar">
+        <Button variant={judgeStrictJsonDraft ? 'primary' : 'quiet'} aria-pressed={judgeStrictJsonDraft} onClick={() => setJudgeStrictJsonDraft((current) => !current)}>
+          <Icon name={judgeStrictJsonDraft ? 'check-circle' : 'seal-check'} size={14} />严格 JSON 输出
+        </Button>
+        <span className="ev-drawer-hint">按 DeepSeek 官方建议请求 json_object 模式、在提示词附加 JSON 样例并设置输出上限，减少评分被截断或夹带散文；仅 DeepSeek 通道发送 API 参数，其他供应商只附加提示词约束。</span>
+      </div>
       <FormField label="评判提示词附加段" hint={`当前 ${judgeDraft.length} 字，最多 100000 字。`}><textarea rows={9} value={judgeDraft} onChange={(event) => setJudgeDraft(event.target.value)} /></FormField>
     </Modal>
     <Modal open={showPromptDrawer} title="编辑 Prompt 候选" onClose={() => setShowPromptDrawer(false)} footer={<><DialogButton onClick={() => setShowPromptDrawer(false)}>取消</DialogButton><DialogButton tone="accent" disabled={busy} onClick={() => void SaveCandidates()}>保存候选</DialogButton></>}>

@@ -119,6 +119,12 @@ export class ObservabilityStore {
     } catch {
       // Existing databases already include the column.
     }
+    try {
+      // 严格 JSON 输出开关：0/1 存储，仅影响 Prompt 测评的 Judge 调用。
+      this.db.exec('ALTER TABLE evaluation_projects ADD COLUMN judge_strict_json INTEGER NOT NULL DEFAULT 0');
+    } catch {
+      // Existing databases already include the column.
+    }
   }
 
   /** 追加已由调用方脱敏的结构化运行日志，并执行数量与时间双重留存限制。 */
@@ -261,17 +267,17 @@ export class ObservabilityStore {
   /** 创建开发者测评项目索引；配置与测试集仍由 EvalService 完成 Schema 校验。 */
   CreateEvalProjectRecord(record: any): any {
     this.db.prepare(`INSERT INTO evaluation_projects(
-      id, name, runner_type, config_json, dataset_jsonl, dataset_version, dataset_case_count, rubric, judge_prompt, revision, created_at, updated_at
-    ) VALUES(?, ?, ?, ?, '', NULL, 0, ?, ?, 1, ?, ?)`)
-      .run(record.id, record.name, record.runnerType, JSON.stringify(record.config), record.rubric ?? '', record.judgePrompt ?? '', record.createdAt, record.updatedAt);
+      id, name, runner_type, config_json, dataset_jsonl, dataset_version, dataset_case_count, rubric, judge_prompt, judge_strict_json, revision, created_at, updated_at
+    ) VALUES(?, ?, ?, ?, '', NULL, 0, ?, ?, ?, 1, ?, ?)`)
+      .run(record.id, record.name, record.runnerType, JSON.stringify(record.config), record.rubric ?? '', record.judgePrompt ?? '', record.judgeStrictJson === true ? 1 : 0, record.createdAt, record.updatedAt);
     return this.ReadEvalProjectRecord(record.id);
   }
 
   /** 以 revision 乐观锁更新项目，防止两个开发者页面互相覆盖候选和 Rubric。 */
   UpdateEvalProjectRecord(id: string, record: any, expectedRevision: number): any {
-    const result = this.db.prepare(`UPDATE evaluation_projects SET name = ?, runner_type = ?, config_json = ?, rubric = ?, judge_prompt = ?, revision = revision + 1, updated_at = ?
+    const result = this.db.prepare(`UPDATE evaluation_projects SET name = ?, runner_type = ?, config_json = ?, rubric = ?, judge_prompt = ?, judge_strict_json = ?, revision = revision + 1, updated_at = ?
       WHERE id = ? AND revision = ?`)
-      .run(record.name, record.runnerType, JSON.stringify(record.config), record.rubric ?? '', record.judgePrompt ?? '', record.updatedAt, id, expectedRevision);
+      .run(record.name, record.runnerType, JSON.stringify(record.config), record.rubric ?? '', record.judgePrompt ?? '', record.judgeStrictJson === true ? 1 : 0, record.updatedAt, id, expectedRevision);
     if (result.changes !== 1) {
       const exists = this.db.prepare('SELECT revision FROM evaluation_projects WHERE id = ?').get(id);
       if (!exists) throw Object.assign(new Error('Evaluation project was not found.'), { code: 'NOT_FOUND' });
@@ -332,7 +338,8 @@ export class ObservabilityStore {
     return {
       schemaVersion: 1, id: row.id, name: row.name, runnerType: row.runner_type, config: JSON.parse(row.config_json),
       datasetJsonl: row.dataset_jsonl, datasetVersion: row.dataset_version, datasetCaseCount: row.dataset_case_count,
-      rubric: row.rubric, judgePrompt: row.judge_prompt ?? '', revision: row.revision, createdAt: row.created_at, updatedAt: row.updated_at,
+      rubric: row.rubric, judgePrompt: row.judge_prompt ?? '', judgeStrictJson: row.judge_strict_json === 1,
+      revision: row.revision, createdAt: row.created_at, updatedAt: row.updated_at,
     };
   }
 
@@ -340,7 +347,7 @@ export class ObservabilityStore {
     return this.db.prepare('SELECT * FROM evaluation_projects ORDER BY updated_at DESC, id').all().map((row: any) => ({
       schemaVersion: 1, id: row.id, name: row.name, runnerType: row.runner_type, config: JSON.parse(row.config_json),
       datasetVersion: row.dataset_version, datasetCaseCount: row.dataset_case_count, rubric: row.rubric, judgePrompt: row.judge_prompt ?? '',
-      revision: row.revision, createdAt: row.created_at, updatedAt: row.updated_at,
+      judgeStrictJson: row.judge_strict_json === 1, revision: row.revision, createdAt: row.created_at, updatedAt: row.updated_at,
     }));
   }
 

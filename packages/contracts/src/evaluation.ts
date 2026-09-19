@@ -83,6 +83,8 @@ export interface EvalProject {
   rubric: string;
   /** 评判提示词附加段：拼进固定的防注入评判框架，空字符串表示不追加。 */
   judgePrompt: string;
+  /** 严格 JSON 输出：Judge 调用请求 json_object 模式并在提示词附加 JSON 样例，防止评分结果被截断或夹带散文。 */
+  judgeStrictJson: boolean;
   revision: number;
   createdAt: number;
   updatedAt: number;
@@ -95,6 +97,7 @@ export interface EvalProjectInput {
   config: EvalProjectConfig;
   rubric?: string;
   judgePrompt?: string;
+  judgeStrictJson?: boolean;
 }
 
 /** 测试集版本库的一行：导入即冻结，删除不影响已落盘 Run 的快照。 */

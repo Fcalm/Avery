@@ -371,16 +371,19 @@ describe('Agent evaluation service', () => {
       scorer: { Score: scoreSpy } as any,
     });
     await service.Initialize();
-    let project = await service.CreateProject({ ...projectInput, judgePrompt: '重点关注指令遵循。', config: { ...projectInput.config, candidates: [projectInput.config.candidates[0]] } });
+    let project = await service.CreateProject({ ...projectInput, judgePrompt: '重点关注指令遵循。', judgeStrictJson: true, config: { ...projectInput.config, candidates: [projectInput.config.candidates[0]] } });
     expect(project.judgePrompt).toBe('重点关注指令遵循。');
-    // 旧调用方不携带 judgePrompt 时不得清空现值。
+    expect(project.judgeStrictJson).toBe(true);
+    // 旧调用方不携带 judgePrompt/judgeStrictJson 时不得清空现值。
     project = await service.UpdateProject(project.id, { name: project.name, runnerType: project.runnerType, config: project.config, rubric: project.rubric }, project.revision);
     expect(project.judgePrompt).toBe('重点关注指令遵循。');
+    expect(project.judgeStrictJson).toBe(true);
     await service.ImportDataset(project.id, dataset, project.rubric, project.revision);
     project = await service.ReadProject(project.id);
     const run = await service.StartRun(project.id);
-    await WaitForTerminal(service, run.id);
-    expect(scoreSpy.mock.calls[0][0]).toMatchObject({ judgePrompt: '重点关注指令遵循。' });
+    const judgeRun = await WaitForTerminal(service, run.id);
+    expect(judgeRun.snapshot).toMatchObject({ judgePrompt: '重点关注指令遵循。', judgeStrictJson: true });
+    expect(scoreSpy.mock.calls[0][0]).toMatchObject({ judgePrompt: '重点关注指令遵循。', strictJson: true });
     await service.Close();
     store.Close();
   });

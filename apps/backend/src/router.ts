@@ -149,7 +149,7 @@ const Revision = z.number().int().nonnegative().optional();
 const RequiredRevision = z.number().int().positive();
 const EvalProjectInputSchema = z.object({
   id: EntityId.optional(), name: z.string().min(1).max(200), runnerType: z.enum(['prompt', 'browser']),
-  config: z.record(z.string(), z.unknown()), rubric: z.string().max(100000).optional(), judgePrompt: z.string().max(100000).optional(),
+  config: z.record(z.string(), z.unknown()), rubric: z.string().max(100000).optional(), judgePrompt: z.string().max(100000).optional(), judgeStrictJson: z.boolean().optional(),
 }).strict();
 /** 测试集版本号是内容哈希：64 位十六进制，防止任意字符串进入文件路径。 */
 const EvalDatasetVersionHash = z.string().regex(/^[a-f0-9]{64}$/);

@@ -124,4 +124,28 @@ describe('evaluation scorers', () => {
     expect(compiled).not.toContain('Developer judging instructions');
     expect(compiled).toContain('Evaluation goal and rubric:\n评分目标');
   });
+
+  it('严格 JSON 输出请求 json_object 模式、附加 JSON 样例并设置输出上限', async () => {
+    const completion = vi.fn(async () => ({ content: judged() }));
+    const scorer = new EvalScorer({ credentialPort: {}, provider: { StreamCompletion: completion } });
+    await scorer.Score({ testCase: baseCase as any, finalResponse: 'React', events: [], finalState: {}, rubric: '评分目标', judgePrompt: '重点关注指令遵循。', strictJson: true, judgeModel: 'deepseek-v4-pro', signal: new AbortController().signal });
+    const request = completion.mock.calls[0][0] as { responseFormat?: unknown; maxTokens?: number; instructions: { compiled: string } };
+    expect(request.responseFormat).toEqual({ type: 'json_object' });
+    expect(request.maxTokens).toBe(8192);
+    const compiled = request.instructions.compiled;
+    expect(compiled).toContain('JSON output mode is enabled');
+    expect(compiled).toContain('"score": 85');
+    expect(compiled.indexOf('JSON output mode')).toBeLessThan(compiled.indexOf('Evaluation goal and rubric'));
+    expect(compiled.indexOf('Output contract (mandatory)')).toBeGreaterThan(compiled.indexOf('JSON output mode'));
+  });
+
+  it('未开启严格 JSON 时不请求 json_object 也不附加样例', async () => {
+    const completion = vi.fn(async () => ({ content: judged() }));
+    const scorer = new EvalScorer({ credentialPort: {}, provider: { StreamCompletion: completion } });
+    await scorer.Score({ testCase: baseCase as any, finalResponse: 'React', events: [], finalState: {}, rubric: '评分目标', judgeModel: 'deepseek-v4-pro', signal: new AbortController().signal });
+    const request = completion.mock.calls[0][0] as { responseFormat?: unknown; maxTokens?: number; instructions: { compiled: string } };
+    expect(request.responseFormat).toBeUndefined();
+    expect(request.maxTokens).toBeUndefined();
+    expect(request.instructions.compiled).not.toContain('JSON output mode is enabled');
+  });
 });

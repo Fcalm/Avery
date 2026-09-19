@@ -40,6 +40,7 @@ const ProjectInputSchema = z.object({
   config: ConfigSchema,
   rubric: z.string().max(100000).optional(),
   judgePrompt: z.string().max(100000).optional(),
+  judgeStrictJson: z.boolean().optional(),
 }).strict();
 const DatasetCaseSchema = z.object({
   id: Id,
@@ -240,10 +241,11 @@ export class EvalService {
     Id.parse(id);
     const parsed = ProjectInputSchema.parse(input);
     ValidateProjectConfig(parsed.config, parsed.runnerType);
-    // 输入未携带 judgePrompt 时沿用现值：旧调用方不传该字段不应清空评判附加段。
+    // 输入未携带 judgePrompt/judgeStrictJson 时沿用现值：旧调用方不传这些字段不应清空评判配置。
     const current = await this.store.ReadEvalProjectRecord(id);
     const judgePrompt = parsed.judgePrompt ?? current.judgePrompt ?? '';
-    return this.PublicProject(await this.store.UpdateEvalProjectRecord(id, { ...parsed, judgePrompt, updatedAt: Date.now() }, expectedRevision));
+    const judgeStrictJson = parsed.judgeStrictJson ?? current.judgeStrictJson === true;
+    return this.PublicProject(await this.store.UpdateEvalProjectRecord(id, { ...parsed, judgePrompt, judgeStrictJson, updatedAt: Date.now() }, expectedRevision));
   }
 
   async ReadProject(id: string): Promise<EvalProject> { await this.RequireDeveloperMode(); return this.PublicProject(await this.store.ReadEvalProjectRecord(Id.parse(id))); }
@@ -358,7 +360,7 @@ export class EvalService {
     });
     return {
       schemaVersion: 1, createdAt: Date.now(), projectId: project.id, projectRevision: project.revision,
-      runnerType: project.runnerType, config: { ...runConfig, candidates }, rubric: project.rubric, judgePrompt: project.judgePrompt ?? '',
+      runnerType: project.runnerType, config: { ...runConfig, candidates }, rubric: project.rubric, judgePrompt: project.judgePrompt ?? '', judgeStrictJson: project.judgeStrictJson === true,
       datasetVersion: project.datasetVersion, cases, toolDefinitions: definitions, toolsetHash,
       versions: { snapshot: 2, promptRunner: 2, browserRunner: 2, scorer: project.runnerType === 'browser' ? 'browser-deterministic-2' : 'prompt-judge-3', assertions: 1, trace: 1, application: '0.1.0' },
       environment: { repeatCount: runConfig.repeatCount, maxConcurrency: project.runnerType === 'browser' ? 1 : 2 },
@@ -522,7 +524,7 @@ export class EvalService {
                   ? ScoreBrowserCase({ testCase, events: result.events, finalState: result.finalState, metrics: result.metrics })
                   : await this.scorer.Score({
                     testCase, finalResponse: result.finalResponse, events: result.events, finalState: result.finalState, metrics: result.metrics,
-                    rubric: snapshot.rubric, judgePrompt: snapshot.judgePrompt, judgeModel: projectConfig.judgeModel!, signal: controller.signal,
+                    rubric: snapshot.rubric, judgePrompt: snapshot.judgePrompt, strictJson: snapshot.judgeStrictJson === true, judgeModel: projectConfig.judgeModel!, signal: controller.signal,
                   });
                 this.ThrowIfCancelled(controller.signal);
                 const judgeUsage = 'usage' in scoreResult ? scoreResult.usage : undefined;
