@@ -16,7 +16,8 @@ describe('统一简历文档模板', () => {
     expect(markup).toContain('13800000000');
     expect(markup).toContain('candidate@example.com');
     expect(markup).toContain('<h2>项目经历</h2>');
-    expect(markup).toContain('<h3 class="resume-project-title">Avery｜求职助手</h3>');
+    // 534ac4e 起项目标题同时携带通用条目类名与 project 标记类，断言同步当前模板行为。
+    expect(markup).toContain('<h3 class="resume-entry-title resume-project-title">Avery｜求职助手</h3>');
     expect(markup).toContain('<strong>负责</strong>');
     expect(markup).toContain('南昌大学｜工商管理');
     expect(markup).not.toContain('<h2>教育背景</h2>');
