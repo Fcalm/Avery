@@ -924,13 +924,13 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
                   </div>}
                 </div>
                 <div className="menu-wrap">
-                  <button className="cmp-btn model-button" type="button" aria-label={`模型：${provider} ${model}`} aria-haspopup="true" aria-expanded={showModel} onClick={() => setShowModel((value) => !value)}>{provider === 'DeepSeek' ? <Icon name="deepseek" size={15} /> : <Icon name="brain" size={15} />}<span>{model}</span><Icon name="chevron-up" className="chev" size={10} /></button>
+                  <button className="cmp-btn model-button" type="button" aria-label={`模型：${provider} ${model}`} aria-haspopup="true" aria-expanded={showModel} onClick={() => setShowModel((value) => !value)}>{provider === 'DeepSeek' ? <Icon name="deepseek" size={15} /> : provider === 'Z.AI' ? <Icon name="zai" size={15} /> : <Icon name="brain" size={15} />}<span>{model}</span><Icon name="chevron-up" className="chev" size={10} /></button>
                   {showModel && <div className="menu pop model-menu" role="menu" aria-label="使用的模型">
                     <div className="menu-label">使用的模型</div>
                     {providerCatalog.map((entry, entryIndex) => <Fragment key={entry.provider}>
                       {entryIndex > 0 && <div className="menu-sep" />}
                       {entry.models.map((availableModel) => <button key={`${entry.provider}:${availableModel}`} type="button" role="menuitemradio" aria-checked={entry.provider === provider && availableModel === model} className={entry.provider === provider && availableModel === model ? 'menu-item sel' : 'menu-item'} onClick={() => HandleSelectModel(entry.provider, availableModel)}>
-                        {entry.provider === 'DeepSeek' ? <Icon name="deepseek" size={16} /> : <Icon name="brain" size={16} />}
+                        {entry.provider === 'DeepSeek' ? <Icon name="deepseek" size={16} /> : entry.provider === 'Z.AI' ? <Icon name="zai" size={16} /> : <Icon name="brain" size={16} />}
                         <span><span className="mt">{availableModel}</span><span className="md">{entry.provider}</span></span>
                         <Icon name="check" className="tick" size={14} />
                       </button>)}

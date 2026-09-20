@@ -24,7 +24,8 @@ const BrowserEngineLabels = { electron: 'Avery 隔离浏览器（兼容）', chr
 /** 模型配置侧栏的分组：推荐 = 官方供应商，自定义供应商可删除并改用自定义端点。 */
 const ProviderGroups = ['推荐', '自定义供应商'];
 /** 模型标记：与原型一致，推荐供应商用字母，自定义供应商用加号。 */
-const ProviderMarks: Record<SettingsDraft['provider'], string> = { DeepSeek: 'D', 'Z.AI': 'Z', '自定义': '+' };
+/** 供应商标记：品牌供应商用品牌图标（mask 随文字色），自定义无品牌保留加号字符。 */
+const ProviderMarks: Record<SettingsDraft['provider'], ReactNode> = { DeepSeek: <Icon name="deepseek" size={13} />, 'Z.AI': <Icon name="zai" size={13} />, '自定义': '+' };
 /** 个性化页选项：与原型 avery-settings.html 的 AV_STYLES / SIZES / ACCENTS / RESUMES 一一对应。 */
 export const AvatarStyles = [{ key: 'default', label: '默认底色' }, { key: 'accent', label: '主题色' }, { key: 'ink', label: '反色' }] as const;
 /** 回复字号档位：默认档必须等于当前正文的 14px，「默认」才与实际渲染一致；App 用它给聊天气泡挂 CSS 变量。 */
