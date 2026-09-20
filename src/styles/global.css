@@ -38,9 +38,7 @@ input:focus, textarea:focus, select:focus { background: var(--titlebar-control);
 .brand { display: flex; align-items: center; padding: 2px 10px 24px; }
 .brand b { display: block; font-family: var(--font-brand); font-size: 24px; font-weight: 400; letter-spacing: -.01em; line-height: 1; }
 .brand small { color: var(--ink-faint); font-size: var(--text-meta); letter-spacing: .13em; }
-.brand-mark { display: grid; width: 34px; height: 34px; place-items: center; border: 2px solid var(--accent); border-radius: 10px 10px 3px 10px; color: var(--accent); font-size: 22px; transform: rotate(-4deg); }
-.brand-mark span { transform: rotate(4deg); }
-.brand-mark img { display: block; width: 100%; height: 100%; object-fit: contain; }
+/* 品牌标记样式统一收敛在 shell.css（此处旧规则会与其级联冲突，见 2026-09 深绿底问题） */
 .sidebar-nav { overflow-x: hidden; overflow-y: auto; text-align: left; }
 .sidebar-nav, .message-list { scrollbar-width: thin; scrollbar-color: var(--scrollbar-idle) transparent; }
 .sidebar-nav::-webkit-scrollbar, .message-list::-webkit-scrollbar { width: 6px; }
@@ -150,9 +148,6 @@ input:focus, textarea:focus, select:focus { background: var(--titlebar-control);
 .brand { gap: var(--space-2); padding: 0 var(--space-2) var(--space-5); }
 .brand b { font-size: 24px; }
 .brand small { margin-top: 1px; letter-spacing: .12em; }
-/* 品牌图标是彩色吉祥物，深绿底会把它吞掉：底色改用卡片色加细描边，深浅主题都与绿色图标形成对比 */
-.brand-mark { width: 36px; height: 36px; border: 1px solid var(--border); border-radius: 9px 9px 4px 9px; background: var(--card); color: var(--accent); transform: none; }
-.brand-mark .iconfont-png { position: relative; z-index: 1; }
 .nav-label { margin: var(--space-2) var(--space-2) var(--space-1); font-size: var(--text-kicker); font-weight: 500; letter-spacing: .12em; }
 .mine-label { margin-top: var(--space-5); }
 .assistant-nav { border-radius: var(--radius-control); }

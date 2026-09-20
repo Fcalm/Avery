@@ -66,11 +66,13 @@ button { background: none; border: 0; }
 .tb-spacer { flex: 1; min-width: 8px; }
 .tb-div { width: 1px; height: 20px; background: var(--border-2); margin: 0 4px; flex: none; }
 .brand { display: flex; align-items: center; gap: 9px; padding: 4px 6px 4px 2px; border-radius: var(--r-control); }
+/* 品牌标记唯一权威规则：彩色吉祥物图标用卡片色底 + 细描边衬托（深绿底会把它吞掉）；
+   transform 归零以抵消旧版倾斜样式，img 承载产品图标并随卡片缩放 */
 .brand-mark {
   width: 24px; height: 24px; flex: none; display: grid; place-items: center;
-  border-radius: 7px; background: var(--accent); color: var(--accent-on);
+  border: 1px solid var(--border); border-radius: 7px; background: var(--card); color: var(--accent); transform: none;
 }
-.brand-mark svg { width: 15px; height: 15px; }
+.brand-mark img { display: block; width: 100%; height: 100%; object-fit: contain; }
 .brand-name { font-size: 14.5px; font-weight: 650; letter-spacing: -.01em; }
 .crumb { display: flex; align-items: center; gap: 5px; min-width: 0; font-size: 13px; color: var(--text-2); }
 .crumb-root { flex: none; }
