@@ -53,13 +53,8 @@ function SaveLocalMap(key: string, value: Record<string, string>): void {
 /** 待归档会话：确认弹窗标题里需要会话名。 */
 type ArchiveTarget = { id: string; title: string };
 
-/** 顶栏品牌标记：与原型一致的 A 字轮廓。 */
-const BrandMark = (
-  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.4} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-    <path d="M5.5 19.5 12 4.5l6.5 15" />
-    <path d="M8.6 13.4h6.8" />
-  </svg>
-);
+/** 顶栏品牌标记：产品引导精灵图标；构建以 file:// 打开，资源路径按文档基址解析成绝对 URL。 */
+const BrandMark = <img src={new URL('./assets/avery-guiding-elf-icon-v2.png', document.baseURI).href} alt="" />;
 
 function FormatBalance(currency: string, total: string) {
   const number = Number(total);
