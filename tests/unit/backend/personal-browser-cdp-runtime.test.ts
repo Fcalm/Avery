@@ -136,6 +136,9 @@ describe('PersonalBrowserCdpRuntime', () => {
     expect(() => new Function(snapshotExpression)).not.toThrow();
     expect(snapshotExpression).toContain('split(/\\s+/)');
     expect(snapshotExpression).toContain("element.classList.contains('disabled')");
+    expect(snapshotExpression).toContain('const fileInputSurfaceOf =');
+    expect(snapshotExpression).toContain("if (type === 'file') return 'filechooser'");
+    expect(snapshotExpression).toContain('hiddenFileInputSurface');
     expect(evaluated).toMatchObject({ success: true, data: { result: { ok: true } } });
     await expect(runtime.Run(['eval', '-b', '%%%'])).rejects.toMatchObject<Partial<PersonalBrowserCdpError>>({ code: 'BROWSER_ARGUMENT_INVALID' });
     await expect(access(screenshotPath)).resolves.toBeUndefined();
@@ -182,6 +185,34 @@ describe('PersonalBrowserCdpRuntime', () => {
     socket.targetClosed = true;
     await expect(runtime.Run(['open', 'https://www.zhipin.com/web/geek/job?query=agent'])).resolves.toMatchObject({ success: true });
     expect(socket.sent.filter((message) => message.method === 'Target.createTarget')).toHaveLength(2);
+    await runtime.Close();
+  });
+
+  it('允许 Snapshot 已认证的通用隐藏文件输入直接绑定授权文件', async () => {
+    let socket!: TranscriptSocket;
+    const runtime = new PersonalBrowserCdpRuntime({
+      endpoint: 'ws://127.0.0.1:9222/devtools/browser/test-id',
+      webSocketFactory: () => { socket = new TranscriptSocket(); return socket; },
+      delay: async () => undefined,
+    });
+    await runtime.Run(['snapshot']);
+    (runtime as any).refs.set('e99', {
+      selector: 'html > body:nth-of-type(1) > div:nth-of-type(1) > input:nth-of-type(1)',
+      tag: 'input', role: 'filechooser', type: 'file', name: '上传简历',
+    });
+
+    await expect(runtime.Run(['upload', '@e99', 'D:\\authorized\\resume.pdf'])).resolves.toMatchObject({
+      success: true,
+      data: { uploaded: true },
+    });
+    const uploadEvaluation = socket.sent.find((message) => message.method === 'Runtime.evaluate'
+      && String(message.params.expression ?? '').includes("element.type !== 'file'"));
+    expect(uploadEvaluation?.params.expression).toContain('hasVisibleUploadSurface');
+    expect(socket.sent).toContainEqual(expect.objectContaining({
+      method: 'DOM.setFileInputFiles',
+      params: { files: ['D:\\authorized\\resume.pdf'], objectId: 'boss-file-input' },
+      sessionId: 'task-session',
+    }));
     await runtime.Close();
   });
 

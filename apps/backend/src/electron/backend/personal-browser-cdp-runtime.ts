@@ -130,6 +130,29 @@ const SnapshotExpression = `(() => {
     return style.display !== 'none' && style.visibility !== 'hidden' && Number(style.opacity || 1) > 0
       && rect.width > 0 && rect.height > 0;
   };
+  const fileInputSurfaceOf = (element) => {
+    if (element.tagName !== 'INPUT' || String(element.type || '').toLowerCase() !== 'file') return null;
+    const explicitLabel = element.id ? document.querySelector('label[for="' + CSS.escape(element.id) + '"]') : null;
+    const candidates = [];
+    if (explicitLabel instanceof HTMLElement) candidates.push(explicitLabel);
+    let current = element.parentElement;
+    for (let depth = 0; current && depth < 6 && current !== document.body && current !== document.documentElement; depth += 1) {
+      candidates.push(current);
+      current = current.parentElement;
+    }
+    return candidates.find((candidate) => {
+      if (!(candidate instanceof HTMLElement) || !visible(candidate)) return false;
+      const identity = normalizedText([
+        candidate.id,
+        typeof candidate.className === 'string' ? candidate.className : '',
+        candidate.getAttribute('role'),
+        candidate.getAttribute('aria-label'),
+        candidate.getAttribute('title'),
+        candidate.innerText || candidate.textContent,
+      ].join(' ')).slice(0, 600);
+      return /(上传|简历|附件|文件|(?:^|[\\s_-])(?:upload|resume|attachment|file|dropzone)(?:$|[\\s_-]))/i.test(identity);
+    }) || null;
+  };
   const bossChatPage = (location.hostname === 'zhipin.com' || location.hostname.endsWith('.zhipin.com'))
     && location.pathname === '/web/geek/chat';
   const bossChatNameOf = (element) => {
@@ -148,8 +171,10 @@ const SnapshotExpression = `(() => {
     const labelledBy = element.getAttribute('aria-labelledby');
     const labelledText = labelledBy ? labelledBy.split(/\\s+/).map((id) => document.getElementById(id)?.textContent || '').join(' ') : '';
     const explicitLabel = element.id ? document.querySelector('label[for="' + CSS.escape(element.id) + '"]')?.textContent : '';
+    const fileInputSurface = fileInputSurfaceOf(element);
     return bossChatNameOf(element) || normalize(element.getAttribute('aria-label') || labelledText || explicitLabel || element.closest('label')?.textContent
-      || element.getAttribute('placeholder') || element.getAttribute('alt') || element.getAttribute('title') || element.textContent);
+      || element.getAttribute('placeholder') || element.getAttribute('alt') || element.getAttribute('title')
+      || fileInputSurface?.innerText || fileInputSurface?.textContent || element.textContent);
   };
   const labelOf = (element) => {
     const labelledBy = element.getAttribute('aria-labelledby');
@@ -172,6 +197,7 @@ const SnapshotExpression = `(() => {
       const type = String(element.type || 'text').toLowerCase();
       if (type === 'checkbox') return 'checkbox';
       if (type === 'radio') return 'radio';
+      if (type === 'file') return 'filechooser';
       if (['button', 'submit', 'reset'].includes(type)) return 'button';
       return type === 'search' ? 'searchbox' : 'textbox';
     }
@@ -258,7 +284,8 @@ const SnapshotExpression = `(() => {
     const bossHiddenImageInput = bossChatPage && element.matches(${JSON.stringify(BossChatImageInputSelector)})
       && element.closest(${JSON.stringify(BossChatImageControlSelector)}) instanceof HTMLElement
       && visible(element.closest(${JSON.stringify(BossChatImageControlSelector)}));
-    if (!visible(element) && !bossHiddenImageInput) continue;
+    const hiddenFileInputSurface = type === 'file' ? fileInputSurfaceOf(element) : null;
+    if (!visible(element) && !bossHiddenImageInput && !hiddenFileInputSurface) continue;
     if (tag === 'input' && type === 'hidden') continue;
     let href;
     if (element instanceof HTMLAnchorElement && element.href) {
@@ -885,7 +912,8 @@ export class PersonalBrowserCdpRuntime implements PersonalBrowserRuntimePort {
     const path = RequireText(filePath, 'filePath', 4_000);
     const bossHiddenImageInput = locator.tag === 'input' && locator.type === 'file'
       && locator.role === 'filechooser' && locator.name === '发送图片';
-    if (!bossHiddenImageInput) await this.Locate(locator, options);
+    const snapshotFileInput = locator.tag === 'input' && locator.type === 'file' && locator.role === 'filechooser';
+    if (!snapshotFileInput) await this.Locate(locator, options);
     const expression = `(() => {
       const expected = ${SafeJson(locator)};
       let element;
@@ -899,6 +927,38 @@ export class PersonalBrowserCdpRuntime implements PersonalBrowserRuntimePort {
         const style = getComputedStyle(control);
         const rect = control.getBoundingClientRect();
         if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity || 1) <= 0 || rect.width <= 0 || rect.height <= 0) return null;
+      } else if (${JSON.stringify(snapshotFileInput)}) {
+        if (element.disabled) return null;
+        const visible = (candidate) => {
+          const style = getComputedStyle(candidate);
+          const rect = candidate.getBoundingClientRect();
+          return style.display !== 'none' && style.visibility !== 'hidden' && Number(style.opacity || 1) > 0
+            && rect.width > 0 && rect.height > 0;
+        };
+        if (!visible(element)) {
+          const normalizedText = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
+          const explicitLabel = element.id ? document.querySelector('label[for="' + CSS.escape(element.id) + '"]') : null;
+          const surfaces = [];
+          if (explicitLabel instanceof HTMLElement) surfaces.push(explicitLabel);
+          let current = element.parentElement;
+          for (let depth = 0; current && depth < 6 && current !== document.body && current !== document.documentElement; depth += 1) {
+            surfaces.push(current);
+            current = current.parentElement;
+          }
+          const hasVisibleUploadSurface = surfaces.some((candidate) => {
+            if (!(candidate instanceof HTMLElement) || !visible(candidate)) return false;
+            const identity = normalizedText([
+              candidate.id,
+              typeof candidate.className === 'string' ? candidate.className : '',
+              candidate.getAttribute('role'),
+              candidate.getAttribute('aria-label'),
+              candidate.getAttribute('title'),
+              candidate.innerText || candidate.textContent,
+            ].join(' ')).slice(0, 600);
+            return /(上传|简历|附件|文件|(?:^|[\\s_-])(?:upload|resume|attachment|file|dropzone)(?:$|[\\s_-]))/i.test(identity);
+          });
+          if (!hasVisibleUploadSurface) return null;
+        }
       }
       return element;
     })()`;
