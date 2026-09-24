@@ -210,6 +210,7 @@ DeepSeek 0.2.0 Adapter 进一步固定以下协议：
 - `[DONE]` 前只允许一个非空 Usage 块。优先接受官方约定的空 `choices` 附加块；兼容 DeepSeek 实际返回的纯终止 choice（存在非空 `finish_reason`，但 delta 不含正文、思考或工具调用）。普通增量中的 `usage: null` 不计为 Usage 块。
 - `prompt_tokens`、`completion_tokens`、`total_tokens` 必须是非负安全整数，并满足 `total_tokens = prompt_tokens + completion_tokens`；不接受数字字符串或 `null` 转换。
 - 缓存命中输入 token 按 Provider 的字段位置读取：DeepSeek 用 `prompt_cache_hit_tokens`，Z.AI GLM 用 `prompt_tokens_details.cached_tokens`；两者统一归一化为 `cachedInputTokens`，同时出现且取值不一致时整块 Usage 按矛盾值拒绝。
+- 对话输入框与轨迹仪表盘的缓存命中率统一为当前会话 `ΣcachedInputTokens ÷ ΣtotalTokens`，其中 `totalTokens = promptTokens + completionTokens`；轨迹事件列表的最近记录数量不限制该累计口径。
 - 缺失或无效 Usage 转成显式 `unavailable` 事实；重复非空块，或 Usage 与真实正文、思考、工具调用增量同块，属于协议错误，不采用“最后一个覆盖”。
 - SDK/Core 对宿主只输出 `ProviderUsageFact`，因此会话账本、Trace 和 UI 数据源消费同一份 `provider` / `unavailable` 事实。
 
