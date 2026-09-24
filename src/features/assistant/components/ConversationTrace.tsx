@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import type { AgentTraceEvent } from '@avery/contracts';
 import { Icon, type IconName } from '../../../shared/components/Icon';
 import { BuildTimeline, CreateTraceTokenUsage, FormatPayload, PayloadSections, type TimelineEvent, type TraceSummary, type TraceTokenUsage } from './traceModel';
+import { CalculateTokenSharePercent } from '../usagePresentation';
 
 type TraceRole = 'system' | 'user' | 'assistant' | 'tool';
 type RoleFilter = 'all' | TraceRole;
@@ -81,12 +82,14 @@ function TokenPie({ usage }: { usage: TraceTokenUsage }) {
 interface ConversationTraceProps {
   /** 仅限当前对话的请求摘要；排序与时间线组装在组件内完成。 */
   traces: TraceSummary[];
+  /** 完整会话累计值；最近的 Trace 列表不能代替完整账本。 */
+  sessionTokenUsage: TraceTokenUsage | null;
   title: string;
   onSelectTrace: (requestId: string) => Promise<AgentTraceEvent[]>;
 }
 
 /** 对话轨迹：按原型还原为“事件列表 + 仪表盘/详情”两栏，读的是真实 Provider usage。 */
-function ConversationTrace({ traces, title, onSelectTrace }: ConversationTraceProps) {
+function ConversationTrace({ traces, sessionTokenUsage, title, onSelectTrace }: ConversationTraceProps) {
   const [query, setQuery] = useState('');
   const [role, setRole] = useState<RoleFilter>('all');
   const [filterOpen, setFilterOpen] = useState(false);
@@ -137,7 +140,7 @@ function ConversationTrace({ traces, title, onSelectTrace }: ConversationTracePr
       .filter(({ event }) => !needle || `${EventText(event)} ${event.title.toLowerCase()}`.toLowerCase().includes(needle));
   }, [events, query, role]);
 
-  const usage = useMemo(() => CreateTraceTokenUsage(sortedTraces), [sortedTraces]);
+  const usage = useMemo(() => sessionTokenUsage ?? CreateTraceTokenUsage(sortedTraces), [sessionTokenUsage, sortedTraces]);
   const selected = events.find((event) => event.id === selectedId) ?? null;
   // 正文字段排首位并默认展开（对齐原型“Content 卡承载主要内容”的意图），其余字段随后折叠；
   // role 字段不重复成卡——详情信息栏已展示角色。
@@ -180,11 +183,11 @@ function ConversationTrace({ traces, title, onSelectTrace }: ConversationTracePr
         <div className="tr-dash-t">{title}</div>
         <div className="tr-meta tr-meta-1"><Icon name="clock" size={13} />创建于 {sortedTraces.length ? FormatDateTime(sortedTraces[0].createdAt) : '—'}</div>
         <div className="tr-meta tr-meta-2"><Icon name="cpu" size={13} />{sortedTraces.at(-1)?.model ?? '未记录模型'}</div>
-        <div className="tr-tok-head"><span>总 token</span><b>{FormatTokenAbbreviation(usage.totalTokens)}</b></div>
+        <div className="tr-tok-head"><span>{sessionTokenUsage ? '会话累计总 token' : '可见轨迹总 token'}</span><b>{FormatTokenAbbreviation(usage.totalTokens)}</b></div>
         {([[usage.cachedInputTokens, '命中输入', 'sw-a'], [usage.uncachedInputTokens, '未命中输入', 'sw-b'], [usage.outputTokens, '输出', 'sw-c']] as Array<[number, string, string]>).map(([value, label, swatch], index) => <div className={`lg-r tr-tok-${index + 1}`} key={label}>
           <span className={`lg-swatch ${swatch}`}></span>
           <span className="lg-t">{label}</span>
-          <span className="lg-n"><b>{FormatCount(value)}</b> · {usage.totalTokens ? Math.round((value / usage.totalTokens) * 100) : 0}%</span>
+          <span className="lg-n"><b>{FormatCount(value)}</b> · {CalculateTokenSharePercent(value, usage.totalTokens) ?? 0}%</span>
         </div>)}
         <TokenPie usage={usage} />
       </section>

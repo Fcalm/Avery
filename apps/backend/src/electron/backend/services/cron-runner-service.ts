@@ -88,10 +88,10 @@ export class CronRunnerService {
       const result = await this.input.agent.SendScheduled({
         requestId, sessionId: conversationId, content: claim.task.message, scenarioId: claim.task.scenarioId,
         cronTaskId: claim.task.id,
-        browserAuthorized: claim.task.browserAuthorized === true,
+        ...(claim.task.browserTaskGrant ? { browserTaskGrant: claim.task.browserTaskGrant } : {}),
         ...(claim.task.resumeId ? { resumeId: claim.task.resumeId } : {}),
       });
-      const needsAttention = result.needsAttention === true || ['waiting_user_input', 'waiting_confirmation'].includes(result.terminal);
+      const needsAttention = result.needsAttention === true || ['waiting_user_input', 'waiting_confirmation', 'paused'].includes(result.terminal);
       const content = result.content || (needsAttention ? '定时任务需要你接管登录、验证码或补充必要信息。' : '定时任务已完成。');
       await this.input.business.CompleteConversationMessage(conversationId, replyId, content, result.thinkingContent || undefined);
       await this.input.business.FinishCronRun(claim.run.id, needsAttention ? 'needsAttention' : 'completed', needsAttention ? 'user_action_required' : undefined);

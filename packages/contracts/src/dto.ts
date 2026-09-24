@@ -121,8 +121,8 @@ export interface SettingsDto {
   compressionThreshold: number;
   onboardingCompleted?: boolean;
   customContext?: string;
-  /** Agent 浏览器内核；Electron 使用专用 Profile，Chrome/Edge 轻量连接用户已登录的 BOSS 页面。 */
-  browserEngine?: 'electron' | 'chrome' | 'edge';
+  /** Agent 浏览器使用用户的 Chrome 或 Edge，实际动作通过 Avery 扩展完成。 */
+  browserEngine?: 'chrome' | 'edge';
   /** 常规-通用：界面语言；当前版本界面文案仅提供中文，英文选项先持久化偏好供后续 i18n 使用。 */
   language?: 'zh' | 'en';
   /** 常规-通用：启动时打开「上次的对话」或停留在工作区首页（新对话页）。 */

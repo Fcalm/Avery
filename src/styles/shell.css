@@ -115,7 +115,10 @@ button { background: none; border: 0; }
   transition: background-color .15s var(--ease), color .15s var(--ease);
 }
 .win-btn:hover { background: var(--surface-2); color: var(--text); }
+.win-btn.close { border-radius: 0; }
 .win-btn.close:hover { background: #c42b1c; color: #fff; }
+/* 窗口还原为自绘双窗口轮廓：线宽按 Phosphor Regular 的 16/256 比例取 1（本视图框为 16），与同排字体字形一致 */
+.window-restore-glyph { display: block; flex: none; stroke: currentColor; stroke-width: 1; stroke-linecap: round; stroke-linejoin: round; }
 
 /* ------------------------------------------------------------------- 侧栏 */
 .sidebar {
@@ -445,6 +448,12 @@ button { background: none; border: 0; }
 }
 @keyframes childIn { from { opacity: 0; transform: translateY(7px); } to { opacity: 1; transform: none; } }
 .ctx-item > i, .ctx-item > .iconfont-png { flex: none; color: var(--text-3); }
+.ctx-spinner {
+  width: 12px; height: 12px; flex: 0 0 12px; box-sizing: border-box;
+  border: 2px solid var(--border-2); border-top-color: var(--accent); border-radius: 50%;
+  animation: ctx-upload-spin .8s linear infinite;
+}
+@keyframes ctx-upload-spin { to { transform: rotate(360deg); } }
 .ctx-name { min-width: 0; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ctx-x {
   width: 18px; height: 18px; display: grid; place-items: center; border-radius: var(--r-pill);

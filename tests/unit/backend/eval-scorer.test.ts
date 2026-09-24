@@ -74,6 +74,16 @@ describe('evaluation scorers', () => {
     expect(score.score).toMatchObject({ scorerType: 'browser_deterministic', deterministicScore: 20, totalScore: 20, taskCompleted: false, judgeScore: null });
   });
 
+  it('旧版 Browser 案例用 expectedState 判分，且不把空状态当作成功断言', () => {
+    const testCase = { ...baseCase, expected: { ...baseCase.expected, expectedState: { submissionCount: 1 } }, browser: {} } as any;
+    const success = ScoreBrowserCase({ testCase, events: [], finalState: { fixture: { submissionCount: 1 } }, metrics: {} });
+    expect(success.score).toMatchObject({ deterministicScore: 100, taskCompleted: true });
+    expect(success.score.assertionResults).toMatchObject([{ id: 'expected-state', passed: true }]);
+    const failure = ScoreBrowserCase({ testCase, events: [], finalState: { fixture: { submissionCount: 0 } }, metrics: {} });
+    expect(failure.score).toMatchObject({ deterministicScore: 0, taskCompleted: false });
+    expect(() => ScoreBrowserCase({ testCase: { ...testCase, expected: { ...testCase.expected, expectedState: {} } }, events: [], finalState: {}, metrics: {} })).toThrow(/no assertions/i);
+  });
+
   it('Browser 案例没有断言时拒绝评分', () => {
     expect(() => ScoreBrowserCase({ testCase: { ...baseCase, browser: {} } as any, events: [], finalState: {}, metrics: {} })).toThrow(/no assertions/i);
   });

@@ -17,6 +17,7 @@ export interface AgentStreamEvent {
   task?: TaskItem;
   confirmationId?: string;
   questions?: Array<{ id: string; question: string; options: string[] }>;
-  browserAction?: { confirmationId?: string; toolName?: string; summary?: string; url?: string; risk?: 'low' | 'medium' | 'high'; status?: 'succeeded' | 'rejected' | 'failed' | 'status_unknown' | 'user_action_required'; message?: string; receipt?: unknown };
+  browserAction?: { confirmationId?: string; proposalId?: string; toolName?: string; summary?: string; url?: string; risk?: 'low' | 'medium' | 'high'; status?: 'succeeded' | 'rejected' | 'failed' | 'status_unknown' | 'user_action_required'; message?: string; receipt?: unknown };
+  cleanupOutcomes?: Array<{ status: 'confirmed' | 'status_unknown' | 'failed'; browserTaskId: string | null; code?: string; message?: string; closedTabs: number; unknownTabs: number | null }>;
   cronTask?: { id?: string; title?: string; message?: string; scenarioId?: 'default' | 'application'; schedule?: unknown; state?: string; summary?: string };
 }

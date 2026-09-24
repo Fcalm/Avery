@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { AgentSdkContractVersion } from '@avery/agent-sdk';
 import type { AgentMessage, ContextBuilderModule, RuntimeContext, SessionContextSnapshot } from '@avery/agent-sdk';
 import { AgentDefaultPorts } from './ports';
 
@@ -11,7 +12,7 @@ export function CreateContextBuilderModule(ports: AgentDefaultPorts): ContextBui
     packageName: '@avery/agent-modules-defaults',
     name: 'avery.agent-defaults',
     version: '0.1.0',
-    sdkVersion: '0.1.0',
+    sdkVersion: AgentSdkContractVersion,
     slot: 'context-builder',
     capabilities: ['context'],
     /** 基于用户自定义上下文构建不可变的会话上下文快照。 */

@@ -1,3 +1,4 @@
+import { AgentSdkContractVersion } from '@avery/agent-sdk';
 import type { LogEntry, ObservabilityModule, ProviderUsageFact } from '@avery/agent-sdk';
 import { AgentDefaultPorts } from './ports';
 
@@ -42,7 +43,7 @@ export function CreateObservabilityModule(ports: AgentDefaultPorts): Observabili
     packageName: '@avery/agent-modules-defaults',
     name: 'avery.agent-defaults',
     version: '0.1.0',
-    sdkVersion: '0.1.0',
+    sdkVersion: AgentSdkContractVersion,
     slot: 'observability',
     capabilities: ['observability'],
     /** 记录不含用户正文、附件路径或密钥的有限本地运行日志；持久化异步失败不阻塞主流程。 */

@@ -6,6 +6,16 @@ export interface BrowserEvalScoreResult {
   details: { assertions: EvalBrowserAssertionResult[]; intrinsicFailures: string[] };
 }
 
+/** 旧版浏览器案例只提供预期 Fixture 状态时，沿用 Runner 的同一完成条件生成断言。 */
+export function ResolveBrowserAssertions(testCase: EvalDatasetCase): EvalBrowserAssertion[] {
+  const explicit = testCase.browser?.assertions;
+  if (explicit?.length) return explicit;
+  const expectedState = testCase.expected.expectedState;
+  return expectedState && Object.keys(expectedState).length > 0
+    ? [{ id: 'expected-state', type: 'state_subset', path: 'fixture', expected: expectedState, weight: 100, required: true }]
+    : [];
+}
+
 function ReadPath(value: unknown, path: string): unknown {
   return path.split('.').filter(Boolean).reduce<unknown>((current, key) => {
     if (!current || typeof current !== 'object') return undefined;
@@ -76,7 +86,7 @@ export function ScoreBrowserCase(input: {
   finalState: unknown;
   metrics: Record<string, number | boolean | null>;
 }): BrowserEvalScoreResult {
-  const assertions = input.testCase.browser?.assertions ?? [];
+  const assertions = ResolveBrowserAssertions(input.testCase);
   if (assertions.length === 0) throw Object.assign(new Error('Browser evaluation case has no assertions.'), { code: 'EVAL_ASSERTIONS_REQUIRED' });
   const results = assertions.map((assertion) => Evaluate(assertion, input.events, input.finalState, input.metrics));
   const totalWeight = results.reduce((sum, result) => sum + result.weight, 0);

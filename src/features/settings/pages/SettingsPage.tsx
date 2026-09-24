@@ -2,8 +2,8 @@ import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 
 import { useQueryClient } from '@tanstack/react-query';
 import { useUiStore } from '../../../app/UiStore';
 import { useSettingsStore } from '../../../features/settings/api/settingsQueries';
-import { ClearAgentObservability, ClearBrowserProfile, ConfigureAgent, GetAgentModuleConfiguration, GetAgentStatus, GetBrowserRuntimeStatus, GetCronBrowserAccess, GetDeepSeekModels, GetProviderCatalog, IsDesktopAgentAvailable, ResetAgentModules, RevokeCronBrowserAccess, SelectAgentModuleDirectory, SetAgentTraceRetention, TestAgentConnection } from '../../../features/assistant/api/agentQueries';
-import { ApplyModelRuntime, CreateCatalogModel, DefaultContextWindow, DefaultMaxOutput, FindCatalogModel, FindCatalogProvider, FormatContextWindow, IsValidContextWindow, IsValidMaxOutput, LoadModelCatalog, MergeBackendProviders, MergeProviderModels, ModelApiFormats, SaveModelCatalog, type ModelApiFormat, type ModelCatalog, type ModelCatalogModel, type ModelCatalogProvider } from '../api/modelCatalog';
+import { ClearAgentObservability, ConfigureAgent, GetAgentModuleConfiguration, GetAgentStatus, GetBrowserRuntimeStatus, GetCronBrowserAccess, GetProviderCatalog, GetProviderModels, IsDesktopAgentAvailable, ResetAgentModules, RevokeCronBrowserAccess, SelectAgentModuleDirectory, SetAgentTraceRetention, TestAgentConnection } from '../../../features/assistant/api/agentQueries';
+import { ApplyModelRuntime, CreateCatalogModel, DefaultContextWindow, DefaultMaxOutput, FindCatalogModel, FindCatalogProvider, FormatContextWindow, IsSyncedModelsTrusted, IsValidContextWindow, IsValidMaxOutput, LoadModelCatalog, MergeBackendProviders, MergeProviderModels, ModelApiFormats, SanitizeModelCatalog, SaveModelCatalog, type ModelApiFormat, type ModelCatalog, type ModelCatalogModel, type ModelCatalogProvider, type ModelCatalogProviderId } from '../api/modelCatalog';
 import { MigrateWorkspace } from '../../../features/workspace/api/workspaceActions';
 import { WORKSPACE_QUERY_KEY } from '../../../features/workspace/api/workspaceData';
 import { Button, DialogButton, Modal, Select } from '../../../shared/components/UI';
@@ -20,12 +20,13 @@ export const SettingsTabs: Array<{ id: SettingTab; label: string; description: s
   { id: 'developer', label: '开发者模式', description: '查看本地日志、Trace 和上下文用量界面。' },
 ];
 /** 浏览器显示名：选择项只保留 Chrome/Edge（隔离浏览器已整体迁移），electron 仅用于展示运行时上报的旧引擎。 */
-const BrowserEngineLabels = { electron: 'Avery 隔离浏览器（兼容）', chrome: 'Google Chrome', edge: 'Microsoft Edge' } as const;
+const BrowserEngineLabels = { chrome: 'Google Chrome', edge: 'Microsoft Edge' } as const;
+const BrowserGrantPurposeLabels = { job_search: '岗位搜索', job_application: '企业投递', boss_contact: 'BOSS 沟通' } as const;
 /** 模型配置侧栏的分组：推荐 = 官方供应商，自定义供应商可删除并改用自定义端点。 */
 const ProviderGroups = ['推荐', '自定义供应商'];
 /** 模型标记：与原型一致，推荐供应商用字母，自定义供应商用加号。 */
 /** 供应商标记：品牌供应商用品牌图标（mask 随文字色），自定义无品牌保留加号字符。 */
-const ProviderMarks: Record<SettingsDraft['provider'], ReactNode> = { DeepSeek: <Icon name="deepseek" size={13} />, 'Z.AI': <Icon name="zai" size={13} />, '自定义': '+' };
+const ProviderMarks: Record<SettingsDraft['provider'], ReactNode> = { DeepSeek: <Icon name="deepseek" size={13} />, 'Z.AI': <Icon name="zai" size={13} />, MIMO: <Icon name="mimo" size={13} />, '自定义': '+' };
 /** 个性化页选项：与原型 avery-settings.html 的 AV_STYLES / SIZES / ACCENTS / RESUMES 一一对应。 */
 export const AvatarStyles = [{ key: 'default', label: '默认底色' }, { key: 'accent', label: '主题色' }, { key: 'ink', label: '反色' }] as const;
 /** 回复字号档位：默认档必须等于当前正文的 14px，「默认」才与实际渲染一致；App 用它给聊天气泡挂 CSS 变量。 */
@@ -50,8 +51,14 @@ interface ModelDialogErrors { id?: boolean; contextWindow?: boolean; maxOutput?:
 function NormalizeProviderSettings(settings: SettingsDraft): SettingsDraft {
   const contextLimitMode = settings.contextLimitMode ?? (settings.provider === '自定义' ? 'custom' : 'default');
   const contextLength = settings.provider === 'DeepSeek' && contextLimitMode === 'default' && settings.contextLength === '64K' ? '256K' : settings.contextLength;
-  const model = settings.provider === 'Z.AI' ? 'glm-5.3-flash' : settings.provider === 'DeepSeek' && (!settings.model.startsWith('deepseek-') || settings.model === 'deepseek-chat' || settings.model === 'deepseek-reasoner') ? 'deepseek-v4-flash' : settings.model;
-  const baseUrl = settings.provider === 'Z.AI' ? 'https://open.bigmodel.cn/api/paas/v4' : settings.provider === 'DeepSeek' ? 'https://api.deepseek.com' : settings.baseUrl;
+  const model = settings.provider === 'Z.AI' ? 'glm-5.3-flash'
+    : settings.provider === 'MIMO' && !settings.model.startsWith('mimo-') ? 'mimo-v2.6-flash'
+    : settings.provider === 'DeepSeek' && (!settings.model.startsWith('deepseek-') || settings.model === 'deepseek-chat' || settings.model === 'deepseek-reasoner') ? 'deepseek-v4-flash'
+    : settings.model;
+  const baseUrl = settings.provider === 'Z.AI' ? 'https://open.bigmodel.cn/api/paas/v4'
+    : settings.provider === 'MIMO' ? 'https://api.xiaomimimo.com/v1'
+    : settings.provider === 'DeepSeek' ? 'https://api.deepseek.com'
+    : settings.baseUrl;
   // 隔离浏览器已整体迁移到 Chrome/Edge：设置里残留的 electron 不再是可选项，草稿统一按 Edge 处理。
   const browserEngine = settings.browserEngine === 'chrome' ? 'chrome' : 'edge';
   return { ...settings, model, baseUrl, contextLength, contextLimitMode, browserEngine, thinkingEnabled: settings.provider === 'Z.AI' ? true : settings.thinkingEnabled };
@@ -117,7 +124,6 @@ function SettingsPage({ onNavigateDeveloper, tab, requestedTab, tabRequestVersio
   const [cronBrowserAccess, setCronBrowserAccess] = useState<CronBrowserAccessStatus | null>(null);
   const [cronBrowserTaskId, setCronBrowserTaskId] = useState('');
   const browserRuntimeRequest = useRef(0);
-  const [showClearBrowserProfile, setShowClearBrowserProfile] = useState(false);
   // 开发者页的数值输入草稿：失焦或回车才提交，避免逐键把 1、15 这类过渡值发给后端。
   const [traceDraft, setTraceDraft] = useState(() => String(settings.traceRetention));
   const [thresholdDraft, setThresholdDraft] = useState(() => String(settings.compressionThreshold));
@@ -184,17 +190,24 @@ function SettingsPage({ onNavigateDeveloper, tab, requestedTab, tabRequestVersio
     document.body.classList.toggle('settings-has-configured-api-key', isCurrentProviderConfigured);
     return () => document.body.classList.remove('settings-has-configured-api-key');
   }, [apiKeyConfigured, configuredProvider, configuredProviders, draft.provider]);
-  /** 写入本地模型目录并同步落缓存；目录是对话页过滤可选模型的依据。 */
+  /** 写入本地模型目录并同步落缓存；目录是对话页过滤可选模型的依据。写入前清洗跨供应商残留模型。 */
   function UpdateCatalog(next: ModelCatalog): void {
-    setCatalog(next);
-    SaveModelCatalog(next);
+    const sanitized = SanitizeModelCatalog(next);
+    setCatalog(sanitized);
+    SaveModelCatalog(sanitized);
   }
-  async function RefreshDeepSeekModels(manual = false) {
+  /** 从官方 /models 同步供应商模型列表（DeepSeek 与 MiMo）；结果并入本地目录，不覆盖用户编辑过的模型。 */
+  async function RefreshProviderModels(provider: ModelCatalogProviderId, manual = false) {
     if (!IsDesktopAgentAvailable()) return;
     setRefreshingModels(true);
     try {
-      const result = await GetDeepSeekModels();
-      if (result.models.length) UpdateCatalog(MergeProviderModels(catalog, 'DeepSeek', result.models));
+      const result = await GetProviderModels(provider);
+      // 结果必须来自请求的供应商：不一致时（例如后端是没有转发 provider 参数的旧版本）丢弃而不是并入。
+      if (!IsSyncedModelsTrusted(provider, result)) {
+        if (manual) ShowNotice('模型列表与所选供应商不一致，已忽略本次结果；请重启应用后重试');
+        return;
+      }
+      if (result.models.length) UpdateCatalog(MergeProviderModels(catalog, provider, result.models));
       if (manual) ShowNotice(result.models.length ? '已同步最新模型列表' : '未获取到可用模型，已保留现有列表');
     } catch (error) {
       if (manual) ShowNotice(error instanceof Error ? error.message : '模型列表刷新失败');
@@ -203,7 +216,7 @@ function SettingsPage({ onNavigateDeveloper, tab, requestedTab, tabRequestVersio
     }
   }
   useEffect(() => {
-    if (tab === 'api' && draft.provider === 'DeepSeek') void RefreshDeepSeekModels();
+    if (tab === 'api' && (draft.provider === 'DeepSeek' || draft.provider === 'MIMO')) void RefreshProviderModels(draft.provider);
   }, [tab, draft.provider]);
   /** 读取主进程侧的供应商目录与当前生效配置；进入页签与页头刷新按钮共用同一份逻辑。 */
   async function LoadProviderConfiguration() {
@@ -211,7 +224,7 @@ function SettingsPage({ onNavigateDeveloper, tab, requestedTab, tabRequestVersio
     setConfiguredProviders(new Set(backendCatalog.providers.filter((item) => item.configured).map((item) => item.provider)));
     setProviderConfigurations(Object.fromEntries(backendCatalog.providers.filter((item) => item.configured).map((item) => [item.provider, item])));
     const status = await GetAgentStatus();
-    const runtimeProvider = status.provider === '自定义' ? '自定义' : status.provider === 'Z.AI' ? 'Z.AI' : 'DeepSeek';
+    const runtimeProvider = status.provider === '自定义' ? '自定义' : status.provider === 'Z.AI' ? 'Z.AI' : status.provider === 'MIMO' ? 'MIMO' : 'DeepSeek';
     // 宿主目录只提供供应商与可用模型：已有的本地模型不被覆盖，重新加载还能找回被删掉的官方供应商；
     // 宿主返回的上下文窗口与思考模式是当前生效值，要回写到对应模型，避免进入设置页就把用户配置重置成默认值。
     const merged = MergeBackendProviders(catalog, backendCatalog.providers);
@@ -255,10 +268,6 @@ function SettingsPage({ onNavigateDeveloper, tab, requestedTab, tabRequestVersio
   useEffect(() => {
     if (tab === 'browser') { void RefreshBrowserRuntime(); void RefreshCronBrowserAccess(); }
   }, [tab]);
-  // 隔离浏览器已整体迁移到 Chrome/Edge：旧设置里的 electron 没有对应选项，进入设置页时静默迁到 Edge。
-  useEffect(() => {
-    if (settings.browserEngine === 'electron') ApplySettings({ browserEngine: 'edge' });
-  }, [settings.browserEngine]);
   useEffect(() => {
     if (tab !== 'general') return;
     let cancelled = false;
@@ -439,16 +448,6 @@ function SettingsPage({ onNavigateDeveloper, tab, requestedTab, tabRequestVersio
     } catch (error) { ShowNotice(error instanceof Error ? error.message : '撤销授权失败', 'error'); }
     finally { setBrowserRuntimeBusy(false); }
   }
-  async function ClearBrowserProfileHandler() {
-    setBrowserRuntimeBusy(true);
-    try {
-      await ClearBrowserProfile();
-      setShowClearBrowserProfile(false);
-      ShowNotice('Agent 浏览器登录数据已清除');
-      await RefreshBrowserRuntime();
-    } catch (error) { ShowNotice(error instanceof Error ? error.message : '浏览器登录数据清理失败'); }
-    finally { setBrowserRuntimeBusy(false); }
-  }
   /** 失焦提交 Trace 保留数量：合法才写后端与设置；非法恢复原值并明确提示，不静默吞掉。 */
   async function CommitTraceRetention() {
     const value = Number(traceDraft);
@@ -502,7 +501,7 @@ function SettingsPage({ onNavigateDeveloper, tab, requestedTab, tabRequestVersio
     // 切换供应商时带上它在本地目录里的模型；已配置过的供应商优先沿用上次保存的模型。
     const preferred = providerConfigurations[provider]?.model ?? draft.model;
     const model = entry?.models.some((item) => item.id === preferred) ? preferred : entry?.models[0]?.id ?? preferred;
-    const baseUrl = provider === 'DeepSeek' ? 'https://api.deepseek.com' : provider === 'Z.AI' ? 'https://open.bigmodel.cn/api/paas/v4' : draft.baseUrl;
+    const baseUrl = provider === 'DeepSeek' ? 'https://api.deepseek.com' : provider === 'Z.AI' ? 'https://open.bigmodel.cn/api/paas/v4' : provider === 'MIMO' ? 'https://api.xiaomimimo.com/v1' : draft.baseUrl;
     UpdateDraft({ provider, baseUrl, model });
   }
   /** 主进程侧是否已保存过该供应商的可用凭据（含刚保存但目录尚未回读的状态）。 */
@@ -577,6 +576,8 @@ function SettingsPage({ onNavigateDeveloper, tab, requestedTab, tabRequestVersio
   function RenderModelConfiguration() {
     const provider = FindCatalogProvider(catalog, draft.provider) ?? catalog.providers[0];
     const providerConfigured = IsProviderConfigured(provider.id);
+    // 推荐供应商里 DeepSeek 与 MiMo 提供官方 /models 同步；其余供应商的模型只能手工维护。
+    const canSyncModels = provider.id === 'DeepSeek' || provider.id === 'MIMO';
     const apiFormatLabel = ModelApiFormats.find((item) => item.key === provider.apiFormat)?.label ?? ModelApiFormats[0].label;
     // 分组标签与供应商条目平铺在同一个列表里：包一层容器会打断 .set-group 的间距规则。
     const sideItems: ReactNode[] = [];
@@ -646,7 +647,7 @@ function SettingsPage({ onNavigateDeveloper, tab, requestedTab, tabRequestVersio
             <div className="set-field">
               <span className="lb-row">
                 <span className="lb">模型列表</span>
-                <button className={`icon-btn sm lb-get${refreshingModels ? ' is-spinning' : ''}`} type="button" aria-label="获取模型列表" title={provider.id === 'DeepSeek' ? '获取模型列表' : '仅 DeepSeek 支持从官方接口同步模型列表'} disabled={provider.id !== 'DeepSeek' || refreshingModels} onClick={() => void RefreshDeepSeekModels(true)}><Icon name="recovery" size={14} /></button>
+                <button className={`icon-btn sm lb-get${refreshingModels ? ' is-spinning' : ''}`} type="button" aria-label="获取模型列表" title={canSyncModels ? '获取模型列表' : '仅 DeepSeek 与 MiMo 支持从官方接口同步模型列表'} disabled={!canSyncModels || refreshingModels} onClick={() => void RefreshProviderModels(provider.id, true)}><Icon name="recovery" size={14} /></button>
               </span>
               <div className="set-models">
                 {provider.models.length ? provider.models.map((model, index) => {
@@ -873,7 +874,7 @@ function SettingsPage({ onNavigateDeveloper, tab, requestedTab, tabRequestVersio
     </div>{RenderLeaveDialog()}</div>;
   }
   if (tab === 'browser') {
-    // 可选项只剩 Chrome/Edge；electron 只可能短暂存在于迁移 effect 生效前，这里统一按 Edge 兜底。
+    // 旧设置值统一按 Edge 兜底。
     const engine = settings.browserEngine === 'chrome' ? 'chrome' : 'edge';
     const engineLabel = BrowserEngineLabels[engine];
     // 未连接时告诉用户如何建立连接（原型 statusDesc 的 need 文案，按扩展模型改写）。
@@ -889,7 +890,7 @@ function SettingsPage({ onNavigateDeveloper, tab, requestedTab, tabRequestVersio
     const pillClass = pill === 'on' ? 'on' : pill === 'busy' ? 'busy' : 'off';
     const pillText = pill === 'busy' ? '检测中' : pill === 'on' ? '已连接' : pill === 'undetected' ? '未检测' : '未连接';
     return <div className="settings-page is-set-page"><div className="set-root">
-      <div className="set-head"><div><h1>浏览器控制</h1><p>连接日常使用的 Chrome 或 Edge，查看连接状态，管理隔离浏览器留下的数据。</p></div></div>
+      <div className="set-head"><div><h1>浏览器控制</h1><p>连接日常使用的 Chrome 或 Edge，查看扩展连接状态和定时任务授权。</p></div></div>
       <div className="gn-card">
         <div className="gn-cap">浏览器</div>
         <div className="gn-row">
@@ -908,12 +909,6 @@ function SettingsPage({ onNavigateDeveloper, tab, requestedTab, tabRequestVersio
             <button className="quiet-btn" type="button" disabled={browserRuntimeBusy} onClick={() => void RefreshBrowserRuntime(true)}><Icon name="plugs-connected" size={14} />检测状态</button>
           </div>
         </div>
-        <div className="gn-cap">隔离浏览器数据</div>
-        <div className="bw-hint"><Icon name="info" size={14} /><span>下面的清理只作用于 Avery 隔离浏览器留下的数据，和当前选用的浏览器没有关系。</span></div>
-        <div className="gn-row">
-          <div className="gn-txt"><span className="gn-t">登录数据</span><span className="gn-d">Cookie、站点存储和登录状态保存在 Avery 专用 Profile 中；清除后不会影响你的个人浏览器数据。</span></div>
-          <div className="gn-ctl"><button className="quiet-btn danger" type="button" disabled={browserRuntimeBusy || !browserRuntime?.profileExists} onClick={() => setShowClearBrowserProfile(true)}><Icon name="trash-simple" size={14} />清除登录数据</button></div>
-        </div>
         <div className="gn-cap">行为</div>
         <RenderGeneralSwitch label="任务结束后自动关闭标签页" description="Avery 自己打开的标签页在任务结束时关掉，你自己开的窗口不动；真实关闭策略暂未接入，先记录你的选择。" checked={settings.closeTaskTabs ?? true} onToggle={() => ApplySettings({ closeTaskTabs: !(settings.closeTaskTabs ?? true) })} />
       </div>
@@ -922,35 +917,14 @@ function SettingsPage({ onNavigateDeveloper, tab, requestedTab, tabRequestVersio
         <div className="gn-row stack">
           <div className="gn-txt"><span className="gn-t">投递定时任务的浏览器授权</span><span className="gn-d">创建投递场景定时任务时，确认弹窗会同时授予该任务个人浏览器权限。到期后 Avery 可在后台启动浏览器并创建任务标签页；BOSS 或企业官网登录失效、验证码或站点风控仍会暂停任务。</span></div>
           <div className="gn-ctl">
-            <Select value={cronBrowserTaskId} onChange={setCronBrowserTaskId} ariaLabel="查看投递定时任务授权" options={cronBrowserAccess?.tasks.length ? cronBrowserAccess.tasks.map((task) => ({ value: task.id, label: `${task.browserAuthorized ? '已授权' : '未授权'} · ${task.title}` })) : [{ value: '', label: '暂无活动的投递定时任务' }]} />
+            <Select value={cronBrowserTaskId} onChange={setCronBrowserTaskId} ariaLabel="查看投递定时任务授权" options={cronBrowserAccess?.tasks.length ? cronBrowserAccess.tasks.map((task) => ({
+              value: task.id,
+              label: `${task.browserAuthorized ? `已授权 · ${task.browserTaskGrant ? BrowserGrantPurposeLabels[task.browserTaskGrant.purpose] : '旧任务'}` : '未授权'} · ${task.title}`,
+            })) : [{ value: '', label: '暂无活动的投递定时任务' }]} />
             {cronBrowserAccess?.tasks.find((task) => task.id === cronBrowserTaskId)?.browserAuthorized && <button className="quiet-btn danger" type="button" disabled={browserRuntimeBusy} onClick={() => void RevokeCronBrowserAccessHandler()}>撤销该任务授权</button>}
           </div>
         </div>
       </div>
-      <Modal
-        open={showClearBrowserProfile}
-        title="清除隔离浏览器登录数据"
-        onClose={() => setShowClearBrowserProfile(false)}
-        variant="dialog"
-        size="sm"
-        footer={<>
-          <DialogButton onClick={() => setShowClearBrowserProfile(false)}>取消</DialogButton>
-          <DialogButton tone="danger" disabled={browserRuntimeBusy} onClick={() => void ClearBrowserProfileHandler()}>确认清除</DialogButton>
-        </>}
-      >
-        {/* 破坏性操作先逐条列出会被清掉的内容（原型 .cf-warn） */}
-        <div className="cf-warn">
-          <Icon name="error" size={18} />
-          <div>
-            <p>这会关闭 Avery 隔离浏览器并删除其专用 Profile，其中的这些内容会一并清空：</p>
-            <ul>
-              <li>Cookie 与登录状态</li>
-              <li>站点存储</li>
-            </ul>
-            <p>清空后无法恢复；不会影响你的个人浏览器。</p>
-          </div>
-        </div>
-      </Modal>
     </div></div>;
   }
   if (tab === 'api') return <div className="settings-page is-model-set">{RenderModelConfiguration()}{RenderLeaveDialog()}</div>;

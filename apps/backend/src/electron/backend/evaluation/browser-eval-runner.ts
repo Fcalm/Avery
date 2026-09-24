@@ -5,6 +5,7 @@ import type { EvalDatasetCase, EvalPromptCandidate, EvalUserSimulatorStrategy } 
 import type { CompiledInstructions, ScenarioSnapshot } from '@avery/agent-sdk';
 import { ApplicationScenario, BuildApplicationPromptFragments, CompilePrompt } from '@avery/agent-modules-defaults';
 import { AgentBrowserError, AgentBrowserRuntime } from '../agent-browser-runtime';
+import type { BrowserExtensionBridge } from '../browser-extension-bridge';
 import { AgentHost } from '../agent-host';
 import { EvalTestBusiness } from './eval-test-business';
 import { StartEvalBrowserFixture } from './browser-fixture-server';
@@ -21,6 +22,7 @@ export interface BrowserEvalCaseInput {
   maxModelTurns: number;
   userSimulator: EvalUserSimulatorStrategy;
   fixtureBranch: 'clean' | 'realistic-dom';
+  browserEngine: 'chrome' | 'edge';
   caseRoot: string;
   signal: AbortSignal;
 }
@@ -34,9 +36,8 @@ export interface BrowserEvalCaseResult {
 
 interface BrowserEvalRunnerOptions {
   credentialPort: any;
-  executablePath: string;
-  companionExecutablePath: string;
-  companionAppPath?: string;
+  browserExtensionBridge: BrowserExtensionBridge;
+  externalBrowserPaths: Partial<Record<'chrome' | 'edge', string>>;
 }
 
 export function BuildBrowserEvalPromptFragments(candidate: EvalPromptCandidate) {
@@ -69,7 +70,7 @@ function MatchesSubset(actual: unknown, expected: unknown): boolean {
   return Object.is(actual, expected);
 }
 
-/** 正式 AgentHost + 独立 Browser Runtime 的本地 Fixture Runner；每个案例拥有独立端口、Profile 和业务端口。 */
+/** 测评与生产共用扩展 Bridge；每个案例只隔离任务标签页和业务数据。 */
 export class BrowserEvalRunner {
   private options: BrowserEvalRunnerOptions;
 
@@ -89,16 +90,17 @@ export class BrowserEvalRunner {
       await writeFile(physicalPath, file.content, 'utf8');
       attachments.set(fileId, physicalPath); runtimeAttachments.push({ name: file.name, path: fileId });
     }
-    const business = new EvalTestBusiness(input.testCase.fixtures, attachments);
+    const business = new EvalTestBusiness(input.testCase.fixtures, attachments, input.browserEngine);
     const events: BrowserEvalCaseResult['events'] = [];
     const browserRuntime = new AgentBrowserRuntime({
-      executablePath: this.options.executablePath,
-      companionExecutablePath: this.options.companionExecutablePath,
-      companionAppPath: this.options.companionAppPath,
+      browserExtensionBridge: this.options.browserExtensionBridge,
+      closeBridgeOnClose: false,
+      externalBrowserPaths: this.options.externalBrowserPaths,
       runtimeRoot: join(input.caseRoot, 'browser-runtime'),
       resolveUploadFile: async (fileId) => attachments.get(fileId) ?? null,
       normalizeNavigationUrl: CreateExactOriginNormalizer(fixture.origin),
     });
+    await browserRuntime.SetEngine(input.browserEngine);
     const fragments = BuildBrowserEvalPromptFragments(input.candidate);
     const allowedTools = [...new Set(input.toolNames)].filter((name) => ApplicationScenario.toolNames.includes(name));
     const scenario: ScenarioSnapshot = { ...ApplicationScenario, toolNames: allowedTools, budgets: { maxModelTurns: input.maxModelTurns } };
@@ -154,7 +156,7 @@ export class BrowserEvalRunner {
           const proposal = host.InspectPendingBrowserAction(confirmation.id);
           const decision = simulator.Decide({ strategy: input.userSimulator, proposal, testCase: input.testCase, fixtureState: fixture.getState(), authorizedFileIds: new Set(attachments.keys()) });
           const accepted = decision.accepted;
-          const outcome = await host.ConfirmBrowserAction(confirmation.id, accepted, { signal: input.signal });
+          const outcome = await host.ConfirmBrowserAction(confirmation.id, accepted, { signal: input.signal, sessionId: `eval-browser-session-${input.caseRunId}` });
           events.push({ type: 'simulator_confirmation', createdAt: Date.now(), payload: { accepted, reason: decision.reason, proposal, outcome } });
           content = accepted ? 'The current browser action was approved and executed. Continue the task from a fresh page snapshot.' : 'The current browser action was rejected. Re-plan safely and continue without bypassing the rejection.';
           continue;

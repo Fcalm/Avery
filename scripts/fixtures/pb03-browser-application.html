@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PB-03 本地招聘表单 Fixture</title>
+  <style>
+    body { font: 16px/1.6 system-ui, sans-serif; margin: 32px auto; max-width: 760px; padding: 0 20px; }
+    label, fieldset { display: block; margin: 14px 0; }
+    input, select, button { font: inherit; margin: 4px; padding: 6px 9px; }
+    [hidden] { display: none !important; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>PB-03 招聘申请测试页</h1>
+    <p>仅供本地扩展与提交前流程验收，字段值均为合成数据。</p>
+    <form id="application" action="/submit" method="post">
+      <label>姓名 <input aria-label="姓名" name="name" autocomplete="name" required></label>
+      <label>方向
+        <select aria-label="方向" name="direction" required>
+          <option value="">请选择</option>
+          <option value="产品">产品</option>
+          <option value="研发">研发</option>
+        </select>
+      </label>
+      <fieldset>
+        <legend>地区（自定义级联）</legend>
+        <button type="button" aria-label="省份" role="combobox" aria-haspopup="listbox" aria-controls="province-options" aria-expanded="false" aria-required="true" data-selected="" id="province">选择省份</button>
+        <div id="province-options" role="listbox" hidden>
+          <button type="button" role="option" aria-selected="false" data-value="广东省"><span>广东省</span></button>
+          <button type="button" role="option" aria-selected="false" data-value="江西省"><span>江西省</span></button>
+        </div>
+        <button type="button" aria-label="城市" role="combobox" aria-haspopup="listbox" aria-controls="city-options" aria-expanded="false" aria-required="true" data-selected="" id="city" disabled>先选择省份</button>
+        <div id="city-options" role="listbox" hidden></div>
+      </fieldset>
+      <label>出生日期 <input aria-label="出生日期" name="birthDate" type="date" required></label>
+      <label><input aria-label="同意本地测试条款" name="terms" type="checkbox" required>我同意本地测试条款</label>
+      <label>简历附件 <input aria-label="简历附件" name="resume" type="file" accept="application/pdf" required></label>
+      <p><a id="task-child-link" href="/child" target="_blank" rel="opener">打开招聘详情子页</a></p>
+      <a id="noopener-child-control" href="/child?noopener=1" target="_blank" rel="noopener" hidden aria-hidden="true">不执行：无 opener 的子页</a>
+      <button type="button" data-pb03-submit>提交申请</button>
+    </form>
+    <output id="submit-state" aria-live="polite">尚未提交</output>
+  </main>
+  <script>
+    window.__pb03SubmitAttempts = 0;
+    window.__pb03NetworkSubmitAttempts = 0;
+    window.__pb03SubmissionMonitor = { installed: true, source: 'fixture' };
+    const form = document.querySelector('#application');
+    const province = document.querySelector('#province');
+    const city = document.querySelector('#city');
+    const provinceOptions = document.querySelector('#province-options');
+    const cityOptions = document.querySelector('#city-options');
+    const submitState = document.querySelector('#submit-state');
+    window.__pb03RegionEvents = [];
+    for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'input', 'change', 'click']) {
+      document.addEventListener(type, (event) => {
+        const originalTarget = event.target instanceof Element ? event.target : null;
+        const option = originalTarget?.closest('[role="option"]');
+        const list = option?.closest('#province-options, #city-options')
+          || originalTarget?.closest('#province-options, #city-options');
+        const control = originalTarget?.closest('#province, #city');
+        const target = option || list || control;
+        if (!target) return;
+        const listId = list?.id || '';
+        window.__pb03RegionEvents.push({
+          type,
+          targetId: target.id || '',
+          targetRole: target.getAttribute('role') || '',
+          targetValue: option?.dataset?.value || target.dataset?.value || '',
+          optionText: option ? String(option.textContent || '').replace(/\s+/g, ' ').trim() : null,
+          optionRole: option?.getAttribute('role') || null,
+          field: listId === 'province-options' ? 'province' : listId === 'city-options' ? 'city' : control?.id === 'province' ? 'province' : control?.id === 'city' ? 'city' : null,
+          trusted: event.isTrusted === true,
+        });
+      }, true);
+    }
+
+    const showOptions = (button, list) => {
+      const open = list.hidden;
+      list.hidden = !open;
+      button.setAttribute('aria-expanded', String(open));
+    };
+    province.addEventListener('click', () => showOptions(province, provinceOptions));
+    provinceOptions.addEventListener('click', (event) => {
+      const option = event.target.closest('[role="option"]');
+      if (!option) return;
+      province.textContent = option.dataset.value;
+      province.dataset.value = option.dataset.value;
+      province.dataset.selected = option.dataset.value;
+      province.setAttribute('aria-valuetext', option.dataset.value);
+      provinceOptions.querySelectorAll('[role="option"]').forEach((candidate) => candidate.setAttribute('aria-selected', String(candidate === option)));
+      provinceOptions.hidden = true;
+      province.setAttribute('aria-expanded', 'false');
+      city.disabled = false;
+      city.textContent = '选择城市';
+      city.dataset.value = '';
+      city.dataset.selected = '';
+      city.removeAttribute('aria-valuetext');
+      city.setAttribute('aria-expanded', 'false');
+      cityOptions.replaceChildren(...(option.dataset.value === '广东省' ? ['佛山市', '广州市'] : ['南昌市']).map((name) => {
+        const child = document.createElement('button');
+        child.type = 'button';
+        child.setAttribute('role', 'option');
+        child.setAttribute('aria-selected', 'false');
+        child.dataset.value = name;
+        const label = document.createElement('span');
+        label.textContent = name;
+        child.append(label);
+        return child;
+      }));
+    });
+    city.addEventListener('click', () => showOptions(city, cityOptions));
+    cityOptions.addEventListener('click', (event) => {
+      const option = event.target.closest('[role="option"]');
+      if (!option) return;
+      city.textContent = option.dataset.value;
+      city.dataset.value = option.dataset.value;
+      city.dataset.selected = option.dataset.value;
+      city.setAttribute('aria-valuetext', option.dataset.value);
+      cityOptions.querySelectorAll('[role="option"]').forEach((candidate) => candidate.setAttribute('aria-selected', String(candidate === option)));
+      cityOptions.hidden = true;
+      city.setAttribute('aria-expanded', 'false');
+    });
+
+    document.addEventListener('submit', (event) => {
+      window.__pb03SubmitAttempts += 1;
+      event.preventDefault();
+      submitState.textContent = '捕获到提交事件';
+    }, true);
+    document.addEventListener('click', (event) => {
+      if (!event.target.closest('[data-pb03-submit]')) return;
+      window.__pb03SubmitAttempts += 1;
+      submitState.textContent = '捕获到提交按钮点击';
+    }, true);
+    document.querySelector('[data-pb03-submit]').addEventListener('click', () => {
+      window.__pb03NetworkSubmitAttempts += 1;
+    });
+  </script>
+</body>
+</html>

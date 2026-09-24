@@ -20,10 +20,10 @@ export {
   ApplicationStatusValues, ChannelValues, JobSeekingTypeValues, JobScoreValues, ProfileCategoryValues,
 } from './enums';
 export {
-  CronTaskScenarioSchema, CronTaskStateSchema, CronRunStateSchema, CronDayOfWeekSchema,
-  CronScheduleSchema, CreateCronTaskSchema, UpdateCronTaskSchema, ReadCronTaskSchema, DeleteCronTaskSchema,
+  CronTaskScenarioSchema, CronTaskStateSchema, CronRunStateSchema, CronDayOfWeekSchema, BrowserTaskGrantPurposeSchema,
+  CronScheduleSchema, CreateCronTaskSchema, UpdateCronTaskSchema, ReadCronTaskSchema, DeleteCronTaskSchema, BrowserTaskGrantSchema,
 } from './cron-task';
-export type { CronSchedule, CreateCronTaskInput, UpdateCronTaskInput, CronTaskState, CronRunState, CronTaskDto, CronRunDto } from './cron-task';
+export type { CronSchedule, CreateCronTaskInput, UpdateCronTaskInput, CronTaskState, CronRunState, BrowserTaskGrantPurpose, BrowserTaskGrant, CronTaskDto, CronRunDto } from './cron-task';
 export type {
   ApplicationStatus, Channel, JobSeekingType, JobScore, ProfileCategory,
 } from './enums';

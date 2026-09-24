@@ -353,7 +353,7 @@ export class BusinessStore {
     return run();
   }
   /** 创建已由交互 Harness 确认的定时任务。 */
-  CreateCronTask(input: unknown, resourceContext?: { resumeId?: string; browserAuthorized?: boolean }): any { return this.cronTaskService.Create(input, resourceContext); }
+  CreateCronTask(input: unknown, resourceContext?: { resumeId?: string; browserTaskGrant?: import('@avery/contracts').BrowserTaskGrant }): any { return this.cronTaskService.Create(input, resourceContext); }
   /** 读取定时任务及可选运行历史。 */
   ReadCronTask(input?: { cronTaskId?: string; includeRuns?: boolean }): any { return this.cronTaskService.Read(input); }
   /** 修改计划内容、调度或暂停状态。 */

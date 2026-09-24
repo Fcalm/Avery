@@ -12,10 +12,12 @@ import { EvalArtifactStore } from './eval-artifact-store';
 import { PromptEvalRunner } from './prompt-eval-runner';
 import { EvalScorer } from './eval-scorer';
 import { BrowserEvalRunner } from './browser-eval-runner';
-import { ScoreBrowserCase } from './browser-eval-scorer';
+import { BrowserExtensionBridge } from '../browser-extension-bridge';
+import { ResolveBrowserAssertions, ScoreBrowserCase } from './browser-eval-scorer';
 import { NormalizeEvalTrace } from './eval-trace';
 
 const Id = z.string().min(1).max(200).regex(/^[A-Za-z0-9._-]+$/);
+const CurrentBrowserFixtureVersion = '2';
 const CandidateSchema = z.object({
   id: Id,
   name: z.string().trim().min(1).max(200),
@@ -104,6 +106,15 @@ export function ParseEvalDataset(jsonl: string): EvalDatasetCase[] {
   return cases;
 }
 
+function BrowserCaseValidationErrors(cases: EvalDatasetCase[]): string[] {
+  const missing = cases.filter((testCase) => ResolveBrowserAssertions(testCase).length === 0).map((testCase) => testCase.id);
+  const incompatible = cases.filter((testCase) => testCase.browser?.fixtureVersion && testCase.browser.fixtureVersion !== CurrentBrowserFixtureVersion).map((testCase) => testCase.id);
+  return [
+    ...(missing.length ? [`以下浏览器案例缺少 Assertions 或 expected.expectedState：${missing.join('、')}`] : []),
+    ...(incompatible.length ? [`以下浏览器案例的 Fixture 版本不受支持（当前为 ${CurrentBrowserFixtureVersion}）：${incompatible.join('、')}`] : []),
+  ];
+}
+
 /** 在固定上限内执行 CaseRun；任一基础设施异常后停止领取新任务，但等待已启动任务稳定退出。 */
 export async function RunEvaluationTaskPool<T>(tasks: Array<() => Promise<T>>, maxConcurrency: number, signal: AbortSignal): Promise<T[]> {
   const requestedConcurrency = Number.isInteger(maxConcurrency) && maxConcurrency > 0 ? maxConcurrency : 1;
@@ -168,9 +179,8 @@ interface EvalServiceOptions {
   promptRunner?: PromptEvalRunner;
   scorer?: EvalScorer;
   browserRunner?: BrowserEvalRunner;
-  agentBrowserExecutablePath?: string;
-  browserCompanionExecutablePath?: string;
-  browserCompanionAppPath?: string;
+  browserExtensionBridge?: BrowserExtensionBridge;
+  externalBrowserPaths?: Partial<Record<'chrome' | 'edge', string>>;
 }
 
 /** 设置采用整体替换语义；运行中省略 developerMode 与显式 false 同样会关闭门禁。 */
@@ -196,6 +206,7 @@ export class EvalService {
   private userDataPath: string;
   private artifactEventTail: Promise<void> = Promise.resolve();
   private credentialPort: any;
+  private defaultBrowserEngine: 'chrome' | 'edge';
 
   constructor(options: EvalServiceOptions) {
     this.userDataPath = options.userDataPath;
@@ -203,14 +214,17 @@ export class EvalService {
     this.getStoredSettings = options.getStoredSettings;
     this.Emit = options.Emit;
     this.credentialPort = options.credentialPort;
+    this.defaultBrowserEngine = options.externalBrowserPaths?.edge ? 'edge' : options.externalBrowserPaths?.chrome ? 'chrome' : 'edge';
     this.artifacts = new EvalArtifactStore(options.userDataPath);
     this.promptRunner = options.promptRunner ?? new PromptEvalRunner({ credentialPort: options.credentialPort });
     this.scorer = options.scorer ?? new EvalScorer({ credentialPort: options.credentialPort });
     this.browserRunner = options.browserRunner ?? new BrowserEvalRunner({
       credentialPort: options.credentialPort,
-      executablePath: options.agentBrowserExecutablePath ?? join(options.userDataPath, 'agent-browser', 'runtime-unavailable'),
-      companionExecutablePath: options.browserCompanionExecutablePath ?? join(options.userDataPath, 'agent-browser', 'companion-unavailable'),
-      companionAppPath: options.browserCompanionAppPath,
+      browserExtensionBridge: options.browserExtensionBridge ?? new BrowserExtensionBridge({
+        statePath: join(options.userDataPath, 'browser-extension', 'bridge.json'),
+        browserPaths: options.externalBrowserPaths,
+      }),
+      externalBrowserPaths: options.externalBrowserPaths ?? {},
     });
   }
 
@@ -263,6 +277,11 @@ export class EvalService {
     Id.parse(projectId);
     if (typeof rubric !== 'string' || rubric.length > 100000) throw Object.assign(new Error('Evaluation rubric is invalid.'), { code: 'VALIDATION_ERROR' });
     const cases = ParseEvalDataset(jsonl);
+    const projectToImport = await this.store.ReadEvalProjectRecord(projectId);
+    if (projectToImport.runnerType === 'browser') {
+      const errors = BrowserCaseValidationErrors(cases);
+      if (errors.length) throw Object.assign(new Error(errors.join('；')), { code: 'VALIDATION_ERROR', details: { errors } });
+    }
     const normalized = cases.map((testCase) => JSON.stringify(testCase)).join('\n');
     const datasetVersion = createHash('sha256').update(normalized).digest('hex');
     const datasetKey = await this.artifacts.WriteDataset(projectId, datasetVersion, normalized);
@@ -332,8 +351,7 @@ export class EvalService {
     if (record.runnerType === 'browser' && record.datasetVersion) {
       try {
         const cases = ParseEvalDataset(await this.artifacts.ReadDataset(record.id, record.datasetVersion));
-        const missing = cases.filter((testCase) => !(testCase.browser?.assertions?.length)).map((testCase) => testCase.id);
-        if (missing.length) errors.push(`以下浏览器案例缺少 Assertions：${missing.join('、')}`);
+        errors.push(...BrowserCaseValidationErrors(cases));
       } catch (error) {
         errors.push(error instanceof Error ? error.message : '浏览器测试集无法读取。');
       }
@@ -427,6 +445,11 @@ export class EvalService {
     }
     const cases = ParseEvalDataset(await this.artifacts.ReadDataset(project.id, project.datasetVersion));
     const snapshot = this.BuildSnapshot(project, cases, { ...runConfig, candidates });
+    if (project.runnerType === 'browser') {
+      const settings = await this.getStoredSettings();
+      const browserEngine = settings.browserEngine === 'chrome' || settings.browserEngine === 'edge' ? settings.browserEngine : this.defaultBrowserEngine;
+      (snapshot.environment as Record<string, unknown>).browserEngine = browserEngine;
+    }
     const snapshotHash = createHash('sha256').update(JSON.stringify(snapshot)).digest('hex');
     const id = `run-${randomUUID()}`;
     const record = await this.store.CreateEvalRunRecord({ id, projectId, projectName: project.name, runnerType: project.runnerType, status: 'queued', snapshotHash, snapshot, createdAt: Date.now() });
@@ -509,7 +532,7 @@ export class EvalService {
                   userSimulator: projectConfig.userSimulator, caseRoot, signal: controller.signal,
                 };
                 const result = run.runnerType === 'browser'
-                  ? await this.browserRunner.Execute({ ...commonInput, fixtureBranch: projectConfig.fixtureBranch })
+                  ? await this.browserRunner.Execute({ ...commonInput, fixtureBranch: projectConfig.fixtureBranch, browserEngine: snapshot.environment.browserEngine === 'chrome' ? 'chrome' : 'edge' })
                   : await this.promptRunner.Execute(commonInput);
                 this.ThrowIfCancelled(controller.signal);
                 await this.store.UpsertEvalCaseRunRecord({

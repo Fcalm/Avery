@@ -281,7 +281,7 @@ describe('Agent evaluation service', () => {
       metrics: { taskCompleted: true, modelTurns: 2, toolCalls: 3, toolErrors: 0, promptTokens: 2, completionTokens: 2, totalTokens: 4 },
     }));
     const service = new EvalService({
-      userDataPath: root, store, credentialPort: {}, getStoredSettings: async () => ({ developerMode: true }), Emit: vi.fn(),
+      userDataPath: root, store, credentialPort: {}, getStoredSettings: async () => ({ developerMode: true, browserEngine: 'chrome' }), Emit: vi.fn(),
       browserRunner: { Execute: browserExecute } as any, scorer: scorer as any,
     });
     await service.Initialize();
@@ -295,13 +295,29 @@ describe('Agent evaluation service', () => {
     const preview = await service.PreviewProject(project.id);
     expect(preview.fragments.map((fragment: any) => fragment.id)).toContain('scenario/application');
     expect(preview.fragments.map((fragment: any) => fragment.id)).not.toContain('scenario/default');
-    const browserDataset = JSON.stringify({ ...JSON.parse(dataset), browser: { fixtureVersion: '1', seed: 1, assertions: [{ id: 'submitted', type: 'state_equals', path: 'fixture.submissionCount', expected: 1, weight: 100, required: true }] }, expected: { ...JSON.parse(dataset).expected, expectedState: { submissionCount: 1 } } });
+    const browserDataset = JSON.stringify({ ...JSON.parse(dataset), browser: { fixtureVersion: '2', seed: 1, assertions: [{ id: 'submitted', type: 'state_equals', path: 'fixture.submissionCount', expected: 1, weight: 100, required: true }] }, expected: { ...JSON.parse(dataset).expected, expectedState: { submissionCount: 1 } } });
     await service.ImportDataset(project.id, browserDataset, project.rubric, project.revision); project = await service.ReadProject(project.id);
     const run = await service.StartRun(project.id); const completed = await WaitForTerminal(service, run.id);
     expect(completed.status).toBe('completed'); expect(browserExecute).toHaveBeenCalledTimes(1);
     expect((completed.snapshot as any).environment.maxConcurrency).toBe(1);
+    expect((completed.snapshot as any).environment.browserEngine).toBe('chrome');
+    expect(browserExecute).toHaveBeenCalledWith(expect.objectContaining({ browserEngine: 'chrome' }));
     expect(completed.summary?.taskCompletionRate).toBe(1);
     expect(scorer.Score).not.toHaveBeenCalled();
+    project = await service.ReadProject(project.id);
+    const legacyCase = { ...JSON.parse(browserDataset), id: 'acf-001', browser: { fixtureVersion: '2' } };
+    await service.ImportDataset(project.id, JSON.stringify(legacyCase), project.rubric, project.revision);
+    expect(await service.ValidateProject(project.id)).toMatchObject({ valid: true, errors: [] });
+    const legacyRun = await service.StartRun(project.id);
+    const legacyCompleted = await WaitForTerminal(service, legacyRun.id);
+    expect(legacyCompleted.status).toBe('completed');
+    expect(legacyCompleted.summary?.taskCompletionRate).toBe(1);
+    project = await service.ReadProject(project.id);
+    const invalidCase = { ...legacyCase, expected: { ...legacyCase.expected, expectedState: undefined } };
+    await expect(service.ImportDataset(project.id, JSON.stringify(invalidCase), project.rubric, project.revision)).rejects.toThrow(/acf-001/);
+    const obsoleteCase = { ...legacyCase, browser: { fixtureVersion: '1' } };
+    await expect(service.ImportDataset(project.id, JSON.stringify(obsoleteCase), project.rubric, project.revision)).rejects.toThrow(/Fixture 版本不受支持.*acf-001/);
+    expect(await service.ListDatasetVersions(project.id)).toHaveLength(2);
     await service.Close();
     store.Close();
   });

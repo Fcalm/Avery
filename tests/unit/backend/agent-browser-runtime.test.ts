@@ -2,14 +2,15 @@ import { access, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { AgentBrowserError, AgentBrowserRuntime, BuildBrowserCompanionArgs, DetectBossRisk, IsBossBrowserUrl, NormalizePublicBrowserUrl } from '../../../apps/backend/src/electron/backend/agent-browser-runtime';
+import { AgentBrowserError, AgentBrowserRuntime, DetectBossRisk, IsBossBrowserUrl, NormalizePublicBrowserUrl } from '../../../apps/backend/src/electron/backend/agent-browser-runtime';
+import { BrowserExtensionProtocolRevision, type BrowserExtensionBridge } from '../../../apps/backend/src/electron/backend/browser-extension-bridge';
 import { DynamicSelectionVerificationExpression, FormSemanticEnrichmentExpression } from '../../../apps/backend/src/electron/backend/browser-form-driver';
 import { PersonalBrowserCdpError, type PersonalBrowserRuntimePort } from '../../../apps/backend/src/electron/backend/personal-browser-cdp-runtime';
 
 const temporaryRoots: string[] = [];
+let nextTaskId = 0;
 
 function EvalExpression(args: string[], stdin?: string): string {
-  if (args.includes('--stdin')) return stdin ?? '';
   const base64Index = args.indexOf('-b');
   return base64Index >= 0 ? Buffer.from(args[base64Index + 1], 'base64').toString('utf8') : '';
 }
@@ -19,7 +20,9 @@ function PersonalRuntimeStub(input: {
   run?: (command: string[], options?: { stdin?: string }) => Promise<{ success: true; data: Record<string, any> }>;
 } = {}): PersonalBrowserRuntimePort {
   let connected = false;
+  const browserTaskId = `test-task-${++nextTaskId}`;
   return {
+    GetBrowserTaskId: () => browserTaskId,
     Connect: vi.fn(async () => {
       const result = input.connect ? await input.connect() : { anchorUrl: 'https://www.zhipin.com/web/geek/job' };
       connected = true;
@@ -37,6 +40,31 @@ function PersonalRuntimeStub(input: {
   };
 }
 
+/** 表单测试沿用命令回执夹具，但执行端换为扩展任务驱动。 */
+function CreateTestRuntime(options: Record<string, any>): AgentBrowserRuntime {
+  let connected = false;
+  const bridge = options.browserExtensionBridge ?? {
+    EnsureConnected: vi.fn(async () => { connected = true; }),
+    Start: vi.fn(async () => undefined),
+    IsConnected: vi.fn(() => connected),
+    Status: vi.fn(() => ({ connected, state: connected ? 'online' : 'offline', port: 17653 })),
+    CloseTask: vi.fn(async () => ({ status: 'confirmed', browserTaskId: 'test-task', closedTabs: 1, unknownTabs: 0 })),
+    Close: vi.fn(async () => { connected = false; }),
+  } as unknown as BrowserExtensionBridge;
+  return new AgentBrowserRuntime({
+    runtimeRoot: options.runtimeRoot,
+    resolveUploadFile: options.resolveUploadFile,
+    browserExtensionBridge: bridge,
+    externalBrowserPaths: options.externalBrowserPaths ?? { chrome: process.execPath, edge: process.execPath },
+    ...(options.normalizeNavigationUrl ? { normalizeNavigationUrl: options.normalizeNavigationUrl } : {}),
+    ...(options.delay ? { delay: options.delay } : {}),
+    ...(options.recordLog ? { recordLog: options.recordLog } : {}),
+    createExtensionRuntime: options.createExtensionRuntime ?? (() => PersonalRuntimeStub({ run: async (command, execution) => options.runBrowserCommand
+        ? options.runBrowserCommand({ args: command, stdin: execution?.stdin, deadline: execution?.deadline })
+        : { success: true, data: {} } })),
+  });
+}
+
 afterEach(async () => {
   vi.unstubAllGlobals();
   vi.unstubAllEnvs();
@@ -44,211 +72,145 @@ afterEach(async () => {
 });
 
 describe('AgentBrowserRuntime', () => {
-  it('Chrome 144+ 使用 DevToolsActivePort 的 WebSocket 附着并只登记 BOSS target', async () => {
-    const runtimeRoot = await mkdtemp(join(tmpdir(), 'avery-existing-browser-discovery-'));
+  it('只通过扩展 Bridge 探测和执行任务，关闭任务不关闭共享 Bridge', async () => {
+    const runtimeRoot = await mkdtemp(join(tmpdir(), 'avery-extension-only-runtime-'));
     temporaryRoots.push(runtimeRoot);
-    const localAppData = join(runtimeRoot, 'local-app-data');
-    const portDirectory = join(localAppData, 'Google', 'Chrome', 'User Data');
-    await mkdir(portDirectory, { recursive: true });
-    await writeFile(join(portDirectory, 'DevToolsActivePort'), '19989\n/devtools/browser/4811f081-d96b-4313-b8e5-6cdd08d2668c\n');
-    vi.stubEnv('LOCALAPPDATA', localAppData);
-    const fetchMock = vi.fn(async (input: string | URL | Request) => {
-      const url = String(input);
-      if (url === 'http://127.0.0.1:19989/') return { ok: false };
-      throw new Error('No CDP endpoint');
-    });
-    vi.stubGlobal('fetch', fetchMock);
-    const createdEndpoints: string[] = [];
-    const personalRuntime = PersonalRuntimeStub();
+    let connected = false;
+    const bridge = {
+      Start: vi.fn(async () => undefined),
+      EnsureConnected: vi.fn(async () => { connected = true; }),
+      IsConnected: vi.fn(() => connected),
+      Status: vi.fn(() => ({ connected, state: connected ? 'online' : 'offline', port: 17653 })),
+      CloseTask: vi.fn(async (_engine: string, browserTaskId: string) => ({ status: 'confirmed', browserTaskId, closedTabs: 1, unknownTabs: 0 })),
+      Close: vi.fn(async () => { connected = false; }),
+    } as unknown as BrowserExtensionBridge;
+    const createExtensionRuntime = vi.fn(() => PersonalRuntimeStub());
     const runtime = new AgentBrowserRuntime({
-      executablePath: process.execPath,
-      companionExecutablePath: process.execPath,
-      runtimeRoot,
-      resolveUploadFile: vi.fn(),
-      createPersonalBrowserRuntime: ({ endpoint }) => { createdEndpoints.push(endpoint); return personalRuntime; },
+      runtimeRoot, resolveUploadFile: vi.fn(), browserExtensionBridge: bridge,
+      externalBrowserPaths: { chrome: process.execPath }, createExtensionRuntime,
     });
-
     await runtime.SetEngine('chrome');
-    await expect(runtime.GetStatus()).resolves.toMatchObject({ engine: 'chrome', running: false, state: 'ready', profileExists: false });
-    await expect(runtime.GetStatus(true)).resolves.toMatchObject({ engine: 'chrome', running: true, state: 'ready', profileExists: false });
+    await expect(runtime.GetStatus(true)).resolves.toMatchObject({ available: true, running: true, engine: 'chrome' });
+    expect(createExtensionRuntime).not.toHaveBeenCalled();
+    expect(await runtime.GetStatus()).not.toHaveProperty('profileExists');
+    await expect(runtime.SetEngine('electron' as never)).rejects.toMatchObject({ code: 'BROWSER_ARGUMENT_INVALID' });
     const proposal = await runtime.Prepare({ toolName: 'BrowserSnapshot', arguments: {} });
-    const observed = await runtime.Execute({ proposal });
-
-    expect(fetchMock).toHaveBeenCalledWith('http://127.0.0.1:19989/', expect.objectContaining({ signal: expect.any(AbortSignal) }));
-    expect(createdEndpoints).toEqual(['ws://127.0.0.1:19989/devtools/browser/4811f081-d96b-4313-b8e5-6cdd08d2668c']);
-    expect((observed.data as any).tabs).toEqual([
-      { tabId: 'avery-task', targetId: 'task-target', url: 'https://www.zhipin.com/web/geek/job', active: true },
-    ]);
+    await expect(runtime.Execute({ proposal })).resolves.toMatchObject({ status: 'succeeded' });
+    expect(createExtensionRuntime).toHaveBeenCalledTimes(1);
+    await expect(runtime.CloseTask()).resolves.toMatchObject({ status: 'confirmed', closedTabs: 1 });
+    expect((bridge.Close as ReturnType<typeof vi.fn>)).not.toHaveBeenCalled();
     await runtime.Close();
+    expect((bridge.Close as ReturnType<typeof vi.fn>)).toHaveBeenCalledOnce();
   });
 
-  it('DevToolsActivePort 丢失时只从已校验的 Chrome 主进程恢复动态端口', async () => {
-    const runtimeRoot = await mkdtemp(join(tmpdir(), 'avery-existing-browser-process-port-'));
+  it('BOSS SPA 在只读 Snapshot 准备后规范化 URL 时重新冻结观察提案', async () => {
+    const runtimeRoot = await mkdtemp(join(tmpdir(), 'avery-browser-readonly-race-'));
     temporaryRoots.push(runtimeRoot);
-    vi.stubEnv('LOCALAPPDATA', join(runtimeRoot, 'no-browser-data'));
-    const createdEndpoints: string[] = [];
-    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false })));
-    const runtime = new AgentBrowserRuntime({
-      executablePath: process.execPath,
-      companionExecutablePath: process.execPath,
-      runtimeRoot,
-      externalBrowserPaths: { chrome: process.execPath },
-      discoverExternalBrowserPorts: vi.fn(async ({ engine, executablePath }) => {
-        expect({ engine, executablePath }).toEqual({ engine: 'chrome', executablePath: process.execPath });
-        return [19989];
-      }),
-      resolveUploadFile: vi.fn(),
-      createPersonalBrowserRuntime: ({ endpoint }) => { createdEndpoints.push(endpoint); return PersonalRuntimeStub(); },
-    });
-
-    await runtime.SetEngine('chrome');
-    await expect(runtime.GetStatus(true)).resolves.toMatchObject({ engine: 'chrome', running: true, state: 'ready' });
-    expect(createdEndpoints).toEqual(['ws://127.0.0.1:19989/devtools/browser']);
-    await runtime.Close();
-  });
-
-  it('Chrome 首次 WebSocket 握手未获批准时返回可等待用户处理的稳定错误', async () => {
-    const runtimeRoot = await mkdtemp(join(tmpdir(), 'avery-browser-permission-'));
-    temporaryRoots.push(runtimeRoot);
-    const runtime = new AgentBrowserRuntime({
-      executablePath: process.execPath,
-      companionExecutablePath: process.execPath,
-      runtimeRoot,
-      resolveUploadFile: vi.fn(),
-      attachExternalBrowser: vi.fn(async () => ({
-        port: 19989,
-        cdpEndpoint: 'ws://127.0.0.1:19989/devtools/browser/4811f081-d96b-4313-b8e5-6cdd08d2668c',
-        userAttached: true,
-        close: vi.fn(async () => undefined),
-      })),
-      createPersonalBrowserRuntime: () => PersonalRuntimeStub({
-        connect: async () => { throw new PersonalBrowserCdpError('BROWSER_CDP_CONNECTION_FAILED', 'Approval timed out.'); },
-      }),
-    });
-
-    await runtime.SetEngine('chrome');
-    const proposal = await runtime.Prepare({ toolName: 'BrowserSnapshot', arguments: {} });
-    await expect(runtime.Execute({ proposal })).rejects.toMatchObject({ code: 'BROWSER_EXISTING_BROWSER_PERMISSION_REQUIRED' });
-    await runtime.Close();
-  });
-
-  it('用户主动检测连接时执行真实握手，并把授权失败保留为可见状态', async () => {
-    const runtimeRoot = await mkdtemp(join(tmpdir(), 'avery-browser-status-probe-'));
-    temporaryRoots.push(runtimeRoot);
-    const closeExternalBrowser = vi.fn(async () => undefined);
-    const runtime = new AgentBrowserRuntime({
-      executablePath: process.execPath,
-      companionExecutablePath: process.execPath,
-      runtimeRoot,
-      resolveUploadFile: vi.fn(),
-      attachExternalBrowser: vi.fn(async () => ({
-        port: 19989,
-        cdpEndpoint: 'ws://127.0.0.1:19989/devtools/browser/4811f081-d96b-4313-b8e5-6cdd08d2668c',
-        userAttached: true,
-        close: closeExternalBrowser,
-      })),
-      createPersonalBrowserRuntime: () => PersonalRuntimeStub({
-        connect: async () => { throw new PersonalBrowserCdpError('BROWSER_CDP_CONNECTION_FAILED', 'Chrome did not authorize the debugging connection.'); },
-      }),
-    });
-
-    await runtime.SetEngine('chrome');
-    await expect(runtime.GetStatus(true)).resolves.toMatchObject({
-      engine: 'chrome', running: false, state: 'unhealthy',
-      message: expect.stringContaining('authorize the debugging connection'),
-    });
-    expect(closeExternalBrowser).toHaveBeenCalledOnce();
-    await runtime.Close();
-  });
-
-  it('Chrome/Edge 只附着用户现有 BOSS 标签页，不创建 Profile、暴露其他标签页或接管用户浏览器进程', async () => {
-    const runtimeRoot = await mkdtemp(join(tmpdir(), 'avery-external-browser-'));
-    temporaryRoots.push(runtimeRoot);
-    const calls: string[][] = [];
     let currentUrl = 'https://www.zhipin.com/web/geek/job';
+    let getCount = 0;
     const personalRuntime = PersonalRuntimeStub({ run: async (command) => {
-      calls.push(command);
       if (command[0] === 'open') currentUrl = command[1];
-      if (command[0] === 'get') return { success: true, data: { url: currentUrl } };
+      if (command[0] === 'get') {
+        getCount += 1;
+        if (getCount >= 3) currentUrl = 'https://www.zhipin.com/web/geek/jobs';
+        return { success: true, data: { url: currentUrl } };
+      }
       if (command[0] === 'snapshot') return { success: true, data: { refs: {} } };
-      if (command[0] === 'tab') return { success: true, data: { tabs: [
-        { tabId: 'avery-task', targetId: 'task-target', url: currentUrl, active: true },
-      ] } };
+      if (command[0] === 'tab') return { success: true, data: { tabs: [{ tabId: 'avery-task', url: currentUrl, active: true }] } };
       return { success: true, data: {} };
     } });
-    const launchCompanion = vi.fn();
-    const detachExternalBrowser = vi.fn(async () => undefined);
-    const attachExternalBrowser = vi.fn(async () => ({
-      port: 9650,
-      cdpEndpoint: 'ws://127.0.0.1:9650/devtools/browser/test-id',
-      homeUrl: 'https://www.zhipin.com/web/geek/job',
-      targetId: 'boss-target',
-      close: detachExternalBrowser,
-    }));
-    const runtime = new AgentBrowserRuntime({
-      executablePath: process.execPath,
-      companionExecutablePath: process.execPath,
+    const runtime = CreateTestRuntime({
       runtimeRoot,
       resolveUploadFile: vi.fn(),
-      normalizeNavigationUrl: async (value) => String(value),
-      launchCompanion,
-      attachExternalBrowser,
-      createPersonalBrowserRuntime: () => personalRuntime,
+      createExtensionRuntime: () => personalRuntime,
     });
 
-    await runtime.SetEngine('edge');
-    const proposal = await runtime.Prepare({ toolName: 'BrowserNavigate', arguments: { url: 'https://www.zhipin.com/web/geek/job?query=agent' } });
-    await runtime.Execute({ proposal });
-    const secondProposal = await runtime.Prepare({ toolName: 'BrowserNavigate', arguments: { url: 'https://www.zhipin.com/web/geek/job?query=agent&page=2' } });
-    await runtime.Execute({ proposal: secondProposal });
-    const snapshot = await runtime.Prepare({ toolName: 'BrowserSnapshot', arguments: {} });
-    const observed = await runtime.Execute({ proposal: snapshot });
-
-    expect(calls.filter((args) => args[0] === 'open')).toEqual([
-      ['open', 'https://www.zhipin.com/web/geek/job?query=agent'],
-      ['open', 'https://www.zhipin.com/web/geek/job?query=agent&page=2'],
-    ]);
-    expect(launchCompanion).not.toHaveBeenCalled();
-    expect(attachExternalBrowser).toHaveBeenCalledWith({ engine: 'edge' });
-    expect((observed.data as any).tabs).toEqual([
-      { tabId: 'avery-task', targetId: 'task-target', url: 'https://www.zhipin.com/web/geek/job?query=agent&page=2', active: true },
-    ]);
-    await expect(runtime.Prepare({ toolName: 'BrowserSwitchTab', arguments: { tabId: 'mail-tab' } })).rejects.toMatchObject({ code: 'BROWSER_TAB_NOT_FOUND' });
-    await expect(runtime.Prepare({ toolName: 'BrowserNavigate', arguments: { url: 'https://example.com/jobs' } })).rejects.toMatchObject({ code: 'BROWSER_NAVIGATION_DENIED' });
-    await expect(runtime.GetStatus()).resolves.toMatchObject({ engine: 'edge', available: true, profileExists: false, running: true, state: 'ready' });
-    await expect(access(join(runtimeRoot, 'profiles', 'edge'))).rejects.toMatchObject({ code: 'ENOENT' });
+    await runtime.SetEngine('chrome');
+    await runtime.Execute({ proposal: await runtime.Prepare({ toolName: 'BrowserNavigate', arguments: { url: currentUrl } }) });
+    const proposal = await runtime.Prepare({ toolName: 'BrowserSnapshot', arguments: {} });
+    await expect(runtime.Execute({ proposal })).resolves.toMatchObject({ status: 'succeeded', data: { currentUrl: 'https://www.zhipin.com/web/geek/jobs' } });
     await runtime.Close();
-    expect(personalRuntime.Close).toHaveBeenCalledOnce();
-    expect(detachExternalBrowser).toHaveBeenCalledOnce();
   });
 
   it('个人浏览器 CronTask 使用可信任务级授权，连接状态不再充当授权租约', async () => {
     const runtimeRoot = await mkdtemp(join(tmpdir(), 'avery-cron-browser-access-'));
     temporaryRoots.push(runtimeRoot);
     const personalRuntime = PersonalRuntimeStub();
-    const runtime = new AgentBrowserRuntime({
-      executablePath: process.execPath,
-      companionExecutablePath: process.execPath,
+    const runtime = CreateTestRuntime({
       runtimeRoot,
       resolveUploadFile: vi.fn(),
       normalizeNavigationUrl: async (value) => String(value),
-      attachExternalBrowser: vi.fn(async () => ({
-        port: 9651,
-        cdpEndpoint: 'ws://127.0.0.1:9651/devtools/browser/test-id',
-        homeUrl: 'https://www.zhipin.com/web/geek/job',
-        close: vi.fn(async () => undefined),
-      })),
-      createPersonalBrowserRuntime: () => personalRuntime,
+      createExtensionRuntime: () => personalRuntime,
     });
 
     await runtime.SetEngine('chrome');
-    await runtime.SetUnattended(true, { cronTaskId: 'cron-1', browserAuthorized: true });
+    const browserTaskGrant = {
+      mode: 'personal_browser_extension' as const, purpose: 'job_search' as const,
+      allowNavigation: true, allowFormFill: false, allowFileUpload: false, allowExternalSend: false,
+      resourceIds: [], grantedAt: '2026-09-23T02:00:00.000Z',
+    };
+    await runtime.SetUnattended(true, { cronTaskId: 'cron-1', browserTaskGrant });
     await expect(runtime.Prepare({ toolName: 'BrowserNavigate', arguments: { url: 'https://www.zhipin.com/web/geek/job' } })).resolves.toMatchObject({ toolName: 'BrowserNavigate' });
+    await expect(runtime.Prepare({ toolName: 'BrowserFill', arguments: { ref: '@e1', pageRevision: 0, text: 'x' } })).rejects.toMatchObject({ code: 'BROWSER_CRON_SCOPE_DENIED' });
+
+    await runtime.SetUnattended(true, { cronTaskId: 'cron-application', browserTaskGrant: {
+      ...browserTaskGrant, purpose: 'job_application', allowFormFill: true,
+    } });
+    await expect(runtime.Prepare({ toolName: 'BrowserPressKey', arguments: { key: 'Enter' } })).rejects.toMatchObject({ code: 'BROWSER_CRON_SCOPE_DENIED' });
+    await expect(runtime.Prepare({ toolName: 'BrowserUploadFile', arguments: { ref: '@e1', pageRevision: 0, fileId: 'resume-file' } })).rejects.toMatchObject({ code: 'BROWSER_CRON_SCOPE_DENIED' });
+
+    await runtime.SetUnattended(true, { cronTaskId: 'cron-revoked', browserTaskGrant: {
+      ...browserTaskGrant, revokedAt: '2026-09-23T03:00:00.000Z',
+    } });
+    await expect(runtime.Prepare({ toolName: 'BrowserNavigate', arguments: { url: 'https://www.zhipin.com/web/geek/job' } })).rejects.toMatchObject({ code: 'BROWSER_CRON_ACCESS_REQUIRED' });
 
     await personalRuntime.Close();
     await runtime.SetUnattended(false);
-    await runtime.SetUnattended(true, { cronTaskId: 'cron-other', browserAuthorized: false });
+    await runtime.SetUnattended(true, { cronTaskId: 'cron-other' });
     await expect(runtime.Prepare({ toolName: 'BrowserNavigate', arguments: { url: 'https://www.zhipin.com/web/geek/job' } })).rejects.toMatchObject({ code: 'BROWSER_CRON_ACCESS_REQUIRED' });
+    await runtime.Close();
+  });
+
+  it('status_unknown cleanup 永久退役旧 browserTaskId，下一代 Runtime 使用隔离的新 task', async () => {
+    const runtimeRoot = await mkdtemp(join(tmpdir(), 'avery-retired-browser-task-'));
+    temporaryRoots.push(runtimeRoot);
+    const bridge = {
+      Status: () => ({
+        port: 17653,
+        state: 'online' as const,
+        version: '0.2.0',
+        actualVersion: '0.2.0',
+        expectedVersion: '0.2.0',
+        handshakeReceived: true,
+        handshakeSource: 'hello' as const,
+        protocolRevision: BrowserExtensionProtocolRevision,
+        actualProtocolRevision: BrowserExtensionProtocolRevision,
+        expectedProtocolRevision: BrowserExtensionProtocolRevision,
+      }),
+      EnsureConnected: vi.fn(async () => undefined),
+      Request: vi.fn(async (_engine: string, _operation: string, payload: any) => ({ id: payload.id, result: { targetInfos: [] } })),
+      CloseTask: vi.fn(async (_engine: string, browserTaskId: string) => ({
+        status: 'status_unknown' as const, browserTaskId, code: 'BROWSER_COMMAND_TIMEOUT', closedTabs: 0, unknownTabs: 3,
+      })),
+      Close: vi.fn(async () => undefined),
+    };
+    const runtime = CreateTestRuntime({
+      runtimeRoot,
+      resolveUploadFile: vi.fn(),
+      browserExtensionBridge: bridge as any,
+    });
+
+    await runtime.SetEngine('chrome');
+    const firstRuntime = await (runtime as any).EnsurePersonalBrowserRuntime();
+    const firstTaskId = firstRuntime.GetBrowserTaskId();
+    await expect(runtime.CloseTask({ deadline: Date.now() + 1_000 })).resolves.toMatchObject({
+      status: 'status_unknown', browserTaskId: firstTaskId, unknownTabs: 3,
+    });
+    expect((runtime as any).retiredBrowserTaskIds.has(firstTaskId)).toBe(true);
+
+    const nextRuntime = await (runtime as any).EnsurePersonalBrowserRuntime();
+    expect(nextRuntime.GetBrowserTaskId()).not.toBe(firstTaskId);
+    expect(bridge.CloseTask).toHaveBeenCalledWith('chrome', firstTaskId, expect.objectContaining({ deadline: expect.any(Number) }));
     await runtime.Close();
   });
 
@@ -256,7 +218,7 @@ describe('AgentBrowserRuntime', () => {
     const runtimeRoot = await mkdtemp(join(tmpdir(), 'avery-browser-screenshot-'));
     temporaryRoots.push(runtimeRoot);
     let screenshotPath = '';
-    const runProcess = vi.fn(async ({ args }: { args: string[] }) => {
+    const runBrowserCommand = vi.fn(async ({ args }: { args: string[] }) => {
       const commandIndex = args.findIndex((arg) => ['open', 'get', 'tab', 'screenshot', 'close'].includes(arg));
       const command = args[commandIndex];
       if (command === 'tab') return { success: true, data: { tabs: [{ tabId: 't1', url: 'https://93.184.216.34/jobs', active: true }] } };
@@ -267,13 +229,10 @@ describe('AgentBrowserRuntime', () => {
       }
       return { success: true, data: {} };
     });
-    const runtime = new AgentBrowserRuntime({
-      executablePath: process.execPath,
-      companionExecutablePath: process.execPath,
+    const runtime = CreateTestRuntime({
       runtimeRoot,
       resolveUploadFile: vi.fn(),
-      runProcess,
-      launchCompanion: vi.fn(async () => ({ port: 9640, homeUrl: 'https://93.184.216.34/jobs', isAlive: () => true, close: vi.fn(async () => undefined) })),
+      runBrowserCommand,
     });
 
     const proposal = await runtime.Prepare({ toolName: 'BrowserScreenshot', arguments: {} });
@@ -285,102 +244,23 @@ describe('AgentBrowserRuntime', () => {
     await runtime.Close();
   });
 
-  it('隔离伴随进程使用随机本地 CDP 端口且路径保持单参数', () => {
-    const args = BuildBrowserCompanionArgs({ appPath: 'D:\\Offer Get\\app', profilePath: 'D:\\Profiles\\name;&unsafe', parentPid: 42 });
-    expect(args).toEqual([
-      'D:\\Offer Get\\app', '--avery-browser-companion', '--avery-browser-profile=D:\\Profiles\\name;&unsafe',
-      '--avery-browser-parent-pid=42', '--remote-debugging-address=127.0.0.1', '--remote-debugging-port=0', '--user-data-dir=D:\\Profiles\\name;&unsafe',
-    ]);
-    expect(BuildBrowserCompanionArgs({ profilePath: 'D:\\Profiles\\scheduled', parentPid: 42, unattended: true })).toContain('--avery-browser-hidden');
-  });
-
-  it('交互与无人值守模式切换时淘汰旧 companion，不交叉复用可见性属性', async () => {
-    const runtimeRoot = await mkdtemp(join(tmpdir(), 'avery-browser-visibility-'));
-    temporaryRoots.push(runtimeRoot);
-    const closeCompanions: Array<ReturnType<typeof vi.fn>> = [];
-    const launchCompanion = vi.fn(async () => {
-      const close = vi.fn(async () => undefined);
-      closeCompanions.push(close);
-      return { port: 9600 + closeCompanions.length, homeUrl: 'https://93.184.216.34/ready', isAlive: () => true, close };
-    });
-    const runProcess = vi.fn(async ({ args }: { args: string[] }) => {
-      const command = args.find((arg) => ['open', 'get', 'tab', 'close'].includes(arg));
-      if (command === 'tab') return { success: true, data: { tabs: [{ tabId: 't1', url: 'https://93.184.216.34/ready', active: true }] } };
-      if (command === 'get') return { success: true, data: { url: 'https://93.184.216.34/jobs' } };
-      return { success: true, data: {} };
-    });
-    const runtime = new AgentBrowserRuntime({ executablePath: process.execPath, companionExecutablePath: process.execPath, runtimeRoot, resolveUploadFile: vi.fn(), runProcess, launchCompanion });
-
-    const first = await runtime.Prepare({ toolName: 'BrowserNavigate', arguments: { url: 'https://93.184.216.34/jobs' } });
-    await runtime.Execute({ proposal: first });
-    await runtime.SetUnattended(true);
-    expect(closeCompanions[0]).toHaveBeenCalledOnce();
-    const scheduled = await runtime.Prepare({ toolName: 'BrowserNavigate', arguments: { url: 'https://93.184.216.34/scheduled' } });
-    await runtime.Execute({ proposal: scheduled });
-    expect(launchCompanion).toHaveBeenCalledTimes(2);
-    await runtime.SetUnattended(false);
-    expect(closeCompanions[1]).toHaveBeenCalledOnce();
-    await runtime.Close();
-  });
-
-  it('BOSS 只允许可见运行，且连续外部动作应用最小安全间隔', async () => {
-    const runtimeRoot = await mkdtemp(join(tmpdir(), 'avery-browser-boss-guard-'));
-    temporaryRoots.push(runtimeRoot);
-    let currentUrl = 'about:blank';
-    let now = 1_000;
-    const waits: number[] = [];
-    const launchCompanion = vi.fn(async () => ({ port: 9660, homeUrl: 'about:blank', isAlive: () => true, close: vi.fn(async () => undefined) }));
-    const runProcess = vi.fn(async ({ args }: { args: string[] }) => {
-      const commandIndex = args.findIndex((arg) => ['open', 'get', 'snapshot', 'tab', 'click', 'close'].includes(arg));
-      const command = args[commandIndex];
-      if (command === 'open') currentUrl = args[commandIndex + 1];
-      if (command === 'get') return { success: true, data: { url: currentUrl } };
-      if (command === 'snapshot') return { success: true, data: { refs: { e1: { role: 'button', name: '下一页' } } } };
-      if (command === 'tab') return { success: true, data: { tabs: [{ tabId: 'boss-tab', url: 'about:blank', active: true }] } };
-      return { success: true, data: {} };
-    });
-    const runtime = new AgentBrowserRuntime({
-      executablePath: process.execPath, companionExecutablePath: process.execPath, runtimeRoot, resolveUploadFile: vi.fn(), runProcess, launchCompanion,
-      normalizeNavigationUrl: async (value) => String(value), now: () => now,
-      delay: async (milliseconds) => { waits.push(milliseconds); now += milliseconds; },
-    });
-
-    await runtime.SetUnattended(true);
-    await expect(runtime.Prepare({ toolName: 'BrowserNavigate', arguments: { url: 'https://www.zhipin.com/web/geek/job?query=agent' } })).rejects.toMatchObject({ code: 'BROWSER_SITE_VISIBLE_REQUIRED' });
-    expect(launchCompanion).not.toHaveBeenCalled();
-
-    await runtime.SetUnattended(false);
-    const navigate = await runtime.Prepare({ toolName: 'BrowserNavigate', arguments: { url: 'https://www.zhipin.com/web/geek/job?query=agent' } });
-    await runtime.Execute({ proposal: navigate });
-    const snapshot = await runtime.Prepare({ toolName: 'BrowserSnapshot', arguments: {} });
-    const observed = await runtime.Execute({ proposal: snapshot });
-    const click = await runtime.Prepare({ toolName: 'BrowserClick', arguments: { ref: '@e1', pageRevision: (observed.data as any).pageRevision } });
-    await runtime.Execute({ proposal: click });
-
-    expect(waits).toEqual([2_000]);
-    await runtime.Close();
-  });
-
   it('BOSS 风控跳转停止导航且保留可见页面，不更换实例重试', async () => {
     const runtimeRoot = await mkdtemp(join(tmpdir(), 'avery-browser-boss-risk-'));
     temporaryRoots.push(runtimeRoot);
-    const closeCompanion = vi.fn(async () => undefined);
-    const runProcess = vi.fn(async ({ args }: { args: string[] }) => {
+    const runBrowserCommand = vi.fn(async ({ args }: { args: string[] }) => {
       const command = args.find((arg) => ['open', 'get', 'tab', 'close'].includes(arg));
       if (command === 'get') return { success: true, data: { url: 'https://www.zhipin.com/web/user/safe' } };
       if (command === 'tab') return { success: true, data: { tabs: [{ tabId: 'boss-tab', url: 'about:blank', active: true }] } };
       return { success: true, data: {} };
     });
-    const runtime = new AgentBrowserRuntime({
-      executablePath: process.execPath, companionExecutablePath: process.execPath, runtimeRoot, resolveUploadFile: vi.fn(), runProcess,
-      launchCompanion: vi.fn(async () => ({ port: 9661, homeUrl: 'about:blank', isAlive: () => true, close: closeCompanion })),
+    const runtime = CreateTestRuntime({
+      runtimeRoot, resolveUploadFile: vi.fn(), runBrowserCommand,
       normalizeNavigationUrl: async (value) => String(value),
     });
 
     const proposal = await runtime.Prepare({ toolName: 'BrowserNavigate', arguments: { url: 'https://www.zhipin.com/web/geek/job?query=agent' } });
     await expect(runtime.Execute({ proposal })).rejects.toMatchObject({ code: 'BROWSER_SITE_RISK_DETECTED' });
-    expect(runProcess.mock.calls.filter(([input]) => input.args.includes('open'))).toHaveLength(1);
-    expect(closeCompanion).not.toHaveBeenCalled();
+    expect(runBrowserCommand.mock.calls.filter(([input]) => input.args.includes('open'))).toHaveLength(1);
     await expect(runtime.GetStatus()).resolves.toMatchObject({ running: true, state: 'unhealthy', currentUrl: 'https://www.zhipin.com/web/user/safe' });
     await runtime.Close();
   });
@@ -419,8 +299,8 @@ describe('AgentBrowserRuntime', () => {
       if (url.origin !== 'http://127.0.0.1:43210') throw Object.assign(new Error('denied'), { code: 'BROWSER_NAVIGATION_DENIED' });
       return url.toString();
     });
-    const runtime = new AgentBrowserRuntime({
-      executablePath: process.execPath, companionExecutablePath: process.execPath, runtimeRoot,
+    const runtime = CreateTestRuntime({
+      runtimeRoot,
       resolveUploadFile: vi.fn(), normalizeNavigationUrl,
     });
 
@@ -430,53 +310,12 @@ describe('AgentBrowserRuntime', () => {
     expect(normalizeNavigationUrl).toHaveBeenCalledTimes(2);
   });
 
-  it('固定 CLI 身份与参数，页面引用在动作和新 Run 后失效', async () => {
-    const runtimeRoot = await mkdtemp(join(tmpdir(), 'avery-browser-runtime-'));
-    temporaryRoots.push(runtimeRoot);
-    const calls: string[][] = [];
-    const closeCompanion = vi.fn(async () => undefined);
-    const runProcess = vi.fn(async ({ args }: { args: string[] }) => {
-      calls.push(args);
-      const commandIndex = args.findIndex((arg) => ['open', 'get', 'snapshot', 'tab', 'click', 'close'].includes(arg));
-      const command = args[commandIndex];
-      if (command === 'get') return { success: true, data: { url: 'https://93.184.216.34/jobs' } };
-      if (command === 'snapshot') return { success: true, data: { snapshot: '- button "Next" [ref=e1]', refs: { e1: { role: 'button', name: 'Next' } } } };
-      if (command === 'tab') return { success: true, data: { tabs: [{ tabId: 't1', url: 'https://93.184.216.34/jobs' }] } };
-      return { success: true, data: {} };
-    });
-    const launchCompanion = vi.fn(async () => ({ port: 9339, homeUrl: 'https://93.184.216.34/jobs', close: closeCompanion }));
-    const runtime = new AgentBrowserRuntime({ executablePath: process.execPath, companionExecutablePath: process.execPath, runtimeRoot, resolveUploadFile: vi.fn(), runProcess, launchCompanion });
-
-    const navigate = await runtime.Prepare({ toolName: 'BrowserNavigate', arguments: { url: 'https://93.184.216.34/jobs?q=a;b' } });
-    await runtime.Execute({ proposal: navigate });
-    const snapshot = await runtime.Prepare({ toolName: 'BrowserSnapshot', arguments: {} });
-    const snapshotResult = await runtime.Execute({ proposal: snapshot });
-    expect(snapshotResult.data).toMatchObject({ pageRevision: 2 });
-    const click = await runtime.Prepare({ toolName: 'BrowserClick', arguments: { ref: '@e1', pageRevision: 2 } });
-    await runtime.Execute({ proposal: click });
-    runtime.ResetPageReferences();
-    await expect(runtime.Prepare({ toolName: 'BrowserClick', arguments: { ref: '@e1', pageRevision: 2 } })).rejects.toMatchObject({ code: 'BROWSER_STALE_PAGE_REF' });
-
-    const openCall = calls.find((args) => args.includes('open'))!;
-    expect(openCall).toEqual(expect.arrayContaining(['--namespace', `avery-${process.pid}-1`, '--session', 'avery-default', '--cdp', '9339', '--pin-tab', '--no-auto-dialog', '--content-boundaries', '--json']));
-    expect(openCall).not.toEqual(expect.arrayContaining(['--profile', '--headed']));
-    expect(openCall[openCall.indexOf('open') + 1]).toBe('https://93.184.216.34/jobs?q=a;b');
-    await expect(runtime.GetStatus()).resolves.toMatchObject({ available: true, running: true });
-    expect(launchCompanion).toHaveBeenCalledOnce();
-
-    const competing = new AgentBrowserRuntime({ executablePath: process.execPath, companionExecutablePath: process.execPath, runtimeRoot, resolveUploadFile: vi.fn(), runProcess, launchCompanion });
-    const competingNavigate = await competing.Prepare({ toolName: 'BrowserNavigate', arguments: { url: 'https://93.184.216.34/other' } });
-    await expect(competing.Execute({ proposal: competingNavigate })).rejects.toMatchObject({ code: 'BROWSER_PROFILE_BUSY' });
-    await runtime.Close();
-    expect(closeCompanion).toHaveBeenCalledOnce();
-  });
-
-  it('BrowserFillForm 从私有档案计划匹配字段并仅通过 JSON stdin 批量填写', async () => {
+  it('BrowserFillForm 从私有档案计划匹配字段并通过扩展任务驱动批量填写', async () => {
     const runtimeRoot = await mkdtemp(join(tmpdir(), 'avery-browser-fill-form-'));
     temporaryRoots.push(runtimeRoot);
     const calls: Array<{ args: string[]; stdin?: string }> = [];
     let batchExecuted = false;
-    const runProcess = vi.fn(async ({ args, stdin }: { args: string[]; stdin?: string }) => {
+    const runBrowserCommand = vi.fn(async ({ args, stdin }: { args: string[]; stdin?: string }) => {
       calls.push({ args, ...(stdin === undefined ? {} : { stdin }) });
       const command = args.find((arg) => ['open', 'get', 'snapshot', 'tab', 'batch', 'close'].includes(arg));
       if (command === 'get') return { success: true, data: { url: 'https://93.184.216.34/application' } };
@@ -514,13 +353,10 @@ describe('AgentBrowserRuntime', () => {
       }
       return { success: true, data: {} };
     });
-    const runtime = new AgentBrowserRuntime({
-      executablePath: process.execPath,
-      companionExecutablePath: process.execPath,
+    const runtime = CreateTestRuntime({
       runtimeRoot,
       resolveUploadFile: vi.fn(),
-      runProcess,
-      launchCompanion: vi.fn(async () => ({ port: 9630, homeUrl: 'https://93.184.216.34/ready', isAlive: () => true, close: vi.fn(async () => undefined) })),
+      runBrowserCommand,
     });
 
     const navigate = await runtime.Prepare({ toolName: 'BrowserNavigate', arguments: { url: 'https://93.184.216.34/application' } });
@@ -555,8 +391,7 @@ describe('AgentBrowserRuntime', () => {
 
     const batchCalls = calls.filter((call) => call.args.includes('batch'));
     expect(batchCalls).toHaveLength(1);
-    expect(batchCalls[0].args).toEqual(expect.arrayContaining(['batch', '--json']));
-    expect(batchCalls[0].args).not.toContain('--bail');
+    expect(batchCalls[0].args).toEqual(['batch']);
     expect(batchCalls[0].args.join(' ')).not.toContain(name);
     expect(batchCalls[0].args.join(' ')).not.toContain(email);
     expect(batchCalls[0].args.join(' ')).not.toContain(idNumber);
@@ -586,7 +421,7 @@ describe('AgentBrowserRuntime', () => {
     temporaryRoots.push(runtimeRoot);
     const batchInputs: string[] = [];
     let batchExecuted = false;
-    const runProcess = vi.fn(async ({ args, stdin }: { args: string[]; stdin?: string }) => {
+    const runBrowserCommand = vi.fn(async ({ args, stdin }: { args: string[]; stdin?: string }) => {
       const command = args.find((arg) => ['open', 'get', 'snapshot', 'tab', 'batch', 'eval', 'close'].includes(arg));
       if (command === 'get') return { success: true, data: { url: 'https://93.184.216.34/application' } };
       if (command === 'snapshot') return { success: true, data: { refs: {
@@ -600,9 +435,8 @@ describe('AgentBrowserRuntime', () => {
       if (command === 'batch') { batchExecuted = true; batchInputs.push(stdin ?? ''); return { success: true, data: { results: [{ success: true }] } }; }
       return { success: true, data: {} };
     });
-    const runtime = new AgentBrowserRuntime({
-      executablePath: process.execPath, companionExecutablePath: process.execPath, runtimeRoot, resolveUploadFile: vi.fn(), runProcess,
-      launchCompanion: vi.fn(async () => ({ port: 9650, homeUrl: 'https://93.184.216.34/application', isAlive: () => true, close: vi.fn(async () => undefined) })),
+    const runtime = CreateTestRuntime({
+      runtimeRoot, resolveUploadFile: vi.fn(), runBrowserCommand,
     });
 
     await runtime.Execute({ proposal: await runtime.Prepare({ toolName: 'BrowserNavigate', arguments: { url: 'https://93.184.216.34/application' } }) });
@@ -633,7 +467,7 @@ describe('AgentBrowserRuntime', () => {
     temporaryRoots.push(runtimeRoot);
     const batchInputs: string[] = [];
     let batchExecuted = false;
-    const runProcess = vi.fn(async ({ args, stdin }: { args: string[]; stdin?: string }) => {
+    const runBrowserCommand = vi.fn(async ({ args, stdin }: { args: string[]; stdin?: string }) => {
       const command = args.find((arg) => ['open', 'get', 'snapshot', 'tab', 'batch', 'close'].includes(arg));
       if (command === 'get') return { success: true, data: { url: 'https://93.184.216.34/application' } };
       if (command === 'snapshot') return { success: true, data: { refs: {
@@ -644,9 +478,8 @@ describe('AgentBrowserRuntime', () => {
       if (command === 'batch') { batchExecuted = true; batchInputs.push(stdin ?? ''); return { success: true, data: { results: [{ success: true }] } }; }
       return { success: true, data: {} };
     });
-    const runtime = new AgentBrowserRuntime({
-      executablePath: process.execPath, companionExecutablePath: process.execPath, runtimeRoot, resolveUploadFile: vi.fn(), runProcess,
-      launchCompanion: vi.fn(async () => ({ port: 9652, homeUrl: 'https://93.184.216.34/application', isAlive: () => true, close: vi.fn(async () => undefined) })),
+    const runtime = CreateTestRuntime({
+      runtimeRoot, resolveUploadFile: vi.fn(), runBrowserCommand,
     });
 
     await runtime.Execute({ proposal: await runtime.Prepare({ toolName: 'BrowserNavigate', arguments: { url: 'https://93.184.216.34/application' } }) });
@@ -677,7 +510,7 @@ describe('AgentBrowserRuntime', () => {
       e4: { role: 'textbox', tag: 'textarea', name: '项目描述与项目职责', section: '项目经历', required: true, valueLength: batchExecuted ? 1 : 0 },
       e5: { role: 'combobox', tag: 'select', name: '性别', section: '个人信息', options: [{ label: '男', value: 'male' }] },
     });
-    const runProcess = vi.fn(async ({ args, stdin }: { args: string[]; stdin?: string }) => {
+    const runBrowserCommand = vi.fn(async ({ args, stdin }: { args: string[]; stdin?: string }) => {
       const command = args.find((arg) => ['open', 'get', 'snapshot', 'tab', 'batch', 'eval', 'close'].includes(arg));
       if (command === 'get') return { success: true, data: { url: 'https://93.184.216.34/application' } };
       if (command === 'snapshot') return { success: true, data: { refs: refs() } };
@@ -685,9 +518,8 @@ describe('AgentBrowserRuntime', () => {
       if (command === 'batch') { batchExecuted = true; batchInputs.push(stdin ?? ''); return { success: true, data: { results: [{ success: true }] } }; }
       return { success: true, data: {} };
     });
-    const runtime = new AgentBrowserRuntime({
-      executablePath: process.execPath, companionExecutablePath: process.execPath, runtimeRoot, resolveUploadFile: vi.fn(), runProcess,
-      launchCompanion: vi.fn(async () => ({ port: 9651, homeUrl: 'https://93.184.216.34/application', isAlive: () => true, close: vi.fn(async () => undefined) })),
+    const runtime = CreateTestRuntime({
+      runtimeRoot, resolveUploadFile: vi.fn(), runBrowserCommand,
     });
     const sources = { profiles: [{
       id: 'project-1', category: 'project', title: '项目经历',
@@ -721,7 +553,7 @@ describe('AgentBrowserRuntime', () => {
     const runtimeRoot = await mkdtemp(join(tmpdir(), 'avery-browser-form-inspection-'));
     temporaryRoots.push(runtimeRoot);
     const calls: Array<{ args: string[]; stdin?: string }> = [];
-    const runProcess = vi.fn(async ({ args, stdin }: { args: string[]; stdin?: string }) => {
+    const runBrowserCommand = vi.fn(async ({ args, stdin }: { args: string[]; stdin?: string }) => {
       calls.push({ args, stdin });
       const command = args.find((arg) => ['open', 'get', 'snapshot', 'tab', 'close'].includes(arg));
       if (command === 'get') return { success: true, data: { url: 'https://93.184.216.34/application' } };
@@ -740,13 +572,10 @@ describe('AgentBrowserRuntime', () => {
       ] } };
       return { success: true, data: {} };
     });
-    const runtime = new AgentBrowserRuntime({
-      executablePath: process.execPath,
-      companionExecutablePath: process.execPath,
+    const runtime = CreateTestRuntime({
       runtimeRoot,
       resolveUploadFile: vi.fn(),
-      runProcess,
-      launchCompanion: vi.fn(async () => ({ port: 9631, homeUrl: 'https://93.184.216.34/ready', isAlive: () => true, close: vi.fn(async () => undefined) })),
+      runBrowserCommand,
     });
 
     const navigate = await runtime.Prepare({ toolName: 'BrowserNavigate', arguments: { url: 'https://93.184.216.34/application' } });
@@ -775,9 +604,8 @@ describe('AgentBrowserRuntime', () => {
     const enrichmentCalls = calls.filter((call) => call.args.includes('eval'));
     expect(enrichmentCalls).toHaveLength(6);
     const expressions = enrichmentCalls.map((call) => EvalExpression(call.args, call.stdin));
-    const inspectTransport = enrichmentCalls.find((call) => call.stdin === FormSemanticEnrichmentExpression);
-    expect(inspectTransport?.args).toContain('--stdin');
-    expect(inspectTransport?.args.join(' ').length).toBeLessThan(2_000);
+    const inspectTransport = enrichmentCalls.find((call) => EvalExpression(call.args, call.stdin) === FormSemanticEnrichmentExpression);
+    expect(inspectTransport?.args.slice(0, 2)).toEqual(['eval', '-b']);
     for (const value of expressions) expect(() => new Function(value)).not.toThrow();
     const expression = expressions.find((value) => value.includes('previousElementSibling')) ?? '';
     expect(expression).toContain('previousElementSibling');
@@ -796,7 +624,7 @@ describe('AgentBrowserRuntime', () => {
     let menu: 'form' | 'province' | 'city' | 'confirm' | 'done' = 'form';
     const clicks: string[] = [];
     const evalExpressions: string[] = [];
-    const runProcess = vi.fn(async ({ args, stdin }: { args: string[]; stdin?: string }) => {
+    const runBrowserCommand = vi.fn(async ({ args, stdin }: { args: string[]; stdin?: string }) => {
       const commandIndex = args.findIndex((arg) => ['open', 'get', 'snapshot', 'tab', 'click', 'eval', 'close'].includes(arg));
       const command = args[commandIndex];
       if (command === 'eval') {
@@ -813,6 +641,7 @@ describe('AgentBrowserRuntime', () => {
         clicks.push(ref);
         if (ref === '@e2') menu = 'province';
         else if (ref === '@e10') menu = 'city';
+        else if (ref === '@e11') menu = 'city';
         else if (ref === '@e12') menu = 'form';
         else if (ref === '@e13') menu = 'confirm';
         else if (ref === '@e14') menu = 'done';
@@ -832,14 +661,11 @@ describe('AgentBrowserRuntime', () => {
       }
       return { success: true, data: {} };
     });
-    const runtime = new AgentBrowserRuntime({
-      executablePath: process.execPath,
-      companionExecutablePath: process.execPath,
+    const runtime = CreateTestRuntime({
       runtimeRoot,
       resolveUploadFile: vi.fn(),
-      runProcess,
+      runBrowserCommand,
       delay: vi.fn(async () => undefined),
-      launchCompanion: vi.fn(async () => ({ port: 9632, homeUrl: 'https://93.184.216.34/application', isAlive: () => true, close: vi.fn(async () => undefined) })),
     });
 
     await runtime.Execute({ proposal: await runtime.Prepare({ toolName: 'BrowserNavigate', arguments: { url: 'https://93.184.216.34/application' } }) });
@@ -855,7 +681,7 @@ describe('AgentBrowserRuntime', () => {
     });
     const outcome = await runtime.Execute({ proposal });
 
-    expect(clicks).toEqual(['@e2', '@e10', '@e13', '@e14']);
+    expect(clicks).toEqual(['@e2', '@e10', '@e11', '@e13', '@e14']);
     expect(evalExpressions.some((expression) => expression.includes('data-avery-dynamic-option'))).toBe(true);
     expect(evalExpressions.some((expression) => expression.includes('typeof element.onclick'))).toBe(true);
     expect(evalExpressions.some((expression) => expression.includes('geographic(display)'))).toBe(true);
@@ -919,7 +745,7 @@ describe('AgentBrowserRuntime', () => {
     const clicks: string[] = [];
     const selected = new Set<string>();
     const delay = vi.fn(async () => undefined);
-    const runProcess = vi.fn(async ({ args, stdin }: { args: string[]; stdin?: string }) => {
+    const runBrowserCommand = vi.fn(async ({ args, stdin }: { args: string[]; stdin?: string }) => {
       const commandIndex = args.findIndex((arg) => ['open', 'get', 'snapshot', 'tab', 'click', 'press', 'eval', 'scrollintoview', 'scroll', 'close'].includes(arg));
       const command = args[commandIndex];
       if (command === 'tab') return { success: true, data: { tabs: [{ tabId: 't1', url: 'https://93.184.216.34/application', active: true }] } };
@@ -958,9 +784,8 @@ describe('AgentBrowserRuntime', () => {
       }
       return { success: true, data: {} };
     });
-    const runtime = new AgentBrowserRuntime({
-      executablePath: process.execPath, companionExecutablePath: process.execPath, runtimeRoot, resolveUploadFile: vi.fn(), runProcess, delay,
-      launchCompanion: vi.fn(async () => ({ port: 9638, homeUrl: 'https://93.184.216.34/application', isAlive: () => true, close: vi.fn(async () => undefined) })),
+    const runtime = CreateTestRuntime({
+      runtimeRoot, resolveUploadFile: vi.fn(), runBrowserCommand, delay,
     });
 
     await runtime.Execute({ proposal: await runtime.Prepare({ toolName: 'BrowserNavigate', arguments: { url: 'https://93.184.216.34/application' } }) });
@@ -989,7 +814,7 @@ describe('AgentBrowserRuntime', () => {
     temporaryRoots.push(runtimeRoot);
     let menu: 'form' | 'province' | 'city' = 'form';
     const dynamicDeadlines: number[] = [];
-    const runProcess = vi.fn(async ({ args, stdin, deadline }: { args: string[]; stdin?: string; deadline: number }) => {
+    const runBrowserCommand = vi.fn(async ({ args, stdin, deadline }: { args: string[]; stdin?: string; deadline: number }) => {
       const commandIndex = args.findIndex((arg) => ['open', 'get', 'snapshot', 'tab', 'click', 'eval', 'press', 'scrollintoview', 'scroll', 'close'].includes(arg));
       const command = args[commandIndex];
       if (command === 'tab') return { success: true, data: { tabs: [{ tabId: 't1', url: 'https://93.184.216.34/application', active: true }] } };
@@ -1014,10 +839,9 @@ describe('AgentBrowserRuntime', () => {
       }
       return { success: true, data: {} };
     });
-    const runtime = new AgentBrowserRuntime({
-      executablePath: process.execPath, companionExecutablePath: process.execPath, runtimeRoot, resolveUploadFile: vi.fn(), runProcess,
+    const runtime = CreateTestRuntime({
+      runtimeRoot, resolveUploadFile: vi.fn(), runBrowserCommand,
       delay: vi.fn(async () => undefined),
-      launchCompanion: vi.fn(async () => ({ port: 9640, homeUrl: 'https://93.184.216.34/application', isAlive: () => true, close: vi.fn(async () => undefined) })),
     });
 
     await runtime.Execute({ proposal: await runtime.Prepare({ toolName: 'BrowserNavigate', arguments: { url: 'https://93.184.216.34/application' } }) });
@@ -1048,7 +872,7 @@ describe('AgentBrowserRuntime', () => {
     const filled: Array<[string, string]> = [];
     const commands: string[] = [];
     const evalExpressions: string[] = [];
-    const runProcess = vi.fn(async ({ args, stdin }: { args: string[]; stdin?: string }) => {
+    const runBrowserCommand = vi.fn(async ({ args, stdin }: { args: string[]; stdin?: string }) => {
       const commandIndex = args.findIndex((arg) => ['open', 'get', 'snapshot', 'tab', 'click', 'fill', 'press', 'eval', 'scrollintoview', 'scroll', 'close'].includes(arg));
       const command = args[commandIndex];
       commands.push(command);
@@ -1073,10 +897,9 @@ describe('AgentBrowserRuntime', () => {
       if (command === 'snapshot') return { success: true, data: { refs: { e2: { role: 'combobox', name: '出生日期' } } } };
       return { success: true, data: {} };
     });
-    const runtime = new AgentBrowserRuntime({
-      executablePath: process.execPath, companionExecutablePath: process.execPath, runtimeRoot, resolveUploadFile: vi.fn(), runProcess,
+    const runtime = CreateTestRuntime({
+      runtimeRoot, resolveUploadFile: vi.fn(), runBrowserCommand,
       delay: vi.fn(async () => undefined),
-      launchCompanion: vi.fn(async () => ({ port: 9635, homeUrl: 'https://93.184.216.34/application', isAlive: () => true, close: vi.fn(async () => undefined) })),
     });
 
     await runtime.Execute({ proposal: await runtime.Prepare({ toolName: 'BrowserNavigate', arguments: { url: 'https://93.184.216.34/application' } }) });
@@ -1107,7 +930,7 @@ describe('AgentBrowserRuntime', () => {
     let panel: 'form' | 'months' | 'years' | 'days' | 'done' = 'form';
     const clicks: string[] = [];
     const fills: string[] = [];
-    const runProcess = vi.fn(async ({ args, stdin }: { args: string[]; stdin?: string }) => {
+    const runBrowserCommand = vi.fn(async ({ args, stdin }: { args: string[]; stdin?: string }) => {
       const commandIndex = args.findIndex((arg) => ['open', 'get', 'snapshot', 'tab', 'click', 'fill', 'press', 'eval', 'scrollintoview', 'scroll', 'close'].includes(arg));
       const command = args[commandIndex];
       if (command === 'tab') return { success: true, data: { tabs: [{ tabId: 't1', url: 'https://93.184.216.34/application', active: true }] } };
@@ -1152,10 +975,9 @@ describe('AgentBrowserRuntime', () => {
       }
       return { success: true, data: {} };
     });
-    const runtime = new AgentBrowserRuntime({
-      executablePath: process.execPath, companionExecutablePath: process.execPath, runtimeRoot, resolveUploadFile: vi.fn(), runProcess,
+    const runtime = CreateTestRuntime({
+      runtimeRoot, resolveUploadFile: vi.fn(), runBrowserCommand,
       delay: vi.fn(async () => undefined),
-      launchCompanion: vi.fn(async () => ({ port: 9639, homeUrl: 'https://93.184.216.34/application', isAlive: () => true, close: vi.fn(async () => undefined) })),
     });
 
     await runtime.Execute({ proposal: await runtime.Prepare({ toolName: 'BrowserNavigate', arguments: { url: 'https://93.184.216.34/application' } }) });
@@ -1180,7 +1002,7 @@ describe('AgentBrowserRuntime', () => {
     temporaryRoots.push(runtimeRoot);
     let panel: 'form' | 'months' | 'years' | 'done' = 'form';
     const clicks: string[] = [];
-    const runProcess = vi.fn(async ({ args, stdin }: { args: string[]; stdin?: string }) => {
+    const runBrowserCommand = vi.fn(async ({ args, stdin }: { args: string[]; stdin?: string }) => {
       const commandIndex = args.findIndex((arg) => ['open', 'get', 'snapshot', 'tab', 'click', 'eval', 'press', 'scrollintoview', 'scroll', 'close'].includes(arg));
       const command = args[commandIndex];
       if (command === 'tab') return { success: true, data: { tabs: [{ tabId: 't1', url: 'https://93.184.216.34/application', active: true }] } };
@@ -1215,10 +1037,9 @@ describe('AgentBrowserRuntime', () => {
       }
       return { success: true, data: {} };
     });
-    const runtime = new AgentBrowserRuntime({
-      executablePath: process.execPath, companionExecutablePath: process.execPath, runtimeRoot, resolveUploadFile: vi.fn(), runProcess,
+    const runtime = CreateTestRuntime({
+      runtimeRoot, resolveUploadFile: vi.fn(), runBrowserCommand,
       delay: vi.fn(async () => undefined),
-      launchCompanion: vi.fn(async () => ({ port: 9642, homeUrl: 'https://93.184.216.34/application', isAlive: () => true, close: vi.fn(async () => undefined) })),
     });
 
     await runtime.Execute({ proposal: await runtime.Prepare({ toolName: 'BrowserNavigate', arguments: { url: 'https://93.184.216.34/application' } }) });
@@ -1251,7 +1072,7 @@ describe('AgentBrowserRuntime', () => {
       e5: { role: 'combobox', name: '开始时间', section: '项目经历' },
       e6: { role: 'combobox', name: '结束时间', section: '项目经历' },
     };
-    const runProcess = vi.fn(async ({ args, stdin }: { args: string[]; stdin?: string }) => {
+    const runBrowserCommand = vi.fn(async ({ args, stdin }: { args: string[]; stdin?: string }) => {
       const commandIndex = args.findIndex((arg) => ['open', 'get', 'snapshot', 'tab', 'click', 'fill', 'press', 'eval', 'scrollintoview', 'scroll', 'close'].includes(arg));
       const command = args[commandIndex];
       if (command === 'tab') return { success: true, data: { tabs: [{ tabId: 't1', url: 'https://93.184.216.34/application', active: true }] } };
@@ -1280,10 +1101,9 @@ describe('AgentBrowserRuntime', () => {
         : { success: true, data: { refs: formRefs } };
       return { success: true, data: {} };
     });
-    const runtime = new AgentBrowserRuntime({
-      executablePath: process.execPath, companionExecutablePath: process.execPath, runtimeRoot, resolveUploadFile: vi.fn(), runProcess,
+    const runtime = CreateTestRuntime({
+      runtimeRoot, resolveUploadFile: vi.fn(), runBrowserCommand,
       delay: vi.fn(async () => undefined),
-      launchCompanion: vi.fn(async () => ({ port: 9637, homeUrl: 'https://93.184.216.34/application', isAlive: () => true, close: vi.fn(async () => undefined) })),
     });
 
     await runtime.Execute({ proposal: await runtime.Prepare({ toolName: 'BrowserNavigate', arguments: { url: 'https://93.184.216.34/application' } }) });
@@ -1310,7 +1130,7 @@ describe('AgentBrowserRuntime', () => {
     temporaryRoots.push(runtimeRoot);
     let menuOpen = false;
     const selected: string[] = [];
-    const runProcess = vi.fn(async ({ args, stdin }: { args: string[]; stdin?: string }) => {
+    const runBrowserCommand = vi.fn(async ({ args, stdin }: { args: string[]; stdin?: string }) => {
       const commandIndex = args.findIndex((arg) => ['open', 'get', 'snapshot', 'tab', 'click', 'press', 'eval', 'scrollintoview', 'scroll', 'close'].includes(arg));
       const command = args[commandIndex];
       if (command === 'tab') return { success: true, data: { tabs: [{ tabId: 't1', url: 'https://93.184.216.34/application', active: true }] } };
@@ -1336,10 +1156,9 @@ describe('AgentBrowserRuntime', () => {
         } } };
       return { success: true, data: {} };
     });
-    const runtime = new AgentBrowserRuntime({
-      executablePath: process.execPath, companionExecutablePath: process.execPath, runtimeRoot, resolveUploadFile: vi.fn(), runProcess,
+    const runtime = CreateTestRuntime({
+      runtimeRoot, resolveUploadFile: vi.fn(), runBrowserCommand,
       delay: vi.fn(async () => undefined),
-      launchCompanion: vi.fn(async () => ({ port: 9636, homeUrl: 'https://93.184.216.34/application', isAlive: () => true, close: vi.fn(async () => undefined) })),
     });
 
     await runtime.Execute({ proposal: await runtime.Prepare({ toolName: 'BrowserNavigate', arguments: { url: 'https://93.184.216.34/application' } }) });
@@ -1366,7 +1185,7 @@ describe('AgentBrowserRuntime', () => {
     temporaryRoots.push(runtimeRoot);
     let opened = false;
     const clicks: string[] = [];
-    const runProcess = vi.fn(async ({ args }: { args: string[] }) => {
+    const runBrowserCommand = vi.fn(async ({ args }: { args: string[] }) => {
       const commandIndex = args.findIndex((arg) => ['open', 'get', 'snapshot', 'tab', 'click', 'eval', 'close'].includes(arg));
       const command = args[commandIndex];
       if (command === 'tab') return { success: true, data: { tabs: [{ tabId: 't1', url: 'https://93.184.216.34/application', active: true }] } };
@@ -1377,14 +1196,11 @@ describe('AgentBrowserRuntime', () => {
         : { success: true, data: { refs: { e2: { role: 'combobox', name: '期望城市' } } } };
       return { success: true, data: {} };
     });
-    const runtime = new AgentBrowserRuntime({
-      executablePath: process.execPath,
-      companionExecutablePath: process.execPath,
+    const runtime = CreateTestRuntime({
       runtimeRoot,
       resolveUploadFile: vi.fn(),
-      runProcess,
+      runBrowserCommand,
       delay: vi.fn(async () => undefined),
-      launchCompanion: vi.fn(async () => ({ port: 9634, homeUrl: 'https://93.184.216.34/application', isAlive: () => true, close: vi.fn(async () => undefined) })),
     });
 
     await runtime.Execute({ proposal: await runtime.Prepare({ toolName: 'BrowserNavigate', arguments: { url: 'https://93.184.216.34/application' } }) });
@@ -1410,7 +1226,7 @@ describe('AgentBrowserRuntime', () => {
     const runtimeRoot = await mkdtemp(join(tmpdir(), 'avery-browser-missing-form-field-'));
     temporaryRoots.push(runtimeRoot);
     const clicks: string[] = [];
-    const runProcess = vi.fn(async ({ args }: { args: string[] }) => {
+    const runBrowserCommand = vi.fn(async ({ args }: { args: string[] }) => {
       const commandIndex = args.findIndex((arg) => ['open', 'get', 'snapshot', 'tab', 'click', 'eval', 'close'].includes(arg));
       const command = args[commandIndex];
       if (command === 'tab') return { success: true, data: { tabs: [{ tabId: 't1', url: 'https://93.184.216.34/application', active: true }] } };
@@ -1419,13 +1235,10 @@ describe('AgentBrowserRuntime', () => {
       if (command === 'snapshot') return { success: true, data: { refs: { e2: { role: 'combobox', name: '政治面貌', required: true } } } };
       return { success: true, data: {} };
     });
-    const runtime = new AgentBrowserRuntime({
-      executablePath: process.execPath,
-      companionExecutablePath: process.execPath,
+    const runtime = CreateTestRuntime({
       runtimeRoot,
       resolveUploadFile: vi.fn(),
-      runProcess,
-      launchCompanion: vi.fn(async () => ({ port: 9633, homeUrl: 'https://93.184.216.34/application', isAlive: () => true, close: vi.fn(async () => undefined) })),
+      runBrowserCommand,
     });
 
     await runtime.Execute({ proposal: await runtime.Prepare({ toolName: 'BrowserNavigate', arguments: { url: 'https://93.184.216.34/application' } }) });
@@ -1447,93 +1260,11 @@ describe('AgentBrowserRuntime', () => {
     await runtime.Close();
   });
 
-  it('companion 异常退出后重启并拒绝崩溃前的页面引用', async () => {
-    const runtimeRoot = await mkdtemp(join(tmpdir(), 'avery-browser-recovery-'));
-    temporaryRoots.push(runtimeRoot);
-    let firstAlive = true;
-    let launchCount = 0;
-    const calls: string[][] = [];
-    const launchCompanion = vi.fn(async () => {
-      launchCount += 1;
-      const alive = launchCount === 1 ? () => firstAlive : () => true;
-      return { port: 9400 + launchCount, homeUrl: 'https://93.184.216.34/jobs', isAlive: alive, close: vi.fn(async () => undefined) };
-    });
-    const runProcess = vi.fn(async ({ args }: { args: string[] }) => {
-      calls.push(args);
-      const command = args.find((arg) => ['open', 'get', 'snapshot', 'tab', 'click', 'close'].includes(arg));
-      if (command === 'get') return { success: true, data: { url: 'https://93.184.216.34/jobs' } };
-      if (command === 'snapshot') return { success: true, data: { snapshot: '- button "Next" [ref=e1]', refs: { e1: { role: 'button', name: 'Next' } } } };
-      if (command === 'tab') return { success: true, data: { tabs: [{ tabId: 't1', url: 'https://93.184.216.34/jobs', active: true }] } };
-      return { success: true, data: {} };
-    });
-    const runtime = new AgentBrowserRuntime({ executablePath: process.execPath, companionExecutablePath: process.execPath, runtimeRoot, resolveUploadFile: vi.fn(), runProcess, launchCompanion });
-
-    const navigate = await runtime.Prepare({ toolName: 'BrowserNavigate', arguments: { url: 'https://93.184.216.34/jobs' } });
-    await runtime.Execute({ proposal: navigate });
-    const snapshot = await runtime.Prepare({ toolName: 'BrowserSnapshot', arguments: {} });
-    const observed = await runtime.Execute({ proposal: snapshot });
-    const staleClick = await runtime.Prepare({ toolName: 'BrowserClick', arguments: { ref: '@e1', pageRevision: (observed.data as any).pageRevision } });
-
-    firstAlive = false;
-    await expect(runtime.Execute({ proposal: staleClick })).rejects.toMatchObject({ code: 'BROWSER_STALE_PAGE_REF' });
-    expect(launchCompanion).toHaveBeenCalledTimes(2);
-    expect(calls.filter((args) => args.includes('click'))).toHaveLength(0);
-    const attachedNamespaces = calls.filter((args) => args.includes('tab') && args.includes('--cdp')).map((args) => args[args.indexOf('--namespace') + 1]);
-    expect(new Set(attachedNamespaces)).toEqual(new Set([`avery-${process.pid}-1`, `avery-${process.pid}-2`]));
-
-    const recoveredSnapshot = await runtime.Prepare({ toolName: 'BrowserSnapshot', arguments: {} });
-    const recovered = await runtime.Execute({ proposal: recoveredSnapshot });
-    const recoveredClick = await runtime.Prepare({ toolName: 'BrowserClick', arguments: { ref: '@e1', pageRevision: (recovered.data as any).pageRevision } });
-    await runtime.Execute({ proposal: recoveredClick });
-    expect(calls.filter((args) => args.includes('click'))).toHaveLength(1);
-    await runtime.Close();
-  });
-
-  it('导航遇到失效 CDP 时淘汰旧 daemon，并使用新 namespace 仅重试一次', async () => {
-    const runtimeRoot = await mkdtemp(join(tmpdir(), 'avery-browser-cdp-recovery-'));
-    temporaryRoots.push(runtimeRoot);
-    let launchCount = 0;
-    let openCount = 0;
-    const calls: string[][] = [];
-    const closeCompanions: Array<ReturnType<typeof vi.fn>> = [];
-    const launchCompanion = vi.fn(async () => {
-      launchCount += 1;
-      const close = vi.fn(async () => undefined);
-      closeCompanions.push(close);
-      return { port: 9500 + launchCount, homeUrl: 'https://93.184.216.34/ready', isAlive: () => true, close };
-    });
-    const runProcess = vi.fn(async ({ args }: { args: string[] }) => {
-      calls.push(args);
-      const command = args.find((arg) => ['open', 'get', 'tab', 'close'].includes(arg));
-      if (command === 'tab') return { success: true, data: { tabs: [{ tabId: 't1', url: 'https://93.184.216.34/ready', active: true }] } };
-      if (command === 'open') {
-        openCount += 1;
-        if (openCount === 1) throw new AgentBrowserError('BROWSER_COMMAND_FAILED', 'Failed to read: connection timed out (os error 10060)');
-        return { success: true, data: {} };
-      }
-      if (command === 'get') return { success: true, data: { url: 'https://93.184.216.34/jobs' } };
-      return { success: true, data: {} };
-    });
-    const runtime = new AgentBrowserRuntime({ executablePath: process.execPath, companionExecutablePath: process.execPath, runtimeRoot, resolveUploadFile: vi.fn(), runProcess, launchCompanion });
-
-    const proposal = await runtime.Prepare({ toolName: 'BrowserNavigate', arguments: { url: 'https://93.184.216.34/jobs' } });
-    await expect(runtime.Execute({ proposal, deadline: Date.now() + 120_000 })).resolves.toMatchObject({ status: 'succeeded' });
-
-    expect(openCount).toBe(2);
-    expect(launchCompanion).toHaveBeenCalledTimes(2);
-    expect(closeCompanions[0]).toHaveBeenCalledOnce();
-    const openNamespaces = calls.filter((args) => args.includes('open')).map((args) => args[args.indexOf('--namespace') + 1]);
-    expect(openNamespaces).toEqual([`avery-${process.pid}-1`, `avery-${process.pid}-2`]);
-    await expect(runtime.GetStatus()).resolves.toMatchObject({ available: true, running: true, state: 'ready' });
-    await runtime.Close();
-  });
-
   it('BrowserFillForm 批次超时返回字段级失败，不关闭仍可见的浏览器实例', async () => {
     const runtimeRoot = await mkdtemp(join(tmpdir(), 'avery-browser-fill-timeout-'));
     temporaryRoots.push(runtimeRoot);
-    const closeCompanion = vi.fn(async () => undefined);
     const recordLog = vi.fn();
-    const runProcess = vi.fn(async ({ args }: { args: string[] }) => {
+    const runBrowserCommand = vi.fn(async ({ args }: { args: string[] }) => {
       const command = args.find((arg) => ['open', 'get', 'snapshot', 'tab', 'batch', 'eval', 'close'].includes(arg));
       if (command === 'get') return { success: true, data: { url: 'https://93.184.216.34/application' } };
       if (command === 'snapshot') return { success: true, data: { refs: { e1: { role: 'textbox', tag: 'input', name: '姓名', valueLength: 0 } } } };
@@ -1541,19 +1272,11 @@ describe('AgentBrowserRuntime', () => {
       if (command === 'batch') throw new AgentBrowserError('BROWSER_COMMAND_TIMEOUT', 'Browser command timed out.', true);
       return { success: true, data: {} };
     });
-    const runtime = new AgentBrowserRuntime({
-      executablePath: process.execPath,
-      companionExecutablePath: process.execPath,
+    const runtime = CreateTestRuntime({
       runtimeRoot,
       resolveUploadFile: vi.fn(),
-      runProcess,
+      runBrowserCommand,
       recordLog,
-      launchCompanion: vi.fn(async () => ({
-        port: 9655,
-        homeUrl: 'https://93.184.216.34/application',
-        isAlive: () => true,
-        close: closeCompanion,
-      })),
     });
 
     await runtime.Execute({ proposal: await runtime.Prepare({ toolName: 'BrowserNavigate', arguments: { url: 'https://93.184.216.34/application' } }) });
@@ -1573,8 +1296,6 @@ describe('AgentBrowserRuntime', () => {
     });
     expect(recordLog).toHaveBeenCalledWith('WARN', 'browser.form_field', expect.stringContaining('field=personal.name:0 kind=fill'));
     expect(recordLog.mock.calls.flat().join(' ')).not.toContain('张三');
-    expect(closeCompanion).not.toHaveBeenCalled();
     await runtime.Close();
-    expect(closeCompanion).toHaveBeenCalledOnce();
   });
 });

@@ -1,4 +1,4 @@
-import { writeFileSync, mkdirSync } from 'node:fs';
+import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { BrowserWindowConstructorOptions } from 'electron';
 import { CreateResumeDocumentMarkup } from '@avery/contracts';
@@ -47,25 +47,26 @@ export async function CreateDocxBuffer(resume: ResumeExportInput): Promise<Buffe
   return zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
 }
 /** 导出窗口始终 sandbox；返回值只含文件名，物理路径不回流 Renderer。 */
-export async function ExportResume({ BrowserWindow, workspacePath, resume, format }: { BrowserWindow: BrowserWindowFactory; workspacePath: string; resume: ResumeExportInput; format: ExportFormat }): Promise<{ path: string; fileName: string }> {
+export async function ExportResume({ BrowserWindow, workspacePath, resume, format, outputDirectory, requireCompleteImage = false }: { BrowserWindow: BrowserWindowFactory; workspacePath: string; resume: ResumeExportInput; format: ExportFormat; outputDirectory?: string; requireCompleteImage?: boolean }): Promise<{ path: string; fileName: string }> {
   if (!ResumeExportFormats.includes(format)) throw new Error('Unsupported resume export format.');
-  const outputDirectory = join(workspacePath, 'exports');
-  mkdirSync(outputDirectory, { recursive: true });
+  const destinationDirectory = outputDirectory ?? join(workspacePath, 'exports');
+  await mkdir(destinationDirectory, { recursive: true });
   const fileName = `${SanitizeFileName(resume.name)}.${format}`;
-  const outputPath = join(outputDirectory, fileName);
-  if (format === 'html') { writeFileSync(outputPath, CreateResumeHtml(resume), 'utf8'); return { path: outputPath, fileName }; }
-  if (format === 'docx') { writeFileSync(outputPath, await CreateDocxBuffer(resume)); return { path: outputPath, fileName }; }
+  const outputPath = join(destinationDirectory, fileName);
+  if (format === 'html') { await writeFile(outputPath, CreateResumeHtml(resume), 'utf8'); return { path: outputPath, fileName }; }
+  if (format === 'docx') { await writeFile(outputPath, await CreateDocxBuffer(resume)); return { path: outputPath, fileName }; }
   const window = new BrowserWindow({ show: false, width: 794, height: 1123, webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false } });
   try {
     await window.loadURL('about:blank');
     await window.webContents.executeJavaScript(`document.open();document.write(${JSON.stringify(CreateResumeHtml(resume))});document.close();`);
     await window.webContents.executeJavaScript('document.fonts ? document.fonts.ready : Promise.resolve()');
-    if (format === 'pdf') writeFileSync(outputPath, await window.webContents.printToPDF({ pageSize: 'A4', printBackground: true }));
+    if (format === 'pdf') await writeFile(outputPath, await window.webContents.printToPDF({ pageSize: 'A4', printBackground: true }));
     else {
-      const pageHeight = await window.webContents.executeJavaScript('Math.min(Math.max(document.documentElement.scrollHeight,1123),16000)');
-      const height = typeof pageHeight === 'number' ? pageHeight : 1123;
+      const pageHeight = await window.webContents.executeJavaScript('Math.max(document.documentElement.scrollHeight,1123)');
+      if (requireCompleteImage && typeof pageHeight === 'number' && pageHeight > 16000) throw new Error('The resume image exceeds the complete PNG capture limit.');
+      const height = typeof pageHeight === 'number' ? Math.min(pageHeight, 16000) : 1123;
       window.setContentSize(794, height);
-      writeFileSync(outputPath, (await window.webContents.capturePage({ x: 0, y: 0, width: 794, height })).toPNG());
+      await writeFile(outputPath, (await window.webContents.capturePage({ x: 0, y: 0, width: 794, height })).toPNG());
     }
     return { path: outputPath, fileName };
   } finally { if (!window.isDestroyed()) window.destroy(); }

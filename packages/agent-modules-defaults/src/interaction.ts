@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { AgentSdkContractVersion } from '@avery/agent-sdk';
 import type { InteractionModule, ToolContext, ToolLedgerEntry, ToolReceipt } from '@avery/agent-sdk';
 import { RequireString, type PendingResumeEdit } from './helpers';
 
@@ -13,7 +14,7 @@ export function CreateInteractionModule(): InteractionModule {
     packageName: '@avery/agent-modules-defaults',
     name: 'avery.agent-defaults',
     version: '0.1.0',
-    sdkVersion: '0.1.0',
+    sdkVersion: AgentSdkContractVersion,
     slot: 'interaction',
     capabilities: ['interaction'],
     /** 应用或丢弃待确认简历补丁：接受时重新获取锁并校验 revision，确认标识只能使用一次；等待期间不持有锁。 */

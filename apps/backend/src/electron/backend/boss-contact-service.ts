@@ -89,7 +89,17 @@ export class BossContactService implements BossContactPort {
     const summary = [`即将联系 ${frozen.length} 个岗位`, ...lines, imageName ? `图片：${imageName}` : '', `简历：${input.resume.name ?? input.resume.id}`].filter(Boolean).join('\n');
     const proposalHash = Hash(plan);
     await this.input.createBatch({ id: plan.batchId, sessionId: plan.sessionId, proposalHash, plan, items: frozen });
-    return { proposalHash, toolName: 'ContactBossJobs' as BrowserToolName, canonicalArguments: { __bossContactPlan: plan }, summary, risk: 'high', forceConfirmation: Boolean(input.imageAssetId), pageRevision: 0, resourceIds: frozen.map((item) => `jobs:${item.jobId}`) };
+    return {
+      proposalId: `proposal-${proposalHash}`,
+      proposalHash,
+      toolName: 'ContactBossJobs' as BrowserToolName,
+      canonicalArguments: { __bossContactPlan: plan },
+      summary,
+      risk: 'high',
+      forceConfirmation: Boolean(input.imageAssetId),
+      pageRevision: 0,
+      resourceIds: frozen.map((item) => `jobs:${item.jobId}`),
+    };
   }
 
   private async Browser(toolName: BrowserToolName, args: Record<string, unknown>, signal?: AbortSignal, deadline?: number): Promise<unknown> {

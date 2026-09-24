@@ -18,7 +18,7 @@ const agentBridge = {
     Configure: (config) => invoke('agent:configure', config),
     TestConnection: (config) => invoke('agent:test-connection', config),
     GetBalance: () => invoke('agent:get-balance'),
-    GetModels: () => invoke('agent:get-models'),
+    GetModels: (provider) => invoke('agent:get-models', provider),
     GetProviderCatalog: () => invoke('agent:get-provider-catalog'),
     Send: (request) => invoke('agent:send', request),
     Cancel: (requestId) => invoke('agent:cancel', requestId),
@@ -26,11 +26,10 @@ const agentBridge = {
     UpdateReasoningEffort: (sessionId, reasoningEffort) => invoke('agent:update-reasoning-effort', sessionId, reasoningEffort),
     ConfirmResumeEdit: (id, accepted) => invoke('agent:confirm-resume-edit', id, accepted),
     ConfirmCronTask: (id, accepted) => invokeAgentWrite('agent:confirm-cron-task', [id, accepted]),
-    ConfirmBrowserAction: (id, accepted) => invokeAgentWrite('agent:confirm-browser-action', [id, accepted]),
+    ConfirmBrowserAction: (id, accepted, sessionId) => invokeAgentWrite('agent:confirm-browser-action', [id, accepted, sessionId]),
     GetBrowserRuntimeStatus: (probeConnection) => invoke('agent:browser-runtime-status', probeConnection),
     GetCronBrowserAccess: () => invoke('agent:cron-browser-access'),
     RevokeCronBrowserAccess: (input) => invokeAgentWrite('agent:cron-browser-revoke', [input]),
-    ClearBrowserProfile: () => invokeAgentWrite('agent:browser-clear-profile', []),
     AcquireResumeEditLock: (id) => invoke('agent:acquire-resume-lock', id),
     ReleaseResumeEditLock: (id) => invoke('agent:release-resume-lock', id),
     GetStatus: () => invoke('agent:status'),
@@ -42,6 +41,7 @@ const agentBridge = {
     ReloadSession: (id) => invoke('agent:reload-session', id),
     SelectProjectDirectory: () => invoke('agent:select-project-directory'),
     GetSessionAssistantState: (id) => invoke('agent:get-session-assistant-state', id),
+    GetSessionScenes: () => invoke('agent:get-session-scenes'),
     BindProjectEnvironment: (sessionId, projectId) => invoke('agent:bind-project-environment', sessionId, projectId),
     GetModuleConfiguration: () => invoke('agent:module-configuration'),
     SelectModuleDirectory: () => invoke('agent:select-module-directory'),
@@ -100,9 +100,12 @@ const evaluationBridge = {
     ListProjects: () => invoke('evaluation:projects-list'),
     DeleteProject: (id) => invokeEvaluationWrite('evaluation:project-delete', [id]),
     ImportDataset: (id, jsonl, rubric, revision) => invokeEvaluationWrite('evaluation:dataset-import', [id, jsonl, rubric, revision]),
+    ListDatasetVersions: (id) => invoke('evaluation:dataset-versions-list', id),
+    SelectDatasetVersion: (id, version, revision) => invokeEvaluationWrite('evaluation:dataset-version-select', [id, version, revision]),
+    DeleteDatasetVersion: (id, version, revision) => invokeEvaluationWrite('evaluation:dataset-version-delete', [id, version, revision]),
     ValidateProject: (id) => invoke('evaluation:project-validate', id),
     PreviewProject: (id) => invoke('evaluation:project-preview', id),
-    StartRun: (id) => invokeEvaluationWrite('evaluation:run-start', [id]),
+    StartRun: (id, candidateId) => invokeEvaluationWrite('evaluation:run-start', [id, candidateId]),
     CancelRun: (id) => invokeEvaluationWrite('evaluation:run-cancel', [id]),
     ReadRun: (id) => invoke('evaluation:run-read', id),
     ListRuns: (projectId) => invoke('evaluation:runs-list', projectId),
@@ -118,5 +121,13 @@ electron_1.contextBridge.exposeInMainWorld('averyAgent', agentBridge);
 electron_1.contextBridge.exposeInMainWorld('averyWorkspace', workspaceBridge);
 electron_1.contextBridge.exposeInMainWorld('averyEvaluation', evaluationBridge);
 electron_1.contextBridge.exposeInMainWorld('averyWindow', {
-    Minimize: () => invoke('window:minimize'), ToggleMaximize: () => invoke('window:toggle-maximize'), Close: () => invoke('window:close'),
+    Minimize: () => invoke('window:minimize'), ToggleMaximize: () => invoke('window:toggle-maximize'), IsMaximized: () => invoke('window:is-maximized'), Close: () => invoke('window:close'),
+    OnMaximizedChange: (listener) => {
+        const handler = (_event, maximized) => listener(maximized === true);
+        electron_1.ipcRenderer.on('window:maximized-change', handler);
+        return () => electron_1.ipcRenderer.removeListener('window:maximized-change', handler);
+    },
+    GetWorkspaceDirectory: () => invoke('app:get-workspace-directory'),
+    OpenWorkspaceDirectory: () => invoke('app:open-workspace-directory'),
+    SetLoginItemSettings: (openAtLogin) => invoke('app:set-login-item', openAtLogin),
 });

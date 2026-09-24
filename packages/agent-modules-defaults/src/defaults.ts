@@ -1,4 +1,4 @@
-import type { AgentModules } from '@avery/agent-sdk';
+import { AgentSdkContractVersion, type AgentModules } from '@avery/agent-sdk';
 import { CreateProviderModule } from './provider';
 import { CreateContextBuilderModule } from './context';
 import { CreateCompactionModule } from './compaction';
@@ -10,7 +10,7 @@ import { AgentDefaultPorts } from './ports';
 /** 默认模块包名与契约版本：解析器据此校验。 */
 export const DefaultsPackageName = '@avery/agent-modules-defaults';
 export const DefaultsVersion = '0.1.0';
-export const DefaultsSdkVersion = '0.1.0';
+export const DefaultsSdkVersion = AgentSdkContractVersion;
 
 /** 构造官方默认六槽聚合；端口（密钥/文件/简历/观测存储）全部由宿主注入，模块不持有任何 Node 业务能力。 */
 export function CreateDefaultModules(ports: AgentDefaultPorts): AgentModules {

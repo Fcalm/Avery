@@ -1,18 +1,18 @@
-import type { CSSProperties, ImgHTMLAttributes } from 'react';
+import type { CSSProperties, ImgHTMLAttributes, SVGProps } from 'react';
 
 /** 图标字重：对应 Phosphor 的 Regular / Light / Fill 三套本地字体。 */
 type IconWeight = 'regular' | 'light' | 'fill';
 
-type IconName = 'assistant' | 'jobs' | 'applications' | 'resumes' | 'profiles' | 'developer' | 'plus' | 'resume' | 'resume-panel' | 'browser' | 'panel-expand' | 'panel-shrink' | 'brand' | 'more' | 'settings' | 'developer-mode' | 'balance' | 'logout' | 'sidebar-expand' | 'sidebar-collapse' | 'chevron-down' | 'chevron-up' | 'chevron-right' | 'send' | 'edit' | 'delete' | 'archive' | 'heart' | 'map-pin' | 'arrow-right' | 'arrow-left' | 'loading' | 'error' | 'warning' | 'recovery' | 'refresh' | 'close' | 'stop' | 'music' | 'user-check' | 'user-x' | 'deepseek' | 'window-minimize' | 'window-restore' | 'window-maximize' | 'trace' | 'logs' | 'search' | 'moon' | 'sun' | 'check' | 'check-circle' | 'pin' | 'account' | 'workspace' | 'sliders' | 'paperclip' | 'brain' | 'gauge' | 'folder-simple' | 'folder-open' | 'shield-check' | 'pencil-simple' | 'robot' | 'lightning' | 'briefcase' | 'clock' | 'copy' | 'info' | 'cpu' | 'list-bullets' | 'sparkle' | 'user' | 'wrench' | 'download-simple' | 'upload-simple' | 'eye' | 'eye-slash' | 'lock-simple' | 'plugs-connected' | 'trash-simple' | 'flask' | 'database' | 'scales' | 'selection' | 'play' | 'hash' | 'warning-circle' | 'seal-check' | 'lock-key' | 'list-checks' | 'code' | 'zai';
+type IconName = 'assistant' | 'jobs' | 'applications' | 'resumes' | 'profiles' | 'developer' | 'plus' | 'resume' | 'resume-panel' | 'browser' | 'panel-expand' | 'panel-shrink' | 'brand' | 'more' | 'settings' | 'developer-mode' | 'balance' | 'logout' | 'sidebar-expand' | 'sidebar-collapse' | 'chevron-down' | 'chevron-up' | 'chevron-right' | 'send' | 'edit' | 'delete' | 'archive' | 'heart' | 'map-pin' | 'arrow-right' | 'arrow-left' | 'loading' | 'error' | 'warning' | 'recovery' | 'refresh' | 'close' | 'stop' | 'music' | 'user-check' | 'user-x' | 'deepseek' | 'window-minimize' | 'window-restore' | 'window-maximize' | 'trace' | 'logs' | 'search' | 'moon' | 'sun' | 'check' | 'check-circle' | 'pin' | 'account' | 'workspace' | 'sliders' | 'paperclip' | 'brain' | 'gauge' | 'folder-simple' | 'folder-open' | 'shield-check' | 'pencil-simple' | 'robot' | 'lightning' | 'briefcase' | 'clock' | 'copy' | 'info' | 'cpu' | 'list-bullets' | 'sparkle' | 'user' | 'wrench' | 'download-simple' | 'upload-simple' | 'eye' | 'eye-slash' | 'lock-simple' | 'plugs-connected' | 'trash-simple' | 'flask' | 'database' | 'scales' | 'selection' | 'play' | 'hash' | 'warning-circle' | 'seal-check' | 'lock-key' | 'list-checks' | 'code' | 'zai' | 'mimo';
 
 /**
  * IconName 到 Phosphor 字形的映射。深松绿设计系统的图标统一来自
  * Phosphor 本地字体（public/fonts/phosphor，随安装包离线加载）；
  * 字形清单见 src/styles/phosphor.css，新增图标需同步补充码点声明。
  */
-const glyphs: Record<IconName, string> = {
+const glyphs: Record<Exclude<IconName, 'window-restore'>, string> = {
   assistant: 'chats-circle', jobs: 'stack', applications: 'kanban', resumes: 'file-text', profiles: 'identification-card', developer: 'code', plus: 'plus', resume: 'file-text', 'resume-panel': 'file-text', browser: 'globe', 'panel-expand': 'arrows-out-simple', 'panel-shrink': 'arrows-in-simple', brand: 'sparkle', more: 'dots-three', settings: 'gear-six', 'developer-mode': 'code', balance: 'coins', logout: 'sign-out', 'sidebar-expand': 'sidebar-simple', 'sidebar-collapse': 'sidebar-simple', 'chevron-down': 'caret-down', 'chevron-up': 'caret-up', 'chevron-right': 'caret-right', send: 'paper-plane-right', edit: 'pencil-simple', delete: 'trash', archive: 'archive', heart: 'heart', 'map-pin': 'map-pin', 'arrow-right': 'arrow-right', loading: 'circle-notch', error: 'warning', warning: 'warning', recovery: 'arrows-counter-clockwise', refresh: 'arrows-clockwise', close: 'x', stop: 'stop', music: 'microphone', 'user-check': 'user-check', // Phosphor 无 user-x，语义最接近的是授权盾牌
-  'user-x': 'shield-check', deepseek: 'deepseek', 'window-minimize': 'minus', 'window-restore': 'corners-in', 'window-maximize': 'corners-out', trace: 'tree-structure', logs: 'list-dashes', search: 'magnifying-glass', moon: 'moon', sun: 'sun', check: 'check', 'check-circle': 'check-circle', pin: 'push-pin', account: 'user-circle', workspace: 'folder-open', sliders: 'sliders-horizontal',
+  'user-x': 'shield-check', deepseek: 'deepseek', 'window-minimize': 'minus', 'window-maximize': 'corners-out', trace: 'tree-structure', logs: 'list-dashes', search: 'magnifying-glass', moon: 'moon', sun: 'sun', check: 'check', 'check-circle': 'check-circle', pin: 'push-pin', account: 'user-circle', workspace: 'folder-open', sliders: 'sliders-horizontal',
   'arrow-left': 'arrow-left',
   paperclip: 'paperclip', brain: 'brain', gauge: 'gauge', 'folder-simple': 'folder-simple', 'folder-open': 'folder-open',
   'shield-check': 'shield-check', 'pencil-simple': 'pencil-simple', robot: 'robot', lightning: 'lightning', briefcase: 'briefcase',
@@ -35,14 +35,22 @@ const glyphs: Record<IconName, string> = {
   'warning-circle': 'warning-circle', 'seal-check': 'seal-check', 'lock-key': 'lock-key', 'list-checks': 'list-checks',
   // 账户菜单（原型 umDeveloper）：开发者工具入口
   code: 'code',
-  // AI 供应商（原型一比一）：智谱 Z.AI 品牌图标
+  // AI 供应商（原型一比一）：智谱 Z.AI 与小米 MiMo 品牌图标；两者都不在 Phosphor 字体里，实际渲染走 pngAssets。
   zai: 'zai',
+  mimo: 'mimo',
 };
 
 /** 未收录于 Phosphor 的品牌图标继续走本地 PNG 资源。 */
-const pngAssets: Partial<Record<IconName, string>> = { deepseek: 'deepseek-color', zai: 'zai-color' };
+const pngAssets: Partial<Record<IconName, string>> = { deepseek: 'deepseek-color', zai: 'zai-color', mimo: 'mimo-color' };
 
 function Icon({ name, size = 20, weight = 'regular', className = '', style, ...props }: { name: IconName; size?: number; weight?: IconWeight } & Omit<ImgHTMLAttributes<HTMLElement>, 'children' | 'src'>) {
+  // 窗口还原不是普通 Copy 字形：用明确的双窗口轮廓，避免不同字库版本下看成复制文档。
+  if (name === 'window-restore') {
+    return <svg className={`window-restore-glyph ${className}`} width={size} height={size} viewBox="0 0 16 16" fill="none" style={style} aria-hidden="true" {...(props as SVGProps<SVGSVGElement>)}>
+      <path d="M6.25 5.75V2.75h7v7H10.5" />
+      <path d="M10.5 5.75h-7v7h7v-7Z" />
+    </svg>;
+  }
   // Vite 的 Electron 构建以 file:// 打开 index.html；PNG 路径必须按文档基址解析成绝对 URL，
   // 否则构建产物的 CSS（/assets/index-*.css）会把样式表里的相对 url 解析到 /assets/assets/ 下。
   const png = pngAssets[name];

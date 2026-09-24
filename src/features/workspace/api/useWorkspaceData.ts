@@ -3,7 +3,7 @@ import { platformClient, Unwrap } from '../../../shared/platform/platformClient'
 import { DefaultSettings, WORKSPACE_QUERY_KEY, type WorkspaceData } from './workspaceData';
 
 /** 从桌面 Bridge 聚合读取工作空间数据；三个只读请求并行，减少启动等待。 */
-async function LoadWorkspaceData(): Promise<WorkspaceData> {
+export async function LoadWorkspaceData(): Promise<WorkspaceData> {
   const [viewModel, profiles, settings] = await Promise.all([
     Unwrap(platformClient.workspace.GetViewModel()),
     Unwrap(platformClient.workspace.GetProfiles()),

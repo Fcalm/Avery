@@ -4,7 +4,7 @@ import { FunctionRouteChannels, MethodRoutes, WriteCommandChannels } from '@aver
 import { WriteCommandEnvelopeSchema } from '@avery/contracts';
 
 export const MaxGatewayPayloadBytes = 10 * 1024 * 1024;
-export const WindowControlChannels = ['window:minimize', 'window:toggle-maximize', 'window:close'] as const;
+export const WindowControlChannels = ['window:minimize', 'window:toggle-maximize', 'window:is-maximized', 'window:close'] as const;
 export const GeneralControlChannels = ['app:get-workspace-directory', 'app:open-workspace-directory', 'app:set-login-item'] as const;
 
 type ResultEnvelope = { ok: boolean; data?: unknown; error?: { code: string; message: string; retryable: boolean; details?: unknown } };
@@ -142,10 +142,12 @@ export function RegisterGeneralControls({ webContentsGetter, workspacePath, ipcM
 }
 
 /** 无边框窗口控制也必须经过相同来源验证，绝不把 BrowserWindow 暴露给 Renderer。 */
-export function RegisterWindowControls({ webContentsGetter, ipcMainApi = ipcMain }: { webContentsGetter: () => BrowserWindow | undefined; ipcMainApi?: IpcMainPort }): void {
+export function RegisterWindowControls({ webContentsGetter, ipcMainApi = ipcMain, maximize }: { webContentsGetter: () => BrowserWindow | undefined; ipcMainApi?: IpcMainPort; maximize?: { Toggle: () => boolean; IsMaximized: () => boolean } }): void {
   const actions: Record<(typeof WindowControlChannels)[number], (window: BrowserWindow) => boolean> = {
     'window:minimize': (window) => { window.minimize(); return true; },
-    'window:toggle-maximize': (window) => { if (window.isMaximized()) window.unmaximize(); else window.maximize(); return window.isMaximized(); },
+    // 宿主提供受控的最大化实现（透明 acrylic 窗口的原生最大化不可靠）；未提供时回退原生行为
+    'window:toggle-maximize': (window) => { if (maximize) return maximize.Toggle(); if (window.isMaximized()) window.unmaximize(); else window.maximize(); return window.isMaximized(); },
+    'window:is-maximized': (window) => maximize ? maximize.IsMaximized() : window.isMaximized(),
     'window:close': (window) => { window.close(); return true; },
   };
   for (const channel of WindowControlChannels) {

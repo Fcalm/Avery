@@ -4,6 +4,7 @@ export const CronTaskScenarioSchema = z.enum(['default', 'application']);
 export const CronTaskStateSchema = z.enum(['active', 'paused', 'completed', 'cancelled']);
 export const CronRunStateSchema = z.enum(['running', 'completed', 'failed', 'missed', 'needsAttention']);
 export const CronDayOfWeekSchema = z.enum(['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday']);
+export const BrowserTaskGrantPurposeSchema = z.enum(['job_search', 'job_application', 'boss_contact']);
 
 const DateTime = z.string().datetime({ offset: true });
 const TimeZone = z.string().min(1).max(100).refine((value) => {
@@ -45,11 +46,25 @@ export const ReadCronTaskSchema = z.object({
 
 export const DeleteCronTaskSchema = z.object({ cronTaskId: z.string().min(1).max(200) }).strict();
 
+export const BrowserTaskGrantSchema = z.object({
+  mode: z.literal('personal_browser_extension'),
+  purpose: BrowserTaskGrantPurposeSchema,
+  allowNavigation: z.boolean(),
+  allowFormFill: z.boolean(),
+  allowFileUpload: z.boolean(),
+  allowExternalSend: z.boolean(),
+  resourceIds: z.array(z.string().trim().min(1).max(500)).max(200).refine((ids) => new Set(ids).size === ids.length, 'Duplicate resource IDs are not allowed.'),
+  grantedAt: DateTime,
+  revokedAt: DateTime.optional(),
+}).strict();
+
 export type CronSchedule = z.infer<typeof CronScheduleSchema>;
 export type CreateCronTaskInput = z.infer<typeof CreateCronTaskSchema>;
 export type UpdateCronTaskInput = z.infer<typeof UpdateCronTaskSchema>;
 export type CronTaskState = z.infer<typeof CronTaskStateSchema>;
 export type CronRunState = z.infer<typeof CronRunStateSchema>;
+export type BrowserTaskGrantPurpose = z.infer<typeof BrowserTaskGrantPurposeSchema>;
+export type BrowserTaskGrant = z.infer<typeof BrowserTaskGrantSchema>;
 
 export interface CronTaskDto {
   id: string;
@@ -57,8 +72,10 @@ export interface CronTaskDto {
   message: string;
   scenarioId: 'default' | 'application';
   resumeId?: string;
-  /** 用户在创建确认中授予该任务的个人浏览器权限；不代表浏览器当前在线。 */
+  /** @deprecated 仅供旧 UI 兼容；授权事实必须读取 browserTaskGrant。 */
   browserAuthorized: boolean;
+  /** 创建确认时冻结的任务级个人浏览器授权；旧任务默认不存在。 */
+  browserTaskGrant?: BrowserTaskGrant;
   schedule: CronSchedule;
   state: CronTaskState;
   consumedOccurrences: number;

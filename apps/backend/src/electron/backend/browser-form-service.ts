@@ -437,7 +437,7 @@ function AliasesForKey(key: string): string[] {
 
 /**
  * 隔离浏览器的可访问性快照只返回控件自身名称。部分 ATS 将标签渲染为相邻 div，
- * 因而这里用固定、不可由模型修改的页面脚本补齐 aria-label，再由 agent-browser 生成原生 ref。
+ * 因而这里用固定、不可由模型修改的页面脚本补齐 aria-label，再由任务页快照生成原生 ref。
  * 脚本只写入辅助语义和非空布尔状态，不回传字段值，也不触发输入、点击或提交事件。
  */
 

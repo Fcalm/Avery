@@ -6,24 +6,26 @@ import { promisify } from 'node:util';
 import { ExportResume } from './resume-export';
 
 type WindowGetter = () => BrowserWindow | undefined;
-type CredentialConfig = { provider: 'DeepSeek' | 'Z.AI' | '自定义'; baseUrl: unknown; model: unknown; thinkingEnabled: unknown; contextLimit: unknown; contextLimitMode?: unknown; compressionThreshold: unknown; apiKey: string };
+type CredentialConfig = { provider: 'DeepSeek' | 'Z.AI' | 'MIMO' | '自定义'; baseUrl: unknown; model: unknown; thinkingEnabled: unknown; contextLimit: unknown; contextLimitMode?: unknown; compressionThreshold: unknown; apiKey: string };
 const ExecFile = promisify(execFile);
 export const CronTaskSchedulerName = 'Avery Cron Runner';
 const LegacyCronTaskSchedulerName = `${['Offer', 'Get'].join('')} Cron Runner`;
 
 async function RemoveLegacyWindowsCronWake(): Promise<void> {
   const taskName = LegacyCronTaskSchedulerName.replace(/'/g, "''");
-  const script = `$task=Get-ScheduledTask -TaskName '${taskName}' -ErrorAction SilentlyContinue;if($null-ne $task){Unregister-ScheduledTask -TaskName '${taskName}' -Confirm:$false -ErrorAction Stop}`;
+  const script = `$task=Get-ScheduledTask -TaskName '${taskName}' -ErrorAction SilentlyContinue;if($null-ne $task){Unregister-ScheduledTask -TaskName '${taskName}' -Confirm:$false -ErrorAction Stop};exit 0`;
   await ExecFile('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], { windowsHide: true });
 }
 
 /** Windows 用户级 Task Scheduler 只维护一个最近唤醒；任务内部数据始终留在 Avery 数据库。 */
 export async function SyncWindowsCronWake(nextRunAt: number | null, executablePath: string): Promise<{ registered: boolean; nextRunAt: number | null; supported: boolean }> {
   if (process.platform !== 'win32') return { registered: false, nextRunAt, supported: false };
-  await RemoveLegacyWindowsCronWake();
+  // 旧版任务可能由管理员创建。清理失败不应阻止当前用户的任务调度或后端启动。
+  try { await RemoveLegacyWindowsCronWake(); }
+  catch (error) { console.warn('Could not remove legacy CronTask wake:', error instanceof Error ? error.message : error); }
   const taskName = CronTaskSchedulerName.replace(/'/g, "''");
   if (nextRunAt === null) {
-    const script = `$task=Get-ScheduledTask -TaskName '${taskName}' -ErrorAction SilentlyContinue;if($null-ne $task){Unregister-ScheduledTask -TaskName '${taskName}' -Confirm:$false -ErrorAction Stop}`;
+    const script = `$task=Get-ScheduledTask -TaskName '${taskName}' -ErrorAction SilentlyContinue;if($null-ne $task){Unregister-ScheduledTask -TaskName '${taskName}' -Confirm:$false -ErrorAction Stop};exit 0`;
     await ExecFile('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], { windowsHide: true });
     return { registered: false, nextRunAt: null, supported: true };
   }
@@ -73,6 +75,11 @@ export function CreateDesktopAdapters({ getWindow, userDataPath, executablePath 
     ExportResume: async ({ workspacePath, resume, format }: { workspacePath: string; resume: { name: string; summary: string; content: string }; format: 'html' | 'pdf' | 'docx' | 'png' }) => {
       const result = await ExportResume({ BrowserWindow, workspacePath, resume, format });
       return { fileName: result.fileName, exported: true };
+    },
+    /** 仅供 Backend AgentHost 使用；Renderer 的导出 IPC 不返回物理路径。 */
+    ExportResumeAsset: async ({ workspacePath, resume, format, assetId }: { workspacePath: string; resume: { name: string; summary: string; content: string }; format: 'pdf' | 'png'; assetId: string }) => {
+      if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(assetId) || !['pdf', 'png'].includes(format)) throw new Error('Invalid resume asset request.');
+      return ExportResume({ BrowserWindow, workspacePath, resume, format, outputDirectory: join(workspacePath, 'exports', 'agent-resume-files', assetId), requireCompleteImage: true });
     },
     CredentialLoad: async () => {
       try {

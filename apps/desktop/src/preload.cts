@@ -23,7 +23,7 @@ const agentBridge: DesktopAgentBridge = {
   Configure: (config) => invoke('agent:configure', config) as ReturnType<DesktopAgentBridge['Configure']>,
   TestConnection: (config) => invoke('agent:test-connection', config) as ReturnType<DesktopAgentBridge['TestConnection']>,
   GetBalance: () => invoke('agent:get-balance') as ReturnType<DesktopAgentBridge['GetBalance']>,
-  GetModels: () => invoke('agent:get-models') as ReturnType<DesktopAgentBridge['GetModels']>,
+  GetModels: (provider) => invoke('agent:get-models', provider) as ReturnType<DesktopAgentBridge['GetModels']>,
   GetProviderCatalog: () => invoke('agent:get-provider-catalog') as ReturnType<DesktopAgentBridge['GetProviderCatalog']>,
   Send: (request) => invoke('agent:send', request) as ReturnType<DesktopAgentBridge['Send']>,
   Cancel: (requestId) => invoke('agent:cancel', requestId) as ReturnType<DesktopAgentBridge['Cancel']>,
@@ -31,11 +31,10 @@ const agentBridge: DesktopAgentBridge = {
   UpdateReasoningEffort: (sessionId, reasoningEffort) => invoke('agent:update-reasoning-effort', sessionId, reasoningEffort) as ReturnType<DesktopAgentBridge['UpdateReasoningEffort']>,
   ConfirmResumeEdit: (id, accepted) => invoke('agent:confirm-resume-edit', id, accepted) as ReturnType<DesktopAgentBridge['ConfirmResumeEdit']>,
   ConfirmCronTask: (id, accepted) => invokeAgentWrite('agent:confirm-cron-task', [id, accepted]) as ReturnType<DesktopAgentBridge['ConfirmCronTask']>,
-  ConfirmBrowserAction: (id, accepted) => invokeAgentWrite('agent:confirm-browser-action', [id, accepted]) as ReturnType<DesktopAgentBridge['ConfirmBrowserAction']>,
+  ConfirmBrowserAction: (id, accepted, sessionId) => invokeAgentWrite('agent:confirm-browser-action', [id, accepted, sessionId]) as ReturnType<DesktopAgentBridge['ConfirmBrowserAction']>,
   GetBrowserRuntimeStatus: (probeConnection) => invoke('agent:browser-runtime-status', probeConnection) as ReturnType<DesktopAgentBridge['GetBrowserRuntimeStatus']>,
   GetCronBrowserAccess: () => invoke('agent:cron-browser-access') as ReturnType<DesktopAgentBridge['GetCronBrowserAccess']>,
   RevokeCronBrowserAccess: (input) => invokeAgentWrite('agent:cron-browser-revoke', [input]) as ReturnType<DesktopAgentBridge['RevokeCronBrowserAccess']>,
-  ClearBrowserProfile: () => invokeAgentWrite('agent:browser-clear-profile', []) as ReturnType<DesktopAgentBridge['ClearBrowserProfile']>,
   AcquireResumeEditLock: (id) => invoke('agent:acquire-resume-lock', id) as ReturnType<DesktopAgentBridge['AcquireResumeEditLock']>,
   ReleaseResumeEditLock: (id) => invoke('agent:release-resume-lock', id) as ReturnType<DesktopAgentBridge['ReleaseResumeEditLock']>,
   GetStatus: () => invoke('agent:status') as ReturnType<DesktopAgentBridge['GetStatus']>,
@@ -130,7 +129,12 @@ contextBridge.exposeInMainWorld('averyAgent', agentBridge);
 contextBridge.exposeInMainWorld('averyWorkspace', workspaceBridge);
 contextBridge.exposeInMainWorld('averyEvaluation', evaluationBridge);
 contextBridge.exposeInMainWorld('averyWindow', {
-  Minimize: () => invoke('window:minimize'), ToggleMaximize: () => invoke('window:toggle-maximize'), Close: () => invoke('window:close'),
+  Minimize: () => invoke('window:minimize'), ToggleMaximize: () => invoke('window:toggle-maximize'), IsMaximized: () => invoke('window:is-maximized') as Promise<boolean>, Close: () => invoke('window:close'),
+  OnMaximizedChange: (listener: (maximized: boolean) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, maximized: unknown) => listener(maximized === true);
+    ipcRenderer.on('window:maximized-change', handler);
+    return () => ipcRenderer.removeListener('window:maximized-change', handler);
+  },
   GetWorkspaceDirectory: () => invoke('app:get-workspace-directory') as Promise<string>,
   OpenWorkspaceDirectory: () => invoke('app:open-workspace-directory') as Promise<boolean>,
   SetLoginItemSettings: (openAtLogin: boolean) => invoke('app:set-login-item', openAtLogin) as Promise<boolean>,

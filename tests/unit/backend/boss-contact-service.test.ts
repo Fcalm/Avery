@@ -12,7 +12,7 @@ function CreateHarness(initialGreetingEnabled = true) {
       : state === 'continued' ? { e3: { role: 'button', name: '继续沟通' } }
         : state === 'chat' ? { e4: { role: 'textbox', name: draft || '输入消息' }, e5: { role: 'button', name: '发送', disabled: disabledSendSnapshots-- > 0 } } : {};
   const browser: BrowserAutomationPort = {
-    Prepare: vi.fn(async ({ toolName, arguments: args }) => ({ proposalHash: `${toolName}-${JSON.stringify(args)}`, toolName, canonicalArguments: args, summary: toolName, risk: 'low', forceConfirmation: false, pageRevision: 1, resourceIds: [] })),
+    Prepare: vi.fn(async ({ toolName, arguments: args }) => ({ proposalId: `proposal-${toolName}-${JSON.stringify(args)}`, proposalHash: `${toolName}-${JSON.stringify(args)}`, toolName, canonicalArguments: args, summary: toolName, risk: 'low', forceConfirmation: false, pageRevision: 1, resourceIds: [] })),
     Execute: vi.fn(async ({ proposal }) => {
       if (proposal.toolName === 'BrowserNavigate') state = 'detail';
       if (proposal.toolName === 'BrowserClick') {

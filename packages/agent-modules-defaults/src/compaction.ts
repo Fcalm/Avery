@@ -1,5 +1,5 @@
 import type { AgentMessage, CompactionModule } from '@avery/agent-sdk';
-import { DropOldestTurnGroups, IsUserTurn, KeepRecentTurnGroups, SplitTurnGroups } from '@avery/agent-sdk';
+import { AgentSdkContractVersion, DropOldestTurnGroups, IsUserTurn, KeepRecentTurnGroups, SplitTurnGroups } from '@avery/agent-sdk';
 
 const SkillControlKinds = new Set(['skill_index', 'loaded_skill', 'loaded_skill_resource', 'skill_state_reset']);
 
@@ -33,7 +33,7 @@ export function CreateCompactionModule(): CompactionModule {
     packageName: '@avery/agent-modules-defaults',
     name: 'avery.agent-defaults',
     version: '0.1.0',
-    sdkVersion: '0.1.0',
+    sdkVersion: AgentSdkContractVersion,
     slot: 'compaction',
     capabilities: ['compaction'],
     /** 估算占比达到阈值时返回需要压缩；与既有运行时语义一致（>= 阈值即压缩）。 */

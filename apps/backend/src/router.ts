@@ -59,7 +59,6 @@ export const MethodRoutes: Record<string, MethodRoute> = {
   'agent:browser-runtime-status': { service: 'agent', method: 'GetBrowserRuntimeStatus' },
   'agent:cron-browser-access': { service: 'agent', method: 'GetCronBrowserAccess' },
   'agent:cron-browser-revoke': { service: 'agent', method: 'RevokeCronBrowserAccess' },
-  'agent:browser-clear-profile': { service: 'agent', method: 'ClearBrowserProfile' },
   'agent:acquire-resume-lock': { service: 'agent', method: 'AcquireResumeEditLock' },
   'agent:release-resume-lock': { service: 'agent', method: 'ReleaseResumeEditLock' },
   'agent:status': { service: 'agent', method: 'GetStatus' },
@@ -157,8 +156,9 @@ const EvalDatasetVersionHash = z.string().regex(/^[a-f0-9]{64}$/);
 /** 写通道负载的整数组形状校验表（阶段 6 A2 收口）：键为通道，值为对该通道 args 的整体 tuple 校验。 */
 const WriteArgsSchemas: Record<string, z.ZodTuple> = {
   'agent:confirm-cron-task': z.tuple([EntityId, z.boolean()]),
-  'agent:confirm-browser-action': z.tuple([EntityId, z.boolean()]),
-  'agent:browser-clear-profile': z.tuple([]),
+  // 浏览器确认必须把 Renderer 当前会话显式带回主进程；Host 会再与
+  // pending action 的 session/task/run binding 做一次严格比较。
+  'agent:confirm-browser-action': z.tuple([EntityId, z.boolean(), EntityId]),
   'evaluation:project-create': z.tuple([EvalProjectInputSchema]),
   'evaluation:project-update': z.tuple([EntityId, EvalProjectInputSchema, RequiredRevision]),
   'evaluation:project-delete': z.tuple([EntityId]),

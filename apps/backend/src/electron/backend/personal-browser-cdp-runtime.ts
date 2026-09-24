@@ -1,5 +1,6 @@
 import { writeFile } from 'node:fs/promises';
 import { setTimeout as Delay } from 'node:timers/promises';
+import type { BrowserExtensionTargetInfo } from './browser-extension-bridge';
 
 const SocketOpen = 1;
 const DefaultTimeoutMs = 60_000;
@@ -39,17 +40,13 @@ const AllowedMethods = new Set([...BrowserMethods, ...PageMethods]);
 
 type BrowserSocket = {
   readonly readyState: number;
-  send(data: string): void;
+  send(data: string, options?: PersonalBrowserCommandOptions): void;
   close(): void;
   addEventListener(type: string, listener: (event: any) => void, options?: { once?: boolean }): void;
   removeEventListener(type: string, listener: (event: any) => void): void;
 };
 
-type CdpTargetInfo = {
-  targetId: string;
-  type?: string;
-  url?: string;
-};
+type CdpTargetInfo = BrowserExtensionTargetInfo;
 
 type PendingCommand = {
   method: string;
@@ -75,6 +72,8 @@ export interface PersonalBrowserRuntimePort {
   Run(command: string[], options?: PersonalBrowserCommandOptions & { stdin?: string }): Promise<PersonalBrowserCommandResult>;
   ResetReferences(): void;
   IsConnected(): boolean;
+  /** Extension-backed runtimes expose the task identity for close_task routing. */
+  GetBrowserTaskId?(): string | undefined;
   Close(): Promise<void>;
 }
 
@@ -86,9 +85,11 @@ export type PersonalBrowserCommandOptions = {
 export interface PersonalBrowserCdpRuntimeOptions {
   endpoint: string;
   anchorUrl?: string;
+  /** Present only for the extension transport; direct CDP keeps its legacy single-target behavior. */
+  browserTaskId?: string;
   now?: () => number;
   delay?: (milliseconds: number, signal?: AbortSignal) => Promise<void>;
-  webSocketFactory?: (url: string) => BrowserSocket;
+  webSocketFactory?: (url: string, options?: PersonalBrowserCommandOptions) => BrowserSocket;
 }
 
 export class PersonalBrowserCdpError extends Error {
@@ -98,13 +99,11 @@ export class PersonalBrowserCdpError extends Error {
   }
 }
 
-function IsBossUrl(value: unknown): value is string {
+function IsTaskWebUrl(value: unknown): value is string {
   if (typeof value !== 'string') return false;
   try {
     const url = new URL(value);
-    const hostname = url.hostname.toLowerCase();
-    return ['http:', 'https:'].includes(url.protocol)
-      && (hostname === 'zhipin.com' || hostname.endsWith('.zhipin.com'));
+    return ['http:', 'https:'].includes(url.protocol) && Boolean(url.hostname) && !url.username && !url.password;
   } catch {
     return false;
   }
@@ -121,9 +120,248 @@ function SafeJson(value: unknown): string {
   return JSON.stringify(value).replaceAll('<', '\\u003c').replaceAll('>', '\\u003e');
 }
 
+const SnapshotReadyStates = new Set(['loading', 'interactive', 'complete']);
+
+// Runtime.evaluate 的语义快照不是通用 JSON 通道。保留 url/title/truncated
+// 只是兼容旧扩展；除此之外不得把任意网页字段带入 Host 契约。
+const SnapshotResultKeys = new Set(['readyState', 'items', 'url', 'title', 'truncated']);
+
+// Runtime.evaluate 的 CDP 返回 envelope 只有这两个字段。不要把任意
+// Runtime/扩展自定义字段透传到 SnapshotValue；新增协议字段必须先审计。
+const RuntimeEvaluateResultKeys = new Set(['result', 'exceptionDetails']);
+
+// CDP command response envelope 只允许 id + result/error；扩展 transport
+// 的 statusUnknown 是 error 上明确审计过的兼容字段，其他字段一律拒绝。
+const CdpResponseKeys = new Set(['id', 'result', 'error']);
+const CdpErrorKeys = new Set(['code', 'message', 'data', 'statusUnknown']);
+const TargetGetTargetsResultKeys = new Set(['targetInfos']);
+const TargetInfoResultKeys = new Set(['targetInfo']);
+
+// CDP Runtime.RemoteObject 的公开字段 allowlist。Snapshot 只接受
+// returnByValue 的 object/value，但仍需拒绝 remote object 上混入的扩展字段。
+const RemoteObjectKeys = new Set([
+  'type', 'subtype', 'className', 'value', 'unserializableValue', 'description',
+  'deepSerializedValue', 'objectId', 'preview', 'customPreview',
+]);
+
+function IsRecord(value: unknown): value is Record<string, any> {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value));
+}
+
+type OwnData = { present: true; value: unknown } | { present: false };
+
+/**
+ * 读取不可信协议对象时只接受 own data descriptor，不触发 getter。
+ * CDP 通常经 JSON.parse 到达，但扩展 socket 和测试 mock 也共用此边界，
+ * getter 绝不能在这里变成浏览器副作用。
+ */
+function ReadOwnData(value: unknown, key: string): OwnData {
+  if (!value || typeof value !== 'object') return { present: false };
+  let descriptor: PropertyDescriptor | undefined;
+  try { descriptor = Object.getOwnPropertyDescriptor(value, key); }
+  catch { return { present: false }; }
+  if (!descriptor || !Object.getOwnPropertyDescriptor(descriptor, 'value')) return { present: false };
+  return { present: true, value: descriptor.value };
+}
+
+function IsPlainRecord(value: unknown): value is Record<string, any> {
+  if (!IsRecord(value)) return false;
+  try {
+    const prototype = Object.getPrototypeOf(value);
+    return prototype === null || prototype === Object.prototype;
+  } catch {
+    return false;
+  }
+}
+
+/** 只检查 data descriptor，并要求对象处于明确 allowlist 的 plain 原型边界。 */
+function IsPlainDataRecord(value: unknown, allowedKeys: ReadonlySet<string>): value is Record<string, any> {
+  if (!IsPlainRecord(value)) return false;
+  try {
+    if (Object.getOwnPropertySymbols(value).length > 0) return false;
+    return Object.getOwnPropertyNames(value).every((key) => {
+      if (!allowedKeys.has(key)) return false;
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      return Boolean(descriptor && Object.getOwnPropertyDescriptor(descriptor, 'value'));
+    });
+  } catch {
+    return false;
+  }
+}
+
+const ArrayPrototype = Array.prototype;
+const SnapshotOptionKeys = new Set(['label', 'value', 'selected']);
+
+function IsArrayIndexKey(key: string): boolean {
+  const index = Number(key);
+  return Number.isSafeInteger(index) && index >= 0 && index < 4_294_967_295 && String(index) === key;
+}
+
+/** 数组也是协议容器：拒绝洞、任意原型和 accessor 元素。 */
+function ReadOwnArrayValues(value: unknown): unknown[] | null {
+  if (!Array.isArray(value)) return null;
+  try {
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== ArrayPrototype && prototype !== null) return null;
+    if (Object.getOwnPropertySymbols(value).length > 0) return null;
+    const lengthDescriptor = Object.getOwnPropertyDescriptor(value, 'length');
+    if (!lengthDescriptor || !Object.getOwnPropertyDescriptor(lengthDescriptor, 'value')
+      || !Number.isSafeInteger(lengthDescriptor.value) || lengthDescriptor.value < 0) return null;
+    const length = lengthDescriptor.value as number;
+    for (const key of Object.getOwnPropertyNames(value)) {
+      if (key !== 'length' && (!IsArrayIndexKey(key) || Number(key) >= length)) return null;
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (!descriptor || !Object.getOwnPropertyDescriptor(descriptor, 'value')) return null;
+    }
+    const values: unknown[] = [];
+    for (let index = 0; index < length; index += 1) {
+      const item = ReadOwnData(value, String(index));
+      if (!item.present) return null;
+      values.push(item.value);
+    }
+    return values;
+  } catch {
+    return null;
+  }
+}
+
+const SnapshotItemKeys = new Set([
+  'selector', 'tag', 'role', 'type', 'name',
+  'rawLabel', 'section', 'fieldName', 'id', 'placeholder', 'ariaLabel', 'ariaLabelledBy',
+  'nearbyTexts', 'precedingLabels', 'followingLabels', 'groupHeading', 'recordIndex',
+  'formExcluded', 'disabled', 'required', 'readOnly', 'autocomplete', 'valueLength',
+  'valid', 'validationMessage', 'checked', 'options', 'href', 'textTruncated',
+]);
+
+function IsStringArray(value: unknown): value is string[] {
+  const values = ReadOwnArrayValues(value);
+  return values !== null && values.every((item) => typeof item === 'string');
+}
+
+function IsSnapshotOption(value: unknown): boolean {
+  if (!IsPlainDataRecord(value, SnapshotOptionKeys)) return false;
+  const label = ReadOwnData(value, 'label');
+  const optionValue = ReadOwnData(value, 'value');
+  const selected = ReadOwnData(value, 'selected');
+  return label.present && typeof label.value === 'string'
+    && optionValue.present && typeof optionValue.value === 'string'
+    && selected.present && typeof selected.value === 'boolean';
+}
+
+function IsSnapshotOptions(value: unknown): boolean {
+  const options = ReadOwnArrayValues(value);
+  return options !== null && options.every((option) => IsSnapshotOption(option));
+}
+
+function CopyOwnDataRecord(value: Record<string, any>): Record<string, any> {
+  const copy = Object.create(null) as Record<string, any>;
+  for (const key of Object.getOwnPropertyNames(value)) {
+    const field = ReadOwnData(value, key);
+    if (field.present) copy[key] = field.value;
+  }
+  return copy;
+}
+
+function NormalizeSnapshotItem(value: Record<string, any>): Record<string, any> {
+  const copy = CopyOwnDataRecord(value);
+  for (const field of ['nearbyTexts', 'precedingLabels', 'followingLabels']) {
+    const array = ReadOwnData(value, field);
+    if (array.present && array.value !== undefined) copy[field] = ReadOwnArrayValues(array.value) ?? [];
+  }
+  const options = ReadOwnData(value, 'options');
+  if (options.present && options.value !== undefined) {
+    copy.options = (ReadOwnArrayValues(options.value) ?? []).map((option) => CopyOwnDataRecord(option as Record<string, any>));
+  }
+  return copy;
+}
+
+function IsSnapshotItem(value: unknown): value is Record<string, any> {
+  if (!IsPlainDataRecord(value, SnapshotItemKeys)) return false;
+  const required = ['selector', 'tag', 'role', 'type', 'name'].map((key) => [key, ReadOwnData(value, key)] as const);
+  if (required.some(([, field]) => !field.present || typeof field.value !== 'string')) return false;
+  const selector = ReadOwnData(value, 'selector');
+  if (!selector.present || typeof selector.value !== 'string' || selector.value.length === 0) return false;
+  const stringFields = ['rawLabel', 'section', 'fieldName', 'id', 'placeholder', 'ariaLabel', 'ariaLabelledBy', 'groupHeading', 'autocomplete', 'validationMessage', 'href'];
+  if (stringFields.some((field) => {
+    const valueField = ReadOwnData(value, field);
+    return valueField.present && valueField.value !== undefined && typeof valueField.value !== 'string';
+  })) return false;
+  const arrayFields = ['nearbyTexts', 'precedingLabels', 'followingLabels'];
+  if (arrayFields.some((field) => {
+    const valueField = ReadOwnData(value, field);
+    return valueField.present && valueField.value !== undefined && !IsStringArray(valueField.value);
+  })) return false;
+  const booleanFields = ['formExcluded', 'disabled', 'required', 'readOnly', 'valid', 'checked', 'textTruncated'];
+  if (booleanFields.some((field) => {
+    const valueField = ReadOwnData(value, field);
+    return valueField.present && valueField.value !== undefined && typeof valueField.value !== 'boolean';
+  })) return false;
+  const recordIndex = ReadOwnData(value, 'recordIndex');
+  if (recordIndex.present && recordIndex.value !== undefined
+    && (!Number.isSafeInteger(recordIndex.value) || (recordIndex.value as number) < 0)) return false;
+  const valueLength = ReadOwnData(value, 'valueLength');
+  if (valueLength.present && valueLength.value !== undefined
+    && (!Number.isSafeInteger(valueLength.value) || (valueLength.value as number) < 0)) return false;
+  const options = ReadOwnData(value, 'options');
+  return !options.present || options.value === undefined || IsSnapshotOptions(options.value);
+}
+
+const TargetInfoKeys = new Set([
+  // Chrome DevTools Protocol Target.TargetInfo fields.
+  'targetId', 'type', 'title', 'url', 'attached', 'canAccessOpener', 'openerId', 'openerFrameId', 'browserContextId', 'subtype',
+  // Extension transport's raw tab identity fields.
+  'tabId', 'windowId', 'openerTabId', 'active',
+  // Fixture/bridge compatibility metadata; it is validated but never used as
+  // the task identity or as a navigation fallback.
+  'readyState',
+]);
+
+function IsTargetInfo(value: unknown, requireTabId = false): value is CdpTargetInfo {
+  if (!IsPlainDataRecord(value, TargetInfoKeys)) return false;
+  const targetId = ReadOwnData(value, 'targetId');
+  if (!targetId.present || typeof targetId.value !== 'string' || targetId.value.length === 0) return false;
+  const stringFields = ['type', 'title', 'url', 'openerId', 'openerFrameId', 'browserContextId', 'subtype', 'readyState'];
+  if (stringFields.some((key) => {
+    const field = ReadOwnData(value, key);
+    return field.present && typeof field.value !== 'string';
+  })) return false;
+  const booleanFields = ['attached', 'active', 'canAccessOpener'];
+  if (booleanFields.some((key) => {
+    const field = ReadOwnData(value, key);
+    return field.present && typeof field.value !== 'boolean';
+  })) return false;
+  const tabId = ReadOwnData(value, 'tabId');
+  const windowId = ReadOwnData(value, 'windowId');
+  const openerTabId = ReadOwnData(value, 'openerTabId');
+  if (requireTabId && (!tabId.present || !Number.isSafeInteger(tabId.value) || (tabId.value as number) < 0
+    || !windowId.present || !Number.isSafeInteger(windowId.value) || (windowId.value as number) < 0
+    || !openerTabId.present || !(openerTabId.value === null
+      || (Number.isSafeInteger(openerTabId.value) && (openerTabId.value as number) >= 0)))) return false;
+  if (!requireTabId && tabId.present && (!Number.isSafeInteger(tabId.value) || (tabId.value as number) < 0)) return false;
+  if (!requireTabId && windowId.present && (!Number.isSafeInteger(windowId.value) || (windowId.value as number) < 0)) return false;
+  if (!requireTabId && openerTabId.present && !(openerTabId.value === null
+    || (Number.isSafeInteger(openerTabId.value) && (openerTabId.value as number) >= 0))) return false;
+  return true;
+}
+
+function NormalizeTargetInfo(value: CdpTargetInfo): CdpTargetInfo {
+  const copy = Object.create(null) as CdpTargetInfo & Record<string, unknown>;
+  for (const key of Object.getOwnPropertyNames(value)) {
+    const field = ReadOwnData(value, key);
+    if (field.present) copy[key] = field.value;
+  }
+  return copy;
+}
+
 const SnapshotExpression = `(() => {
   const normalizedText = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
   const normalize = (value, limit = 180) => normalizedText(value).slice(0, limit);
+  // 表单检查器会把固定结构的字段特征包临时写入 aria-label。仅对此内部标记保留完整内容，
+  // 普通页面文本仍按原上限裁剪，避免扩大 Snapshot 输出。
+  const accessibleName = (value) => {
+    const text = normalizedText(value);
+    return text.startsWith('__avery_field__') ? text.slice(0, 4096) : text.slice(0, 180);
+  };
   const visible = (element) => {
     const style = getComputedStyle(element);
     const rect = element.getBoundingClientRect();
@@ -172,7 +410,7 @@ const SnapshotExpression = `(() => {
     const labelledText = labelledBy ? labelledBy.split(/\\s+/).map((id) => document.getElementById(id)?.textContent || '').join(' ') : '';
     const explicitLabel = element.id ? document.querySelector('label[for="' + CSS.escape(element.id) + '"]')?.textContent : '';
     const fileInputSurface = fileInputSurfaceOf(element);
-    return bossChatNameOf(element) || normalize(element.getAttribute('aria-label') || labelledText || explicitLabel || element.closest('label')?.textContent
+    return bossChatNameOf(element) || accessibleName(element.getAttribute('aria-label') || labelledText || explicitLabel || element.closest('label')?.textContent
       || element.getAttribute('placeholder') || element.getAttribute('alt') || element.getAttribute('title')
       || fileInputSurface?.innerText || fileInputSurface?.textContent || element.textContent);
   };
@@ -248,14 +486,15 @@ const SnapshotExpression = `(() => {
     }
     const parts = [];
     let current = element;
-    for (let depth = 0; current && current !== document.documentElement && depth < 10; depth += 1) {
+    while (current && current !== document.documentElement) {
       const tag = current.tagName.toLowerCase();
       const siblings = current.parentElement ? [...current.parentElement.children].filter((child) => child.tagName === current.tagName) : [];
       const index = Math.max(1, siblings.indexOf(current) + 1);
       parts.unshift(tag + ':nth-of-type(' + index + ')');
       current = current.parentElement;
     }
-    return parts.join(' > ');
+    // 北森表单嵌套超过十层且各区块结构相似；局部路径会命中其他字段，必须锚定文档根。
+    return current === document.documentElement ? ['html', ...parts].join(' > ') : '';
   };
   const standardCandidates = [...document.querySelectorAll('a[href],button,input,textarea,select,[role],[contenteditable="true"]')];
   const bossPhraseCandidates = bossChatPage ? [...document.querySelectorAll(${JSON.stringify(`${BossChatPhrasePanelSelector} *`)})]
@@ -291,7 +530,7 @@ const SnapshotExpression = `(() => {
     if (element instanceof HTMLAnchorElement && element.href) {
       try {
         const url = new URL(element.href, location.href);
-        if (url.hostname === 'zhipin.com' || url.hostname.endsWith('.zhipin.com')) href = url.href.slice(0, 2000);
+        if (url.protocol === 'http:' || url.protocol === 'https:') href = url.href.slice(0, 2000);
       } catch {}
     }
     const context = contextOf(element);
@@ -310,7 +549,7 @@ const SnapshotExpression = `(() => {
       fieldName: normalize(element.getAttribute('name'), 180),
       id: normalize(element.id, 180),
       placeholder: normalize(element.getAttribute('placeholder'), 180),
-      ariaLabel: normalize(element.getAttribute('aria-label'), 180),
+      ariaLabel: accessibleName(element.getAttribute('aria-label')),
       ariaLabelledBy: normalize(element.getAttribute('aria-labelledby'), 180),
       nearbyTexts: context.nearbyTexts,
       precedingLabels: context.precedingLabels,
@@ -333,10 +572,11 @@ const SnapshotExpression = `(() => {
     });
   }
   return {
-    url: location.href,
-    title: normalize(document.title, 300),
+    // A ready document is a valid read-only snapshot even when it has no
+    // interactive controls.  Keep readiness in the semantic result so the
+    // transport can distinguish that state from a page that is still loading.
+    readyState: document.readyState,
     items,
-    truncated: items.length === ${MaxSnapshotElements},
   };
 })()`;
 
@@ -354,6 +594,8 @@ const ReadExpression = `(() => {
 export class PersonalBrowserCdpRuntime implements PersonalBrowserRuntimePort {
   private readonly endpoint: string;
   private readonly preferredAnchorUrl?: string;
+  private readonly browserTaskId?: string;
+  private readonly taskScoped: boolean;
   private readonly now: () => number;
   private readonly delay: NonNullable<PersonalBrowserCdpRuntimeOptions['delay']>;
   private readonly webSocketFactory: NonNullable<PersonalBrowserCdpRuntimeOptions['webSocketFactory']>;
@@ -363,12 +605,15 @@ export class PersonalBrowserCdpRuntime implements PersonalBrowserRuntimePort {
   private anchorUrl: string | null = null;
   private taskTargetId: string | null = null;
   private taskSessionId: string | null = null;
+  private taskTabs = new Map<string, CdpTargetInfo>();
   private refs = new Map<string, ElementFingerprint>();
   private closing = false;
 
   constructor(options: PersonalBrowserCdpRuntimeOptions) {
     this.endpoint = options.endpoint;
     this.preferredAnchorUrl = options.anchorUrl;
+    this.browserTaskId = options.browserTaskId;
+    this.taskScoped = Boolean(options.browserTaskId);
     this.now = options.now ?? Date.now;
     this.delay = options.delay ?? ((milliseconds, signal) => Delay(milliseconds, undefined, signal ? { signal } : undefined));
     this.webSocketFactory = options.webSocketFactory ?? ((url) => {
@@ -392,6 +637,8 @@ export class PersonalBrowserCdpRuntime implements PersonalBrowserRuntimePort {
 
   IsConnected(): boolean { return this.socket?.readyState === SocketOpen; }
 
+  GetBrowserTaskId(): string | undefined { return this.browserTaskId; }
+
   async Connect(options: PersonalBrowserCommandOptions = {}): Promise<{ anchorUrl: string }> {
     if (this.IsConnected() && this.anchorUrl) return { anchorUrl: this.anchorUrl };
     if (!this.IsConnected()) await this.OpenSocket(options);
@@ -399,42 +646,61 @@ export class PersonalBrowserCdpRuntime implements PersonalBrowserRuntimePort {
     const preferred = this.preferredAnchorUrl
       ? targets.find((target) => target.type === 'page' && target.url === this.preferredAnchorUrl)
       : undefined;
-    const anchor = preferred ?? targets.find((target) => target.type === 'page' && IsBossUrl(target.url));
-    if (!anchor || !IsBossUrl(anchor.url)) {
-      throw new PersonalBrowserCdpError('BROWSER_BOSS_TAB_REQUIRED', 'The browser is connected, but no open BOSS tab was found. Open and sign in to zhipin.com, then try again.');
-    }
-    this.anchorUrl = anchor.url;
-    return { anchorUrl: anchor.url };
+    const anchor = preferred ?? targets.find((target) => target.type === 'page' && IsTaskWebUrl(target.url));
+    this.anchorUrl = anchor && IsTaskWebUrl(anchor.url) ? anchor.url : null;
+    return { anchorUrl: this.anchorUrl ?? '' };
   }
 
   private async OpenSocket(options: PersonalBrowserCommandOptions): Promise<void> {
     if (options.signal?.aborted) throw new PersonalBrowserCdpError('CANCELLED', 'Browser connection was cancelled.');
     this.closing = false;
-    const timeoutMs = this.Timeout(options);
+    const effectiveOptions = this.EffectiveOptions(options);
+    if (this.now() >= (effectiveOptions.deadline ?? Number.POSITIVE_INFINITY)) {
+      throw new PersonalBrowserCdpError('BROWSER_COMMAND_TIMEOUT', 'The personal-browser connection deadline has expired.');
+    }
+    const connectionController = new AbortController();
+    const connectionSignal = effectiveOptions.signal
+      ? AbortSignal.any([effectiveOptions.signal, connectionController.signal])
+      : connectionController.signal;
+    const connectionOptions = { ...effectiveOptions, signal: connectionSignal };
+    const timeoutMs = this.Timeout(effectiveOptions);
     await new Promise<void>((resolveConnection, rejectConnection) => {
       let settled = false;
+      let timedOut = false;
       let socket: BrowserSocket;
-      try { socket = this.webSocketFactory(this.endpoint); }
+      try { socket = this.webSocketFactory(this.endpoint, connectionOptions); }
       catch (error) { rejectConnection(error); return; }
       this.socket = socket;
       const Finish = (error?: Error) => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
-        options.signal?.removeEventListener('abort', Abort);
+        connectionSignal.removeEventListener('abort', Abort);
         if (error) rejectConnection(error); else resolveConnection();
       };
       const Abort = () => {
+        if (timedOut) return;
         try { socket.close(); } catch {}
         Finish(new PersonalBrowserCdpError('CANCELLED', 'Browser connection was cancelled.'));
       };
       const timer = setTimeout(() => {
+        timedOut = true;
+        connectionController.abort();
         try { socket.close(); } catch {}
         Finish(new PersonalBrowserCdpError('BROWSER_COMMAND_TIMEOUT', 'The selected browser did not authorize the debugging connection in time.'));
       }, timeoutMs);
-      options.signal?.addEventListener('abort', Abort, { once: true });
+      connectionSignal.addEventListener('abort', Abort, { once: true });
       socket.addEventListener('open', () => Finish(), { once: true });
-      socket.addEventListener('error', () => Finish(new PersonalBrowserCdpError('BROWSER_COMMAND_FAILED', 'The selected browser rejected the debugging connection.')), { once: true });
+      socket.addEventListener('error', (event) => {
+        const cause = event?.error;
+        Finish(cause instanceof PersonalBrowserCdpError
+          ? cause
+          : new PersonalBrowserCdpError(
+            typeof cause?.code === 'string' ? cause.code : 'BROWSER_COMMAND_FAILED',
+            cause instanceof Error ? cause.message : 'The selected browser rejected the Avery extension connection.',
+            cause?.statusUnknown === true,
+          ));
+      }, { once: true });
       socket.addEventListener('message', (event) => this.OnMessage(event));
       socket.addEventListener('close', (event) => this.OnClose(event));
     });
@@ -444,16 +710,60 @@ export class PersonalBrowserCdpRuntime implements PersonalBrowserRuntimePort {
     let message: any;
     try { message = JSON.parse(String(event.data ?? '')); }
     catch { return; }
-    if (!Number.isSafeInteger(message?.id)) return;
-    const pending = this.pending.get(message.id);
-    if (!pending) return;
-    this.pending.delete(message.id);
-    clearTimeout(pending.timer);
-    if (pending.abort) pending.abort();
-    if (message.error) {
-      pending.reject(new PersonalBrowserCdpError('BROWSER_COMMAND_FAILED', `${pending.method}: ${String(message.error.message ?? 'CDP command failed.').slice(0, 400)}`, pending.sideEffect));
+    const idField = ReadOwnData(message, 'id');
+    const hasOwnId = IsPlainRecord(message) && idField.present;
+    const responseId = hasOwnId && Number.isSafeInteger(idField.value) ? idField.value as number : null;
+    const candidatePending = responseId === null ? undefined : this.pending.get(responseId);
+    const RejectInvalid = (reason: string) => {
+      if (!candidatePending || responseId === null) return;
+      this.pending.delete(responseId);
+      clearTimeout(candidatePending.timer);
+      candidatePending.abort?.();
+      candidatePending.reject(new PersonalBrowserCdpError('BROWSER_OUTPUT_INVALID', reason, candidatePending.sideEffect));
+    };
+    const resultField = ReadOwnData(message, 'result');
+    const errorField = ReadOwnData(message, 'error');
+    const hasResult = IsPlainRecord(message) && resultField.present;
+    const hasError = IsPlainRecord(message) && errorField.present;
+    const validError = !hasError || (IsPlainDataRecord(errorField.value, CdpErrorKeys)
+      && (() => {
+        const code = ReadOwnData(errorField.value, 'code');
+        const errorMessage = ReadOwnData(errorField.value, 'message');
+        const statusUnknown = ReadOwnData(errorField.value, 'statusUnknown');
+        return (!code.present || typeof code.value === 'string' || Number.isSafeInteger(code.value))
+          && (!errorMessage.present || typeof errorMessage.value === 'string')
+          && (!statusUnknown.present || typeof statusUnknown.value === 'boolean');
+      })());
+    const validEnvelope = IsPlainDataRecord(message, CdpResponseKeys)
+      && hasOwnId
+      && hasResult !== hasError
+      && (!hasResult || IsPlainRecord(resultField.value))
+      && validError;
+    if (!validEnvelope) {
+      RejectInvalid('The CDP response envelope contains unknown or invalid fields.');
+      return;
+    }
+    if (responseId === null) return;
+    const resolvedPending = this.pending.get(responseId);
+    if (!resolvedPending) return;
+    this.pending.delete(responseId);
+    clearTimeout(resolvedPending.timer);
+    if (resolvedPending.abort) resolvedPending.abort();
+    const pending = resolvedPending;
+    if (hasError) {
+      const error = (errorField.present ? errorField.value : {}) as Record<string, any>;
+      const errorCode = ReadOwnData(error, 'code');
+      const errorMessage = ReadOwnData(error, 'message');
+      const statusUnknown = ReadOwnData(error, 'statusUnknown');
+      const codeValue = errorCode.present ? errorCode.value : undefined;
+      const messageValue = errorMessage.present ? errorMessage.value : undefined;
+      const statusUnknownValue = statusUnknown.present ? statusUnknown.value : undefined;
+      const code = typeof codeValue === 'string' && /^(BROWSER_|CANCELLED$)/.test(codeValue)
+        ? codeValue
+        : 'BROWSER_COMMAND_FAILED';
+      pending.reject(new PersonalBrowserCdpError(code, `${pending.method}: ${String(messageValue ?? 'CDP command failed.').slice(0, 400)}`, statusUnknownValue === true || pending.sideEffect));
     } else {
-      pending.resolve(message.result && typeof message.result === 'object' ? message.result : {});
+      pending.resolve(resultField.present && resultField.value && typeof resultField.value === 'object' ? resultField.value as Record<string, any> : {});
     }
   }
 
@@ -478,6 +788,13 @@ export class PersonalBrowserCdpRuntime implements PersonalBrowserRuntimePort {
     return Math.max(1, Math.min(DefaultTimeoutMs, (options.deadline ?? this.now() + DefaultTimeoutMs) - this.now()));
   }
 
+  /** 每条 CDP 消息都必须把 Runtime 的本地最早截止时间传到实际传输层。 */
+  private EffectiveOptions(options: PersonalBrowserCommandOptions): PersonalBrowserCommandOptions {
+    const localDeadline = this.now() + DefaultTimeoutMs;
+    const deadline = Math.min(options.deadline ?? localDeadline, localDeadline);
+    return { ...options, deadline };
+  }
+
   private async Pause(milliseconds: number, options: PersonalBrowserCommandOptions, statusUnknown = false): Promise<void> {
     try { await this.delay(milliseconds, options.signal); }
     catch {
@@ -487,37 +804,53 @@ export class PersonalBrowserCdpRuntime implements PersonalBrowserRuntimePort {
   }
 
   private Send(method: string, params: Record<string, unknown>, sessionId: string | undefined, options: PersonalBrowserCommandOptions, sideEffect = false): Promise<Record<string, any>> {
+    const effectiveOptions = this.EffectiveOptions(options);
     if (!AllowedMethods.has(method)) throw new PersonalBrowserCdpError('BROWSER_COMMAND_NOT_ALLOWED', `CDP method ${method} is not allowed.`);
-    if (PageMethods.has(method) && !sessionId) throw new PersonalBrowserCdpError('BROWSER_COMMAND_NOT_ALLOWED', `${method} requires the bound BOSS task target.`);
+    if (PageMethods.has(method) && !sessionId) throw new PersonalBrowserCdpError('BROWSER_COMMAND_NOT_ALLOWED', `${method} requires the bound Avery task target.`);
     if (!this.socket || this.socket.readyState !== SocketOpen) throw new PersonalBrowserCdpError('BROWSER_COMMAND_FAILED', 'The personal-browser CDP connection is not open.', sideEffect);
-    if (options.signal?.aborted) throw new PersonalBrowserCdpError('CANCELLED', 'Browser command was cancelled.', sideEffect);
+    if (effectiveOptions.signal?.aborted) throw new PersonalBrowserCdpError('CANCELLED', 'Browser command was cancelled.', sideEffect);
+    if (this.now() >= (effectiveOptions.deadline ?? Number.POSITIVE_INFINITY)) {
+      throw new PersonalBrowserCdpError('BROWSER_COMMAND_TIMEOUT', 'Browser command expired before it was sent.', false);
+    }
+    const commandController = new AbortController();
+    const transportSignal = effectiveOptions.signal
+      ? AbortSignal.any([effectiveOptions.signal, commandController.signal])
+      : commandController.signal;
+    const transportOptions = { ...effectiveOptions, signal: transportSignal };
     const id = ++this.nextId;
     return new Promise((resolveCommand, rejectCommand) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
-        options.signal?.removeEventListener('abort', Abort);
+        commandController.abort();
+        effectiveOptions.signal?.removeEventListener('abort', Abort);
         rejectCommand(new PersonalBrowserCdpError('BROWSER_COMMAND_TIMEOUT', `${method} timed out.`, sideEffect));
-      }, this.Timeout(options));
+      }, this.Timeout(effectiveOptions));
       const Abort = () => {
         this.pending.delete(id);
         clearTimeout(timer);
         rejectCommand(new PersonalBrowserCdpError('CANCELLED', 'Browser command was cancelled.', sideEffect));
       };
-      options.signal?.addEventListener('abort', Abort, { once: true });
+      effectiveOptions.signal?.addEventListener('abort', Abort, { once: true });
       this.pending.set(id, {
         method,
         sideEffect,
         resolve: resolveCommand,
         reject: rejectCommand,
         timer,
-        abort: options.signal ? () => options.signal?.removeEventListener('abort', Abort) : undefined,
+        abort: () => {
+          commandController.abort();
+          effectiveOptions.signal?.removeEventListener('abort', Abort);
+        },
       });
       try {
-        this.socket!.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
+        // BrowserExtensionSocket 将这两个选项继续传给 Bridge；不能让 Runtime
+        // 的取消/截止时间在 WebSocket 边界丢失，导致 Host 已返回后扩展仍执行命令。
+        this.socket!.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }), transportOptions);
       } catch {
         this.pending.delete(id);
         clearTimeout(timer);
-        options.signal?.removeEventListener('abort', Abort);
+        commandController.abort();
+        effectiveOptions.signal?.removeEventListener('abort', Abort);
         rejectCommand(new PersonalBrowserCdpError('BROWSER_COMMAND_FAILED', `${method} could not be sent.`, sideEffect));
       }
     });
@@ -525,11 +858,70 @@ export class PersonalBrowserCdpRuntime implements PersonalBrowserRuntimePort {
 
   private async GetTargets(options: PersonalBrowserCommandOptions): Promise<CdpTargetInfo[]> {
     const result = await this.Send('Target.getTargets', {}, undefined, options);
-    return Array.isArray(result.targetInfos) ? result.targetInfos.filter((target: any) => target && typeof target.targetId === 'string') : [];
+    if (!IsPlainDataRecord(result, TargetGetTargetsResultKeys)) {
+      throw new PersonalBrowserCdpError('BROWSER_OUTPUT_INVALID', 'The browser target list response contains unknown or invalid fields.');
+    }
+    const targetInfos = ReadOwnData(result, 'targetInfos');
+    const targetValues = ReadOwnArrayValues(targetInfos.present ? targetInfos.value : undefined);
+    if (targetValues === null) {
+      throw new PersonalBrowserCdpError('BROWSER_OUTPUT_INVALID', 'The browser target list is invalid.');
+    }
+    // 扩展任务的 target identity 必须始终来自 Chrome tabs 原始字段。
+    // 不再根据 targetId 形状猜测是否需要 raw 字段；猜测会让缺失
+    // windowId/tabId 的恶意或损坏响应绕过 task-scoped 边界。
+    const requireRawTabId = this.taskScoped;
+    if (targetValues.some((target) => !IsTargetInfo(target, requireRawTabId))) {
+      throw new PersonalBrowserCdpError('BROWSER_OUTPUT_INVALID', 'The browser target list contains an invalid raw target identity.');
+    }
+    const targets = targetValues.map((target) => NormalizeTargetInfo(target as CdpTargetInfo));
+    if (this.taskScoped) this.taskTabs = new Map(targets.map((target) => [target.targetId, target]));
+    return targets;
   }
 
   private async EnsureTaskTarget(initialUrl: string | undefined, options: PersonalBrowserCommandOptions): Promise<void> {
     if (!this.IsConnected()) await this.Connect(options);
+    if (this.taskScoped) {
+      // 扩展 worker 只返回本 browserTaskId 的 targets；重连后刷新列表即可恢复
+      // parent/child 页面，而不会从浏览器全局 active tab 猜测身份。
+      const targets = await this.GetTargets(options);
+      if (this.taskTargetId) {
+        const current = targets.find((target) => target.targetId === this.taskTargetId);
+        if (current) {
+          try {
+            await this.AssertTaskTarget(options);
+            if (this.taskSessionId) return;
+            const attached = await this.Send('Target.attachToTarget', { targetId: current.targetId, flatten: true }, undefined, options);
+            if (typeof attached.sessionId === 'string' && attached.sessionId) {
+              this.taskSessionId = attached.sessionId;
+              await this.Send('Target.activateTarget', { targetId: current.targetId }, undefined, options);
+              return;
+            }
+          } catch (error) {
+            if (error instanceof PersonalBrowserCdpError && error.code === 'CANCELLED') throw error;
+          }
+        }
+        this.taskTargetId = null;
+        this.taskSessionId = null;
+      }
+      const candidate = targets.find((target) => target.active === true)
+        ?? targets.find((target) => target.type === 'page' && IsTaskWebUrl(target.url));
+      if (candidate) {
+        this.taskTargetId = candidate.targetId;
+        this.taskSessionId = null;
+        try {
+          await this.AssertTaskTarget(options);
+          const attached = await this.Send('Target.attachToTarget', { targetId: candidate.targetId, flatten: true }, undefined, options);
+          if (typeof attached.sessionId !== 'string' || !attached.sessionId) throw new PersonalBrowserCdpError('BROWSER_START_FAILED', 'The selected browser did not attach the Avery task tab.');
+          this.taskSessionId = attached.sessionId;
+          await this.Send('Target.activateTarget', { targetId: candidate.targetId }, undefined, options);
+          return;
+        } catch (error) {
+          if (error instanceof PersonalBrowserCdpError && error.code === 'CANCELLED') throw error;
+          this.taskTargetId = null;
+          this.taskSessionId = null;
+        }
+      }
+    }
     if (this.taskTargetId && this.taskSessionId) {
       try {
         await this.AssertTaskTarget(options);
@@ -557,59 +949,74 @@ export class PersonalBrowserCdpRuntime implements PersonalBrowserRuntimePort {
       this.taskSessionId = null;
     }
     const destination = initialUrl ?? this.anchorUrl;
-    if (!IsBossUrl(destination)) throw new PersonalBrowserCdpError('BROWSER_NAVIGATION_DENIED', 'A BOSS task tab can only be created from an allowed zhipin.com URL.');
+    if (!IsTaskWebUrl(destination)) throw new PersonalBrowserCdpError('BROWSER_NAVIGATION_DENIED', 'An Avery task tab can only be created from an http/https URL without embedded credentials.');
     const created = await this.Send('Target.createTarget', { url: destination }, undefined, options);
-    if (typeof created.targetId !== 'string' || !created.targetId) throw new PersonalBrowserCdpError('BROWSER_START_FAILED', 'The selected browser did not create the BOSS task tab.');
+    if (typeof created.targetId !== 'string' || !created.targetId) throw new PersonalBrowserCdpError('BROWSER_START_FAILED', 'The selected browser did not create the Avery task tab.');
     const attached = await this.Send('Target.attachToTarget', { targetId: created.targetId, flatten: true }, undefined, options);
-    if (typeof attached.sessionId !== 'string' || !attached.sessionId) throw new PersonalBrowserCdpError('BROWSER_START_FAILED', 'The selected browser did not attach the BOSS task tab.');
+    if (typeof attached.sessionId !== 'string' || !attached.sessionId) throw new PersonalBrowserCdpError('BROWSER_START_FAILED', 'The selected browser did not attach the Avery task tab.');
     this.taskTargetId = created.targetId;
     this.taskSessionId = attached.sessionId;
     await this.Send('Target.activateTarget', { targetId: created.targetId }, undefined, options);
-    await this.WaitForBossTarget(options);
-    await this.WaitForBossDocument(options);
+    await this.WaitForTaskTarget(options);
+    await this.WaitForTaskDocument(options);
   }
 
   private async TargetInfo(options: PersonalBrowserCommandOptions): Promise<CdpTargetInfo> {
-    if (!this.taskTargetId) throw new PersonalBrowserCdpError('BROWSER_START_FAILED', 'The BOSS task target is unavailable.');
+    if (!this.taskTargetId) throw new PersonalBrowserCdpError('BROWSER_START_FAILED', 'The Avery task target is unavailable.');
     let result: Record<string, any>;
     try { result = await this.Send('Target.getTargetInfo', { targetId: this.taskTargetId }, undefined, options); }
     catch (error) {
-      if (error instanceof PersonalBrowserCdpError && error.code === 'BROWSER_COMMAND_FAILED') {
-        throw new PersonalBrowserCdpError('BROWSER_TAB_NOT_FOUND', 'The BOSS task tab is no longer available.');
+      if (error instanceof PersonalBrowserCdpError && ['BROWSER_COMMAND_FAILED', 'BROWSER_TAB_NOT_FOUND'].includes(error.code)) {
+        throw new PersonalBrowserCdpError('BROWSER_TAB_NOT_FOUND', 'The Avery task tab is no longer available.');
       }
       throw error;
     }
-    const info = result.targetInfo as CdpTargetInfo | undefined;
-    if (!info || typeof info.targetId !== 'string') throw new PersonalBrowserCdpError('BROWSER_TAB_NOT_FOUND', 'The BOSS task tab is no longer available.');
-    return info;
+    if (!IsPlainDataRecord(result, TargetInfoResultKeys)) {
+      throw new PersonalBrowserCdpError('BROWSER_OUTPUT_INVALID', 'The browser target info response contains unknown or invalid fields.');
+    }
+    const targetInfo = ReadOwnData(result, 'targetInfo');
+    const info = targetInfo.present ? targetInfo.value as CdpTargetInfo : undefined;
+    if (!IsTargetInfo(info, this.taskScoped && Boolean(this.taskTargetId))) throw new PersonalBrowserCdpError('BROWSER_TAB_NOT_FOUND', 'The Avery task tab is no longer available.');
+    return NormalizeTargetInfo(info);
+  }
+
+  private TabData(target: CdpTargetInfo, active = target.active === true): Record<string, unknown> {
+    return {
+      ...(Number.isSafeInteger(target.tabId) ? { tabId: target.tabId } : {}),
+      targetId: target.targetId,
+      ...(Number.isSafeInteger(target.windowId) ? { windowId: target.windowId } : {}),
+      ...(target.openerTabId === null || Number.isSafeInteger(target.openerTabId) ? { openerTabId: target.openerTabId ?? null } : {}),
+      ...(typeof target.url === 'string' ? { url: target.url } : {}),
+      active,
+    };
   }
 
   private async AssertTaskTarget(options: PersonalBrowserCommandOptions): Promise<CdpTargetInfo> {
     const info = await this.TargetInfo(options);
-    if (!IsBossUrl(info.url)) {
-      throw new PersonalBrowserCdpError('BROWSER_NAVIGATION_DENIED', 'The personal-browser task tab left zhipin.com. Avery stopped before reading or interacting with it.');
+    if (!IsTaskWebUrl(info.url)) {
+      throw new PersonalBrowserCdpError('BROWSER_NAVIGATION_DENIED', 'The personal-browser task tab left the allowed http/https boundary. Avery stopped before reading or interacting with it.');
     }
     return info;
   }
 
-  private async WaitForBossTarget(options: PersonalBrowserCommandOptions): Promise<CdpTargetInfo> {
+  private async WaitForTaskTarget(options: PersonalBrowserCommandOptions): Promise<CdpTargetInfo> {
     let latest: CdpTargetInfo | undefined;
     for (let attempt = 0; attempt < 40; attempt += 1) {
       latest = await this.TargetInfo(options);
-      if (IsBossUrl(latest.url)) return latest;
+      if (IsTaskWebUrl(latest.url)) return latest;
       await this.Pause(100, options, true);
     }
-    throw new PersonalBrowserCdpError('BROWSER_NAVIGATION_DENIED', `The task tab did not reach an allowed BOSS URL${latest?.url ? ` (${latest.url})` : ''}.`);
+    throw new PersonalBrowserCdpError('BROWSER_NAVIGATION_DENIED', `The task tab did not reach an allowed http/https URL${latest?.url ? ` (${latest.url})` : ''}.`);
   }
 
   /** target URL 可能早于渲染文档提交更新；固定轮询真实 location，避免在 about:blank 上读取。 */
-  private async WaitForBossDocument(options: PersonalBrowserCommandOptions, previousUrl?: string): Promise<{ url: string; readyState: string }> {
+  private async WaitForTaskDocument(options: PersonalBrowserCommandOptions, previousUrl?: string): Promise<{ url: string; readyState: string }> {
     const end = Math.min(options.deadline ?? this.now() + 15_000, this.now() + 15_000);
     let lastError: unknown;
     while (this.now() < end) {
       try {
         const value = this.Value(await this.Evaluate(`(() => ({ url: location.href, readyState: document.readyState }))()`, options));
-        if (value && IsBossUrl(value.url) && value.readyState !== 'loading' && (!previousUrl || value.url !== previousUrl)) {
+        if (value && IsTaskWebUrl(value.url) && value.readyState !== 'loading' && (!previousUrl || value.url !== previousUrl)) {
           return { url: value.url, readyState: String(value.readyState) };
         }
       } catch (error) {
@@ -619,36 +1026,123 @@ export class PersonalBrowserCdpRuntime implements PersonalBrowserRuntimePort {
       await this.Pause(100, options, true);
     }
     if (lastError instanceof PersonalBrowserCdpError && lastError.code === 'BROWSER_NAVIGATION_DENIED') throw lastError;
-    throw new PersonalBrowserCdpError('BROWSER_COMMAND_TIMEOUT', 'The BOSS task document did not become ready in time.', true);
+    throw new PersonalBrowserCdpError('BROWSER_COMMAND_TIMEOUT', 'The Avery task document did not become ready in time.', true);
   }
 
-  private async Evaluate(expression: string, options: PersonalBrowserCommandOptions, returnByValue = true, sideEffect = false): Promise<Record<string, any>> {
+  private async Evaluate(expression: string, options: PersonalBrowserCommandOptions, returnByValue = true, sideEffect = false, awaitPromise = false): Promise<Record<string, any>> {
     await this.AssertTaskTarget(options);
-    return this.Send('Runtime.evaluate', { expression, returnByValue }, this.taskSessionId ?? undefined, options, sideEffect);
+    return this.Send('Runtime.evaluate', {
+      expression,
+      returnByValue,
+      ...(awaitPromise ? { awaitPromise: true } : {}),
+    }, this.taskSessionId ?? undefined, options, sideEffect);
   }
 
   private Value(result: Record<string, any>): any {
-    if (result.exceptionDetails) throw new PersonalBrowserCdpError('BROWSER_COMMAND_FAILED', 'The fixed browser expression failed.');
-    return result.result?.value;
+    if (!IsPlainDataRecord(result, RuntimeEvaluateResultKeys)) {
+      throw new PersonalBrowserCdpError('BROWSER_OUTPUT_INVALID', 'Runtime.evaluate returned an unknown or invalid response envelope.');
+    }
+    const exceptionDetails = ReadOwnData(result, 'exceptionDetails');
+    if (exceptionDetails.present && exceptionDetails.value) throw new PersonalBrowserCdpError('BROWSER_COMMAND_FAILED', 'The fixed browser expression failed.');
+    const remoteField = ReadOwnData(result, 'result');
+    const remote = remoteField.present ? remoteField.value : undefined;
+    const remoteType = ReadOwnData(remote, 'type');
+    if (!remoteField.present || !IsPlainDataRecord(remote, RemoteObjectKeys)
+      || !remoteType.present
+      || typeof remoteType.value !== 'string') {
+      throw new PersonalBrowserCdpError('BROWSER_OUTPUT_INVALID', 'Runtime.evaluate returned an unknown or invalid remote object.');
+    }
+    const remoteValue = ReadOwnData(remote, 'value');
+    return remoteValue.present ? remoteValue.value : undefined;
+  }
+
+  private SnapshotValue(result: Record<string, any>): Record<string, any> {
+    if (!IsPlainDataRecord(result, RuntimeEvaluateResultKeys)) {
+      throw new PersonalBrowserCdpError('BROWSER_OUTPUT_INVALID', 'Runtime.evaluate returned an invalid response for the browser semantic snapshot.');
+    }
+    const exceptionDetails = ReadOwnData(result, 'exceptionDetails');
+    if (exceptionDetails.present && exceptionDetails.value !== undefined && exceptionDetails.value !== null) {
+      throw new PersonalBrowserCdpError('BROWSER_COMMAND_FAILED', 'Runtime.evaluate returned exceptionDetails for the browser semantic snapshot.');
+    }
+    const remoteField = ReadOwnData(result, 'result');
+    const remote = remoteField.present ? remoteField.value : undefined;
+    const remoteType = ReadOwnData(remote, 'type');
+    const remoteValue = ReadOwnData(remote, 'value');
+    if (!remoteField.present || !IsPlainDataRecord(remote, RemoteObjectKeys)
+      || !remoteType.present || remoteType.value !== 'object' || !remoteValue.present) {
+      throw new PersonalBrowserCdpError('BROWSER_OUTPUT_INVALID', 'Runtime.evaluate did not return a value for the browser semantic snapshot.');
+    }
+    if (!IsPlainDataRecord(remoteValue.value, SnapshotResultKeys)) {
+      throw new PersonalBrowserCdpError('BROWSER_OUTPUT_INVALID', 'Runtime.evaluate returned a non-object value for the browser semantic snapshot.');
+    }
+    const value = remoteValue.value as Record<string, any>;
+    const readyState = ReadOwnData(value, 'readyState');
+    const items = ReadOwnData(value, 'items');
+    if (!readyState.present || typeof readyState.value !== 'string' || !SnapshotReadyStates.has(readyState.value)) {
+      throw new PersonalBrowserCdpError('BROWSER_OUTPUT_INVALID', 'The browser semantic snapshot has an invalid readyState.');
+    }
+    const itemValues = ReadOwnArrayValues(items.present ? items.value : undefined);
+    if (itemValues === null || itemValues.some((item: unknown) => !IsSnapshotItem(item))) {
+      throw new PersonalBrowserCdpError('BROWSER_OUTPUT_INVALID', 'The browser semantic snapshot has invalid items.');
+    }
+    if (itemValues.length > MaxSnapshotElements) {
+      throw new PersonalBrowserCdpError('BROWSER_OUTPUT_INVALID', 'The browser semantic snapshot contains too many items.');
+    }
+    const url = ReadOwnData(value, 'url');
+    if (url.present && url.value !== undefined && !IsTaskWebUrl(url.value)) {
+      throw new PersonalBrowserCdpError('BROWSER_OUTPUT_INVALID', 'The browser semantic snapshot has an invalid URL.');
+    }
+    const title = ReadOwnData(value, 'title');
+    if (title.present && title.value !== undefined && typeof title.value !== 'string') {
+      throw new PersonalBrowserCdpError('BROWSER_OUTPUT_INVALID', 'The browser semantic snapshot has an invalid title.');
+    }
+    const truncated = ReadOwnData(value, 'truncated');
+    if (truncated.present && truncated.value !== undefined && typeof truncated.value !== 'boolean') {
+      throw new PersonalBrowserCdpError('BROWSER_OUTPUT_INVALID', 'The browser semantic snapshot has an invalid truncated flag.');
+    }
+    // 返回全新的 data-only 对象，后续 Snapshot 格式化不能再看到传输层
+    // 注入的 getter 或原型字段。
+    const normalized = Object.create(null) as Record<string, any>;
+    normalized.readyState = readyState.value;
+    normalized.items = itemValues.map((item) => NormalizeSnapshotItem(item as Record<string, any>));
+    if (url.present && url.value !== undefined) normalized.url = url.value;
+    if (title.present && title.value !== undefined) normalized.title = title.value;
+    if (truncated.present && truncated.value !== undefined) normalized.truncated = truncated.value;
+    return normalized;
   }
 
   private async Snapshot(options: PersonalBrowserCommandOptions): Promise<Record<string, any>> {
     const end = Math.min(options.deadline ?? this.now() + 10_000, this.now() + 10_000);
+    // 未提供调用方 deadline 时也必须把同一个十秒边界传给每条 Runtime.evaluate，
+    // 否则单条传输默认 60 秒超时会把 loading 轮询变成无界等待。
+    const snapshotOptions = { ...options, deadline: end };
     let value: any;
-    while (this.now() < end) {
-      value = this.Value(await this.Evaluate(SnapshotExpression, options));
-      if (!value || !IsBossUrl(value.url) || !Array.isArray(value.items)) {
-        throw new PersonalBrowserCdpError('BROWSER_OUTPUT_INVALID', 'The BOSS semantic snapshot is invalid.');
-      }
-      if (value.items.length > 0) break;
-      await this.Pause(100, options);
+    for (let attempt = 0; attempt < 100 && this.now() < end; attempt += 1) {
+      value = this.SnapshotValue(await this.Evaluate(SnapshotExpression, snapshotOptions));
+      // A static document containing only headings/paragraphs has no refs,
+      // but BrowserSnapshot must still return its URL/title.  Continue to
+      // poll while the document is still loading, even if a partial DOM has
+      // already exposed controls.  Interactive/complete pages, including an
+      // interactive page with no refs, are valid successful snapshots.
+      if (value.readyState !== 'loading') break;
+      await this.Pause(100, snapshotOptions);
     }
-    if (!value?.items?.length) throw new PersonalBrowserCdpError('BROWSER_COMMAND_TIMEOUT', 'The BOSS page did not expose interactive elements in time.');
+    if (!value || value.readyState === 'loading') {
+      throw new PersonalBrowserCdpError('BROWSER_COMMAND_TIMEOUT', 'The task page did not become ready for a semantic snapshot in time.');
+    }
+    // 新扩展可只返回 readyState/items；URL/title 由已绑定任务 target 提供，
+    // 避免把 Runtime.evaluate 的通用返回字段扩成未审计的页面对象。
+    const target = (!IsTaskWebUrl(value.url) || typeof value.title !== 'string')
+      ? await this.AssertTaskTarget(snapshotOptions)
+      : undefined;
+    const snapshotUrl = IsTaskWebUrl(value.url) ? value.url : target?.url;
+    if (!IsTaskWebUrl(snapshotUrl)) {
+      throw new PersonalBrowserCdpError('BROWSER_OUTPUT_INVALID', 'The browser semantic snapshot has no valid task URL.');
+    }
     this.refs.clear();
     const refs: Record<string, Record<string, unknown>> = {};
     const lines: string[] = [];
     for (const [index, raw] of value.items.slice(0, MaxSnapshotElements).entries()) {
-      if (!raw || typeof raw !== 'object' || typeof raw.selector !== 'string') continue;
       const ref = `e${index + 1}`;
       const fingerprint: ElementFingerprint = {
         selector: raw.selector,
@@ -685,14 +1179,14 @@ export class PersonalBrowserCdpRuntime implements PersonalBrowserRuntimePort {
         ...(typeof raw.checked === 'boolean' ? { checked: raw.checked } : {}),
         ...(raw.textTruncated === true ? { textTruncated: true } : {}),
         ...(Array.isArray(raw.options) ? { options: raw.options.slice(0, 50) } : {}),
-        ...(IsBossUrl(raw.href) ? { href: raw.href } : {}),
+        ...(IsTaskWebUrl(raw.href) ? { href: raw.href } : {}),
       };
-      const suffix = [fingerprint.type ? `type=${fingerprint.type}` : '', IsBossUrl(raw.href) ? `href=${raw.href}` : ''].filter(Boolean).join(' ');
+      const suffix = [fingerprint.type ? `type=${fingerprint.type}` : '', IsTaskWebUrl(raw.href) ? `href=${raw.href}` : ''].filter(Boolean).join(' ');
       lines.push(`- ${fingerprint.role || fingerprint.tag} ${JSON.stringify(fingerprint.name)} [ref=${ref}]${suffix ? ` ${suffix}` : ''}`);
     }
     return {
-      url: value.url,
-      title: String(value.title ?? ''),
+      url: snapshotUrl,
+      title: String(value.title ?? target?.title ?? ''),
       snapshot: lines.join('\n').slice(0, MaxSnapshotChars),
       refs,
       partialTextTruncated: value.items.some((item: any) => item?.textTruncated === true),
@@ -712,6 +1206,10 @@ export class PersonalBrowserCdpRuntime implements PersonalBrowserRuntimePort {
       const expected = ${SafeJson(locator)};
       const normalizedText = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
       const normalize = (value, limit = 180) => normalizedText(value).slice(0, limit);
+      const accessibleName = (value) => {
+        const text = normalizedText(value);
+        return text.startsWith('__avery_field__') ? text.slice(0, 4096) : text.slice(0, 180);
+      };
       const bossChatPage = (location.hostname === 'zhipin.com' || location.hostname.endsWith('.zhipin.com'))
         && location.pathname === '/web/geek/chat';
       const bossChatNameOf = (element) => {
@@ -730,7 +1228,7 @@ export class PersonalBrowserCdpRuntime implements PersonalBrowserRuntimePort {
         const labelledBy = element.getAttribute('aria-labelledby');
         const labelledText = labelledBy ? labelledBy.split(/\\s+/).map((id) => document.getElementById(id)?.textContent || '').join(' ') : '';
         const explicitLabel = element.id ? document.querySelector('label[for="' + CSS.escape(element.id) + '"]')?.textContent : '';
-        return bossChatNameOf(element) || normalize(element.getAttribute('aria-label') || labelledText || explicitLabel || element.closest('label')?.textContent
+        return bossChatNameOf(element) || accessibleName(element.getAttribute('aria-label') || labelledText || explicitLabel || element.closest('label')?.textContent
           || element.getAttribute('placeholder') || element.getAttribute('alt') || element.getAttribute('title') || element.textContent);
       };
       const roleOf = (element) => {
@@ -762,7 +1260,11 @@ export class PersonalBrowserCdpRuntime implements PersonalBrowserRuntimePort {
         type: normalize(element.getAttribute('type'), 40).toLowerCase(),
         name: nameOf(element),
       };
-      if (actual.tag !== expected.tag || actual.role !== expected.role || actual.type !== expected.type || actual.name !== expected.name) return { stale: true };
+      // BrowserInspectForm 在快照后会清理临时字段特征包；这类 ref 依靠唯一 DOM 路径与稳定控件类型重定位。
+      // 普通 Snapshot 仍校验可访问名称，避免页面更新后误操作同路径下的新元素。
+      const temporaryFormName = String(expected.name || '').startsWith('__avery_field__');
+      if (actual.tag !== expected.tag || actual.type !== expected.type
+        || (!temporaryFormName && (actual.role !== expected.role || actual.name !== expected.name))) return { stale: true };
       element.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
       const rect = element.getBoundingClientRect();
       const style = getComputedStyle(element);
@@ -842,6 +1344,27 @@ export class PersonalBrowserCdpRuntime implements PersonalBrowserRuntimePort {
     const point = await this.Locate(locator, options);
     if (point.type === 'password') throw new PersonalBrowserCdpError('BROWSER_ARGUMENT_INVALID', 'Password inputs cannot be filled by the personal-browser driver.');
     if (!['input', 'textarea'].includes(point.tag) && point.contentEditable !== true) throw new PersonalBrowserCdpError('BROWSER_ARGUMENT_INVALID', 'BrowserFill requires a text input.');
+    if (point.tag === 'input' && point.type === 'date') {
+      const expression = `(() => {
+        const expected = ${SafeJson(locator)};
+        const requested = ${SafeJson(value)};
+        let element;
+        try { element = document.querySelector(expected.selector); } catch { return { stale: true }; }
+        if (!(element instanceof HTMLInputElement) || element.type !== 'date') return { stale: true };
+        const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+        if (!setter) return { unsupported: true };
+        setter.call(element, requested);
+        element.dispatchEvent(new Event('input', { bubbles: true }));
+        element.dispatchEvent(new Event('change', { bubbles: true }));
+        return { filled: element.value === requested, value: element.value };
+      })()`;
+      const result = this.Value(await this.Evaluate(expression, options, true, true));
+      if (result?.stale) throw new PersonalBrowserCdpError('BROWSER_STALE_PAGE_REF', 'The browser date input changed. Take a new snapshot.');
+      if (result?.unsupported || result?.filled !== true) {
+        throw new PersonalBrowserCdpError('BROWSER_ARGUMENT_INVALID', 'The browser rejected the requested date value.');
+      }
+      return { filled: true, textLength: value.length };
+    }
     await this.ClickPoint(point as { x: number; y: number }, options);
     await this.ClearFocused(options);
     await this.InsertText(value, options);
@@ -1010,7 +1533,7 @@ export class PersonalBrowserCdpRuntime implements PersonalBrowserRuntimePort {
 
   private async Navigate(url: unknown, options: PersonalBrowserCommandOptions): Promise<Record<string, any>> {
     const destination = RequireText(url, 'url', 2_048);
-    if (!IsBossUrl(destination)) throw new PersonalBrowserCdpError('BROWSER_NAVIGATION_DENIED', 'Personal-browser navigation is restricted to zhipin.com.');
+    if (!IsTaskWebUrl(destination)) throw new PersonalBrowserCdpError('BROWSER_NAVIGATION_DENIED', 'Personal-browser navigation only accepts http/https URLs without embedded credentials.');
     if (!this.taskTargetId || !this.taskSessionId) {
       await this.EnsureTaskTarget(destination, options);
     } else {
@@ -1025,9 +1548,9 @@ export class PersonalBrowserCdpRuntime implements PersonalBrowserRuntimePort {
         return { url: (await this.AssertTaskTarget(options)).url };
       }
       await this.Send('Page.navigate', { url: destination }, this.taskSessionId, options, true);
-      await this.WaitForBossTarget(options);
-      if (previousUrl !== destination) await this.WaitForBossDocument(options, previousUrl);
-      else await this.WaitForBossDocument(options);
+      await this.WaitForTaskTarget(options);
+      if (previousUrl !== destination) await this.WaitForTaskDocument(options, previousUrl);
+      else await this.WaitForTaskDocument(options);
     }
     this.refs.clear();
     return { url: (await this.AssertTaskTarget(options)).url };
@@ -1039,19 +1562,71 @@ export class PersonalBrowserCdpRuntime implements PersonalBrowserRuntimePort {
     const entries = Array.isArray(history.entries) ? history.entries : [];
     const currentIndex = Number(history.currentIndex);
     if (!Number.isInteger(currentIndex) || currentIndex <= 0 || !entries[currentIndex - 1]) {
-      throw new PersonalBrowserCdpError('BROWSER_COMMAND_FAILED', 'The BOSS task tab has no previous history entry.');
+      throw new PersonalBrowserCdpError('BROWSER_COMMAND_FAILED', 'The Avery task tab has no previous history entry.');
     }
     const entry = entries[currentIndex - 1];
-    if (!IsBossUrl(entry.url)) throw new PersonalBrowserCdpError('BROWSER_NAVIGATION_DENIED', 'BrowserGoBack would leave zhipin.com.');
+    if (!IsTaskWebUrl(entry.url)) throw new PersonalBrowserCdpError('BROWSER_NAVIGATION_DENIED', 'BrowserGoBack would leave the allowed http/https boundary.');
     await this.Send('Page.navigateToHistoryEntry', { entryId: entry.id }, this.taskSessionId ?? undefined, options, true);
     this.refs.clear();
-    await this.WaitForBossTarget(options);
-    return { url: (await this.WaitForBossDocument(options, previousUrl)).url };
+    await this.WaitForTaskTarget(options);
+    return { url: (await this.WaitForTaskDocument(options, previousUrl)).url };
   }
 
   async Run(command: string[], options: PersonalBrowserCommandOptions & { stdin?: string } = {}): Promise<PersonalBrowserCommandResult> {
     await this.Connect(options);
     const [name, ...args] = command;
+    if (name === 'tab') {
+      if (!this.taskScoped) {
+        if (!args.length) {
+          // 无参 tab 只是读取当前专用任务页；不能为了补充列表重新附着/激活，
+          // 否则上层 Snapshot 刚写入的 refs 会在同一只读操作中被清空。
+          if (!this.taskTargetId) return { success: true, data: { tabs: [] } };
+          const targets = await this.GetTargets(options);
+          const target = targets.find((candidate) => candidate.targetId === this.taskTargetId);
+          return {
+            success: true,
+            data: {
+              tabs: target ? [{
+                tabId: 'task', targetId: target.targetId,
+                ...(Number.isSafeInteger(target.windowId) ? { windowId: target.windowId } : {}),
+                ...(Number.isSafeInteger(target.openerTabId) ? { openerTabId: target.openerTabId } : {}),
+                ...(typeof target.url === 'string' ? { url: target.url } : {}), active: target.active === true,
+              }] : [],
+            },
+          };
+        }
+        if (args[0] !== 'task') throw new PersonalBrowserCdpError('BROWSER_TAB_NOT_FOUND', 'Only the dedicated Avery task tab is registered in personal-browser mode.');
+        if (!this.taskTargetId) throw new PersonalBrowserCdpError('BROWSER_TAB_NOT_FOUND', 'The dedicated Avery task tab is not registered in this session.');
+        await this.AssertTaskTarget(options);
+        if (!this.taskSessionId) {
+          const attached = await this.Send('Target.attachToTarget', { targetId: this.taskTargetId, flatten: true }, undefined, options);
+          if (typeof attached.sessionId !== 'string' || !attached.sessionId) throw new PersonalBrowserCdpError('BROWSER_START_FAILED', 'The selected browser did not attach the Avery task tab.');
+          this.taskSessionId = attached.sessionId;
+        }
+        await this.Send('Target.activateTarget', { targetId: this.taskTargetId }, undefined, options);
+        this.refs.clear();
+        const info = await this.AssertTaskTarget(options);
+        return { success: true, data: { tabs: [{ tabId: 'task', targetId: info.targetId, url: info.url, active: true }] } };
+      }
+      const targets = await this.GetTargets(options);
+      if (!args.length) {
+        // 这是 Snapshot 后的只读补充查询：保持 taskTargetId、taskSessionId 和 refs
+        // 原样，且只返回扩展按 browserTaskId 过滤后的任务标签页。
+        return { success: true, data: { tabs: targets.map((target) => this.TabData(target)) } };
+      }
+      const requestedId = String(args[0]);
+      const selectedTarget = targets.find((target) => Number.isSafeInteger(target.tabId) && String(target.tabId) === requestedId);
+      if (!selectedTarget) throw new PersonalBrowserCdpError('BROWSER_TAB_NOT_FOUND', 'The browser tab is not registered in this task.');
+      const selectedId = selectedTarget.targetId;
+      this.taskTargetId = selectedId;
+      this.taskSessionId = null;
+      const attached = await this.Send('Target.attachToTarget', { targetId: selectedId, flatten: true }, undefined, options);
+      if (typeof attached.sessionId !== 'string' || !attached.sessionId) throw new PersonalBrowserCdpError('BROWSER_START_FAILED', 'The selected browser did not attach the Avery task tab.');
+      this.taskSessionId = attached.sessionId;
+      await this.Send('Target.activateTarget', { targetId: selectedId }, undefined, options);
+      this.refs.clear();
+      return { success: true, data: { tabs: targets.map((target) => this.TabData(target, target.targetId === selectedId)) } };
+    }
     if (name === 'open') return { success: true, data: await this.Navigate(args[0], options) };
     await this.EnsureTaskTarget(undefined, options);
     if (name === 'get' && args[0] === 'url') return { success: true, data: { url: (await this.AssertTaskTarget(options)).url } };
@@ -1071,11 +1646,11 @@ export class PersonalBrowserCdpRuntime implements PersonalBrowserRuntimePort {
       if (!expression.trim() || Buffer.byteLength(expression, 'utf8') > 256_000) {
         throw new PersonalBrowserCdpError('BROWSER_ARGUMENT_INVALID', 'The Host browser expression is invalid.');
       }
-      return { success: true, data: { result: this.Value(await this.Evaluate(expression, options)) } };
+      return { success: true, data: { result: this.Value(await this.Evaluate(expression, options, true, false, true)) } };
     }
     if (name === 'read') {
       const value = this.Value(await this.Evaluate(ReadExpression, options));
-      if (!value || !IsBossUrl(value.url)) throw new PersonalBrowserCdpError('BROWSER_OUTPUT_INVALID', 'The BOSS page read result is invalid.');
+      if (!value || !IsTaskWebUrl(value.url)) throw new PersonalBrowserCdpError('BROWSER_OUTPUT_INVALID', 'The task page read result is invalid.');
       return { success: true, data: value };
     }
     if (name === 'screenshot') {
@@ -1084,6 +1659,20 @@ export class PersonalBrowserCdpRuntime implements PersonalBrowserRuntimePort {
       if (typeof result.data !== 'string' || !result.data) throw new PersonalBrowserCdpError('BROWSER_OUTPUT_INVALID', 'The selected browser did not return screenshot data.');
       await writeFile(path, Buffer.from(result.data, 'base64'));
       return { success: true, data: { path } };
+    }
+    if (name === 'scrollintoview') {
+      await this.Locate(this.Ref(args[0]), options);
+      return { success: true, data: { scrolled: true } };
+    }
+    if (name === 'scroll') {
+      const direction = args[0];
+      const distance = Number(args[1]);
+      if (!['up', 'down'].includes(direction) || !Number.isFinite(distance) || distance < 1 || distance > 4_000) {
+        throw new PersonalBrowserCdpError('BROWSER_ARGUMENT_INVALID', 'The browser scroll command is invalid.');
+      }
+      const delta = Math.round(distance) * (direction === 'up' ? -1 : 1);
+      this.Value(await this.Evaluate(`(() => { window.scrollBy(0, ${delta}); return { scrolled: true }; })()`, options, true, true));
+      return { success: true, data: { scrolled: true } };
     }
     if (name === 'click') return { success: true, data: await this.Click(args[0], options) };
     if (name === 'fill') return { success: true, data: await this.Fill(args[0], args[1], options) };
@@ -1116,12 +1705,6 @@ export class PersonalBrowserCdpRuntime implements PersonalBrowserRuntimePort {
       if (args[0] === '--load') return { success: true, data: await this.Wait('load', args[1], options) };
       return { success: true, data: await this.Wait('selector', args[0], options) };
     }
-    if (name === 'tab') {
-      if (args.length && args[0] !== 'task') throw new PersonalBrowserCdpError('BROWSER_TAB_NOT_FOUND', 'Only the dedicated BOSS task tab is registered in personal-browser mode.');
-      if (args[0] === 'task') await this.Send('Target.activateTarget', { targetId: this.taskTargetId }, undefined, options);
-      const info = await this.AssertTaskTarget(options);
-      return { success: true, data: { tabs: [{ tabId: 'task', url: info.url, active: true }] } };
-    }
     if (name === 'back') return { success: true, data: await this.GoBack(options) };
     throw new PersonalBrowserCdpError('BROWSER_COMMAND_NOT_ALLOWED', 'Browser command is not allowed in personal-browser mode.');
   }
@@ -1133,6 +1716,7 @@ export class PersonalBrowserCdpRuntime implements PersonalBrowserRuntimePort {
     this.refs.clear();
     this.taskTargetId = null;
     this.taskSessionId = null;
+    this.taskTabs.clear();
     const socket = this.socket;
     this.socket = null;
     if (socket) {

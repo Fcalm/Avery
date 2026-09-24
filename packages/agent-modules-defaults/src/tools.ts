@@ -1,5 +1,6 @@
 import Ajv from 'ajv';
 import { createHash, randomUUID } from 'node:crypto';
+import { AgentSdkContractVersion } from '@avery/agent-sdk';
 import type {
   BrowserActionProposal, BrowserToolName, RegisteredAgentTool, ToolCallFragment, ToolContext, ToolExecutionResult, ToolLedgerEntry,
   ToolReceipt, ToolsModule,
@@ -176,11 +177,50 @@ function BuildRegistry(): RegisteredAgentTool[] {
         type: 'object', properties: {
           title: { type: 'string', minLength: 1, maxLength: 200 }, message: { type: 'string', minLength: 1, maxLength: 20000 },
           scenarioId: { type: 'string', enum: ['default', 'application'], description: 'Use application for any recruitment-site navigation, job search, or rendered JD reading, even when no application or resume is involved. Use default only for local non-browser tasks.' },
-          schedule: { oneOf: [
-            { type: 'object', properties: { type: { const: 'once' }, executeAt: { type: 'string' }, timeZone: { type: 'string' } }, required: ['type', 'executeAt', 'timeZone'], additionalProperties: false },
-            { type: 'object', properties: { type: { const: 'daily' }, startAt: { type: 'string' }, timeZone: { type: 'string' }, intervalDays: { type: 'integer', minimum: 1, maximum: 365 }, occurrences: { type: 'integer', minimum: 1, maximum: 3650 } }, required: ['type', 'startAt', 'timeZone', 'occurrences'], additionalProperties: false },
-            { type: 'object', properties: { type: { const: 'weekly' }, startAt: { type: 'string' }, timeZone: { type: 'string' }, daysOfWeek: { type: 'array', minItems: 1, maxItems: 7, uniqueItems: true, items: { type: 'string', enum: ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'] } }, intervalWeeks: { type: 'integer', minimum: 1, maximum: 52 }, occurrences: { type: 'integer', minimum: 1, maximum: 3650 } }, required: ['type', 'startAt', 'timeZone', 'daysOfWeek', 'occurrences'], additionalProperties: false },
-          ] },
+          schedule: {
+            description: 'Execution schedule. Pass a JSON object, not a string containing JSON. Use exact property names, double-quoted strings, and no trailing commas. Choose exactly one shape according to type. Valid JSON examples: once = {"type":"once","executeAt":"2026-09-24T09:00:00+08:00","timeZone":"Asia/Shanghai"}; daily = {"type":"daily","startAt":"2026-09-24T09:00:00+08:00","timeZone":"Asia/Shanghai","intervalDays":1,"occurrences":7}; weekly workdays = {"type":"weekly","startAt":"2026-09-28T09:00:00+08:00","timeZone":"Asia/Shanghai","daysOfWeek":["monday","tuesday","wednesday","thursday","friday"],"intervalWeeks":1,"occurrences":10}.',
+            oneOf: [
+              {
+                type: 'object',
+                description: 'One-time schedule. The task executes once at executeAt. Valid JSON object: {"type":"once","executeAt":"2026-09-24T09:00:00+08:00","timeZone":"Asia/Shanghai"}.',
+                properties: {
+                  type: { const: 'once', description: 'Schedule type for a task that executes exactly once. Use the literal value once.' },
+                  executeAt: { type: 'string', description: 'Future execution date and time in ISO 8601/RFC 3339 format, including a UTC offset. Example: 2026-09-24T09:00:00+08:00 for 09:00 in China, or 2026-09-24T01:00:00Z for 01:00 UTC.' },
+                  timeZone: { type: 'string', description: 'IANA time-zone name used to interpret and display the schedule; do not use an abbreviation or UTC offset. Examples: Asia/Shanghai, America/New_York, or UTC.' },
+                },
+                required: ['type', 'executeAt', 'timeZone'], additionalProperties: false,
+              },
+              {
+                type: 'object',
+                description: 'Daily interval schedule. The first execution is startAt, followed by another execution every intervalDays until occurrences total executions have been consumed. Valid JSON object: {"type":"daily","startAt":"2026-09-24T09:00:00+08:00","timeZone":"Asia/Shanghai","intervalDays":1,"occurrences":7}.',
+                properties: {
+                  type: { const: 'daily', description: 'Schedule type for a task that repeats every N calendar days. Use the literal value daily.' },
+                  startAt: { type: 'string', description: 'Future date and time of the first execution in ISO 8601/RFC 3339 format, including a UTC offset. Example: 2026-09-24T09:00:00+08:00.' },
+                  timeZone: { type: 'string', description: 'IANA time-zone name used for the recurring local time and daylight-saving rules; do not use an abbreviation or UTC offset. Examples: Asia/Shanghai or America/New_York.' },
+                  intervalDays: { type: 'integer', minimum: 1, maximum: 365, description: 'Number of calendar days between executions. Use 1 for every day, 2 for every other day, and so on. Omit only when the intended value is the default of 1.' },
+                  occurrences: { type: 'integer', minimum: 1, maximum: 3650, description: 'Total number of executions, including the first execution; this is not a number of days or an end date. Example: use 7 to execute exactly seven times.' },
+                },
+                required: ['type', 'startAt', 'timeZone', 'occurrences'], additionalProperties: false,
+              },
+              {
+                type: 'object',
+                description: 'Weekly schedule. The task executes on each selected weekday, repeating every intervalWeeks, until occurrences total executions have been consumed. Valid JSON object: {"type":"weekly","startAt":"2026-09-28T09:00:00+08:00","timeZone":"Asia/Shanghai","daysOfWeek":["monday","tuesday","wednesday","thursday","friday"],"intervalWeeks":1,"occurrences":10}.',
+                properties: {
+                  type: { const: 'weekly', description: 'Schedule type for selected weekdays. Use the literal value weekly.' },
+                  startAt: { type: 'string', description: 'Future date and time that anchors the first eligible execution and supplies the recurring local clock time, in ISO 8601/RFC 3339 format with a UTC offset. Example: 2026-09-28T09:00:00+08:00.' },
+                  timeZone: { type: 'string', description: 'IANA time-zone name used for weekday, local time, and daylight-saving calculations; do not use an abbreviation or UTC offset. Examples: Asia/Shanghai or America/New_York.' },
+                  daysOfWeek: {
+                    type: 'array', minItems: 1, maxItems: 7, uniqueItems: true,
+                    description: 'Unique lowercase English weekdays on which the task executes. Example for workdays: ["monday", "tuesday", "wednesday", "thursday", "friday"].',
+                    items: { type: 'string', enum: ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'], description: 'A lowercase English weekday name.' },
+                  },
+                  intervalWeeks: { type: 'integer', minimum: 1, maximum: 52, description: 'Number of weeks between active weekly cycles. Use 1 for every week, 2 for every other week, and so on. Omit only when the intended value is the default of 1.' },
+                  occurrences: { type: 'integer', minimum: 1, maximum: 3650, description: 'Total number of executions across all selected weekdays, including the first execution; this is not a number of weeks. Example: Monday through Friday for two weeks requires 10 occurrences.' },
+                },
+                required: ['type', 'startAt', 'timeZone', 'daysOfWeek', 'occurrences'], additionalProperties: false,
+              },
+            ],
+          },
         }, required: ['title', 'message', 'scenarioId', 'schedule'], additionalProperties: false,
       }),
       timeoutMs: 10000, isConcurrencySafe: false, sideEffect: 'local_write', risk: 'high', confirmation: 'always', idempotency: 'required',
@@ -207,6 +247,11 @@ function BuildRegistry(): RegisteredAgentTool[] {
     tool.allowedScenarios = sharedApplicationTools.has(name) ? ['default', 'application'] : ['default'];
   }
   registry.push(
+    {
+      definition: CreateDefinition('ExportResumeFile', 'Use when a company application form requires a resume file upload or BOSS chat requires a resume image, after binding the intended resume with ReadResume. Export it as PDF for company forms or PNG for BOSS chat. The Host returns a fileId; use that exact ID with BrowserUploadFile or ContactBossJobs.imageAssetId. Do not provide resume text or a local path.', { type: 'object', properties: { format: { type: 'string', enum: ['pdf', 'png'], description: 'pdf for company resume upload; png for a BOSS chat image.' } }, required: ['format'], additionalProperties: false }),
+      timeoutMs: 120000, isConcurrencySafe: false, sideEffect: 'local_write', risk: 'low', confirmation: 'never', idempotency: 'not_needed',
+      resourceKeys: () => ['resume:export'], requiredResources: ['bound_resume'], allowedScenarios: ['application'],
+    },
     {
       definition: CreateDefinition('CollectJobs', 'Collect up to 10 temporary BOSS job candidates from explicit search criteria. Results live only in this conversation for 15 minutes and are not saved automatically. Review the returned candidates, then call SaveJob with collectionId and candidateId only for selected jobs.', {
         type: 'object', properties: {
@@ -295,7 +340,7 @@ function BuildRegistry(): RegisteredAgentTool[] {
   registry.push(
     {
       ...BrowserBase,
-      definition: CreateDefinition('BrowserNavigate', 'Navigate the current browser tab to a public http/https URL. Private, local, credential-bearing, and special-protocol URLs are rejected. When the user selects an attached personal browser, navigation is restricted to zhipin.com.', { type: 'object', properties: { url: { type: 'string', maxLength: 2048 } }, required: ['url'], additionalProperties: false }),
+      definition: CreateDefinition('BrowserNavigate', 'Navigate the Avery task tab to an http/https URL. Special protocols and URLs with embedded credentials are rejected. A personal browser may open public or user-accessible internal recruitment pages, but the tool cannot inspect other personal tabs.', { type: 'object', properties: { url: { type: 'string', maxLength: 2048 } }, required: ['url'], additionalProperties: false }),
       // 首次导航包含隔离 Electron 与 CLI 后台进程冷启动，不能套用已热启动页面动作的 30 秒预算。
       timeoutMs: 120_000,
       sideEffect: 'none', risk: 'low', confirmation: 'never', idempotency: 'not_needed',
@@ -389,7 +434,7 @@ function BuildRegistry(): RegisteredAgentTool[] {
     },
     {
       ...BrowserBase,
-      definition: CreateDefinition('BrowserUploadFile', 'Upload a Host-authorized fileId to a file input from the latest BrowserSnapshot. fileId must equal the attachment path exposed in runtime-context, not the display name. Local filesystem paths are never accepted.', { type: 'object', properties: { ...RefParameters.properties, fileId: { type: 'string', maxLength: 1000 } }, required: ['ref', 'pageRevision', 'fileId'], additionalProperties: false }),
+      definition: CreateDefinition('BrowserUploadFile', 'Upload a Host-authorized fileId to a file input from the latest BrowserSnapshot. Use either the attachment path exposed in runtime-context or the exact fileId returned by ExportResumeFile; never use a display name or local filesystem path.', { type: 'object', properties: { ...RefParameters.properties, fileId: { type: 'string', maxLength: 1000 } }, required: ['ref', 'pageRevision', 'fileId'], additionalProperties: false }),
       timeoutMs: 60_000, sideEffect: 'external_action', risk: 'high', confirmation: 'always', idempotency: 'required',
     },
     {
@@ -459,6 +504,26 @@ export function CreateToolsModule(ports: AgentDefaultPorts): ToolsModule {
     await context.bindResume(resume);
     context.boundResume = resume;
     return CreateToolResult(callId, { ok: true, mode: 'resume', bound: true, resume });
+  }
+
+  /** 导出当前绑定版本并把返回的资源 ID 授权给本轮后续上传工具。 */
+  async function ExportResumeFile(context: ToolContext, callId: string, args: Record<string, unknown>): Promise<ToolExecutionResult> {
+    if (!context.ports.resumeExport || !context.boundResume) return CreateToolResult(callId, { ok: false, code: 'RESUME_EXPORT_UNAVAILABLE', message: 'Resume file export is unavailable.' });
+    if (context.unattended) return CreateToolResult(callId, { ok: false, code: 'BROWSER_CRON_SCOPE_DENIED', message: 'Scheduled runs cannot create new upload file grants. Prepare and authorize a persistent file when creating the task.' }, { disposition: 'pause' });
+    const format = args.format === 'png' ? 'png' : 'pdf';
+    const idempotencyKey = CreateIdempotencyKey(context, 'ExportResumeFile', HashArguments({ callId, resumeId: context.boundResume.id, revision: context.boundResume.revision, format }));
+    const ledger = await StartLedger(context, 'ExportResumeFile', { format }, idempotencyKey);
+    try {
+      const exported = await context.ports.resumeExport.Export({ resume: context.boundResume, format, sessionId: context.sessionId, signal: context.signal });
+      if (context.signal?.aborted) throw Object.assign(new Error('Resume file export was cancelled.'), { code: 'CANCELLED' });
+      const receipt: ToolReceipt = { receiptId: `receipt-${randomUUID()}`, toolDefinitionId: 'ExportResumeFile', resourceIds: [exported.fileId], revisions: { resume: exported.resumeRevision }, idempotencyKey };
+      await FinishLedger(context, ledger, 'succeeded', { receipt });
+      if (!context.attachments.some((attachment) => attachment.path === exported.fileId)) context.attachments.push({ name: exported.fileName, path: exported.fileId });
+      return CreateToolResult(callId, { ok: true, ...exported }, { receipt });
+    } catch (error) {
+      await FinishLedger(context, ledger, context.signal?.aborted ? 'status_unknown' : 'failed', { errorCode: error && typeof error === 'object' && 'code' in error ? String(error.code) : 'RESUME_EXPORT_FAILED' });
+      throw error;
+    }
   }
 
   /** 加载冻结 Skill 正文或清单内资源；消息追加与 loaded 状态提交由 Kernel 原子完成。 */
@@ -953,6 +1018,9 @@ export function CreateToolsModule(ports: AgentDefaultPorts): ToolsModule {
   async function CollectJobs(context: ToolContext, callId: string, args: Record<string, unknown>): Promise<ToolExecutionResult> {
     const collection = context.ports.jobCollection;
     if (!collection) return CreateToolResult(callId, { ok: false, code: 'RESOURCE_NOT_AUTHORIZED', message: 'Scripted job collection is unavailable in the current host.' });
+    if (context.unattended && (!context.browserTaskGrant || context.browserTaskGrant.revokedAt || !context.browserTaskGrant.allowNavigation)) {
+      return CreateToolResult(callId, { ok: false, code: 'BROWSER_CRON_SCOPE_DENIED', message: 'This CronTask has no active BrowserTaskGrant for job navigation.' }, { disposition: 'pause' });
+    }
     try {
       const result = await collection.Collect({
         sessionId: context.sessionId,
@@ -974,6 +1042,13 @@ export function CreateToolsModule(ports: AgentDefaultPorts): ToolsModule {
   async function ContactBossJobs(context: ToolContext, callId: string, args: Record<string, unknown>): Promise<ToolExecutionResult> {
     const service = context.ports.bossContact;
     if (!service) return CreateToolResult(callId, { ok: false, code: 'RESOURCE_NOT_AUTHORIZED', message: 'BOSS contact automation is unavailable in the current Host.' });
+    const grant = context.browserTaskGrant;
+    if (context.unattended && (!grant || grant.revokedAt || grant.purpose !== 'boss_contact' || !grant.allowNavigation || !grant.allowFormFill || !grant.allowExternalSend)) {
+      return CreateToolResult(callId, { ok: false, code: 'BROWSER_CRON_SCOPE_DENIED', message: 'This CronTask BrowserTaskGrant does not allow BOSS contact.' }, { disposition: 'pause' });
+    }
+    if (context.unattended && typeof args.imageAssetId === 'string' && (!grant?.allowFileUpload || !grant.resourceIds.includes(`file:${args.imageAssetId}`))) {
+      return CreateToolResult(callId, { ok: false, code: 'BROWSER_CRON_SCOPE_DENIED', message: 'This CronTask BrowserTaskGrant does not allow the requested image resource.' }, { disposition: 'pause' });
+    }
     const items = args.items as Array<{ jobId: string; message: { mode: 'first_quick_phrase' } | { mode: 'custom'; text: string } }>;
     if (new Set(items.map((item) => item.jobId)).size !== items.length) return CreateToolResult(callId, { ok: false, code: 'INVALID_TOOL_ARGUMENTS', message: 'ContactBossJobs jobId values must be unique.' });
     let proposal: BrowserActionProposal;
@@ -983,20 +1058,38 @@ export function CreateToolsModule(ports: AgentDefaultPorts): ToolsModule {
       const value = error as { code?: unknown; message?: unknown };
       return CreateToolResult(callId, { ok: false, code: typeof value.code === 'string' ? value.code : 'BOSS_JOB_NOT_ELIGIBLE', message: typeof value.message === 'string' ? value.message : 'The BOSS contact batch could not be prepared.' });
     }
+    // BrowserActionProposal requires an explicit proposalId. A legacy adapter
+    // must fail closed here; proposalHash is a digest, not an authorization ID.
+    if (typeof proposal.proposalId !== 'string' || !proposal.proposalId.trim()) {
+      return CreateToolResult(callId, { ok: false, code: 'BROWSER_OUTPUT_INVALID', message: 'The browser proposal is missing proposalId.' });
+    }
+    if (context.signal?.aborted) return CreateToolResult(callId, { ok: false, code: 'CANCELLED', message: 'Tool execution was cancelled before the contact batch started.' });
     const idempotencyKey = CreateIdempotencyKey(context, 'ContactBossJobs', proposal.proposalHash);
     const requiresConfirmation = !context.unattended && (context.confirmationMode !== 'fully_trusted' || typeof args.imageAssetId === 'string');
     if (requiresConfirmation) {
       if (!context.pendingBrowserActions) return CreateToolResult(callId, { ok: false, code: 'BROWSER_CONFIRMATION_UNAVAILABLE', message: 'BOSS batch confirmation storage is unavailable.' }, { disposition: 'pause' });
       const confirmationId = `browser-confirmation-${randomUUID()}`;
-      context.pendingBrowserActions.set(confirmationId, { kind: 'boss_contact', confirmationId, proposal, idempotencyKey, requestId: context.requestId, runId: context.runId, toolCallId: callId, createdAt: Date.now() });
+      const browserTaskId = context.ports.browser?.GetBrowserTaskId?.() ?? null;
+      context.pendingBrowserActions.set(confirmationId, {
+        kind: 'boss_contact', confirmationId, proposal, idempotencyKey, sessionId: context.sessionId, browserTaskId, requestId: context.requestId, runId: context.runId, toolCallId: callId, createdAt: Date.now(), bindingVersion: 1,
+        binding: {
+          sessionId: context.sessionId,
+          browserTaskId,
+          runId: context.runId,
+          proposalId: proposal.proposalId,
+          proposalHash: proposal.proposalHash,
+          pageRevision: proposal.pageRevision,
+        },
+      });
       context.persistSessionState();
-      context.emit({ type: 'browser_confirmation', requestId: context.requestId, confirmationId, browserAction: { confirmationId, toolName: 'ContactBossJobs', summary: proposal.summary, risk: 'high' } });
+      context.emit({ type: 'browser_confirmation', requestId: context.requestId, confirmationId, browserAction: { confirmationId, proposalId: proposal.proposalId, toolName: 'ContactBossJobs', summary: proposal.summary, risk: 'high' } });
       return CreateToolResult(callId, { ok: false, code: 'CONFIRMATION_REQUIRED', confirmationId, proposalHash: proposal.proposalHash, summary: proposal.summary, message: 'The BOSS contact batch is waiting for user confirmation.' }, { disposition: 'wait_confirmation' });
     }
     const previous = await GetLedger(context).FindByIdempotencyKey(idempotencyKey);
     if (previous?.status === 'succeeded' && previous.receipt) return CreateToolResult(callId, { ok: true, replayed: true }, { receipt: previous.receipt });
     if (previous?.status === 'status_unknown') return CreateToolResult(callId, { ok: false, code: 'MESSAGE_STATUS_UNKNOWN', message: 'The previous batch outcome is unknown and must be reconciled before retrying.' }, { disposition: 'pause' });
     const ledgerEntry = await StartLedger(context, 'ContactBossJobs', args, idempotencyKey);
+    if (context.signal?.aborted) return CreateToolResult(callId, { ok: false, code: 'STATUS_UNKNOWN', message: 'The contact batch was cancelled before its outcome could be established.', retryable: false }, { disposition: 'pause' });
     try {
       const outcome = await service.Execute({ proposal, signal: context.signal, deadline: context.deadline });
       if (outcome.status !== 'succeeded') { await FinishLedger(context, ledgerEntry, 'status_unknown', { errorCode: 'MESSAGE_STATUS_UNKNOWN' }); return CreateToolResult(callId, { ok: false, code: 'MESSAGE_STATUS_UNKNOWN', data: outcome.data }, { disposition: 'pause' }); }
@@ -1074,7 +1167,7 @@ export function CreateToolsModule(ports: AgentDefaultPorts): ToolsModule {
       const message = error instanceof Error ? error.message : fallbackMessage;
       const siteRisk = code === 'BROWSER_SITE_RISK_DETECTED';
       const visibleRequired = code === 'BROWSER_SITE_VISIBLE_REQUIRED';
-      const personalBrowserRequired = ['BROWSER_EXISTING_BROWSER_UNAVAILABLE', 'BROWSER_EXISTING_BROWSER_PERMISSION_REQUIRED', 'BROWSER_BOSS_TAB_REQUIRED', 'BROWSER_USER_BROWSER_INTERACTIVE_ONLY', 'BROWSER_CRON_ACCESS_REQUIRED'].includes(code);
+      const personalBrowserRequired = ['BROWSER_EXISTING_BROWSER_UNAVAILABLE', 'BROWSER_EXISTING_BROWSER_PERMISSION_REQUIRED', 'BROWSER_BOSS_TAB_REQUIRED', 'BROWSER_USER_BROWSER_INTERACTIVE_ONLY', 'BROWSER_CRON_ACCESS_REQUIRED', 'BROWSER_CRON_SCOPE_DENIED'].includes(code);
       if (siteRisk && !context.unattended) {
         context.emit({
           type: 'browser_user_action', requestId: context.requestId,
@@ -1132,6 +1225,12 @@ export function CreateToolsModule(ports: AgentDefaultPorts): ToolsModule {
     } catch (error) {
       return BrowserFailure(error, 'BROWSER_VALIDATION_ERROR', 'Browser action validation failed.');
     }
+    // BrowserActionProposal requires an explicit proposalId. Do not synthesize
+    // an authorization identity from proposalHash in a versioned pending record.
+    if (typeof proposal.proposalId !== 'string' || !proposal.proposalId.trim()) {
+      return BrowserFailure({ code: 'BROWSER_OUTPUT_INVALID', message: 'The browser proposal is missing proposalId.' }, 'BROWSER_OUTPUT_INVALID', 'The browser proposal is missing proposalId.');
+    }
+    if (context.signal?.aborted) return CreateToolResult(callId, { ok: false, code: 'CANCELLED', message: 'Browser action was cancelled before execution.' });
     const meta = GetToolMeta(toolName);
     const hasExternalEffect = meta?.sideEffect === 'external_action';
     const requiresConfirmation = hasExternalEffect && !context.unattended && (
@@ -1144,13 +1243,24 @@ export function CreateToolsModule(ports: AgentDefaultPorts): ToolsModule {
     if (requiresConfirmation) {
       if (!context.pendingBrowserActions) return CreateToolResult(callId, { ok: false, code: 'BROWSER_CONFIRMATION_UNAVAILABLE', message: 'Browser confirmation storage is unavailable.' }, { disposition: 'pause' });
       const confirmationId = `browser-confirmation-${randomUUID()}`;
+      const browserTaskId = context.ports.browser?.GetBrowserTaskId?.() ?? null;
       context.pendingBrowserActions.set(confirmationId, {
-        confirmationId, proposal, idempotencyKey, requestId: context.requestId, runId: context.runId, toolCallId: callId, createdAt: Date.now(),
+        confirmationId, proposal, idempotencyKey, sessionId: context.sessionId, browserTaskId, requestId: context.requestId, runId: context.runId, toolCallId: callId, createdAt: Date.now(), bindingVersion: 1,
+        binding: {
+          sessionId: context.sessionId,
+          browserTaskId,
+          runId: context.runId,
+          proposalId: proposal.proposalId,
+          proposalHash: proposal.proposalHash,
+          pageRevision: proposal.pageRevision,
+          ...(typeof proposal.canonicalArguments?.ref === 'string' ? { ref: proposal.canonicalArguments.ref } : {}),
+          ...(toolName === 'BrowserUploadFile' ? { fileId: String(proposal.canonicalArguments.fileId ?? '') } : {}),
+        },
       });
       context.persistSessionState();
       context.emit({
         type: 'browser_confirmation', requestId: context.requestId, confirmationId,
-        browserAction: { confirmationId, toolName, summary: proposal.summary, url: proposal.url, risk: proposal.risk },
+        browserAction: { confirmationId, proposalId: proposal.proposalId, toolName, summary: proposal.summary, url: proposal.url, risk: proposal.risk },
       });
       return CreateToolResult(callId, { ok: false, code: 'CONFIRMATION_REQUIRED', confirmationId, proposalHash: proposal.proposalHash, summary: proposal.summary, message: 'The browser action is waiting for user confirmation.' }, { disposition: 'wait_confirmation' });
     }
@@ -1302,9 +1412,9 @@ export function CreateToolsModule(ports: AgentDefaultPorts): ToolsModule {
     packageName: '@avery/agent-modules-defaults',
     name: 'avery.agent-defaults',
     version: '0.1.0',
-    sdkVersion: '0.1.0',
+    sdkVersion: AgentSdkContractVersion,
     slot: 'tools',
-    capabilities: ['tools:default:18', 'tools:application:35', 'browser:atomic', 'browser:vision-screenshot', 'browser:fill-batch', 'skills:progressive', 'cron:scheduled', 'applications:tracking', 'jobs:collection', 'boss:contact-batch'],
+    capabilities: ['tools:default:18', 'tools:application:36', 'browser:atomic', 'browser:vision-screenshot', 'browser:fill-batch', 'skills:progressive', 'cron:scheduled', 'applications:tracking', 'jobs:collection', 'boss:contact-batch'],
     /** 返回设计文档 MVP 白名单工具；旧名仅兼容旧快照，不再向新模型暴露。 */
     GetToolDefinitions(scenarioId = 'default') { return registry.filter((tool) => tool.allowedScenarios?.includes(scenarioId)); },
     /** 统一执行管道：Schema 校验与一次修复、写工具幂等账本、按工具超时、结构化错误码、统一 disposition。 */
@@ -1337,12 +1447,14 @@ export function CreateToolsModule(ports: AgentDefaultPorts): ToolsModule {
       const execution = async (executionContext: ToolContext) => {
         const resourceFailure = await ValidateRequiredResources(toolMeta, executionContext, call.id);
         if (resourceFailure) return resourceFailure;
+        if (executionContext.signal?.aborted) return CreateToolResult(call.id, { ok: false, code: 'CANCELLED', message: 'Tool execution was cancelled.' });
         switch (toolName) {
           case 'Read': return await Read(executionContext, call.id, args);
           case 'Glob': return Glob(executionContext, call.id, args);
           case 'Grep': return await Grep(executionContext, call.id, args);
           case 'ReadProfile': return CreateToolResult(call.id, { ok: true, profiles: executionContext.profileSnapshot });
           case 'ReadResume': return await ReadResume(executionContext, call.id, args);
+          case 'ExportResumeFile': return await ExportResumeFile(executionContext, call.id, args);
           case 'CreateResume': return await CreateResume(executionContext, call.id, args);
           case 'UpdateResume': return await UpdateResume(executionContext, call.id, args);
           case 'UpdateProfile': return await UpdateProfile(executionContext, call.id, args);

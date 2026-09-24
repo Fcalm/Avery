@@ -2,7 +2,8 @@ import { describe, expect, it, vi } from 'vitest';
 import { CronRunnerService } from '../../../apps/backend/src/electron/backend/services/cron-runner-service';
 
 function CreateHarness(result: Record<string, unknown> = { accepted: true, content: '后台完成', thinkingContent: '', terminal: 'completed', needsAttention: false }) {
-  const claim = { task: { id: 'cron-1', title: '工作日投递', message: '执行投递', scenarioId: 'application', resumeId: 'resume-1', browserAuthorized: true, schedule: { timeZone: 'Asia/Shanghai' } }, run: { id: 'run-1', scheduledAt: Date.parse('2026-08-29T09:00:00+08:00') } };
+  const browserTaskGrant = { mode: 'personal_browser_extension', purpose: 'job_application', allowNavigation: true, allowFormFill: true, allowFileUpload: false, allowExternalSend: true, resourceIds: ['resume:resume-1'], grantedAt: '2026-08-28T01:00:00.000Z' };
+  const claim = { task: { id: 'cron-1', title: '工作日投递', message: '执行投递', scenarioId: 'application', resumeId: 'resume-1', browserTaskGrant, schedule: { timeZone: 'Asia/Shanghai' } }, run: { id: 'run-1', scheduledAt: Date.parse('2026-08-29T09:00:00+08:00') } };
   const business = {
     RecoverInterruptedCronRuns: vi.fn(async () => ({ recovered: 0 })), GetEarliestCronRunAt: vi.fn(async () => ({ nextRunAt: null })), ClaimDueCronTasks: vi.fn(async () => [claim]),
     CreateConversation: vi.fn(async () => ({})), AppendConversationMessages: vi.fn(async () => ({})), AttachCronRunConversation: vi.fn(async () => ({})),
@@ -20,7 +21,7 @@ describe('Cron Runner 后台会话', () => {
     expect(summary).toMatchObject({ claimed: 1, completed: 1, failed: 0 });
     expect(harness.business.CreateConversation).toHaveBeenCalledOnce();
     expect(harness.business.AppendConversationMessages.mock.calls[0][1]).toEqual(expect.arrayContaining([expect.objectContaining({ role: 'user', content: '执行投递' }), expect.objectContaining({ role: 'assistant' })]));
-    expect(harness.agent.SendScheduled).toHaveBeenCalledWith(expect.objectContaining({ scenarioId: 'application', resumeId: 'resume-1', cronTaskId: 'cron-1', browserAuthorized: true }));
+    expect(harness.agent.SendScheduled).toHaveBeenCalledWith(expect.objectContaining({ scenarioId: 'application', resumeId: 'resume-1', cronTaskId: 'cron-1', browserTaskGrant: harness.claim.task.browserTaskGrant }));
     expect(harness.business.CompleteConversationMessage).toHaveBeenCalledWith(expect.any(String), expect.any(String), '后台完成', undefined);
     expect(harness.business.FinishCronRun).toHaveBeenCalledWith('run-1', 'completed', undefined);
   });
@@ -29,6 +30,13 @@ describe('Cron Runner 后台会话', () => {
     const harness = CreateHarness({ accepted: true, content: '', thinkingContent: '', terminal: 'waiting_user_input', needsAttention: true });
     const summary = await harness.service.RunDue();
     expect(summary.needsAttention).toBe(1);
+    expect(harness.business.FinishCronRun).toHaveBeenCalledWith('run-1', 'needsAttention', 'user_action_required');
+  });
+
+  it('TaskGrant 越权导致的 paused 终态写 needsAttention，不误记成功', async () => {
+    const harness = CreateHarness({ accepted: true, content: 'BrowserTaskGrant 不允许该操作。', thinkingContent: '', terminal: 'paused', needsAttention: false });
+    const summary = await harness.service.RunDue();
+    expect(summary).toMatchObject({ completed: 0, needsAttention: 1 });
     expect(harness.business.FinishCronRun).toHaveBeenCalledWith('run-1', 'needsAttention', 'user_action_required');
   });
 

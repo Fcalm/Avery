@@ -1,11 +1,10 @@
-import { app, BrowserWindow, Menu, nativeImage, session, Tray } from 'electron';
+import { app, BrowserWindow, Menu, nativeImage, screen, session, Tray, type Rectangle } from 'electron';
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { join, resolve } from 'node:path';
 import { CreateBackendHost } from '@avery/backend/dist/host';
 import { CreateDesktopAdapters } from './adapters';
 import { RegisterGateway, RegisterGeneralControls, RegisterWindowControls } from './gateway';
-import { IsBrowserCompanionProcess, StartBrowserCompanion } from './browser-companion';
 import { MigrateLegacyUserData } from './brand-migration';
 
 const smokeStartedAt = Date.now();
@@ -18,16 +17,48 @@ const consoleErrors: string[] = [];
 let tray: Tray | undefined;
 let forceCloseAfterTrayDecision = false;
 let quitting = false;
+/**
+ * 最大化状态由主进程单一维护：透明 acrylic 无边框窗口在 Windows 上原生 maximize() 不可靠
+ *（可能完全不生效、isMaximized() 恒为 false），因此最大化/还原按主屏工作区边界实现，
+ * 渲染进程只消费这里下发的结果，避免按钮显示与窗口几何不一致。
+ */
+let windowMaximized = false;
+let windowRestoreBounds: Rectangle | undefined;
 
-/** 仅解析应用固定依赖中的原生 CLI，不回退到 PATH 或用户全局安装。 */
-function resolveAgentBrowserExecutablePath(): string {
-  const binaryName = process.platform === 'win32'
-    ? `agent-browser-win32-${process.arch}.exe`
-    : `agent-browser-${process.platform === 'darwin' ? 'darwin' : 'linux'}-${process.arch}`;
-  const candidates = app.isPackaged
-    ? [join(process.resourcesPath, 'app.asar.unpacked', 'node_modules', 'agent-browser', 'bin', binaryName)]
-    : [join(__dirname, '..', '..', '..', 'node_modules', 'agent-browser', 'bin', binaryName)];
-  return candidates.find((candidate) => existsSync(candidate)) ?? candidates[0];
+/** 还原（普通）尺寸：默认 1440×960，工作区更小时留出边距，保证还原后窗口确实变小。 */
+function ResolveWindowRestoreSize() {
+  const workArea = screen.getPrimaryDisplay().workAreaSize;
+  return { width: Math.max(1024, Math.min(1440, workArea.width - 64)), height: Math.max(680, Math.min(960, workArea.height - 64)) };
+}
+
+function NotifyWindowMaximized(maximized: boolean): void {
+  const window = mainWindow;
+  if (!window || window.isDestroyed() || window.webContents.isDestroyed()) return;
+  window.webContents.send('window:maximized-change', maximized);
+}
+
+/** 切换最大化：进入时记住当前几何并铺满工作区，退出时还原；返回切换后的状态供 IPC 回传渲染进程。 */
+function ToggleWindowMaximized(): boolean {
+  const window = mainWindow;
+  if (!window || window.isDestroyed()) return false;
+  if (windowMaximized) {
+    window.setBounds(windowRestoreBounds ?? { ...window.getBounds(), ...ResolveWindowRestoreSize() });
+    windowRestoreBounds = undefined;
+    windowMaximized = false;
+  } else {
+    windowRestoreBounds = window.getBounds();
+    window.setBounds(screen.getPrimaryDisplay().workArea);
+    windowMaximized = true;
+  }
+  NotifyWindowMaximized(windowMaximized);
+  return windowMaximized;
+}
+
+function IsWindowMaximized(): boolean {
+  const window = mainWindow;
+  if (!window || window.isDestroyed()) return false;
+  // 系统侧原生最大化（任务栏、快捷键）同样计入，避免两种来源打架
+  return windowMaximized || window.isMaximized();
 }
 
 /** 只从各平台的标准安装位置发现真实浏览器，不执行注册表或 Shell 查询。 */
@@ -102,26 +133,48 @@ async function ResolveWindowClose(): Promise<void> {
     window.close();
     return;
   }
+  if (!EnsureTray(iconPath)) {
+    forceCloseAfterTrayDecision = true;
+    window.close();
+    return;
+  }
   window.hide();
-  EnsureTray(iconPath);
 }
 
-function EnsureTray(iconPath: string): void {
-  if (tray) return;
-  tray = new Tray(nativeImage.createFromPath(iconPath));
-  tray.setToolTip('Avery');
-  tray.setContextMenu(Menu.buildFromTemplate([
-    { label: '显示主窗口', click: () => ShowMainWindowFromTray() },
-    { label: '退出', click: () => app.quit() },
-  ]));
-  tray.on('click', () => ShowMainWindowFromTray());
+function EnsureTray(iconPath: string): boolean {
+  if (tray) return true;
+  if (!iconPath) {
+    console.error('Avery 托盘图标资源路径为空。');
+    return false;
+  }
+  const image = nativeImage.createFromPath(iconPath);
+  if (image.isEmpty()) {
+    console.error(`无法加载 Avery 托盘图标：${iconPath}`);
+    return false;
+  }
+  let createdTray: Tray | undefined;
+  try {
+    createdTray = new Tray(image);
+    createdTray.setToolTip('Avery');
+    createdTray.setContextMenu(Menu.buildFromTemplate([
+      { label: '显示主窗口', click: () => ShowMainWindowFromTray() },
+      { label: '退出', click: () => app.quit() },
+    ]));
+    createdTray.on('click', () => ShowMainWindowFromTray());
+    tray = createdTray;
+    return true;
+  } catch (error) {
+    createdTray?.destroy();
+    tray = undefined;
+    console.error('创建 Avery 托盘图标失败：', error);
+    return false;
+  }
 }
 
 function ShowMainWindowFromTray(): void {
   const window = mainWindow;
   if (!window || window.isDestroyed()) createWindow();
   else { if (window.isMinimized()) window.restore(); window.show(); window.focus(); }
-  DestroyTray();
 }
 
 function DestroyTray(): void {
@@ -132,16 +185,32 @@ function DestroyTray(): void {
 
 /** 创建唯一主窗口，明确维持 Renderer 与 Node/Electron 能力隔离。 */
 function createWindow(): BrowserWindow {
-  // Acrylic 负责模糊桌面；显式启用原生圆角，让 DWM 同时裁剪系统材质与 Renderer 根层。
+  if (mainWindow && !mainWindow.isDestroyed()) return mainWindow;
+  // Acrylic 负责模糊桌面；关闭 Windows 原生圆角，避免 DWM 把标题栏关闭按钮的悬停背景裁成弧形。
   const useWindowsTransparency = process.platform === 'win32';
+  const appIconPath = resolveAppIconPath();
+  const appIcon = appIconPath ? nativeImage.createFromPath(appIconPath) : undefined;
+  const validAppIcon = appIcon && !appIcon.isEmpty() ? appIcon : undefined;
+  const restoreSize = ResolveWindowRestoreSize();
   const window = new BrowserWindow({
-    width: 1440, height: 960, minWidth: 1024, minHeight: 680, frame: false, autoHideMenuBar: true,
+    width: restoreSize.width, height: restoreSize.height, minWidth: 1024, minHeight: 680, frame: false, autoHideMenuBar: true,
+    // 无边框窗口也显式加入任务栏，并给 Windows 任务栏提供应用图标。
+    skipTaskbar: false,
+    ...(validAppIcon ? { icon: validAppIcon } : {}),
     backgroundColor: useWindowsTransparency ? '#00000000' : '#F6F1E6',
-    ...(useWindowsTransparency ? { transparent: true, backgroundMaterial: 'acrylic' as const, roundedCorners: true } : {}),
+    ...(useWindowsTransparency ? { transparent: true, backgroundMaterial: 'acrylic' as const, roundedCorners: false } : {}),
     webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true, preload: join(__dirname, '..', '..', '..', 'electron', 'preload.cjs') },
   });
   mainWindow = window;
+  windowMaximized = false;
+  windowRestoreBounds = undefined;
   window.setMenuBarVisibility(false);
+  window.on('maximize', () => { windowMaximized = true; NotifyWindowMaximized(true); });
+  window.on('unmaximize', () => { windowMaximized = false; NotifyWindowMaximized(false); });
+  window.on('restore', () => NotifyWindowMaximized(IsWindowMaximized()));
+  // 首次启动即最大化：透明无边框窗口不能依赖原生最大化，这里同样按工作区边界执行。
+  // 冒烟校验需要固定视口，跳过。
+  if (process.env.AVERY_DESKTOP_SMOKE !== '1') ToggleWindowMaximized();
   if (app.isPackaged || process.env.AVERY_DESKTOP_SMOKE === '1') void window.loadFile(join(__dirname, '..', '..', '..', 'dist', 'index.html'));
   else void window.loadURL(process.env.VITE_DEV_SERVER_URL || 'http://127.0.0.1:5173');
   window.webContents.once('did-finish-load', () => { rendererLoaded = true; });
@@ -152,8 +221,15 @@ function createWindow(): BrowserWindow {
     event.preventDefault();
     void ResolveWindowClose();
   });
-  // 重新显示窗口时重置关闭决策并撤掉托盘图标，下一次关闭重新按设置判断。
-  window.on('show', () => { forceCloseAfterTrayDecision = false; DestroyTray(); });
+  // 最小化时保留任务栏窗口，并确保托盘入口仍在；托盘图标在整个应用生命周期内常驻。
+  window.on('minimize', () => {
+    if (process.env.AVERY_DESKTOP_SMOKE === '1') return;
+    window.setSkipTaskbar(false);
+    const iconPath = resolveAppIconPath();
+    if (!iconPath || !EnsureTray(iconPath)) console.error('Avery 已最小化到任务栏，但托盘图标不可用。');
+  });
+  // 重新显示窗口时重置关闭决策；托盘图标保持常驻，直到应用真正退出。
+  window.on('show', () => { forceCloseAfterTrayDecision = false; });
   window.on('closed', () => { if (mainWindow === window) mainWindow = undefined; });
   return window;
 }
@@ -351,11 +427,8 @@ async function runInstalledVisualScenario(outputDirectory: string): Promise<Reco
   return { rendererNavigationReady: true, consoleErrors, pages, keyboardTargetFocused, keyboardNavigation, developerModeGate, passed: pagesPassed && keyboardTargetFocused === true && keyboardNavigation === true && developerModeGate && consoleErrors.length === 0 };
 }
 
-if (IsBrowserCompanionProcess()) {
-  StartBrowserCompanion();
-} else {
   const cronRunnerLaunch = process.argv.includes('--cron-runner');
-  // Smoke 与 CDP 驱动的调试实例都必须在申请单实例锁前切换隔离目录：
+  // Smoke 调试实例必须在申请单实例锁前切换隔离目录：
   // 一防被正在运行的正式应用误判为第二实例，二防调试写入落到用户真实工作区。
   if (process.env.AVERY_SMOKE_USER_DATA) app.setPath('userData', resolve(process.env.AVERY_SMOKE_USER_DATA));
   const ownsSingleInstance = app.requestSingleInstanceLock();
@@ -366,29 +439,31 @@ if (IsBrowserCompanionProcess()) {
   app.whenReady().then(async () => {
     writeSmokeStage('electron_ready');
     configureSecurityPolicies();
+    // AppUserModelId 在创建托盘和窗口之前设置，确保 Windows 将两者归属于 Avery。
+    app.setAppUserModelId('com.avery.app');
     const userDataPath = app.getPath('userData');
     if (process.env.AVERY_DESKTOP_SMOKE !== '1') await MigrateLegacyUserData(userDataPath);
     const workspacePath = join(userDataPath, 'Avery Workspace');
-    const adapters = CreateDesktopAdapters({ getWindow: () => mainWindow, userDataPath, executablePath: process.execPath, enableSystemCron: app.isPackaged });
+    // 冒烟实例使用独立数据目录，也不能读写用户机器上的真实计划任务。
+    const adapters = CreateDesktopAdapters({ getWindow: () => mainWindow, userDataPath, executablePath: process.execPath, enableSystemCron: app.isPackaged && process.env.AVERY_DESKTOP_SMOKE !== '1' });
     backendHost = CreateBackendHost({
       appContext: {
         userDataPath,
         defaultWorkspacePath: workspacePath,
         workspacePath,
-        agentBrowserExecutablePath: resolveAgentBrowserExecutablePath(),
-        browserCompanionExecutablePath: process.execPath,
-        browserCompanionAppPath: process.defaultApp ? app.getAppPath() : undefined,
         externalBrowserPaths: resolveExternalBrowserPaths(),
       },
       desktopCapabilities: adapters,
     });
     RegisterGateway({ backendHost, webContentsGetter: () => mainWindow, notificationIconPath: resolveAppIconPath() || undefined });
-    RegisterWindowControls({ webContentsGetter: () => mainWindow });
+    RegisterWindowControls({ webContentsGetter: () => mainWindow, maximize: { Toggle: ToggleWindowMaximized, IsMaximized: IsWindowMaximized } });
     RegisterGeneralControls({ webContentsGetter: () => mainWindow, workspacePath });
-    // Windows 系统通知按 AppUserModelId 归组到 Avery；与打包配置 appId 保持一致。
-    app.setAppUserModelId('com.avery.app');
     Menu.setApplicationMenu(null);
-    if (!cronRunnerLaunch) createWindow();
+    if (!cronRunnerLaunch) {
+      // 普通应用在首个窗口创建前注册托盘；后台 CronRunner 和自动化冒烟实例不暴露托盘。
+      if (process.env.AVERY_DESKTOP_SMOKE !== '1') EnsureTray(resolveAppIconPath());
+      createWindow();
+    }
     else void runDueCronTasksWhenReady(true).catch((error) => { console.error('CronTask runner failed:', error); app.exit(1); });
     if (process.env.AVERY_DESKTOP_SMOKE !== '1') return;
     const deadline = Date.now() + 15000;
@@ -425,5 +500,4 @@ if (IsBrowserCompanionProcess()) {
   app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
   // before-quit 先于窗口关闭事件：托盘「退出」触发的关闭必须放行，不再被托盘决策拦截。
   app.on('before-quit', () => { quitting = true; DestroyTray(); backendHost?.Shutdown(); });
-  }
 }

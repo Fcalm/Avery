@@ -1,12 +1,23 @@
 import { randomUUID } from 'node:crypto';
-import { CreateCronTaskSchema, UpdateCronTaskSchema, type CronRunState, type CronSchedule } from '@avery/contracts';
+import { BrowserTaskGrantSchema, CreateCronTaskSchema, UpdateCronTaskSchema, type BrowserTaskGrant, type CronRunState, type CronSchedule } from '@avery/contracts';
 import { CronOccurrenceAt, CronTotalOccurrences, ValidateCronScheduleTiming } from '../backend/cron-schedule';
 import { GetNow, WriteAudit, AssertRevision } from './helpers';
 
+function ParseBrowserTaskGrant(value: unknown): BrowserTaskGrant | undefined {
+  if (typeof value !== 'string' || !value) return undefined;
+  try {
+    const parsed = BrowserTaskGrantSchema.safeParse(JSON.parse(value));
+    return parsed.success ? parsed.data : undefined;
+  } catch { return undefined; }
+}
+
 function ToTask(row: any): any {
+  const browserTaskGrant = ParseBrowserTaskGrant(row.browser_task_grant_json);
   return {
     id: row.id, title: row.title, message: row.message, scenarioId: row.scenario_id, ...(row.resume_id ? { resumeId: row.resume_id } : {}),
-    browserAuthorized: row.browser_authorized === 1,
+    // 旧 browser_authorized 不能升级为新版授权；只有经过 Schema 校验且未撤销的 Grant 才有效。
+    browserAuthorized: Boolean(browserTaskGrant && !browserTaskGrant.revokedAt),
+    ...(browserTaskGrant ? { browserTaskGrant } : {}),
     schedule: JSON.parse(row.schedule_json), state: row.state, consumedOccurrences: row.consumed_occurrences,
     totalOccurrences: row.total_occurrences, nextRunAt: row.next_run_at, revision: row.revision,
     createdAt: row.created_at, updatedAt: row.updated_at,
@@ -38,17 +49,29 @@ export class CronTaskRepository {
     return this.db.prepare('SELECT * FROM cron_runs WHERE cron_task_id = ? ORDER BY occurrence DESC').all(cronTaskId).map(ToRun);
   }
 
-  Create(raw: unknown, resourceContext: { resumeId?: string; browserAuthorized?: boolean } = {}): any {
+  Create(raw: unknown, resourceContext: { resumeId?: string; browserTaskGrant?: BrowserTaskGrant } = {}): any {
     const input = CreateCronTaskSchema.parse(raw);
     ValidateCronScheduleTiming(input.schedule);
     const id = `cron-${randomUUID()}`;
     const now = GetNow();
     const total = CronTotalOccurrences(input.schedule);
     const nextRunAt = CronOccurrenceAt(input.schedule, 1);
-    const browserAuthorized = input.scenarioId === 'application' && resourceContext.browserAuthorized === true;
-    this.db.prepare('INSERT INTO cron_tasks(id,title,message,scenario_id,resume_id,browser_authorized,schedule_json,state,consumed_occurrences,total_occurrences,next_run_at,revision,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
-      .run(id, input.title, input.message, input.scenarioId, resourceContext.resumeId ?? null, browserAuthorized ? 1 : 0, JSON.stringify(input.schedule), 'active', 0, total, nextRunAt, 1, now, now);
-    WriteAudit(this.db, 'user', 'create', 'cron_task', id, { scenarioId: input.scenarioId, browserAuthorized });
+    if (input.scenarioId !== 'application' && resourceContext.browserTaskGrant) throw Object.assign(new Error('Default CronTasks cannot receive browser authorization.'), { code: 'VALIDATION_ERROR' });
+    const browserTaskGrant = input.scenarioId === 'application' && resourceContext.browserTaskGrant
+      ? BrowserTaskGrantSchema.parse(resourceContext.browserTaskGrant)
+      : undefined;
+    const browserAuthorized = Boolean(browserTaskGrant && !browserTaskGrant.revokedAt);
+    this.db.prepare('INSERT INTO cron_tasks(id,title,message,scenario_id,resume_id,browser_authorized,browser_task_grant_json,schedule_json,state,consumed_occurrences,total_occurrences,next_run_at,revision,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
+      .run(id, input.title, input.message, input.scenarioId, resourceContext.resumeId ?? null, browserAuthorized ? 1 : 0, browserTaskGrant ? JSON.stringify(browserTaskGrant) : null, JSON.stringify(input.schedule), 'active', 0, total, nextRunAt, 1, now, now);
+    WriteAudit(this.db, 'user', 'create', 'cron_task', id, {
+      scenarioId: input.scenarioId,
+      browserGrantPurpose: browserTaskGrant?.purpose ?? null,
+      browserAllowNavigation: browserTaskGrant?.allowNavigation ?? false,
+      browserAllowFormFill: browserTaskGrant?.allowFormFill ?? false,
+      browserAllowFileUpload: browserTaskGrant?.allowFileUpload ?? false,
+      browserAllowExternalSend: browserTaskGrant?.allowExternalSend ?? false,
+      browserResourceCount: browserTaskGrant?.resourceIds.length ?? 0,
+    });
     return this.Read(id);
   }
 
@@ -57,6 +80,9 @@ export class CronTaskRepository {
     const row = this.db.prepare('SELECT * FROM cron_tasks WHERE id = ?').get(input.cronTaskId);
     if (!row || row.state === 'cancelled') throw new Error('CronTask was not found.');
     AssertRevision(row, expectedRevision, 'cron_task', input.cronTaskId);
+    if (input.message !== undefined && input.message !== row.message && ParseBrowserTaskGrant(row.browser_task_grant_json)) {
+      throw Object.assign(new Error('Changing a browser CronTask message requires a new confirmed task so its BrowserTaskGrant can be frozen again.'), { code: 'CRON_BROWSER_GRANT_RECONFIRM_REQUIRED' });
+    }
     const schedule = (input.schedule ?? JSON.parse(row.schedule_json)) as CronSchedule;
     if (input.schedule) ValidateCronScheduleTiming(schedule);
     const total = CronTotalOccurrences(schedule);
@@ -72,19 +98,27 @@ export class CronTaskRepository {
   }
 
   Delete(id: string): any {
-    const row = this.db.prepare('SELECT revision FROM cron_tasks WHERE id = ?').get(id);
+    const row = this.db.prepare('SELECT revision,browser_task_grant_json FROM cron_tasks WHERE id = ?').get(id);
     if (!row) throw new Error('CronTask was not found.');
-    this.db.prepare("UPDATE cron_tasks SET state='cancelled',next_run_at=NULL,cancelled_at=?,revision=revision+1,updated_at=? WHERE id=?").run(GetNow(), GetNow(), id);
+    const now = GetNow();
+    const grant = ParseBrowserTaskGrant(row.browser_task_grant_json);
+    const revokedGrant = grant && !grant.revokedAt ? { ...grant, revokedAt: new Date(now).toISOString() } : grant;
+    this.db.prepare("UPDATE cron_tasks SET state='cancelled',next_run_at=NULL,cancelled_at=?,browser_authorized=0,browser_task_grant_json=?,revision=revision+1,updated_at=? WHERE id=?")
+      .run(now, revokedGrant ? JSON.stringify(revokedGrant) : null, now, id);
     WriteAudit(this.db, 'user', 'cancel', 'cron_task', id, {});
     return { id, deleted: true };
   }
 
   /** 只允许撤销创建时的任务级授权；重新授权必须重新经过 CronTask 创建确认。 */
   RevokeBrowserAuthorization(id: string): any {
-    const row = this.db.prepare('SELECT state,browser_authorized FROM cron_tasks WHERE id = ?').get(id);
+    const row = this.db.prepare('SELECT state,browser_task_grant_json FROM cron_tasks WHERE id = ?').get(id);
     if (!row || row.state === 'cancelled') throw new Error('CronTask was not found.');
-    if (row.browser_authorized !== 1) return this.Read(id);
-    this.db.prepare('UPDATE cron_tasks SET browser_authorized=0,revision=revision+1,updated_at=? WHERE id=?').run(GetNow(), id);
+    const grant = ParseBrowserTaskGrant(row.browser_task_grant_json);
+    if (!grant || grant.revokedAt) return this.Read(id);
+    const now = GetNow();
+    const revokedGrant = { ...grant, revokedAt: new Date(now).toISOString() };
+    this.db.prepare('UPDATE cron_tasks SET browser_authorized=0,browser_task_grant_json=?,revision=revision+1,updated_at=? WHERE id=?')
+      .run(JSON.stringify(revokedGrant), now, id);
     WriteAudit(this.db, 'user', 'revoke_browser_authorization', 'cron_task', id, {});
     return this.Read(id);
   }

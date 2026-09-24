@@ -175,10 +175,25 @@ export type BrowserToolName =
   | 'BrowserSwitchTab'
   | 'BrowserGoBack';
 
-export type BrowserEngine = 'electron' | 'chrome' | 'edge';
+/** Cron Runner 从持久任务记录注入的浏览器授权快照；模型和 Renderer 不能自行构造。 */
+export interface BrowserTaskGrantSnapshot {
+  mode: 'personal_browser_extension';
+  purpose: 'job_search' | 'job_application' | 'boss_contact';
+  allowNavigation: boolean;
+  allowFormFill: boolean;
+  allowFileUpload: boolean;
+  allowExternalSend: boolean;
+  resourceIds: string[];
+  grantedAt: string;
+  revokedAt?: string;
+}
+
+export type BrowserEngine = 'chrome' | 'edge';
 
 /** 浏览器动作提案由宿主根据当前页面引用生成；模型不能自行构造哈希或内部路径。 */
 export interface BrowserActionProposal {
+  /** 生产 Host 绑定使用的稳定提案标识；不得以 proposalHash 替代。 */
+  proposalId: string;
   proposalHash: string;
   toolName: BrowserToolName;
   canonicalArguments: Record<string, unknown>;
@@ -194,15 +209,16 @@ export interface BrowserActionProposal {
 export interface BrowserAutomationPort {
   Prepare(input: { toolName: BrowserToolName; arguments: Record<string, unknown> }): Promise<BrowserActionProposal>;
   Execute(input: { proposal: BrowserActionProposal; signal?: AbortSignal; deadline?: number }): Promise<{ data: unknown; status: 'succeeded' | 'status_unknown' }>;
-  /** probeConnection 仅由用户显式检测触发；普通状态读取不得启动 CDP 握手或弹出浏览器授权。 */
-  GetStatus(probeConnection?: boolean): Promise<{ available: boolean; profileExists: boolean; running: boolean; pageRevision: number; currentUrl?: string }>;
-  ClearProfile(): Promise<{ cleared: boolean }>;
+  /** probeConnection 仅由用户显式检测触发；普通状态读取不得启动浏览器。 */
+  GetStatus(probeConnection?: boolean): Promise<{ available: boolean; running: boolean; pageRevision: number; currentUrl?: string }>;
+  /** 当前扩展 Runtime 的任务身份；待确认动作须绑定此值，不能在会话切换后复用新任务页。 */
+  GetBrowserTaskId?(): string | undefined;
   /** 新 Run 或用户接管后废弃全部元素引用，强制先重新 Snapshot。 */
   ResetPageReferences(): void;
   Close(): Promise<void>;
   /** Cron Runner 设置可信任务上下文；任务级持久授权与浏览器在线状态分别校验。 */
-  SetUnattended?(value: boolean, context?: { cronTaskId?: string; browserAuthorized?: boolean }): Promise<void> | void;
-  /** 设置下一次浏览器动作使用的内核；切换时必须淘汰旧会话，不能跨 Profile 复用引用。 */
+  SetUnattended?(value: boolean, context?: { cronTaskId?: string; browserTaskGrant?: BrowserTaskGrantSnapshot }): Promise<void> | void;
+  /** 设置下一次浏览器动作使用的 Chrome/Edge；切换时淘汰旧任务页引用。 */
   SetEngine?(value: BrowserEngine): Promise<void> | void;
   /** 仅供受信任 Host 适配器运行固定页面提取表达式；不存在对应模型工具，也不得传入模型生成的脚本。 */
   EvaluateTrustedPage?(input: { site: 'boss_zhipin'; expression: string; signal?: AbortSignal; deadline?: number }): Promise<unknown>;
@@ -274,6 +290,10 @@ export interface ResumeWritePort {
 export interface ToolPorts {
   file: FileReadPort;
   resumeRead: ResumeReadPort;
+  /** 已绑定简历的 PDF/PNG 导出由 Host 完成；返回文件资源 ID，不暴露物理路径。 */
+  resumeExport?: {
+    Export(input: { resume: ResumeSnapshot; format: 'pdf' | 'png'; sessionId: string; signal?: AbortSignal }): Promise<{ fileId: string; fileName: string; mimeType: 'application/pdf' | 'image/png'; resumeId: string; resumeRevision: number; sizeBytes: number; sha256: string }>;
+  };
   resumeWrite: ResumeWritePort;
   profileWrite?: ProfileWritePort;
   jobSearch?: JobSearchPort;
@@ -331,6 +351,8 @@ export interface ToolContext {
   pendingSkillLoads?: Set<string>;
   /** 无人值守 Cron Run 已在创建时获得周期级授权；只由宿主内部入口设置。 */
   unattended?: boolean;
+  /** 无人值守浏览器权限的持久快照；普通交互 Run 不设置。 */
+  browserTaskGrant?: BrowserTaskGrantSnapshot;
   /** 当前 Provider/模型是否接受 image_url；截图工具据此在调用 CLI 前拒绝不兼容模型。 */
   supportsVisionInput?: boolean;
 }

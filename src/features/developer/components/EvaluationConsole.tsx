@@ -265,9 +265,9 @@ export function EvaluationConsole() {
     setCandidateDraft(structuredClone(candidates));
     setSelectedCandidateId(candidates[0]?.id ?? null);
     if (!selected) return;
-    void ListEvalDatasetVersions(selected.id).then(setVersions).catch(() => undefined);
+    void ListEvalDatasetVersions(selected.id).then(setVersions).catch((error) => ShowNotice(error instanceof Error ? error.message : '读取测试集版本失败'));
     void PreviewEvalProject(selected.id).then(setPromptPreview).catch(() => undefined);
-  }, [selected?.id]);
+  }, [selected?.id, ShowNotice]);
 
   useEffect(() => { void GetProviderCatalog().then((catalog) => setProviders(catalog.providers)).catch(() => undefined); }, []);
 
@@ -364,6 +364,13 @@ export function EvaluationConsole() {
       void ListEvalDatasetVersions(selected.id).then(setVersions).catch(() => undefined);
       ShowNotice('已切换测试集版本，下次评测生效');
     });
+  }
+
+  function OpenManage() {
+    if (!selected) return;
+    setImportJsonl('');
+    setShowManage(true);
+    void ListEvalDatasetVersions(selected.id).then(setVersions).catch((error) => ShowNotice(error instanceof Error ? error.message : '读取测试集版本失败'));
   }
 
   async function ConfirmDeleteVersion() {
@@ -500,7 +507,7 @@ export function EvaluationConsole() {
           </div>
 
           <section className="ev-sec">
-            <div className="ev-sec-h"><Icon name="selection" size={14} /><span>评测集选择</span><span className="sp" /><Button variant="quiet" onClick={() => { setImportJsonl(''); setShowManage(true); }}><Icon name="sliders" size={13} />管理</Button></div>
+            <div className="ev-sec-h"><Icon name="selection" size={14} /><span>评测集选择</span><span className="sp" /><Button variant="quiet" onClick={OpenManage}><Icon name="sliders" size={13} />管理</Button></div>
             <Select value={selected.datasetVersion ?? ''} ariaLabel="测试集版本" onChange={(value) => void SelectVersion(value)} options={versions.map((item) => ({ value: item.version, label: `${ShortHash(item.version)} · ${item.caseCount} 案例 · ${FormatTime(item.importedAt)}${item.isCurrent ? ' · 当前使用' : ''}` }))} />
             <div className="ev-hash"><Icon name="hash" size={13} /><span>数据集版本 {ShortHash(selected.datasetVersion)}，运行时会冻结为不可变快照</span></div>
           </section>
@@ -679,7 +686,7 @@ export function EvaluationConsole() {
         <li>需要重新评测时，请再发起一次新的评测。</li>
       </ul>
     </Modal>
-    <Modal open={showManage} title="管理测试集版本" onClose={() => setShowManage(false)} footer={<><DialogButton onClick={() => setShowManage(false)}>完成</DialogButton><DialogButton tone="accent" disabled={busy || !importJsonl.trim()} onClick={() => void ImportVersion()}>导入为新版本</DialogButton></>}>
+    <Modal open={showManage} title="管理测试集版本" variant="dialog" onClose={() => setShowManage(false)} footer={<><DialogButton onClick={() => setShowManage(false)}>完成</DialogButton><DialogButton tone="accent" disabled={busy || !importJsonl.trim()} onClick={() => void ImportVersion()}>导入为新版本</DialogButton></>}>
       <p className="ev-manage-note">测试集在导入时冻结成一个版本，已经跑过的评测始终读它当时用到的那一版，删除版本不会改变已有结果。</p>
       <div className="ev-ds-list">
         {versions.map((item) => <div className={`ev-ds-row ${item.isCurrent ? 'on' : ''}`} key={item.version}>

@@ -5,6 +5,7 @@ import type { ChatMessage, Conversation } from '../../../types/domain';
 import { useWorkspaceData } from '../../workspace/api/useWorkspaceData';
 import { usePatchWorkspace, useWorkspaceMutation, type WorkspaceMutationHandlers } from '../../workspace/api/mutationHelper';
 import { CreateEntityId } from '../../workspace/api/workspaceData';
+import { AppendConversationMessages, CompleteConversationMessage } from '../../workspace/api/workspaceMerge';
 
 /** 会话业务集合；来自工作空间聚合缓存。 */
 export function useConversations() {
@@ -79,7 +80,7 @@ export function useSetConversationArchived(handlers?: WorkspaceMutationHandlers)
 export function useAppendConversationMessages(handlers?: WorkspaceMutationHandlers) {
   return useWorkspaceMutation<{ conversationId: string; messages: ChatMessage[] }, { conversationId: string; count: number }>({
     mutationFn: ({ conversationId, messages }, options) => Unwrap(platformClient.workspace.AppendConversationMessages(conversationId, messages as ChatMessageInput[], options)),
-    applyServer: (data) => data,
+    applyServer: (data, variables) => AppendConversationMessages(data, variables.conversationId, variables.messages),
     ...handlers,
   });
 }
@@ -88,7 +89,7 @@ export function useAppendConversationMessages(handlers?: WorkspaceMutationHandle
 export function useCompleteConversationMessage(handlers?: WorkspaceMutationHandlers) {
   return useWorkspaceMutation<{ conversationId: string; messageId: string; content: string; thinkingContent?: string }, { conversationId: string; messageId: string }>({
     mutationFn: ({ conversationId, messageId, content, thinkingContent }, options) => Unwrap(platformClient.workspace.CompleteConversationMessage(conversationId, messageId, content, thinkingContent, options)),
-    applyServer: (data) => data,
+    applyServer: (data, variables) => CompleteConversationMessage(data, variables.conversationId, variables.messageId, variables.content, variables.thinkingContent),
     ...handlers,
   });
 }

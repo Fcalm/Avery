@@ -14,6 +14,32 @@ export interface SessionUsagePresentation {
   title: string;
 }
 
+export interface SessionTokenTotals {
+  source: 'actual' | 'unavailable' | 'legacy_estimate' | 'loading';
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  cachedInputTokens: number;
+}
+
+/** 缓存占比与轨迹分段统一以会话累计总 token（输入加输出）为分母。 */
+export function CalculateTokenSharePercent(part: number, totalTokens: number): number | null {
+  if (!Number.isSafeInteger(part) || !Number.isSafeInteger(totalTokens) || part < 0 || totalTokens <= 0 || part > totalTokens) return null;
+  return Math.round((part / totalTokens) * 100);
+}
+
+/** 输入框与轨迹卡片读取同一份会话账本；Trace 最近 50 条只用于事件列表。 */
+export function CreateSessionTokenUsage(usage: SessionTokenTotals) {
+  if (usage.source !== 'actual' || ![usage.promptTokens, usage.completionTokens, usage.totalTokens, usage.cachedInputTokens].every((value) => Number.isSafeInteger(value) && value >= 0)
+    || usage.totalTokens !== usage.promptTokens + usage.completionTokens || usage.cachedInputTokens > usage.promptTokens) return null;
+  return {
+    cachedInputTokens: usage.cachedInputTokens,
+    uncachedInputTokens: usage.promptTokens - usage.cachedInputTokens,
+    outputTokens: usage.completionTokens,
+    totalTokens: usage.totalTokens,
+  };
+}
+
 /**
  * 仅把 Provider 返回的最近一次 prompt_tokens 用于用户可见 Usage。
  * 缺失、历史估算和加载状态绝不显示为真实百分比，避免将本地推算误认为模型事实。

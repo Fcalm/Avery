@@ -17,8 +17,8 @@ export class AgentRunService {
   /** 查询已保存 DeepSeek 凭据对应的账户余额。 */
   GetBalance(): any { return this.agent.GetBalance(); }
 
-  /** 查询已保存 DeepSeek 凭据可访问的模型列表。 */
-  GetModels(): any { return this.agent.GetModels(); }
+  /** 查询指定 Provider 凭据可访问的模型列表；缺省 DeepSeek。参数必须原样转发：漏转发会被当成 DeepSeek 查询，把 DeepSeek 模型列表交回请求其它供应商的调用方。 */
+  GetModels(provider?: unknown): any { return this.agent.GetModels(provider); }
 
   /** 返回所有已配置 Provider 的脱敏模型目录。 */
   GetProviderCatalog(): any { return this.agent.GetProviderCatalog(); }
@@ -42,7 +42,7 @@ export class AgentRunService {
   ConfirmCronTask(confirmationId: string, accepted: boolean): any { return this.agent.ConfirmCronTask(confirmationId, accepted); }
 
   /** 应用或拒绝冻结的浏览器动作提案。 */
-  ConfirmBrowserAction(confirmationId: string, accepted: boolean): any { return this.agent.ConfirmBrowserAction(confirmationId, accepted); }
+  ConfirmBrowserAction(confirmationId: string, accepted: boolean, sessionId: string): any { return this.agent.ConfirmBrowserAction(confirmationId, accepted, { sessionId }); }
 
   /** 返回不含本地路径的浏览器状态；用户显式检测时可发起一次只读连接握手。 */
   GetBrowserRuntimeStatus(probeConnection?: boolean): any { return this.agent.GetBrowserRuntimeStatus(probeConnection); }
@@ -52,7 +52,6 @@ export class AgentRunService {
   RevokeCronBrowserAccess(input: unknown): any { return this.agent.RevokeCronBrowserAccess(input); }
 
   /** 清除 Avery 独立浏览器登录身份。 */
-  ClearBrowserProfile(): any { return this.agent.ClearBrowserProfile(); }
 
   /** 用户开始编辑简历前获取互斥锁。 */
   AcquireResumeEditLock(resumeId: string): any { return this.agent.AcquireResumeEditLock(resumeId); }
@@ -67,6 +66,9 @@ export class AgentRunService {
   ReloadSession(sessionId: string): any { return this.agent.ReloadSession(sessionId); }
 
   GetSessionAssistantState(sessionId: string): any { return this.agent.GetSessionAssistantState(sessionId); }
+
+  /** 批量返回会话场景映射（只读），与 GetSessionAssistantState 同源。 */
+  GetSessionScenes(): any { return this.agent.GetSessionScenes(); }
 
   async BindProjectEnvironment(sessionId: string, projectId: string): Promise<any> {
     await this.agent.BindProjectEnvironment(sessionId, projectId);

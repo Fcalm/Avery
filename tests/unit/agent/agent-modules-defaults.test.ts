@@ -252,15 +252,17 @@ describe('agent-modules-defaults', () => {
     expect(ApplicationScenarioPlaceholder.enabled).toBe(true);
     const applicationNames = CreateToolsModule(CreatePorts()).GetToolDefinitions('application').map((tool) => tool.definition.function.name);
     expect(new Set(applicationNames)).toEqual(new Set(ApplicationScenario.toolNames));
-    expect(applicationNames).toHaveLength(35);
+    expect(applicationNames).toHaveLength(36);
     expect(applicationNames).toContain('DeleteTodo');
-    expect(applicationNames).toEqual(expect.arrayContaining(['CreateCronTask', 'ReadCronTask', 'UpdateCronTask', 'DeleteCronTask', 'CollectJobs', 'ContactBossJobs', 'ReadApplicationStatus', 'SaveJob', 'UpdateApplicationStatus']));
+    expect(CreateToolsModule(CreatePorts()).GetToolDefinitions('application').find((tool) => tool.definition.function.name === 'ExportResumeFile')?.definition.function.description)
+      .toMatch(/^Use when a company application form requires a resume file upload or BOSS chat requires a resume image/);
+    expect(applicationNames).toEqual(expect.arrayContaining(['CreateCronTask', 'ReadCronTask', 'UpdateCronTask', 'DeleteCronTask', 'ExportResumeFile', 'CollectJobs', 'ContactBossJobs', 'ReadApplicationStatus', 'SaveJob', 'UpdateApplicationStatus']));
     expect(applicationNames).not.toEqual(expect.arrayContaining(['CreateResume', 'UpdateResume', 'UpdateProfile', 'SearchJobs']));
     const instructions = BuildApplicationCompiledInstructions('application-tools');
     expect(instructions.compiled).toContain('BrowserSelect');
     expect(instructions.compiled).toContain('invalidate all refs');
     expect(instructions.compiled).toContain('next Run must also start browser work with a fresh BrowserSnapshot');
-    expect(instructions.compiled).toContain('exact attachment path shown in runtime-context');
+    expect(instructions.compiled).toContain('exact fileId returned by ExportResumeFile');
     expect(instructions.compiled).toContain('last and only browser action');
     expect(instructions.compiled).toContain('ReadApplicationStatus');
     expect(instructions.compiled).toContain('they do not require a bound resume');
@@ -271,12 +273,17 @@ describe('agent-modules-defaults', () => {
     const createCronTask = applicationDefinitions.find((tool) => tool.definition.function.name === 'CreateCronTask');
     expect(createCronTask?.definition.function.description).toContain('scenarioId=application');
     expect((createCronTask?.definition.function.parameters.properties?.scenarioId as { description?: string })?.description).toContain('job search');
+    const cronScheduleDescription = (createCronTask?.definition.function.parameters.properties?.schedule as { description?: string })?.description;
+    expect(cronScheduleDescription).toContain('Pass a JSON object, not a string containing JSON');
+    expect(cronScheduleDescription).toContain('{"type":"once"');
+    expect(cronScheduleDescription).toContain('{"type":"daily"');
+    expect(cronScheduleDescription).toContain('{"type":"weekly"');
     expect(applicationDefinitions.find((tool) => tool.definition.function.name === 'SaveJob')?.definition.function.description).toContain('does not require a bound resume');
     expect(tools.find((tool) => tool.definition.function.name === 'UpdateResume')?.requiredResources).toEqual(['bound_resume']);
     expect(applicationDefinitions.find((tool) => tool.definition.function.name === 'UpdateApplicationStatus')?.requiredResources).toEqual(['bound_resume']);
     expect((applicationDefinitions.find((tool) => tool.definition.function.name === 'UpdateApplicationStatus')?.definition.function.parameters.properties?.status as { enum?: string[] })?.enum).not.toContain('saved');
     expect(applicationDefinitions.find((tool) => tool.definition.function.name === 'BrowserWait')?.definition.function.description).toContain('domcontentloaded');
-    expect(applicationDefinitions.find((tool) => tool.definition.function.name === 'BrowserUploadFile')?.definition.function.description).toContain('attachment path exposed in runtime-context');
+    expect(applicationDefinitions.find((tool) => tool.definition.function.name === 'BrowserUploadFile')?.definition.function.description).toContain('exact fileId returned by ExportResumeFile');
     expect(applicationDefinitions.find((tool) => tool.definition.function.name === 'BrowserScreenshot')?.definition.function.description).toContain('vision');
     expect(applicationDefinitions.find((tool) => tool.definition.function.name === 'BrowserInspectForm')).toBeUndefined();
     expect(applicationDefinitions.find((tool) => tool.definition.function.name === 'BrowserValidateForm')?.sideEffect).toBe('none');
@@ -331,6 +338,22 @@ describe('agent-modules-defaults', () => {
     expect(JSON.parse(result.content)).toMatchObject({ ok: true, collectionId: 'collection-1' });
   });
 
+  it('无人值守岗位采集缺少 BrowserTaskGrant 时暂停且不调用端口', async () => {
+    const collect = vi.fn();
+    const base = CreateToolContext();
+    const context = CreateToolContext({
+      scenarioId: 'application', unattended: true,
+      ports: { ...base.ports, jobCollection: { Collect: collect, SaveCandidate: vi.fn() } },
+    });
+    const result = await CreateToolsModule(CreatePorts()).ExecuteToolCall({
+      id: 'collect-ungranted', type: 'function', function: { name: 'CollectJobs', arguments: JSON.stringify({ platforms: ['boss_zhipin'], queries: [{ keyword: 'Agent', city: '佛山' }], sort: 'relevance', maxResults: 10 }) },
+    }, context);
+
+    expect(collect).not.toHaveBeenCalled();
+    expect(result.disposition).toBe('pause');
+    expect(JSON.parse(result.content)).toMatchObject({ ok: false, code: 'BROWSER_CRON_SCOPE_DENIED' });
+  });
+
   it('SaveJob 引用模式只把候选引用与决策分传给 Host', async () => {
     const saveCandidate = vi.fn(async () => ({ jobId: 'job-boss-a1', jobRevision: 2 }));
     const context = CreateToolContext({ scenarioId: 'application', ports: { ...CreateToolContext().ports, jobCollection: { Collect: vi.fn(), SaveCandidate: saveCandidate } } });
@@ -343,7 +366,7 @@ describe('agent-modules-defaults', () => {
   });
 
   it('ContactBossJobs 冻结一个批次并使用现有浏览器确认通道', async () => {
-    const proposal = { proposalHash: 'boss-plan-hash', toolName: 'ContactBossJobs' as any, canonicalArguments: { frozen: true }, summary: '即将联系 1 个岗位', risk: 'high' as const, forceConfirmation: false, pageRevision: 0, resourceIds: ['jobs:job-1'] };
+    const proposal = { proposalId: 'proposal-boss-plan', proposalHash: 'boss-plan-hash', toolName: 'ContactBossJobs' as any, canonicalArguments: { frozen: true }, summary: '即将联系 1 个岗位', risk: 'high' as const, forceConfirmation: false, pageRevision: 0, resourceIds: ['jobs:job-1'] };
     const prepare = vi.fn(async () => proposal);
     const base = CreateToolContext();
     const resume = { id: 'resume-1', name: '产品简历', content: 'resume', revision: 2 };
@@ -355,8 +378,37 @@ describe('agent-modules-defaults', () => {
     expect(context.pendingBrowserActions?.size).toBe(1);
   });
 
+  it('无人值守 BOSS 沟通仅接受 boss_contact Grant，且文件必须在冻结资源中', async () => {
+    const prepare = vi.fn();
+    const base = CreateToolContext();
+    const resume = { id: 'resume-1', name: '产品简历', content: 'resume', revision: 2 };
+    const context = CreateToolContext({
+      scenarioId: 'application', unattended: true, boundResume: resume,
+      browserTaskGrant: {
+        mode: 'personal_browser_extension', purpose: 'job_search', allowNavigation: true,
+        allowFormFill: false, allowFileUpload: false, allowExternalSend: false,
+        resourceIds: ['resume:resume-1'], grantedAt: '2026-09-23T02:00:00.000Z',
+      },
+      ports: { ...base.ports, resumeRead: { ...base.ports.resumeRead, ReadCurrent: vi.fn(async () => resume) }, bossContact: { Prepare: prepare, Execute: vi.fn(), Cancel: vi.fn() } },
+    });
+    const module = CreateToolsModule(CreatePorts());
+    const call = (imageAssetId?: string) => module.ExecuteToolCall({
+      id: `contact-${imageAssetId ?? 'none'}`, type: 'function', function: { name: 'ContactBossJobs', arguments: JSON.stringify({ items: [{ jobId: 'job-1', message: { mode: 'first_quick_phrase' } }], ...(imageAssetId ? { imageAssetId } : {}) }) },
+    }, context);
+
+    const wrongPurpose = await call();
+    expect(JSON.parse(wrongPurpose.content)).toMatchObject({ code: 'BROWSER_CRON_SCOPE_DENIED' });
+    context.browserTaskGrant = {
+      ...context.browserTaskGrant!, purpose: 'boss_contact', allowFormFill: true, allowExternalSend: true,
+    };
+    const ungrantedFile = await call('image-1');
+    expect(JSON.parse(ungrantedFile.content)).toMatchObject({ code: 'BROWSER_CRON_SCOPE_DENIED' });
+    expect(prepare).not.toHaveBeenCalled();
+  });
+
   it('BrowserFillForm 只在投递场景接受已选择的档案来源且不把正文放入模型参数', async () => {
     const prepare = vi.fn(async ({ toolName, arguments: args }: any) => ({
+      proposalId: `proposal-fill-form-${String(args.continuationId ?? 'initial')}`,
       proposalHash: `fill-form-hash-${String(args.continuationId ?? 'initial')}`, toolName, canonicalArguments: args, summary: '填写 2 个输入框', risk: 'medium' as const,
       forceConfirmation: false, pageRevision: 3, resourceIds: ['browser:avery-default'],
     }));
@@ -466,6 +518,42 @@ describe('agent-modules-defaults', () => {
     const resumeResult = await module.ExecuteToolCall({ id: 'resume-read', type: 'function', function: { name: 'ReadResume', arguments: '{"resumeId":"resume-1"}' } }, context);
     expect(JSON.parse(resumeResult.content)).toMatchObject({ ok: true, mode: 'resume', bound: true, resume: { id: 'resume-1', content: '私有简历正文', revision: 3 } });
     expect(bindResume).toHaveBeenCalledWith(resume);
+  });
+
+  it('ExportResumeFile 仅导出已绑定简历，并将 fileId 授权给同一 Run 的上传工具', async () => {
+    const resume = { id: 'resume-1', name: '产品简历', content: '简历正文', revision: 3 };
+    const fileId = 'asset://resume/11111111-1111-4111-8111-111111111111';
+    const exportFile = vi.fn(async () => ({ fileId, fileName: '产品简历.pdf', mimeType: 'application/pdf' as const, resumeId: resume.id, resumeRevision: 3, sizeBytes: 42, sha256: 'abc' }));
+    const browserPrepare = vi.fn(async () => ({ proposalId: 'upload-proposal', proposalHash: 'upload-hash', toolName: 'BrowserUploadFile', canonicalArguments: {}, summary: '上传简历', risk: 'low' as const, forceConfirmation: false, pageRevision: 1, resourceIds: [] }));
+    const base = CreateToolContext();
+    const context = CreateToolContext({
+      scenarioId: 'application', boundResume: resume,
+      ports: { ...base.ports, resumeRead: { ...base.ports.resumeRead, ReadCurrent: vi.fn(async () => resume) }, resumeExport: { Export: exportFile }, browser: { Prepare: browserPrepare, Execute: vi.fn(async () => ({ ok: true })) } },
+    });
+    const tools = CreateToolsModule(CreatePorts());
+    const exportCall = { id: 'export-pdf', type: 'function' as const, function: { name: 'ExportResumeFile', arguments: '{"format":"pdf"}' } };
+    const exported = await tools.ExecuteToolCall(exportCall, context);
+    expect(JSON.parse(exported.content)).toMatchObject({ ok: true, fileId, resumeId: resume.id, resumeRevision: 3 });
+    expect(exportFile).toHaveBeenCalledWith(expect.objectContaining({ resume, format: 'pdf', sessionId: context.sessionId }));
+    expect(context.attachments).toContainEqual({ name: '产品简历.pdf', path: fileId });
+
+    await tools.ExecuteToolCall({ id: 'upload-pdf', type: 'function', function: { name: 'BrowserUploadFile', arguments: JSON.stringify({ ref: '@e1', pageRevision: 1, fileId }) } }, context);
+    expect(browserPrepare).toHaveBeenCalledOnce();
+
+    const unbound = CreateToolContext({ scenarioId: 'application', ports: { ...base.ports, resumeExport: { Export: exportFile } } });
+    const denied = await tools.ExecuteToolCall({ ...exportCall, id: 'export-unbound' }, unbound);
+    expect(JSON.parse(denied.content)).toMatchObject({ ok: false, code: 'RESUME_NOT_BOUND' });
+  });
+
+  it('ExportResumeFile 不向无人值守 Run 新增临时文件授权', async () => {
+    const resume = { id: 'resume-1', name: '产品简历', content: '简历正文', revision: 3 };
+    const exportFile = vi.fn();
+    const base = CreateToolContext();
+    const context = CreateToolContext({ scenarioId: 'application', unattended: true, boundResume: resume, ports: { ...base.ports, resumeRead: { ...base.ports.resumeRead, ReadCurrent: vi.fn(async () => resume) }, resumeExport: { Export: exportFile } } });
+    const result = await CreateToolsModule(CreatePorts()).ExecuteToolCall({ id: 'cron-export', type: 'function', function: { name: 'ExportResumeFile', arguments: '{"format":"png"}' } }, context);
+    expect(JSON.parse(result.content)).toMatchObject({ ok: false, code: 'BROWSER_CRON_SCOPE_DENIED' });
+    expect(result.disposition).toBe('pause');
+    expect(exportFile).not.toHaveBeenCalled();
   });
 
   it('SaveJob 无需绑定简历且只返回岗位资源回执', async () => {

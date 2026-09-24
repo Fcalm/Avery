@@ -55,6 +55,7 @@ describe('v13 岗位截止时间迁移', () => {
       Array.from({ length: manifest.migrations.length }, (_, index) => index + 1),
     );
     expect(db.prepare('PRAGMA table_info(jobs)').all().map((column: any) => column.name)).toContain('deadline');
+    expect(db.prepare('PRAGMA table_info(cron_tasks)').all().map((column: any) => column.name)).toContain('browser_task_grant_json');
     expect(db.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_jobs_deadline'").get())
       .toEqual({ name: 'idx_jobs_deadline' });
     db.close();

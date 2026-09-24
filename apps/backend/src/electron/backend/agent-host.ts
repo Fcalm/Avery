@@ -1,29 +1,31 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { readFile, realpath } from 'node:fs/promises';
 import * as path from 'node:path';
 import { RunAgentLoop } from '@avery/agent-core';
-import { CreateRunSnapshot, ResolveModules } from '@avery/agent-module-host';
+import { CreateRunSnapshot, HostSdkVersion, ResolveModules } from '@avery/agent-module-host';
 import { ApplicationScenario, BuildApplicationCompiledInstructions, BuildDefaultCompiledInstructions, CreateDefaultModules, DefaultScenario } from '@avery/agent-modules-defaults';
 import { IsRuntimeContextMessage } from '@avery/agent-sdk';
-import type { AgentMessage, AgentModules, BossContactPort, BrowserAutomationPort, BrowserEngine, CompiledInstructions, ConfirmationMode, JobCollectionPort, ProviderUsageFact, ReasoningEffort, ScenarioSnapshot, SkillSnapshot } from '@avery/agent-sdk';
+import type { AgentMessage, AgentModules, BossContactPort, BrowserAutomationPort, BrowserEngine, CompiledInstructions, ConfirmationMode, JobCollectionPort, ProviderUsageFact, ReasoningEffort, ResumeSnapshot, ScenarioSnapshot, SkillSnapshot } from '@avery/agent-sdk';
 import { AgentFileReader } from './agent-file-reader';
 import { AgentResumePort } from './agent-resume-port';
 import { ResumeLockStore } from './resume-lock-store';
 import { CreateVisionUserMessage, HydrateVisionMessage, SupportsVisionInput } from './vision-input';
 import { AgentBrowserRuntime } from './agent-browser-runtime';
+import { BrowserExtensionBridge, type BrowserTaskCleanupOutcome } from './browser-extension-bridge';
 import { AgentSkillRegistry } from './agent-skill-registry';
 import { JobCollectionService } from './job-collection-service';
 import { BossContactService } from './boss-contact-service';
-import { CreateCronTaskSchema } from '@avery/contracts';
+import { BrowserTaskGrantSchema, CreateCronTaskSchema, type BrowserTaskGrant, type BrowserTaskGrantPurpose } from '@avery/contracts';
 
 /** 用户编辑锁的稳定 ownerId；前端经 bridge 加解锁都以此为准。 */
 const UserLockOwnerId = 'user-main';
 const SessionSnapshotTtlMs = 24 * 60 * 60 * 1000;
 const RuntimeTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
-type SupportedProvider = 'DeepSeek' | 'Z.AI' | '自定义';
+type SupportedProvider = 'DeepSeek' | 'Z.AI' | 'MIMO' | '自定义';
 
 function NormalizeProvider(value: unknown, fallback: SupportedProvider = 'DeepSeek'): SupportedProvider {
-  return value === 'DeepSeek' || value === 'Z.AI' || value === '自定义' ? value : fallback;
+  return value === 'DeepSeek' || value === 'Z.AI' || value === 'MIMO' || value === '自定义' ? value : fallback;
 }
 
 /** 兼容迁移旧版中文权限值；所有新运行统一使用稳定的英文枚举。 */
@@ -99,7 +101,7 @@ function NormalizeSessionAssistantState(value: unknown): SessionAssistantState |
   if (typeof candidate.model !== 'string') return null;
   const model = candidate.model.trim();
   if (!model || model.length > 200) return null;
-  const inferredProvider: SupportedProvider = model === 'glm-5.3-flash' ? 'Z.AI' : model.startsWith('deepseek-') ? 'DeepSeek' : '自定义';
+  const inferredProvider: SupportedProvider = model === 'glm-5.3-flash' ? 'Z.AI' : model.startsWith('mimo-') ? 'MIMO' : model.startsWith('deepseek-') ? 'DeepSeek' : '自定义';
   return { provider: NormalizeProvider(candidate.provider, inferredProvider), model, confirmationMode: NormalizeConfirmationMode(candidate.confirmationMode), reasoningEffort: NormalizeReasoningEffort(candidate.reasoningEffort) };
 }
 
@@ -109,11 +111,49 @@ function RequireString(value: unknown, field: string, maxLength = 20000): string
   return value.trim();
 }
 
+type BrowserTaskGrantDraft = Omit<BrowserTaskGrant, 'grantedAt' | 'revokedAt'>;
+
+/** 未明确表达外部写入时按岗位搜索收窄；确认页会展示最终推断结果。 */
+function InferBrowserTaskGrant(input: { title: string; message: string }, resources: { resumeId?: string; profileIds?: string[] }): BrowserTaskGrantDraft {
+  const text = `${input.title}\n${input.message}`.toLocaleLowerCase();
+  const bossContact = /(?:boss|直聘).{0,20}(?:打招呼|沟通|联系|发消息|发送消息)|(?:打招呼|联系招聘者|contact recruiter|send message)/i.test(text);
+  const application = /投递|申请|网申|填写(?:申请|表单)|填表|提交(?:申请|简历)|上传(?:简历|附件)|\bapply\b|application form|submit application|fill (?:in )?(?:the )?form|upload (?:a )?resume/i.test(text);
+  const purpose: BrowserTaskGrantPurpose = bossContact ? 'boss_contact' : application ? 'job_application' : 'job_search';
+  const allowFormFill = purpose !== 'job_search';
+  const resourceIds = [
+    ...(resources.resumeId ? [`resume:${resources.resumeId}`] : []),
+    ...(allowFormFill ? (resources.profileIds ?? []).map((id) => `profile:${id}`) : []),
+  ];
+  return {
+    mode: 'personal_browser_extension',
+    purpose,
+    allowNavigation: true,
+    allowFormFill,
+    // 第一版 CronTask 不继承临时附件；没有持久文件资源时不得承诺后台上传。
+    allowFileUpload: false,
+    allowExternalSend: purpose !== 'job_search',
+    resourceIds: [...new Set(resourceIds)],
+  };
+}
+
+function BrowserGrantSummary(grant: BrowserTaskGrantDraft): string {
+  const purpose = grant.purpose === 'job_search' ? '岗位搜索/读取' : grant.purpose === 'boss_contact' ? 'BOSS 沟通' : '企业官网投递';
+  const permissions = [
+    grant.allowNavigation && '导航和读取',
+    grant.allowFormFill && '填写表单或消息',
+    grant.allowFileUpload && '上传文件',
+    grant.allowExternalSend && '发送消息或提交',
+  ].filter(Boolean).join('、');
+  return `任务用途：${purpose}；授权能力：${permissions || '无浏览器写入'}；冻结持久资源：${grant.resourceIds.length} 项。`;
+}
+
 type AgentHostBrowserRuntime = BrowserAutomationPort & {
   Close(): Promise<void>;
+  GetBrowserTaskId?(): string | undefined;
+  /** 收回当前交互 browserTaskId，保留共享扩展 Bridge 以便后续任务复用。 */
+  CloseTask?(options?: { deadline: number }): Promise<BrowserTaskCleanupOutcome | void>;
   ResetPageReferences(): void;
   GetStatus(probeConnection?: boolean): Promise<unknown>;
-  ClearProfile(): Promise<unknown>;
 };
 
 export interface AgentHostOptions {
@@ -125,10 +165,10 @@ export interface AgentHostOptions {
   credentialPort: any;
   resolveProjectEnvironment?: (projectId: string) => Promise<unknown> | unknown;
   resumeLockStore?: ResumeLockStore;
-  agentBrowserExecutablePath?: string;
-  browserCompanionExecutablePath?: string;
-  browserCompanionAppPath?: string;
   externalBrowserPaths?: Partial<Record<'chrome' | 'edge', string>>;
+  browserExtensionBridge?: BrowserExtensionBridge;
+  /** 桌面主进程复用现有 PDF/PNG 渲染；仅 Backend AgentHost 能接收生成路径。 */
+  renderResumeFile?: (input: { resume: { name: string; summary: string; content: string }; format: 'pdf' | 'png'; assetId: string }) => Promise<{ path: string; fileName: string }>;
   /** 构造期 Skill 固定目录测试接缝；生产环境使用应用内置 skills 目录。 */
   skillRootPath?: string;
   /** 构造期测试接缝；生产组合根不传入，不能由 Renderer、IPC 或环境变量选择。 */
@@ -143,6 +183,8 @@ export interface AgentHostOptions {
   scenarioOverride?: ScenarioSnapshot;
   /** Cron 数据写入后的 OS 唤醒同步由 Backend 组合根提供。 */
   onCronScheduleChanged?: () => Promise<void> | void;
+  /** Cleanup deadline test seam; production defaults to six seconds. */
+  browserTaskCleanupTimeoutMs?: number;
 }
 
 /**
@@ -155,6 +197,9 @@ export class AgentHost {
   private moduleConfigPath: string;
   private Emit: (event: unknown) => void;
   private business: any;
+  private workspacePath: string;
+  private renderResumeFile?: AgentHostOptions['renderResumeFile'];
+  private generatedAssets = new Map<string, { sessionId: string; physicalPath: string; name: string; mimeType: 'application/pdf' | 'image/png' }>();
   private observabilityPort: any;
   private credentialPort: any;
   private resolveProjectEnvironment: (projectId: string) => Promise<unknown> | unknown;
@@ -167,6 +212,14 @@ export class AgentHost {
   private pendingBrowserActions = new Map<string, any>();
   private pendingCronTasks = new Map<string, any>();
   private browserRunId: string | null = null;
+  private browserSessionId: string | null = null;
+  private currentSessionId: string | null = null;
+  /**
+   * Host 侧的 task 收尾幂等屏障。Runtime 会在 CloseTask 前把自身引用清空，
+   * 但测试接缝/迟到 promise 可能暂时仍返回旧 ID；同一 Host 生命周期内绝不
+   * 对已经进入收尾的 task 再发第二次 CloseTask。
+   */
+  private closedBrowserTaskIds = new Set<string>();
   private toolLedger = new Map<string, any>();
   private projectEnvironments = new Map<string, any>();
   private sessionSnapshots = new Map<string, any>();
@@ -195,6 +248,9 @@ export class AgentHost {
   private compileInstructions: (scenarioId: 'default' | 'application', toolPolicyHash: string) => CompiledInstructions;
   private scenarioOverride?: ScenarioSnapshot;
   private readonly defaultBrowserEngine: BrowserEngine;
+  private readonly browserTaskCleanupTimeoutMs: number;
+  /** 旧 pending binding 只允许显式注入的测试 Runtime 适配器读取；生产组合根永不打开此兼容口。 */
+  private readonly allowLegacyBrowserBindings: boolean;
   private skillRegistry: AgentSkillRegistry;
   private onCronScheduleChanged: () => Promise<void> | void;
   private scheduledRequestIds = new Set<string>();
@@ -209,11 +265,13 @@ export class AgentHost {
         if (event.type === 'content_delta' && typeof event.delta === 'string') output.content += event.delta;
         if (event.type === 'thinking_delta' && typeof event.delta === 'string') output.thinkingContent += event.delta;
         if (['completed', 'cancelled', 'error', 'waiting_user_input', 'waiting_confirmation', 'paused'].includes(event.type)) output.terminal = event.type;
-        if (event.type === 'browser_user_action' || event.type === 'question_requested' || event.type === 'waiting_user_input' || event.type === 'waiting_confirmation') output.needsAttention = true;
+        if (event.type === 'browser_user_action' || event.type === 'question_requested' || event.type === 'waiting_user_input' || event.type === 'waiting_confirmation' || event.type === 'paused') output.needsAttention = true;
       }
       options.Emit(event);
     };
     this.business = options.business;
+    this.workspacePath = options.workspacePath;
+    this.renderResumeFile = options.renderResumeFile;
     this.observabilityPort = options.observability;
     this.credentialPort = options.credentialPort;
     this.resolveProjectEnvironment = options.resolveProjectEnvironment ?? (() => null);
@@ -230,21 +288,26 @@ export class AgentHost {
       ? BuildApplicationCompiledInstructions(toolPolicyHash)
       : BuildDefaultCompiledInstructions(toolPolicyHash));
     this.scenarioOverride = options.scenarioOverride;
-    this.defaultBrowserEngine = options.scenarioOverride
-      ? 'electron'
-      : options.externalBrowserPaths?.edge
+    this.defaultBrowserEngine = options.externalBrowserPaths?.edge
         ? 'edge'
         : options.externalBrowserPaths?.chrome
           ? 'chrome'
-          : 'electron';
+          : 'edge';
+    this.browserTaskCleanupTimeoutMs = Number.isSafeInteger(options.browserTaskCleanupTimeoutMs) && (options.browserTaskCleanupTimeoutMs as number) > 0
+      ? Math.min(options.browserTaskCleanupTimeoutMs as number, 30_000)
+      : 6_000;
+    this.allowLegacyBrowserBindings = options.browserRuntime !== undefined;
     this.skillRegistry = new AgentSkillRegistry(options.skillRootPath);
     this.browserRuntime = options.browserRuntime ?? new AgentBrowserRuntime({
-      executablePath: options.agentBrowserExecutablePath ?? path.join(options.userDataPath, 'agent-browser', 'runtime-unavailable'),
-      companionExecutablePath: options.browserCompanionExecutablePath ?? path.join(options.userDataPath, 'agent-browser', 'companion-unavailable'),
-      companionAppPath: options.browserCompanionAppPath,
       externalBrowserPaths: options.externalBrowserPaths,
-      runtimeRoot: path.join(options.userDataPath, 'agent-browser'),
+      browserExtensionBridge: options.browserExtensionBridge ?? new BrowserExtensionBridge({
+        statePath: path.join(options.userDataPath, 'browser-extension', 'bridge.json'),
+        browserPaths: options.externalBrowserPaths,
+      }),
+      runtimeRoot: path.join(options.userDataPath, 'browser-runtime'),
       resolveUploadFile: async (fileId) => {
+        const generated = this.generatedAssets.get(fileId);
+        if (generated) return generated.physicalPath;
         const resolved = await this.business?.ResolveAttachmentUri?.(fileId);
         return typeof resolved === 'string' ? resolved : resolved?.physicalPath ?? null;
       },
@@ -265,7 +328,10 @@ export class AgentHost {
         browser: this.browserRuntime,
         loadViewModel: () => this.business.LoadViewModel(),
         saveJob: (input) => this.business.SaveTrackedJob(input),
-        resolveAsset: async (assetId) => this.business.ResolveAttachmentUri(assetId),
+        resolveAsset: async (assetId) => {
+          const generated = this.generatedAssets.get(assetId);
+          return generated ? { name: generated.name, mimeType: generated.mimeType, physicalPath: generated.physicalPath } : this.business.ResolveAttachmentUri(assetId);
+        },
         readResume: (resumeId) => this.resumeReadPort.ReadCurrent(resumeId),
         getBrowserStatus: () => this.browserRuntime.GetStatus(true),
         createBatch: (input) => this.business.CreateBossContactBatch(input),
@@ -280,18 +346,48 @@ export class AgentHost {
   }
 
   SetWorkspacePath(workspacePath: string): void {
+    this.workspacePath = workspacePath;
+    this.generatedAssets.clear();
     this.fileReader.SetOcrCacheRoot(workspacePath ? path.join(workspacePath, 'derived', 'ocr') : null);
   }
 
   async Close(): Promise<void> {
     this.jobCollectionService?.Close();
     await this.browserRuntime.Close();
+    this.generatedAssets.clear();
+    this.browserSessionId = null;
+    this.browserRunId = null;
     await this.fileReader.Close();
+  }
+
+  /** 仅从已绑定的当前简历生成文件；资源 ID 在当前会话授权，物理路径只留在 Host。 */
+  private async ExportBoundResumeFile(resume: ResumeSnapshot, format: 'pdf' | 'png', sessionId: string, signal?: AbortSignal): Promise<{ fileId: string; fileName: string; mimeType: 'application/pdf' | 'image/png'; resumeId: string; resumeRevision: number; sizeBytes: number; sha256: string }> {
+    if (!this.renderResumeFile) throw Object.assign(new Error('Resume file export is unavailable.'), { code: 'RESUME_EXPORT_UNAVAILABLE' });
+    if (signal?.aborted) throw Object.assign(new Error('Resume file export was cancelled.'), { code: 'CANCELLED' });
+    if (!Number.isSafeInteger(resume.revision) || (resume.revision as number) < 1) throw Object.assign(new Error('The bound resume revision is unavailable.'), { code: 'RESUME_BINDING_STALE' });
+    const assetId = randomUUID();
+    const exported = await this.renderResumeFile({ resume: { name: resume.name, summary: resume.summary ?? '', content: resume.content }, format, assetId });
+    const assetRoot = await realpath(path.join(this.workspacePath, 'exports', 'agent-resume-files', assetId));
+    const physicalPath = await realpath(exported.path);
+    if (path.dirname(physicalPath) !== assetRoot || path.basename(physicalPath) !== exported.fileName || path.extname(physicalPath).toLowerCase() !== `.${format}`) throw Object.assign(new Error('The exported resume path is invalid.'), { code: 'RESUME_EXPORT_INVALID' });
+    const bytes = await readFile(physicalPath);
+    if (bytes.length === 0 || bytes.length > 25 * 1024 * 1024) throw Object.assign(new Error('The exported resume exceeds the browser upload size limit.'), { code: 'RESUME_EXPORT_INVALID' });
+    const validPdf = format === 'pdf' && bytes.subarray(0, 5).equals(Buffer.from('%PDF-'));
+    const validPng = format === 'png' && bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+    if (!validPdf && !validPng) throw Object.assign(new Error('The exported resume format is invalid.'), { code: 'RESUME_EXPORT_INVALID' });
+    const current = await this.resumeReadPort.ReadCurrent(resume.id);
+    if (signal?.aborted) throw Object.assign(new Error('Resume file export was cancelled.'), { code: 'CANCELLED' });
+    if (!current || current.revision !== resume.revision) throw Object.assign(new Error('The resume changed during export. Read it again before exporting.'), { code: 'RESUME_BINDING_STALE' });
+    const fileId = `asset://resume/${assetId}`;
+    const mimeType = format === 'pdf' ? 'application/pdf' : 'image/png';
+    this.generatedAssets.set(fileId, { sessionId, physicalPath, name: exported.fileName, mimeType });
+    return { fileId, fileName: exported.fileName, mimeType, resumeId: resume.id, resumeRevision: resume.revision as number, sizeBytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') };
   }
 
   /** 会话删除后清除全部会话私有运行态；Tool Ledger 与 Trace 作为外部动作审计继续保留。 */
   DeleteSessionResources(sessionId: string): void {
     this.jobCollectionService?.DeleteSession(sessionId);
+    for (const [fileId, asset] of this.generatedAssets) if (asset.sessionId === sessionId) this.generatedAssets.delete(fileId);
     const requestIds = new Set<string>();
     for (const [requestId, snapshot] of this.runSnapshots) {
       if (snapshot?.sessionId === sessionId) requestIds.add(requestId);
@@ -360,7 +456,7 @@ export class AgentHost {
         packageName: String((descriptor as any).packageName || `local.${slot}`),
         name: String((descriptor as any).name || `local.${slot}`),
         version: String((descriptor as any).version || '0.1.0'),
-        sdkVersion: String((descriptor as any).sdkVersion || '0.1.0'),
+        sdkVersion: String((descriptor as any).sdkVersion || HostSdkVersion),
         create: () => {
           delete require.cache[entry];
           const loaded = require(entry);
@@ -506,8 +602,14 @@ export class AgentHost {
   TestConnection(config: unknown): any { this.EnsureModulesReady(); return this.modules.modelProvider.TestConnection(config); }
   /** 查询已加密保存的 DeepSeek Key 对应余额；不会向渲染层暴露凭据。 */
   GetBalance(): any { this.EnsureModulesReady(); return this.modules.modelProvider.GetBalance(); }
-  /** 查询当前凭据可访问的 DeepSeek 模型；不会向渲染层暴露凭据。 */
-  GetModels(): any { this.EnsureModulesReady(); return this.modules.modelProvider.GetModels('DeepSeek'); }
+  /**
+   * 查询指定 Provider 当前凭据可访问的模型；缺省 DeepSeek。显式未知 Provider 传给模块层按错误拒绝，
+   * 不静默归一化——归一化会把其它供应商的模型列表交出去并被合并进错误的供应商。
+   */
+  GetModels(provider?: unknown): any {
+    this.EnsureModulesReady();
+    return this.modules.modelProvider.GetModels(provider === undefined ? 'DeepSeek' : typeof provider === 'string' ? provider : String(provider));
+  }
 
   /** 返回全部已配置 Provider 的模型目录；不包含 Base URL 之外的私有配置或凭据。 */
   GetProviderCatalog(): any { this.EnsureModulesReady(); return this.modules.modelProvider.GetProviderCatalog(); }
@@ -586,13 +688,14 @@ export class AgentHost {
   }
 
   /** 冻结 CronTask 创建参数；简历是可选授权资源，纯岗位搜索和 JD 阅读不得被强制绑定。 */
-  private PrepareCronTask(input: unknown, context: { requestId: string; resumeId?: string }): { confirmationId: string; summary: string; scenarioId: 'default' | 'application' } {
+  private PrepareCronTask(input: unknown, context: { requestId: string; resumeId?: string; profileIds?: string[] }): { confirmationId: string; summary: string; scenarioId: 'default' | 'application' } {
     const parsed = CreateCronTaskSchema.parse(input);
     const confirmationId = `cron-confirmation-${randomUUID()}`;
+    const browserTaskGrantDraft = parsed.scenarioId === 'application' ? InferBrowserTaskGrant(parsed, context) : undefined;
     const summary = parsed.scenarioId === 'application'
-      ? `系统可在计划时间唤醒或后台启动应用。确认创建即授权此任务在整个周期内以无人值守完全信任模式操作个人浏览器，可能搜索和读取岗位、填写表单、发送招聘消息并提交投递；执行时不会逐项确认。授权只属于此任务，任务结束、删除或手动撤销后失效；浏览器未连接或未登录时任务仍会暂停。${context.resumeId ? '任务可通过 ReadResume 读取创建前已绑定的简历，但不携带临时附件；网页强制上传文件时会标记为需要你接管。' : '当前未绑定简历；岗位搜索和 JD 阅读可以继续，任何需要简历内容、文件或投递状态写入的步骤都必须停止并请你接管。'}`
+      ? `系统可在计划时间唤醒或后台启动应用。${BrowserGrantSummary(browserTaskGrantDraft!)}确认创建即冻结以上 BrowserTaskGrant，并允许任务在整个周期内以无人值守模式执行；执行时不会逐项确认。授权只属于此任务，任务结束、删除或手动撤销后失效；登录失效、验证码或站点风控时任务会暂停。${context.resumeId ? '任务可通过 ReadResume 读取创建前已绑定的简历；第一版不携带临时附件，网页要求上传文件时会标记为需要你接管。' : '当前未绑定简历；任何需要简历内容或投递状态写入的步骤都必须停止并请你接管。'}`
       : '系统可在计划时间唤醒或后台启动应用。该计划将在整个周期内以无人值守完全信任模式创建新会话并执行指定消息；执行时不会逐项确认。';
-    this.pendingCronTasks.set(confirmationId, { input: parsed, resumeId: context.resumeId, requestId: context.requestId, createdAt: Date.now(), summary });
+    this.pendingCronTasks.set(confirmationId, { input: parsed, resumeId: context.resumeId, browserTaskGrantDraft, requestId: context.requestId, createdAt: Date.now(), summary });
     this.SaveState();
     return { confirmationId, summary, scenarioId: parsed.scenarioId };
   }
@@ -608,9 +711,12 @@ export class AgentHost {
     if (!Number.isFinite(pending.createdAt) || Date.now() - pending.createdAt > SessionSnapshotTtlMs) {
       throw Object.assign(new Error('CronTask confirmation expired. Create the schedule again.'), { code: 'VALIDATION_ERROR' });
     }
+    const browserTaskGrant = pending.input.scenarioId === 'application'
+      ? BrowserTaskGrantSchema.parse({ ...pending.browserTaskGrantDraft, grantedAt: new Date().toISOString() })
+      : undefined;
     const task = await this.business.CreateCronTask(pending.input, {
       ...(pending.resumeId ? { resumeId: pending.resumeId } : {}),
-      ...(pending.input.scenarioId === 'application' ? { browserAuthorized: true } : {}),
+      ...(browserTaskGrant ? { browserTaskGrant } : {}),
     });
     try {
       await this.onCronScheduleChanged();
@@ -624,7 +730,7 @@ export class AgentHost {
   }
 
   /** 执行被冻结的浏览器提案；确认后仍重新校验页面 revision 和目标引用，拒绝模型重建动作。 */
-  async ConfirmBrowserAction(confirmationId: string, accepted: boolean, execution: { signal?: AbortSignal } = {}): Promise<any> {
+  async ConfirmBrowserAction(confirmationId: string, accepted: boolean, execution: { signal?: AbortSignal; sessionId?: string } = {}): Promise<any> {
     const normalizedId = RequireString(confirmationId, 'confirmationId', 200);
     if (this.browserRunId) throw Object.assign(new Error('Another browser Agent run is already active.'), { code: 'AGENT_BUSY' });
     const confirmationRunId = `confirmation:${normalizedId}`;
@@ -632,8 +738,120 @@ export class AgentHost {
     try {
     const pending = this.pendingBrowserActions.get(normalizedId) as any;
     if (!pending) throw Object.assign(new Error('Browser confirmation is unavailable or expired.'), { code: 'VALIDATION_ERROR' });
+    const pendingTaskId = typeof pending.browserTaskId === 'string' && pending.browserTaskId.length > 0 ? pending.browserTaskId : null;
+    const pendingTaskIdentityValid = pending.browserTaskId === null
+      || (typeof pending.browserTaskId === 'string' && pending.browserTaskId.length > 0);
+    const currentTaskId = this.browserRuntime.GetBrowserTaskId?.() ?? null;
+    if (typeof pending.sessionId !== 'string'
+      || pending.sessionId !== execution.sessionId
+      || pending.sessionId !== this.currentSessionId
+      || pendingTaskId !== currentTaskId) {
+      this.pendingBrowserActions.delete(normalizedId);
+      this.SaveState();
+      throw Object.assign(new Error('Browser confirmation belongs to a different session or browser task.'), { code: 'BROWSER_CONFIRMATION_SESSION_MISMATCH' });
+    }
+    const binding = pending.binding;
+    const proposal = pending.proposal;
+    const uploadRequiresBinding = proposal?.toolName === 'BrowserUploadFile';
+    // Versioned production records require the explicit proposalId field; a
+    // proposalHash is a content digest, not an authorization identity.
+    const proposalId = typeof proposal?.proposalId === 'string' && proposal.proposalId.length > 0
+      ? proposal.proposalId
+      : '';
+    const proposalHash = typeof proposal?.proposalHash === 'string' && proposal.proposalHash.length > 0
+      ? proposal.proposalHash
+      : '';
+    const canonicalFileId = typeof proposal?.canonicalArguments?.fileId === 'string'
+      ? proposal.canonicalArguments.fileId
+      : '';
+    const canonicalRef = typeof proposal?.canonicalArguments?.ref === 'string'
+      ? proposal.canonicalArguments.ref
+      : '';
+    // 生产 pending 记录带 bindingVersion；所有身份字段一起比较，不能因为
+    // toolName 看似安全就绕过 session/task/run/proposal/page/file 绑定。
+    const bindingMatches = pending.bindingVersion === 1
+      && Boolean(binding)
+      && pendingTaskIdentityValid
+      && typeof pending.sessionId === 'string'
+      && pending.sessionId.length > 0
+      && typeof pending.runId === 'string'
+      && pending.runId.length > 0
+      && proposalId.length > 0
+      && proposalHash.length > 0
+      && typeof binding.sessionId === 'string'
+      && binding.sessionId.length > 0
+      && binding.sessionId === pending.sessionId
+      && binding.browserTaskId === pendingTaskId
+      && (binding.browserTaskId === null || (typeof binding.browserTaskId === 'string' && binding.browserTaskId.length > 0))
+      && typeof binding.runId === 'string'
+      && binding.runId.length > 0
+      && binding.runId === pending.runId
+      && typeof binding.proposalId === 'string'
+      && binding.proposalId.length > 0
+      && binding.proposalId === proposalId
+      && typeof binding.proposalHash === 'string'
+      && binding.proposalHash.length > 0
+      && binding.proposalHash === proposalHash
+      && Number.isSafeInteger(binding.pageRevision)
+      && binding.pageRevision >= 0
+      && Number.isSafeInteger(proposal?.pageRevision)
+      && proposal.pageRevision >= 0
+      && binding.pageRevision === proposal?.pageRevision
+      && (!uploadRequiresBinding || (
+        canonicalFileId.length > 0
+        && canonicalRef.length > 0
+        && typeof binding.fileId === 'string'
+        && binding.fileId === canonicalFileId
+        && typeof binding.ref === 'string'
+        && binding.ref === canonicalRef
+      ));
+    // Legacy test/runtime ports predating bindingVersion may still carry a
+    // complete hash/page binding. They are accepted only for an explicitly
+    // injected test Runtime; every production tool path above always emits
+    // version 1 and production IPC cannot reach this compatibility branch.
+    const legacyBindingMatches = this.allowLegacyBrowserBindings
+      && pending.bindingVersion === undefined
+      && (!uploadRequiresBinding && !binding || Boolean(binding && (
+        binding.sessionId === pending.sessionId
+        && binding.browserTaskId === pendingTaskId
+        && binding.runId === pending.runId
+        && binding.proposalHash === proposal?.proposalHash
+        && Number.isSafeInteger(binding.pageRevision)
+        && binding.pageRevision >= 0
+        && Number.isSafeInteger(proposal?.pageRevision)
+        && proposal.pageRevision >= 0
+        && binding.pageRevision === proposal?.pageRevision
+        && (!uploadRequiresBinding || (
+          canonicalFileId.length > 0
+          && typeof binding.fileId === 'string'
+          && binding.fileId === canonicalFileId
+        ))
+      )))
+    if (!bindingMatches && !legacyBindingMatches) {
+      this.pendingBrowserActions.delete(normalizedId);
+      this.SaveState();
+      throw Object.assign(new Error('Browser confirmation proposal binding is invalid or stale.'), { code: 'BROWSER_CONFIRMATION_BINDING_MISMATCH' });
+    }
+    // Consume before the first await. Two concurrent clicks must never both
+    // observe the same pending record and execute the external action.
     this.pendingBrowserActions.delete(normalizedId);
     this.SaveState();
+    // Runtime.Execute also re-prepares the frozen action. This read-only
+    // revision check makes a changed page fail after the one-time pending
+    // claim, while remaining compatible with older test/runtime ports that do
+    // not expose a numeric pageRevision in GetStatus().
+    try {
+      const status = await this.browserRuntime.GetStatus(false);
+      if (Number.isSafeInteger(proposal?.pageRevision) && Number.isSafeInteger(status?.pageRevision)
+        && proposal.pageRevision !== status.pageRevision) {
+        throw Object.assign(new Error('The browser page changed after this confirmation was shown.'), { code: 'BROWSER_CONFIRMATION_STALE' });
+      }
+    } catch (error) {
+      if (error && typeof error === 'object' && 'code' in error && String((error as { code: unknown }).code) === 'BROWSER_CONFIRMATION_STALE') throw error;
+      // Execute remains the final authority for runtimes whose status probe is
+      // unavailable; a probe failure must not turn a safe fail-closed action
+      // into a guessed page/task selection.
+    }
     if (!Number.isFinite(pending.createdAt) || Date.now() - pending.createdAt > SessionSnapshotTtlMs) {
       throw Object.assign(new Error('Browser confirmation expired. Take a new snapshot and prepare the action again.'), { code: 'VALIDATION_ERROR' });
     }
@@ -694,8 +912,9 @@ export class AgentHost {
       return succeeded;
     } catch (error) {
       const code = error && typeof error === 'object' && 'code' in error ? String((error as { code: unknown }).code) : 'BROWSER_COMMAND_FAILED';
-      await ledger.Finish(ledgerId, code === 'CANCELLED' ? 'status_unknown' : 'failed', { errorCode: code, finishedAt: Date.now() });
-      const failed = { confirmationId: normalizedId, status: code === 'CANCELLED' ? 'status_unknown' : 'failed', code, summary: pending.proposal.summary, message: error instanceof Error ? error.message : 'Browser action failed.' };
+      const statusUnknown = code === 'CANCELLED' || (error && typeof error === 'object' && 'statusUnknown' in error && (error as { statusUnknown?: unknown }).statusUnknown === true);
+      await ledger.Finish(ledgerId, statusUnknown ? 'status_unknown' : 'failed', { errorCode: code, finishedAt: Date.now() });
+      const failed = { confirmationId: normalizedId, status: statusUnknown ? 'status_unknown' : 'failed', code, summary: pending.proposal.summary, message: error instanceof Error ? error.message : 'Browser action failed.' };
       this.Emit({ type: 'browser_action_completed', requestId: pending.requestId, confirmationId: normalizedId, browserAction: failed });
       return failed;
     }
@@ -709,13 +928,46 @@ export class AgentHost {
     const normalizedId = RequireString(confirmationId, 'confirmationId', 200);
     const pending = this.pendingBrowserActions.get(normalizedId) as any;
     if (!pending?.proposal) return null;
+    const proposal = pending.proposal;
+    // Inspect 是只读的测评接缝，但仍必须保留与生产确认相同的授权身份。
+    // 旧 proposalHash 只是内容摘要，不能替代 proposalId。
+    if (typeof proposal.proposalId !== 'string' || !proposal.proposalId.trim()) return null;
+    const binding = pending.binding;
     return structuredClone({
-      toolName: pending.proposal.toolName,
-      canonicalArguments: pending.proposal.canonicalArguments,
-      summary: pending.proposal.summary,
-      url: pending.proposal.url,
-      risk: pending.proposal.risk,
-      resourceIds: pending.proposal.resourceIds,
+      // 该方法不会注册到 Renderer IPC；检查结果显式携带确认绑定，调用方
+      // 只能核对完整绑定，不能把 hash 或 toolName 当作授权依据。
+      confirmationId: normalizedId,
+      requestId: pending.requestId,
+      sessionId: pending.sessionId,
+      runId: pending.runId,
+      browserTaskId: pending.browserTaskId,
+      proposalId: proposal.proposalId,
+      toolName: proposal.toolName,
+      canonicalArguments: proposal.canonicalArguments,
+      summary: proposal.summary,
+      url: proposal.url,
+      risk: proposal.risk,
+      resourceIds: proposal.resourceIds,
+      proposal: {
+        proposalId: proposal.proposalId,
+        proposalHash: proposal.proposalHash,
+        toolName: proposal.toolName,
+        canonicalArguments: proposal.canonicalArguments,
+        pageRevision: proposal.pageRevision,
+      },
+      ...(binding ? {
+        binding: {
+          bindingVersion: pending.bindingVersion,
+          sessionId: binding.sessionId,
+          browserTaskId: binding.browserTaskId,
+          runId: binding.runId,
+          proposalId: binding.proposalId,
+          proposalHash: binding.proposalHash,
+          pageRevision: binding.pageRevision,
+          ...(typeof binding.ref === 'string' ? { ref: binding.ref } : {}),
+          ...(typeof binding.fileId === 'string' ? { fileId: binding.fileId } : {}),
+        },
+      } : {}),
     });
   }
 
@@ -723,7 +975,7 @@ export class AgentHost {
     // 设置页可能在投递 Run 期间刷新状态；此时只保存偏好，不得关闭正在使用的浏览器。
     if (this.browserRunId && !force) return;
     const settings = (await this.business?.GetStoredSettings?.()) ?? {};
-    const engine = settings.browserEngine === 'electron' || settings.browserEngine === 'chrome' || settings.browserEngine === 'edge'
+    const engine = settings.browserEngine === 'chrome' || settings.browserEngine === 'edge'
       ? settings.browserEngine
       : this.defaultBrowserEngine;
     await this.browserRuntime.SetEngine?.(engine);
@@ -741,7 +993,11 @@ export class AgentHost {
     const result = await this.business.ReadCronTask({});
     const tasks = (Array.isArray(result?.tasks) ? result.tasks : [])
       .filter((task: any) => task?.scenarioId === 'application' && task?.state === 'active')
-      .map((task: any) => ({ id: String(task.id), title: String(task.title).slice(0, 200), nextRunAt: typeof task.nextRunAt === 'number' ? task.nextRunAt : null, browserAuthorized: task.browserAuthorized === true }));
+      .map((task: any) => ({
+        id: String(task.id), title: String(task.title).slice(0, 200), nextRunAt: typeof task.nextRunAt === 'number' ? task.nextRunAt : null,
+        browserAuthorized: Boolean(task.browserTaskGrant && !task.browserTaskGrant.revokedAt),
+        ...(task.browserTaskGrant ? { browserTaskGrant: task.browserTaskGrant } : {}),
+      }));
     return { tasks };
   }
 
@@ -750,20 +1006,7 @@ export class AgentHost {
     if (!input || typeof input !== 'object' || Array.isArray(input)) throw Object.assign(new Error('Cron browser access is invalid.'), { code: 'VALIDATION_ERROR' });
     const cronTaskId = RequireString((input as any).cronTaskId, 'cronTaskId', 200);
     const task = await this.business.RevokeCronTaskBrowserAuthorization(cronTaskId);
-    return { revoked: task?.browserAuthorized !== true, task };
-  }
-
-  /** 清除 Avery 独立浏览器身份；调用方必须先展示破坏性确认。 */
-  async ClearBrowserProfile(): Promise<any> {
-    if (this.IsBusy()) throw Object.assign(new Error('Stop the current Agent run before clearing the browser profile.'), { code: 'AGENT_BUSY' });
-    this.browserRunId = 'maintenance:clear';
-    try {
-      await this.SyncBrowserEngine(true);
-      this.pendingBrowserActions.clear();
-      this.SaveState();
-      return await this.browserRuntime.ClearProfile();
-    }
-    finally { if (this.browserRunId === 'maintenance:clear') this.browserRunId = null; }
+    return { revoked: Boolean(task?.browserTaskGrant?.revokedAt) || !task?.browserTaskGrant, task };
   }
 
   /** 用户开始编辑简历前获取互斥锁；Agent 占用时返回未获取及原因。 */
@@ -832,6 +1075,7 @@ export class AgentHost {
     } catch {
       return fallback;
     }
+    // /models 是 DeepSeek 的在线校验能力；MiMo 允许手工添加官方列表之外的新模型，会话恢复不按列表剔除。
     if (!status.configured || provider !== 'DeepSeek') return model;
     try {
       const result = await this.modules.modelProvider.GetModels(provider);
@@ -1191,12 +1435,13 @@ export class AgentHost {
   /** Backend Cron Runner 专用入口；Renderer 无法设置 scheduledRequestIds，也不能伪造无人值守权限。 */
   async SendScheduled(input: any): Promise<any> {
     const requestId = RequireString(input?.requestId, 'requestId', 200);
+    const browserTaskGrant = input?.browserTaskGrant === undefined ? undefined : BrowserTaskGrantSchema.parse(input.browserTaskGrant);
     this.scheduledRequestIds.add(requestId);
     const output = { content: '', thinkingContent: '', needsAttention: false };
     this.scheduledOutput.set(requestId, output);
     await this.browserRuntime.SetUnattended?.(true, {
       cronTaskId: typeof input?.cronTaskId === 'string' ? input.cronTaskId : undefined,
-      browserAuthorized: input?.browserAuthorized === true,
+      browserTaskGrant,
     });
     try {
       const result = await this.Send({ ...input, confirmationMode: 'fully_trusted', attachments: [], projectId: undefined });
@@ -1206,6 +1451,69 @@ export class AgentHost {
       this.scheduledOutput.delete(requestId);
       await this.browserRuntime.SetUnattended?.(false);
     }
+  }
+
+  private async CloseBrowserTask(): Promise<BrowserTaskCleanupOutcome | null> {
+    const closeTask = this.browserRuntime.CloseTask;
+    if (!closeTask) return null;
+    const browserTaskId = this.browserRuntime.GetBrowserTaskId?.() ?? null;
+    // 没有任务页时不应向 Bridge 发送 close_task(null)，也不应制造一个
+    // 虚假的 cleanup failure；没有 GetBrowserTaskId 的旧 Runtime 仍保留旧兼容路径。
+    if (browserTaskId && this.closedBrowserTaskIds.has(browserTaskId)) return null;
+    if (!browserTaskId && this.browserRuntime.GetBrowserTaskId) return null;
+    if (browserTaskId) this.closedBrowserTaskIds.add(browserTaskId);
+    const deadline = Date.now() + this.browserTaskCleanupTimeoutMs;
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      const work = Promise.resolve(closeTask.call(this.browserRuntime, { deadline }));
+      const timeout = new Promise<BrowserTaskCleanupOutcome>((resolveTimeout) => {
+        timer = setTimeout(() => resolveTimeout({
+          status: 'status_unknown', browserTaskId, code: 'BROWSER_COMMAND_TIMEOUT',
+          message: 'The browser task cleanup exceeded its deadline.', closedTabs: 0, unknownTabs: null,
+        }), Math.max(0, deadline - Date.now()));
+      });
+      const result = await Promise.race([work, timeout]);
+      if (result && (result.status === 'confirmed' || result.status === 'status_unknown' || result.status === 'failed')) {
+        return {
+          ...result,
+          browserTaskId: result.browserTaskId ?? browserTaskId,
+          closedTabs: Number.isSafeInteger(result.closedTabs) ? result.closedTabs : 0,
+          unknownTabs: Number.isSafeInteger(result.unknownTabs) ? result.unknownTabs : null,
+        };
+      }
+      return { status: 'confirmed', browserTaskId, closedTabs: 0, unknownTabs: 0 };
+    } catch (error) {
+      const statusUnknown = Boolean(error && typeof error === 'object' && 'statusUnknown' in error && (error as { statusUnknown?: unknown }).statusUnknown === true);
+      const code = error && typeof error === 'object' && 'code' in error ? String((error as { code: unknown }).code) : 'BROWSER_TASK_CLEANUP_FAILED';
+      return {
+        status: statusUnknown ? 'status_unknown' : 'failed', browserTaskId, code,
+        message: error instanceof Error ? error.message.slice(0, 300) : 'Browser task cleanup failed.',
+        closedTabs: 0, unknownTabs: statusUnknown ? null : 0,
+      };
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
+  private RecordBrowserTaskCleanup(requestId: string, outcome: BrowserTaskCleanupOutcome, index: number): void {
+    const now = Date.now();
+    const ledgerId = `browser-cleanup-${randomUUID()}`;
+    this.toolLedger.set(ledgerId, {
+      ledgerId,
+      runId: requestId,
+      toolCallId: `cleanup-${index + 1}`,
+      toolName: 'BrowserTaskCleanup',
+      idempotencyKey: `browser-cleanup:${requestId}:${outcome.browserTaskId ?? index + 1}`,
+      argumentsHash: createHash('sha256').update(JSON.stringify(outcome)).digest('hex'),
+      actor: 'system',
+      resourceIds: outcome.browserTaskId ? [`browser-task:${outcome.browserTaskId}`] : [],
+      status: outcome.status === 'confirmed' ? 'succeeded' : outcome.status,
+      ...(outcome.code ? { errorCode: outcome.code } : {}),
+      startedAt: now,
+      finishedAt: now,
+      cleanupOutcome: outcome,
+    });
+    this.SaveState();
   }
 
   /** 在显式状态机内执行一次受限的流式对话回合：编排完成后委托 Kernel 运行循环。 */
@@ -1223,14 +1531,44 @@ export class AgentHost {
     const unattended = this.scheduledRequestIds.has(requestId);
     const cronToolNames = new Set(['CreateCronTask', 'ReadCronTask', 'UpdateCronTask', 'DeleteCronTask']);
     const runScenario = unattended ? { ...scenario, toolNames: scenario.toolNames.filter((name) => !cronToolNames.has(name)) } : scenario;
-    if (scenarioId === 'application' && this.browserRunId) throw Object.assign(new Error('Another browser Agent run is already active.'), { code: 'AGENT_BUSY' });
-    if (scenarioId === 'application') {
-      await this.SyncBrowserEngine();
-      this.browserRunId = requestId;
-      // 页面元素引用不得跨 Run 复用；用户可能在两次发送之间接管可见浏览器并改变 DOM。
-      this.browserRuntime.ResetPageReferences();
-    }
+    let retainBrowserTask = false;
+    const cleanupOutcomes: BrowserTaskCleanupOutcome[] = [];
+    if (this.browserRunId) throw Object.assign(new Error('Another browser Agent run is already active.'), { code: 'AGENT_BUSY' });
     try {
+    if (scenarioId === 'application') {
+      // 先同步占用，再进入任何 await；否则两个并发 Send 都可能通过上面的检查，
+      // 后者切换/关闭前者刚创建的 browserTaskId。
+      this.browserRunId = requestId;
+      this.currentSessionId = sessionId;
+      try {
+        await this.SyncBrowserEngine(true);
+        if (this.browserSessionId && this.browserSessionId !== sessionId) {
+          // 一次交互任务只绑定一个会话；切换会话时只关闭旧 task 页，不关闭共享 Bridge。
+          const cleanup = await this.CloseBrowserTask();
+          if (cleanup) cleanupOutcomes.push(cleanup);
+          this.browserSessionId = null;
+        }
+        this.browserSessionId = sessionId;
+        // 页面元素引用不得跨 Run 复用；用户可能在两次发送之间接管可见浏览器并改变 DOM。
+        this.browserRuntime.ResetPageReferences();
+      } catch (error) {
+        if (this.browserRunId === requestId) this.browserRunId = null;
+        throw error;
+      }
+    } else {
+      const switchingBrowserSession = Boolean(this.browserSessionId && this.browserSessionId !== sessionId);
+      if (switchingBrowserSession) this.browserRunId = requestId;
+      try {
+        if (switchingBrowserSession) {
+          const cleanup = await this.CloseBrowserTask();
+          if (cleanup) cleanupOutcomes.push(cleanup);
+          this.browserSessionId = null;
+        }
+        this.currentSessionId = sessionId;
+      } finally {
+        if (switchingBrowserSession && this.browserRunId === requestId) this.browserRunId = null;
+      }
+    }
     const restoredAssistantState = await this.RestoreSessionAssistantState(sessionId);
     const provider = NormalizeProvider(input?.provider, restoredAssistantState.provider);
     const status = await this.modules.modelProvider.GetStatus(provider);
@@ -1253,15 +1591,27 @@ export class AgentHost {
     const attachments = Array.isArray(input?.attachments) ? input.attachments.slice(0, 10).map((attachment: any) => ({
       name: String(attachment?.name ?? '').slice(0, 200), path: String(attachment?.path ?? '').slice(0, 1000),
     })).filter((attachment: any) => attachment.name && attachment.path) : [];
-    // Renderer 选中的简历不再自动注入或绑定；只有受信 Cron 入口可携带冻结的简历授权范围。
-    const authorizedResumeId = unattended && typeof input?.resumeId === 'string' && input.resumeId ? input.resumeId.slice(0, 200) : '';
+    const scheduledBrowserTaskGrant = unattended && input?.browserTaskGrant !== undefined
+      ? BrowserTaskGrantSchema.parse(input.browserTaskGrant)
+      : undefined;
+    // 投递场景只允许 Grant resourceIds 中冻结的简历；默认场景不由浏览器 TaskGrant 收窄。
+    const requestedResumeId = unattended && typeof input?.resumeId === 'string' && input.resumeId ? input.resumeId.slice(0, 200) : '';
+    const authorizedResumeId = requestedResumeId && (scenarioId === 'default' || scheduledBrowserTaskGrant?.resourceIds.includes(`resume:${requestedResumeId}`))
+      ? requestedResumeId
+      : '';
     const projectId = typeof input?.projectId === 'string' ? input.projectId.slice(0, 200) : '';
     // 快照可能因 TTL 刷新并追加 Skill reset；必须先完成刷新，再读取本次请求历史。
     const snapshots = await this.LoadOrCreateSnapshots(sessionId, scenarioId);
     this.EnsureModuleSnapshotCompatible(snapshots.module);
     if (assistantStateChanged) await this.PersistSessionAssistantState(sessionId, { provider, model, confirmationMode, reasoningEffort });
     const projectRoot = await this.BindProjectEnvironment(sessionId, projectId);
-    const profiles = (await this.business?.GetProfiles?.())?.items ?? [];
+    const allProfiles = (await this.business?.GetProfiles?.())?.items ?? [];
+    const authorizedProfileIds = new Set((scheduledBrowserTaskGrant?.resourceIds ?? [])
+      .filter((resourceId) => resourceId.startsWith('profile:'))
+      .map((resourceId) => resourceId.slice('profile:'.length)));
+    const profiles = unattended && scenarioId === 'application'
+      ? allProfiles.filter((profile: any) => authorizedProfileIds.has(String(profile.id)))
+      : allProfiles;
     const persistedBinding = this.sessionResumeBindings.get(sessionId);
     let boundResumeSnapshot = persistedBinding ? await this.resumeReadPort.ReadCurrent(persistedBinding.resumeId) : null;
     if (persistedBinding && (!boundResumeSnapshot || boundResumeSnapshot.revision !== persistedBinding.revision)) {
@@ -1410,13 +1760,18 @@ export class AgentHost {
           },
         },
         browser: scenarioId === 'application' ? this.browserRuntime : undefined,
+        resumeExport: scenarioId === 'application' ? { Export: (input: { resume: ResumeSnapshot; format: 'pdf' | 'png'; sessionId: string; signal?: AbortSignal }) => this.ExportBoundResumeFile(input.resume, input.format, input.sessionId, input.signal) } : undefined,
         jobCollection: scenarioId === 'application' ? this.jobCollectionPort ?? undefined : undefined,
         bossContact: scenarioId === 'application' ? this.bossContactPort ?? undefined : undefined,
         skill: {
           Load: async (skillInput: { skillId: string; resource?: string }) => this.skillRegistry.Load(snapshots.skills, scenarioId, skillInput),
         },
         ...(!unattended ? { cronTask: {
-          PrepareCreate: async (cronInput: Record<string, unknown>) => this.PrepareCronTask(cronInput, { requestId, ...(toolContext.boundResume?.id ? { resumeId: toolContext.boundResume.id } : {}) }),
+          PrepareCreate: async (cronInput: Record<string, unknown>) => this.PrepareCronTask(cronInput, {
+            requestId,
+            ...(toolContext.boundResume?.id ? { resumeId: toolContext.boundResume.id } : {}),
+            profileIds: profiles.map((profile: any) => String(profile.id)).filter(Boolean),
+          }),
           Read: async (cronInput: { cronTaskId?: string; includeRuns?: boolean }) => this.business.ReadCronTask(cronInput),
           Update: async (cronInput: Record<string, unknown>) => {
             const task = await this.business.UpdateCronTask(cronInput);
@@ -1477,6 +1832,7 @@ export class AgentHost {
       loadedSkillResources: sessionLoadedResources,
       pendingSkillLoads: new Set<string>(),
       unattended,
+      ...(scheduledBrowserTaskGrant ? { browserTaskGrant: scheduledBrowserTaskGrant } : {}),
     };
     const runtimeControl = { sessionId, confirmationMode, toolContext };
     this.runtimeControls.set(requestId, runtimeControl);
@@ -1508,6 +1864,13 @@ export class AgentHost {
         instructions: runSnapshot.instructions,
         onModelUsage: (usage) => { modelRequestCompleted = true; this.RecordSessionUsage(requestId, sessionId, usage, contextLimit, threshold); },
       });
+      // circuit_open 是轮数/工具预算耗尽的 terminal failure。Kernel 会先发
+      // error，但结果的旧 disposition 仍是 paused；不能把它误当成可续接的
+      // waiting 状态，否则 BrowserTask 会跨 terminal 继续持有页面和锁。
+      const resumableWait = result.outcome === 'waiting_user_input'
+        || result.outcome === 'waiting_confirmation'
+        || (result.outcome === 'paused' && result.reason !== 'iteration_limit' && result.reason !== 'tool_call_limit');
+      retainBrowserTask = scenarioId === 'application' && resumableWait;
       if (result.outcome === 'cancelled') RestoreSkillState();
       this.compressionCount += result.compressionCount;
       const currentUsage = this.sessionUsage.get(sessionId);
@@ -1517,7 +1880,7 @@ export class AgentHost {
         currentUsage.compressionThreshold = threshold;
         currentUsage.updatedAt = Date.now();
         this.lastContextUsage = { inputTokens: currentUsage.inputTokens, contextLimit };
-      } else if (!modelRequestCompleted) {
+      } else if (!modelRequestCompleted && result.outcome !== 'cancelled') {
         this.sessionUsage.set(sessionId, {
           source: 'unavailable', inputTokens: 0, contextLimit, compressionCount: result.compressionCount, compressionThreshold: threshold,
           promptTokens: 0, completionTokens: 0, totalTokens: 0, cachedInputTokens: 0, reportedRequestCount: 0, unreportedRequestCount: 1, updatedAt: Date.now(),
@@ -1534,9 +1897,25 @@ export class AgentHost {
       this.runtimeControls.delete(requestId);
     }
     } finally {
+      if (scenarioId === 'application' && !retainBrowserTask) {
+        // waiting_* / paused 会把同一 browserTaskId 留给后续续轮；其他终态收回本次 task。
+        const cleanup = await this.CloseBrowserTask();
+        if (cleanup) cleanupOutcomes.push(cleanup);
+        if (this.browserSessionId === sessionId) this.browserSessionId = null;
+      }
       if (this.browserRunId === requestId) this.browserRunId = null;
+      for (const [index, cleanup] of cleanupOutcomes.entries()) {
+        try { this.RecordBrowserTaskCleanup(requestId, cleanup, index); } catch { /* run_released remains the authoritative bounded cleanup report. */ }
+        try { this.modules.observability.AppendTraceEvent(requestId, 'browser_task_cleanup', cleanup, 0); } catch { /* telemetry cannot keep the Host lock held. */ }
+        if (cleanup.status !== 'confirmed') {
+          try {
+            this.modules.observability.RecordLog('WARN', 'browser.task_cleanup',
+              `status=${cleanup.status} task=${cleanup.browserTaskId ?? 'none'} code=${cleanup.code ?? 'none'} closedTabs=${cleanup.closedTabs} unknownTabs=${cleanup.unknownTabs ?? 'unknown'}`);
+          } catch { /* run_released still exposes the outcome to the UI. */ }
+        }
+      }
       // waiting_* 只表示 Kernel 停止调度；必须在 Host 锁与运行资源清理后再允许 Renderer 发起续轮。
-      this.Emit({ type: 'run_released', requestId, sessionId });
+      this.Emit({ type: 'run_released', requestId, sessionId, ...(cleanupOutcomes.length ? { cleanupOutcomes } : {}) });
     }
   }
 

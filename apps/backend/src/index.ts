@@ -32,6 +32,7 @@ const { CreateCredentialClient } = require('./electron/backend/credential-client
 const { AgentRunService } = require('./electron/backend/services/agent-run-service.js') as any;
 const { DeveloperService } = require('./electron/backend/services/developer-service.js') as any;
 const { AgentHost } = require('./electron/backend/agent-host.js') as any;
+const { BrowserExtensionBridge } = require('./electron/backend/browser-extension-bridge.js') as any;
 const { ResumeLockStore } = require('./electron/backend/resume-lock-store.js') as any;
 const { EvalService, AssertEvaluationDeveloperModePreserved } = require('./electron/backend/evaluation/eval-service.js') as any;
 const { CronRunnerService } = require('./electron/backend/services/cron-runner-service.js') as any;
@@ -44,10 +45,11 @@ async function Bootstrap(): Promise<void> {
   const userDataPath = String(app.userDataPath ?? '');
   const defaultWorkspacePath = String(app.defaultWorkspacePath ?? '');
   let currentWorkspacePath = String(app.workspacePath || defaultWorkspacePath);
-  const agentBrowserExecutablePath = String(app.agentBrowserExecutablePath ?? '');
-  const browserCompanionExecutablePath = String(app.browserCompanionExecutablePath ?? '');
-  const browserCompanionAppPath = typeof app.browserCompanionAppPath === 'string' && app.browserCompanionAppPath ? app.browserCompanionAppPath : undefined;
   const externalBrowserPaths = app.externalBrowserPaths && typeof app.externalBrowserPaths === 'object' ? app.externalBrowserPaths : undefined;
+  const browserExtensionBridge = new BrowserExtensionBridge({
+    statePath: join(userDataPath, 'browser-extension', 'bridge.json'),
+    browserPaths: externalBrowserPaths,
+  });
   const smoke = Boolean(app.smoke);
 
   const desktop = CreateDesktopCapabilityClient(PostMessage);
@@ -75,10 +77,9 @@ async function Bootstrap(): Promise<void> {
     credentialPort,
     resolveProjectEnvironment: (projectId: string) => projectEnvironments.get(projectId) || null,
     resumeLockStore,
-    agentBrowserExecutablePath,
-    browserCompanionExecutablePath,
-    browserCompanionAppPath,
     externalBrowserPaths,
+    browserExtensionBridge,
+    renderResumeFile: (input: { resume: { name: string; summary: string; content: string }; format: 'pdf' | 'png'; assetId: string }) => desktop.Call('ExportResumeAsset', [{ workspacePath: currentWorkspacePath, ...input }]),
     onCronScheduleChanged: () => cronRunner?.Sync(),
   });
 
@@ -88,9 +89,8 @@ async function Bootstrap(): Promise<void> {
     userDataPath,
     store: host.observability,
     credentialPort,
-    agentBrowserExecutablePath,
-    browserCompanionExecutablePath,
-    browserCompanionAppPath,
+    browserExtensionBridge,
+    externalBrowserPaths,
     getStoredSettings: async () => (await host.business.GetStoredSettings()) ?? {},
     Emit: (event: unknown) => PostMessage({ kind: 'event', channel: 'evaluation:event', payload: { type: 'evaluation_event', event } }),
   });

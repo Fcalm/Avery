@@ -1,8 +1,10 @@
+import type { BrowserTaskGrant } from '@avery/contracts';
+
 /** CronTask 应用服务：Repository 是唯一事实源；每次写后通知调度器同步最早唤醒。 */
 export class CronTaskService {
   constructor(private readonly repository: any, private readonly syncWake: (nextRunAt: number | null) => Promise<unknown> | unknown = () => undefined) {}
 
-  async Create(input: unknown, resourceContext?: { resumeId?: string; browserAuthorized?: boolean }): Promise<any> { const task = this.repository.Create(input, resourceContext); await this.Sync(); return task; }
+  async Create(input: unknown, resourceContext?: { resumeId?: string; browserTaskGrant?: BrowserTaskGrant }): Promise<any> { const task = this.repository.Create(input, resourceContext); await this.Sync(); return task; }
   Read(input: { cronTaskId?: string; includeRuns?: boolean } = {}): any {
     if (input.cronTaskId) {
       const task = this.repository.Read(input.cronTaskId);

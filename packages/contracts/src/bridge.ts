@@ -4,6 +4,7 @@ import type {
 } from './dto';
 import type { WriteCommandOptions } from './envelope';
 import type { DesktopEvaluationBridge } from './evaluation';
+import type { BrowserTaskGrant } from './cron-task';
 
 /** Agent 确认级别；完全信任仍受场景白名单、Schema、资源授权与幂等约束。 */
 export type ConfirmationMode = 'always_confirm' | 'allow_low_risk' | 'fully_trusted';
@@ -18,7 +19,7 @@ export interface AgentSendRequest {
   content: string;
   model?: string;
   /** 请求级 Provider；与 model 一起按会话持久化并在 Run 创建时冻结。 */
-  provider?: 'DeepSeek' | 'Z.AI' | '自定义';
+  provider?: 'DeepSeek' | 'Z.AI' | 'MIMO' | '自定义';
   /** 请求级思考强度；缺省恢复会话值，旧会话默认 medium。 */
   reasoningEffort?: ReasoningEffort;
   /** 请求级确认模式；缺省由后端场景默认。 */
@@ -31,6 +32,7 @@ export interface AgentSendRequest {
 
 export interface BrowserActionState {
   confirmationId?: string;
+  proposalId?: string;
   toolName?: string;
   summary?: string;
   url?: string;
@@ -41,19 +43,27 @@ export interface BrowserActionState {
   receipt?: { receiptId: string; toolDefinitionId: string; resourceIds: string[]; idempotencyKey?: string };
 }
 
+export interface BrowserTaskCleanupOutcome {
+  status: 'confirmed' | 'status_unknown' | 'failed';
+  browserTaskId: string | null;
+  code?: string;
+  message?: string;
+  closedTabs: number;
+  unknownTabs: number | null;
+}
+
 export interface AgentBrowserRuntimeStatus {
   available: boolean;
-  profileExists: boolean;
   running: boolean;
   pageRevision: number;
   state: 'not_installed' | 'stopped' | 'ready' | 'unhealthy';
   message?: string;
   currentUrl?: string;
-  engine: 'electron' | 'chrome' | 'edge';
+  engine: 'chrome' | 'edge';
 }
 
 export interface CronBrowserAccessStatus {
-  tasks: Array<{ id: string; title: string; nextRunAt: number | null; browserAuthorized: boolean }>;
+  tasks: Array<{ id: string; title: string; nextRunAt: number | null; browserAuthorized: boolean; browserTaskGrant?: BrowserTaskGrant }>;
 }
 
 /** Agent 流式事件：preload 单通道 `agent:stream` 的全部事件类型。 */
@@ -72,12 +82,13 @@ export interface AgentStreamEvent {
   confirmationId?: string;
   questions?: Array<{ id: string; question: string; options: string[] }>;
   browserAction?: BrowserActionState;
+  cleanupOutcomes?: BrowserTaskCleanupOutcome[];
   cronTask?: { id?: string; title?: string; message?: string; scenarioId?: 'default' | 'application'; schedule?: unknown; state?: string; summary?: string };
 }
 
 /** Agent 模型配置：API Key 仅经 IPC 进入主进程 safeStorage。 */
 export interface AgentConfiguration {
-  provider: 'DeepSeek' | 'Z.AI' | '自定义';
+  provider: 'DeepSeek' | 'Z.AI' | 'MIMO' | '自定义';
   apiKey: string;
   baseUrl: string;
   model: string;
@@ -117,7 +128,7 @@ export interface AgentSessionAssistantState {
   scenarioId: 'default' | 'application';
   /** 经当前 Provider 校验后的会话模型；失效值已回退。 */
   model: string;
-  provider: 'DeepSeek' | 'Z.AI' | '自定义';
+  provider: 'DeepSeek' | 'Z.AI' | 'MIMO' | '自定义';
   /** 会话级确认策略；不扩展场景、工具或资源授权边界。 */
   confirmationMode: ConfirmationMode;
   /** 会话级思考强度；切换会话或重启应用后从 Backend 快照恢复。 */
@@ -148,21 +159,20 @@ export interface DesktopAgentBridge {
   Configure: (config: AgentConfiguration) => Promise<{ configured: boolean }>;
   TestConnection: (config: AgentConfiguration) => Promise<{ connected: boolean }>;
   GetBalance: () => Promise<{ available: boolean; balances: Array<{ currency: string; totalBalance: string }> }>;
-  /** 读取当前凭据可访问的 DeepSeek 模型列表，凭据不会离开主进程。 */
-  GetModels: () => Promise<{ models: string[] }>;
+  /** 读取指定 Provider 凭据可访问的模型列表（DeepSeek / MiMo 走官方 GET /models 同步）；provider 回执用于确认结果来源，凭据不会离开主进程。缺省查询 DeepSeek。 */
+  GetModels: (provider?: 'DeepSeek' | 'Z.AI' | 'MIMO' | '自定义') => Promise<{ provider: 'DeepSeek' | 'Z.AI' | 'MIMO' | '自定义'; models: string[] }>;
   /** 返回所有已配置 Provider 及其可选模型，不暴露 API Key。 */
-  GetProviderCatalog: () => Promise<{ providers: Array<{ provider: 'DeepSeek' | 'Z.AI' | '自定义'; configured: boolean; model: string; models: string[]; baseUrl: string; contextLimit: number; contextLimitMode: 'default' | 'custom'; compressionThreshold: number; thinkingEnabled: boolean }> }>;
+  GetProviderCatalog: () => Promise<{ providers: Array<{ provider: 'DeepSeek' | 'Z.AI' | 'MIMO' | '自定义'; configured: boolean; model: string; models: string[]; baseUrl: string; contextLimit: number; contextLimitMode: 'default' | 'custom'; compressionThreshold: number; thinkingEnabled: boolean }> }>;
   Send: (request: AgentSendRequest) => Promise<{ accepted: boolean }>;
   Cancel: (requestId: string) => Promise<{ cancelled: boolean }>;
   UpdateConfirmationMode: (requestId: string, confirmationMode: ConfirmationMode) => Promise<{ updated: boolean; confirmationMode?: ConfirmationMode; reason?: string }>;
   UpdateReasoningEffort: (sessionId: string, reasoningEffort: ReasoningEffort) => Promise<{ updated: boolean; reasoningEffort: ReasoningEffort }>;
   ConfirmResumeEdit: (confirmationId: string, accepted: boolean) => Promise<{ applied: boolean }>;
   ConfirmCronTask: (confirmationId: string, accepted: boolean) => Promise<{ created: boolean; task?: unknown }>;
-  ConfirmBrowserAction: (confirmationId: string, accepted: boolean) => Promise<BrowserActionState>;
+  ConfirmBrowserAction: (confirmationId: string, accepted: boolean, sessionId: string) => Promise<BrowserActionState>;
   GetBrowserRuntimeStatus: (probeConnection?: boolean) => Promise<AgentBrowserRuntimeStatus>;
   GetCronBrowserAccess: () => Promise<CronBrowserAccessStatus>;
   RevokeCronBrowserAccess: (input: { cronTaskId: string }) => Promise<{ revoked: boolean; task?: unknown }>;
-  ClearBrowserProfile: () => Promise<{ cleared: boolean }>;
   /** 用户开始编辑简历前获取互斥锁；Agent 占用时返回未获取及原因。 */
   AcquireResumeEditLock: (resumeId: string) => Promise<{ acquired: boolean; reason?: string }>;
   /** 用户保存或取消编辑后释放简历锁。 */
@@ -243,7 +253,7 @@ export interface WorkspaceBridge {
 export const BridgeNamespaces = {
   agent: [
     'Configure', 'TestConnection', 'GetBalance', 'GetModels', 'GetProviderCatalog', 'Send', 'Cancel', 'UpdateConfirmationMode', 'UpdateReasoningEffort', 'ConfirmResumeEdit', 'ConfirmCronTask',
-    'ConfirmBrowserAction', 'GetBrowserRuntimeStatus', 'GetCronBrowserAccess', 'RevokeCronBrowserAccess', 'ClearBrowserProfile',
+    'ConfirmBrowserAction', 'GetBrowserRuntimeStatus', 'GetCronBrowserAccess', 'RevokeCronBrowserAccess',
     'AcquireResumeEditLock', 'ReleaseResumeEditLock', 'GetStatus',
     'GetObservability', 'GetTraceEvents', 'DeleteTraces', 'SetTraceRetention', 'ClearObservability',
     'ReloadSession', 'SelectProjectDirectory', 'GetSessionAssistantState', 'BindProjectEnvironment', 'GetSessionScenes',

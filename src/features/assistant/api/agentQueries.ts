@@ -26,9 +26,9 @@ export async function GetAgentBalance() {
   return Unwrap(await platformClient.agent.GetBalance());
 }
 
-/** 读取当前凭据在 DeepSeek 官方 /models 返回的可用模型。 */
-export async function GetDeepSeekModels() {
-  return Unwrap(await platformClient.agent.GetModels());
+/** 读取指定 Provider 当前凭据可访问的模型（DeepSeek / MiMo 走官方 GET /models 同步）。 */
+export async function GetProviderModels(provider: 'DeepSeek' | 'Z.AI' | 'MIMO' | '自定义') {
+  return Unwrap(await platformClient.agent.GetModels(provider));
 }
 
 /** 获取所有已配置 Provider 的可选模型，凭据不会离开主进程。 */
@@ -80,11 +80,11 @@ export async function ConfirmCronTask(confirmationId: string, accepted: boolean)
 }
 
 /** 确认或拒绝冻结的浏览器动作；接受后由 Host 重新校验并执行原提案。 */
-export async function ConfirmBrowserAction(confirmationId: string, accepted: boolean) {
-  return Unwrap(await platformClient.agent.ConfirmBrowserAction(confirmationId, accepted));
+export async function ConfirmBrowserAction(confirmationId: string, accepted: boolean, sessionId: string) {
+  return Unwrap(await platformClient.agent.ConfirmBrowserAction(confirmationId, accepted, sessionId));
 }
 
-/** 读取不包含本地路径的 agent-browser Runtime 状态；显式检测可要求后端验证真实连接。 */
+/** 读取扩展桥接状态；显式检测可要求后端验证真实连接。 */
 export async function GetBrowserRuntimeStatus(probeConnection = false) {
   return Unwrap(await platformClient.agent.GetBrowserRuntimeStatus(probeConnection));
 }
@@ -95,11 +95,6 @@ export async function GetCronBrowserAccess() {
 
 export async function RevokeCronBrowserAccess(cronTaskId: string) {
   return Unwrap(await platformClient.agent.RevokeCronBrowserAccess({ cronTaskId }));
-}
-
-/** 清除 Avery 独立浏览器身份；UI 必须先完成破坏性确认。 */
-export async function ClearBrowserProfile() {
-  return Unwrap(await platformClient.agent.ClearBrowserProfile());
 }
 
 /** 更新在途 Run 的确认权限；无在途 Run 时由下一次 Send 携带当前值。 */
