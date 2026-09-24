@@ -7,6 +7,7 @@ node_modules/
 # Generated renderer and release artifacts
 /dist/
 /release-rebuild/
+/release-pb05/
 /output/
 /artifacts/
 /build/markitdown/
