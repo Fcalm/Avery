@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { existsSync } from 'node:fs';
 import { readdir, readFile, realpath, stat } from 'node:fs/promises';
 import * as path from 'node:path';
 import type { AgentMessage, FrozenSkill, SkillManifest, SkillSnapshot } from '@avery/agent-sdk';
@@ -34,6 +35,12 @@ function EscapeXml(value: string): string {
 
 function SkillLookupKey(value: string): string {
   return value.trim().toLowerCase().replace(/-/g, '');
+}
+
+/** 开发版的 workspace 布局与打包版的 node_modules 布局不同；打包版从 Electron 资源根定位 Skill。 */
+export function ResolveDefaultSkillRoot(moduleDirectory = __dirname, resourcesPath = process.resourcesPath): string {
+  if (resourcesPath && existsSync(path.join(resourcesPath, 'app.asar'))) return path.join(resourcesPath, 'app.asar', 'skills');
+  return path.resolve(moduleDirectory, '../../../../../skills');
 }
 
 async function ReadUtf8File(filePath: string, maximumBytes: number): Promise<string> {
@@ -121,7 +128,7 @@ async function DiscoverReferencePaths(directory: string): Promise<string[]> {
 export class AgentSkillRegistry {
   private readonly rootPath: string;
 
-  constructor(rootPath = path.resolve(__dirname, '../../../../../skills')) {
+  constructor(rootPath = ResolveDefaultSkillRoot()) {
     this.rootPath = rootPath;
   }
 

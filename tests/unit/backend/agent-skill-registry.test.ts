@@ -2,13 +2,23 @@ import { join } from 'node:path';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { afterEach, describe, expect, it } from 'vitest';
-import { AgentSkillRegistry } from '../../../apps/backend/src/electron/backend/agent-skill-registry';
+import { AgentSkillRegistry, ResolveDefaultSkillRoot } from '../../../apps/backend/src/electron/backend/agent-skill-registry';
 
 describe('AgentSkillRegistry', () => {
   const registry = new AgentSkillRegistry(join(process.cwd(), 'skills'));
   const roots: string[] = [];
 
   afterEach(async () => { await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
+
+  it('打包版从 resources/app.asar 定位 Skill，不受 node_modules 内的 Backend 路径影响', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'avery-skill-root-')); roots.push(root);
+    const resources = join(root, 'resources');
+    await mkdir(resources);
+    await writeFile(join(resources, 'app.asar'), 'fixture');
+    const packagedModule = join(resources, 'app.asar', 'node_modules', '@avery', 'backend', 'dist', 'electron', 'backend');
+    expect(ResolveDefaultSkillRoot(packagedModule, resources)).toBe(join(resources, 'app.asar', 'skills'));
+    expect(ResolveDefaultSkillRoot(join(root, 'apps', 'backend', 'dist', 'electron', 'backend'), join(root, 'no-resources'))).toBe(join(root, 'skills'));
+  });
 
   it('跳过没有 SKILL.md 的普通目录，但不掩盖已注册 Skill 的损坏 frontmatter', async () => {
     const root = await mkdtemp(join(tmpdir(), 'avery-skill-registry-')); roots.push(root);
