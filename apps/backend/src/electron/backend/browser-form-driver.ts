@@ -707,7 +707,7 @@ export function DynamicOptionMatch(
     const label = String(metadata?.name ?? '').replace(/\s+/g, ' ').trim().slice(0, 120);
     const normalized = normalizeOption(label);
     if (!normalized || normalized.length > 80 || /^(请选择|请输入|确定|取消|关闭)$/.test(normalized)) continue;
-    // agent-browser 可能沿用标记前的可访问性角色，因此已补为 option 的原生 li 仍会回报 listitem。
+    // 浏览器快照可能沿用标记前的可访问性角色，因此已补为 option 的原生 li 仍会回报 listitem。
     if (!clickable.has(rawRef.replace(/^@/, '')) && !['button', 'option', 'listitem', 'menuitem', 'treeitem', 'radio'].includes(role)) continue;
     const actionKey = `${role}:${normalized}`;
     if (visitedActions.has(actionKey)) continue;
@@ -725,9 +725,9 @@ export function DynamicOptionMatch(
       candidates.push({ ref: `@${rawRef.replace(/^@/, '')}`, label, score, complete, role, actionKey });
     }
   }
-  const actionPriority = (candidate: typeof candidates[number]) => candidate.complete
-    ? (candidate.role === 'radio' ? 2 : 1)
-    : (candidate.role === 'radio' ? 0 : 2);
+  // 北森同时暴露文字行和旁侧圆点。文字行承担级联导航和末级选择，圆点只是辅助选中态；
+  // 优先点击文字可避免停在省级或命中尺寸过小、易重建的图标节点。
+  const actionPriority = (candidate: typeof candidates[number]) => candidate.role === 'radio' ? 0 : 2;
   candidates.sort((left, right) => right.score - left.score
     || actionPriority(right) - actionPriority(left)
     || left.label.length - right.label.length);
@@ -1180,7 +1180,18 @@ export class BrowserFormDriver {
           if (region && selectedAny) break;
           return { filled: false, reason: selectedAny ? 'cascade_incomplete' : 'option_not_found' };
         }
-        await this.port.runCommand(['click', option.ref], options);
+        try {
+          await this.port.runCommand(['click', option.ref], options);
+        } catch (error) {
+          // 虚拟列表可能在快照后立即重建候选节点；只在 ref 失效时重新生成一次候选快照，
+          // 再按相同语义选择，避免重复执行已完成的级联步骤。
+          if (!(error instanceof AgentBrowserError) || error.code !== 'BROWSER_STALE_PAGE_REF') throw error;
+          const refreshedSnapshot = await this.SnapshotDynamicOptions(options);
+          const refreshed = DynamicOptionMatch(refreshedSnapshot.data ?? {}, operation.key, operation.value, visitedActions);
+          if (!refreshed) throw error;
+          option = refreshed;
+          await this.port.runCommand(['click', option.ref], options);
+        }
         selectedAny = true;
         visitedActions.add(option.actionKey);
         if (!selectedLabels.includes(option.label)) selectedLabels.push(option.label);
@@ -1195,6 +1206,15 @@ export class BrowserFormDriver {
         // 自动提交型地区控件不需要确认；仍显示旧值时，确认是不可省略的提交步骤。
         committed = await this.VerifyDynamicSelection(operation, selectedLabels, options);
         if (committed) return { filled: true };
+        // 北森文字行负责进入下一级；末级仍可能要求点选同名圆点后再确认。
+        const selectionSnapshot = await this.SnapshotDynamicOptions(options);
+        const selection = DynamicOptionMatch(selectionSnapshot.data ?? {}, operation.key, operation.value, visitedActions);
+        if (selection?.role === 'radio' && selection.complete) {
+          await this.port.runCommand(['click', selection.ref], options);
+          visitedActions.add(selection.actionKey);
+          if (!selectedLabels.includes(selection.label)) selectedLabels.push(selection.label);
+          await this.port.delay(DynamicTransitionDelayMs, options.signal);
+        }
         const confirmation = await this.WaitForDynamicConfirmation(options);
         if (!confirmation) return { filled: false, reason: 'confirmation_not_available' };
         await this.port.runCommand(['click', confirmation.ref], options);
@@ -1202,11 +1222,23 @@ export class BrowserFormDriver {
         committed = await this.VerifyDynamicSelection(operation, selectedLabels, options);
         return committed ? { filled: true } : { filled: false, reason: 'confirmation_not_committed' };
       }
-      if (selectionControlUsed) {
-        const confirmation = await this.WaitForDynamicConfirmation(options);
-        if (confirmation) await this.port.runCommand(['click', confirmation.ref], options);
-      }
       committed = await this.VerifyDynamicSelection(operation, selectedLabels, options);
+      if (!committed) {
+        const selectionSnapshot = await this.SnapshotDynamicOptions(options);
+        const selection = DynamicOptionMatch(selectionSnapshot.data ?? {}, operation.key, operation.value, visitedActions);
+        if (selection?.role === 'radio' && selection.complete) {
+          await this.port.runCommand(['click', selection.ref], options);
+          visitedActions.add(selection.actionKey);
+          if (!selectedLabels.includes(selection.label)) selectedLabels.push(selection.label);
+          await this.port.delay(DynamicTransitionDelayMs, options.signal);
+        }
+        const confirmation = await this.WaitForDynamicConfirmation(options);
+        if (confirmation) {
+          await this.port.runCommand(['click', confirmation.ref], options);
+          await this.port.delay(DynamicConfirmationDelayMs, options.signal);
+          committed = await this.VerifyDynamicSelection(operation, selectedLabels, options);
+        }
+      }
       return committed ? { filled: true } : { filled: false, reason: 'selection_not_committed' };
     } finally {
       try { await this.port.runCommand(['eval', '-b', Buffer.from(DynamicOptionCleanupExpression, 'utf8').toString('base64')], options); } catch { /* 字段结果优先，下次候选快照仍会先清理。 */ }

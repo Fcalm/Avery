@@ -281,6 +281,10 @@ describe('BrowserFormService 匹配阈值与等价值候选', () => {
       e1: { role: 'radio', name: '汉族' },
       e2: { role: 'radio', name: '回族' },
     } }, 'ethnicity', '汉', new Set())).toMatchObject({ ref: '@e1', role: 'radio', complete: true });
+    expect(DynamicOptionMatch({ refs: {
+      e1: { role: 'radio', name: '汉族' },
+      e2: { role: 'button', name: '汉族' },
+    } }, 'ethnicity', '汉', new Set())).toMatchObject({ ref: '@e2', role: 'button', complete: true });
     expect(DynamicSearchMatch({ refs: {
       e3: { role: 'textbox', name: '__avery_dynamic_search__' },
     } })).toEqual({ ref: '@e3' });
@@ -288,6 +292,7 @@ describe('BrowserFormService 匹配阈值与等价值候选', () => {
 
   it('民族目标不在虚拟列表时先搜索再选择并确认', async () => {
     let snapshotCount = 0;
+    let verificationCount = 0;
     const commands: string[][] = [];
     const driver = new BrowserFormDriver({
       pageRevision: () => 1,
@@ -312,7 +317,8 @@ describe('BrowserFormService 匹配阈值与等价值候选', () => {
         if (command[0] === 'eval') {
           const expression = Buffer.from(command[2] ?? '', 'base64').toString('utf8');
           if (expression.includes("const triggers = [...document.querySelectorAll('[data-avery-form-semantic=\"custom-select\"]')")) {
-            return { data: { result: { filled: true } } };
+            verificationCount += 1;
+            return { data: { result: { filled: verificationCount > 1 } } };
           }
         }
         return { success: true, data: {} };
