@@ -6,7 +6,9 @@ import type { DesktopAgentBridge, DesktopEvaluationBridge, WorkspaceBridge } fro
 interface DesktopWindowBridge {
   Minimize: () => Promise<boolean>;
   ToggleMaximize: () => Promise<boolean>;
+  IsMaximized: () => Promise<boolean>;
   Close: () => Promise<boolean>;
+  OnMaximizedChange: (listener: (maximized: boolean) => void) => () => void;
   GetWorkspaceDirectory: () => Promise<string>;
   OpenWorkspaceDirectory: () => Promise<boolean>;
   SetLoginItemSettings: (openAtLogin: boolean) => Promise<boolean>;

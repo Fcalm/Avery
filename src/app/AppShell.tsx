@@ -19,7 +19,9 @@ const MinContentWidth = 800;
 type WindowControls = {
   Minimize: () => Promise<boolean>;
   ToggleMaximize: () => Promise<boolean>;
+  IsMaximized: () => Promise<boolean>;
   Close: () => Promise<boolean>;
+  OnMaximizedChange: (listener: (maximized: boolean) => void) => () => void;
 };
 
 type ThemeMode = 'light' | 'dark';
@@ -117,6 +119,23 @@ function AppShell({ page, onNavigate, onRestartOnboarding, settingsTab, onReques
   activeConversationIdRef.current = activeConversationId;
 
   const windowControls = (window as Window & { averyWindow?: WindowControls }).averyWindow;
+  useEffect(() => {
+    if (!windowControls) return undefined;
+    let cancelled = false;
+    let changedSinceRead = false;
+    const unsubscribe = windowControls.OnMaximizedChange((maximized) => {
+      changedSinceRead = true;
+      SetIsMaximized(maximized);
+    });
+    // 先订阅事件，再读取实际窗口状态；避免初始状态遗漏或较旧的 IPC 快照覆盖新事件。
+    void windowControls.IsMaximized().then((maximized) => {
+      if (!cancelled && !changedSinceRead) SetIsMaximized(maximized);
+    }).catch(() => undefined);
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, [windowControls]);
   const minimumContentWidth = page === 'assistant' ? ASSISTANT_MAIN_MIN_WIDTH : MinContentWidth;
   // 原型导航顺序与命名：对话、岗位、简历、投递记录、档案；开发者工具不走侧栏导航，
   // 入口在账户菜单（对应原型 umDeveloper），且仅在开启开发者模式后出现。
@@ -236,7 +255,8 @@ function AppShell({ page, onNavigate, onRestartOnboarding, settingsTab, onReques
   }
 
   async function HandleToggleMaximize() {
-    SetIsMaximized(await windowControls?.ToggleMaximize() ?? false);
+    // 最大化状态以 Main 进程的 maximize / unmaximize 事件为准；IPC 返回值可能早于系统窗口状态更新。
+    await windowControls?.ToggleMaximize();
   }
 
   async function HandleDeveloperModeChange(enabled: boolean) {

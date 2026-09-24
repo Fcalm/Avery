@@ -185,7 +185,7 @@
   --shadow-control: var(--shadow);
   --focus-ring: 0 0 0 3px var(--accent-soft);
   --transition-standard: 0.18s var(--ease);
-  --titlebar-height: 56px;
+  --titlebar-height: 44px;
 
   color: var(--text);
   background: var(--bg);

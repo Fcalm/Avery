@@ -533,11 +533,9 @@ html, body { background: transparent; }
   box-sizing: border-box;
   min-height: 100vh;
   overflow: hidden;
-  border: 0;
-  border-radius: var(--radius-container);
+  border: 1px solid #333333;
+  border-radius: 0;
   background: var(--app-background);
-  /* 由根层同时裁剪背景与全部子层，避免仅面板圆角而应用背景仍以直角露出的情况。 */
-  clip-path: inset(0 round var(--radius-container));
   isolation: isolate;
   -webkit-backdrop-filter: blur(var(--blur-glass));
   backdrop-filter: blur(var(--blur-glass));
