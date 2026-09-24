@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * CJS 源文件门禁（阶段 6 S6）：
- * 1. TS 组合根目录（apps 与 packages 下各包的 src、根 src/）不允许出现 .cjs/.cts 源文件。
+ * 1. TS 组合根目录不允许出现额外 .cjs/.cts 源文件；Electron preload 与 Node 原生测试入口例外。
  * 2. electron/ 下 CJS 源文件仅允许「桌面壳 + 领域层」清单（preload 沙箱限制必须 CJS；领域层待后续阶段 TS 化）。
  * 3. 输出允许清单，CI 可执行；发现越界 CJS 以非零退出。
  */
@@ -28,7 +28,7 @@ function CollectCjs(directory) {
 }
 
 /** electron 下 CJS 源文件允许前缀（桌面壳 + 领域层；smoke 与迁移脚本不参与门禁）。 */
-const AllowedCjsPrefixes = ['electron/preload.cjs'];
+const AllowedCjsPrefixes = ['electron/preload.cjs', 'apps/desktop/src/preload.cts', 'apps/backend/test/backend-idempotency.test.cjs'];
 
 /** 检查一个 CJS 文件是否命中允许清单（精确匹配或前缀匹配）。 */
 function IsAllowed(file) {
@@ -39,7 +39,7 @@ const tsSourceRoots = ['apps', 'packages', 'src'].map((name) => join(root, name)
 const violations = [];
 for (const sourceRoot of tsSourceRoots) {
   if (!statSync(sourceRoot, { throwIfNoEntry: false })) continue;
-  for (const file of CollectCjs(sourceRoot)) violations.push(`TS 组合根目录不应有 CJS 源文件：${file}`);
+  for (const file of CollectCjs(sourceRoot)) if (!IsAllowed(file)) violations.push(`TS 组合根目录不应有 CJS 源文件：${file}`);
 }
 
 // Test and release-verification entrypoints are not production Electron sources.
@@ -53,4 +53,4 @@ if (violations.length) {
   for (const line of violations) console.error(`  - ${line}`);
   process.exit(1);
 }
-console.log(`CJS 门禁通过：TS 组合根目录无 CJS；electron 允许清单 ${electronCjs.length} 个文件。`);
+console.log(`CJS 门禁通过：TS 组合根目录仅有明确允许的 preload/测试入口；electron 允许清单 ${electronCjs.length} 个文件。`);

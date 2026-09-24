@@ -20,11 +20,8 @@
     "test": "npm run test:vitest && npm run test --workspaces --if-present",
     "test:vitest": "node node_modules/vitest/vitest.mjs run --config vitest.config.ts",
     "smoke": "node scripts/smoke-packaged-app.mjs",
-    "smoke:browser-companion": "node scripts/smoke-browser-companion.mjs",
-    "smoke:agent-application": "node scripts/smoke-agent-application.mjs",
-    "smoke:packaged-agent-application": "node scripts/smoke-packaged-agent-application.mjs",
-    "evaluate:deepseek-application": "node scripts/evaluate-deepseek-application.mjs",
-    "evaluate:system-baseline": "node scripts/run-evaluation-system-baseline.mjs",
+    "smoke:browser-extension": "node scripts/smoke-browser-extension.mjs",
+    "smoke:browser-migration": "node scripts/smoke-browser-migration-pb03.mjs",
     "audit:system-baseline": "node scripts/audit-evaluation-system-baseline.mjs",
     "smoke:evaluation-ui": "node scripts/smoke-evaluation-ui.mjs",
     "build:markitdown-sidecar": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-markitdown-sidecar.ps1",
@@ -43,7 +40,6 @@
     "@tanstack/react-query": "^5.59.0",
     "@tesseract.js-data/chi_sim": "1.0.0",
     "@tesseract.js-data/eng": "1.0.0",
-    "agent-browser": "0.34.0",
     "ajv": "^8.20.0",
     "better-sqlite3": "13.0.3",
     "drizzle-orm": "^0.45.2",
@@ -69,6 +65,7 @@
   "build": {
     "appId": "com.avery.app",
     "productName": "Avery",
+    "artifactName": "${productName}-Setup-${version}-${arch}.${ext}",
     "icon": "build/icon.ico",
     "asar": true,
     "npmRebuild": false,
@@ -78,22 +75,30 @@
     "files": [
       "dist/**",
       "apps/**",
+      "!apps/desktop/dist/browser-companion.js",
       "packages/**",
       "skills/**",
       "electron/**",
       "migrations/**",
       "node_modules/@avery/**",
-      "node_modules/agent-browser/**",
+      "!node_modules/@avery/desktop/dist/browser-companion.js",
+      "!**/*.map",
+      "!**/docs/**",
+      "!**/doc/**",
+      "!**/tests/**",
+      "!**/examples/**",
       "package.json"
-    ],
-    "asarUnpack": [
-      "node_modules/agent-browser/bin/**"
     ],
     "extraResources": [
       {
         "from": "build/markitdown",
         "to": "markitdown",
         "filter": ["markitdown.exe"]
+      },
+      {
+        "from": "apps/browser-extension",
+        "to": "browser-extension",
+        "filter": ["**/*"]
       }
     ]
   }

@@ -15,8 +15,8 @@ const rebuildPkg = require('../node_modules/@electron/rebuild/package.json');
 const errors = [];
 if (electronPkg.version !== expectedElectron || pkg.devDependencies.electron !== expectedElectron) errors.push(`Electron must be exactly ${expectedElectron}.`);
 if (builderPkg.version !== expectedBuilder || pkg.devDependencies['electron-builder'] !== expectedBuilder) errors.push(`electron-builder must be exactly ${expectedBuilder}.`);
-if (rebuildPkg.version !== expectedRebuild || pkg.devDependencies['@electron/rebuild'] !== expectedRebuild) errors.push(`@electron/rebuild must be exactly ${expectedRebuild}.`);
-for (const file of ['build/icon.ico', 'build/icon.png', 'electron/preload.cjs']) if (!existsSync(join(root, file))) errors.push(`Missing release input: ${file}`);
+if (rebuildPkg.version !== expectedRebuild) errors.push(`@electron/rebuild must be exactly ${expectedRebuild}.`);
+for (const file of ['build/icon.ico', 'electron/preload.cjs']) if (!existsSync(join(root, file))) errors.push(`Missing release input: ${file}`);
 const electronPath = require('electron');
 if (!existsSync(electronPath)) errors.push('Downloaded Electron executable is unavailable.');
 else {

@@ -10,7 +10,9 @@ if (!existsSync(executable)) throw new Error(`Packaged executable is missing: ${
 const ownsUserData = !process.env.AVERY_SMOKE_USER_DATA;
 const userData = process.env.AVERY_SMOKE_USER_DATA ? resolve(process.env.AVERY_SMOKE_USER_DATA) : mkdtempSync(join(tmpdir(), 'avery-packaged-smoke-'));
 const resultPath = process.env.AVERY_SMOKE_RESULT_PATH ? resolve(process.env.AVERY_SMOKE_RESULT_PATH) : join(userData, 'smoke-result.json');
-const child = spawn(executable, [], { cwd: root, env: { ...process.env, AVERY_DESKTOP_SMOKE: '1', AVERY_SMOKE_USER_DATA: userData, AVERY_SMOKE_RESULT_PATH: resultPath }, windowsHide: true, stdio: 'ignore' });
+const child = spawn(executable, [], { cwd: root, env: { ...process.env, AVERY_DESKTOP_SMOKE: '1', AVERY_SMOKE_USER_DATA: userData, AVERY_SMOKE_RESULT_PATH: resultPath }, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+let childStderr = '';
+child.stderr.on('data', (chunk) => { childStderr = (childStderr + chunk.toString()).slice(-4000); });
 const deadline = Date.now() + 60000;
 let exited = false;
 let exitCode = null;
@@ -29,6 +31,6 @@ if (process.platform === 'win32' && child.pid) {
   try { execFileSync('taskkill.exe', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true }); } catch {}
 } else child.kill();
 if (ownsUserData) try { rmSync(userData, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }); } catch {}
-const result = { resultWritten: Boolean(payload), stage: payload?.stage ?? null, exited, exitCode, rendererLoaded: payload?.rendererLoaded === true, backendReady: payload?.backendReady === true, rendererAgentIpc: payload?.rendererAgentIpc ?? null, electron: payload?.electron ?? null, startupReadyMs: payload?.startupReadyMs ?? null, backendState: payload?.backendState ?? null, lifecycleError: payload?.lifecycleError ?? null, lifecycleErrorMessage: payload?.lifecycleErrorMessage ?? null, lifecycleStep: payload?.lifecycleStep ?? null, ...(payload?.lifecycle ? { lifecycle: payload.lifecycle } : {}), ...(payload?.installedVisual ? { installedVisual: payload.installedVisual } : {}) };
+const result = { resultWritten: Boolean(payload), stage: payload?.stage ?? null, exited, exitCode, rendererLoaded: payload?.rendererLoaded === true, backendReady: payload?.backendReady === true, rendererAgentIpc: payload?.rendererAgentIpc ?? null, electron: payload?.electron ?? null, startupReadyMs: payload?.startupReadyMs ?? null, backendState: payload?.backendState ?? null, lifecycleError: payload?.lifecycleError ?? null, lifecycleErrorMessage: payload?.lifecycleErrorMessage ?? null, lifecycleStep: payload?.lifecycleStep ?? null, ...(payload?.stage === 'failed' && childStderr ? { childStderr } : {}), ...(payload?.lifecycle ? { lifecycle: payload.lifecycle } : {}), ...(payload?.installedVisual ? { installedVisual: payload.installedVisual } : {}) };
 console.log(JSON.stringify(result));
 if (!result.resultWritten || !result.rendererLoaded || !result.backendReady || result.rendererAgentIpc?.agentStatus !== true || result.rendererAgentIpc?.browserRuntimeStatus !== true || result.electron !== expectedElectron || !Number.isFinite(result.startupReadyMs) || result.startupReadyMs > 2000 || (result.installedVisual && !result.installedVisual.passed)) process.exit(1);

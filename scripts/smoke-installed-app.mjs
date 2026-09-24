@@ -2,13 +2,13 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 
 const root = join(import.meta.dirname, '..');
 const require = createRequire(import.meta.url);
 const pkg = require('../package.json');
 const installer = process.env.AVERY_INSTALLED_SMOKE_INSTALLER
-  ? join(root, process.env.AVERY_INSTALLED_SMOKE_INSTALLER)
+  ? resolve(root, process.env.AVERY_INSTALLED_SMOKE_INSTALLER)
   : join(root, 'release', `Avery-Setup-${pkg.version}-x64.exe`);
 if (!existsSync(installer)) throw new Error(`Installer is missing: ${installer}`);
 
