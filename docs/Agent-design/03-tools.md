@@ -129,7 +129,7 @@ interface AgentToolDefinition<TInput, TOutput> {
     'Read', 'Glob', 'Grep', 'ReadProfile', 'ReadResume',
     'CreateTodo', 'UpdateTodo', 'DeleteTodo', 'ReadTodo', 'AskUserQuestion', 'LoadSkill',
     'CreateCronTask', 'ReadCronTask', 'UpdateCronTask', 'DeleteCronTask',
-    'CollectJobs', 'ContactBossJobs', 'ReadApplicationStatus', 'SaveJob', 'UpdateApplicationStatus',
+    'ExportResumeFile', 'CollectJobs', 'ContactBossJobs', 'ReadApplicationStatus', 'SaveJob', 'UpdateApplicationStatus',
     'BrowserNavigate', 'BrowserSnapshot', 'BrowserScreenshot', 'BrowserReadPage', 'BrowserClick',
     'BrowserFill', 'BrowserFillForm', 'BrowserValidateForm', 'BrowserSelect', 'BrowserSetChecked', 'BrowserPressKey',
     'BrowserUploadFile', 'BrowserWait', 'BrowserSwitchTab', 'BrowserGoBack'
@@ -138,6 +138,8 @@ interface AgentToolDefinition<TInput, TOutput> {
 ```
 
 场景在会话首次发送时冻结；切换场景必须新建会话。浏览器工具名称与执行边界见 5.4 节和 `07-browser-tools-development-plan.md`，确认权限只改变普通动作的确认频率，不扩大工具、文件或网络权限。
+
+`ExportResumeFile` 属于投递场景，用于把已绑定的简历准备成可上传文件；默认场景继续通过简历页面导出文件。工具契约见 5.2 节。
 
 `CollectJobs` 使用 Host 内置平台适配器采集最多 10 个 BOSS 候选，只写入 15 分钟的会话内存缓存，不自动写岗位库。Agent 判断后使用 `SaveJob(collectionId, candidateId)` 保存选中候选；浏览器直接观察岗位的完整字段模式作为独立 Schema 分支保留。
 
@@ -161,7 +163,7 @@ interface AgentToolDefinition<TInput, TOutput> {
 
 四个 CronTask 工具同时存在于默认和投递场景。`CreateCronTask` 只冻结提案并展示一次周期级无人值守确认；确认前不写数据库、不注册系统任务。确认后每次 occurrence 创建独立会话，以真实 `user` 消息执行，并使用 `fully_trusted + unattended`，但仍受冻结场景、Schema、资源授权、网络边界与 Tool Ledger 约束。
 
-投递 CronTask 的创建确认同时授予该任务个人浏览器权限，并以 `browserAuthorized` 持久绑定到真实 `cronTaskId`；不再要求用户到设置页配置限时租约。单次任务完成、周期任务结束、任务删除或用户手动撤销后不再使用该授权。授权只表示 Harness 允许该任务操作个人浏览器，不代表 Chrome/Edge 当前在线或 BOSS 已登录；后台 Run 会尝试建立受限连接，浏览器不可连接、未登录或需要人工批准时暂停并保留待接管会话。旧版本已创建但未经新版确认的任务默认不获得授权。
+投递 CronTask 的创建确认同时生成个人浏览器任务授权，并持久绑定到真实 `cronTaskId`；授权冻结任务用途、导航、填表、上传、外部发送和持久资源范围。单次任务完成、周期任务结束、任务删除或用户手动撤销后不再使用。后台 Run 通过 Browser Bridge 连接或正常启动用户配置的 Chrome/Edge，由扩展创建任务标签页，不在执行时等待标签页或远程调试授权；扩展离线、浏览器启动失败、未登录或需要人工处理时暂停并保留待接管会话。旧版本任务默认不获得新版授权。
 
 支持 `once`、`daily` 和带 `daysOfWeek` 的 `weekly` 调度；重复时间按 IANA 时区的本地日历计算。关机或休眠导致多次逾期时只补最近一次，其余写为 `missed`。系统只维护一个 `Avery Cron Runner` 唤醒任务，业务数据库保存全部计划与运行历史。无人值守 Run 不暴露四个 CronTask 工具，防止递归调度。
 创建确认会明示系统可在计划时间唤醒或后台启动应用。Windows 唤醒允许电池供电时启动，且切换到电池后不中止已开始的 Run。
@@ -212,6 +214,30 @@ UpdateResume
 
 `ReadResume({})` 返回 `id/name/revision/updatedAt/targetRoles` 索引，不包含 `content` 或正文摘要；`ReadResume({resumeId})` 才返回完整正文，并把该 ID 与 revision 绑定到当前会话。`UpdateProfile` 和 `UpdateResume` 接收结构化 patch 与 expected revision。是否展示 diff、等待确认或直接提交由 Harness 根据场景策略决定，模型不调用 Preview/Commit 工具。包含未确认 `【待确认】` 的简历草稿不能调用 `UpdateResume` 写入正式版本；Harness 必须先完成文本确认并移除已确认标签。
 
+#### `ExportResumeFile`
+
+供投递场景将已绑定的简历版本准备为可上传文件。桌面导出已有 PDF 的 `printToPDF` 和 PNG 的 `capturePage().toPNG()` 实现；新增工具复用这两种格式，不新增 JPEG 转码。
+
+```ts
+type ExportResumeFileInput = { format: 'pdf' | 'png' };
+type ExportResumeFileOutput = {
+  fileId: string;
+  fileName: string;
+  mimeType: 'application/pdf' | 'image/png';
+  resumeId: string;
+  resumeRevision: number;
+  sizeBytes: number;
+  sha256: string;
+};
+```
+
+- 先调用 `ReadResume({resumeId})` 建立绑定；工具只使用该绑定的 ID 和 revision，从后端读取正式简历内容。不接受模型提供的正文、任意文件路径或导出目录。
+- `pdf` 用于企业官网简历上传；`png` 可作为 `ContactBossJobs.imageAssetId` 向 BOSS 聊天发送。同一个 `fileId` 也可传给 `BrowserUploadFile`。
+- 宿主保存导出的原始文件，登记为当前 Run 授权的文件资源，返回不暴露物理路径的 `fileId`；必须同步更新执行时的授权资源清单，使后续上传工具能实际使用该 ID。Markdown 附件快照只用于阅读，不作为上传内容。
+- 导出结果绑定简历 revision 和内容哈希，保留 `.pdf` 或 `.png` 扩展名、正确 MIME 与文件头；浏览器物化副本也必须保留该扩展名。PNG 超出完整截图范围或文件超过目标上传限制时明确失败，不返回截断文件。
+- 本地导出不要求外发确认；网页上传和 BOSS 发图仍按原有确认与结果核验流程执行。`fileId` 不是网页 URL，工具不返回 `file:` 路径或公开下载地址。
+- 当前工具仅在交互 Run 生成上传资源。定时任务不能调用它获取新的文件授权；定时上传仍需单独完成持久文件资源冻结和 `allowFileUpload` 授权。
+
 ### 5.3 岗位网络工具草案（0.2.0 禁用）
 
 Schema 草案保留：
@@ -254,29 +280,29 @@ ReadUrl
 
 ### 5.4 浏览器操作工具（投递场景规划）
 
-浏览器能力由 Host 统一映射到受控执行层，不向模型开放原始 CLI、CDP 方法、任意参数、JavaScript 或插件能力。Electron 隔离浏览器使用 `agent-browser` CLI 和 Avery 专用 Profile；Chrome/Edge 使用内部轻量 CDP 驱动连接用户已经打开、已登录且启用本机 CDP 的浏览器。个人浏览器只创建并登记一个 `zhipin.com` 任务标签页，不能向模型暴露或切换到邮箱等其他标签页；无人值守时还必须携带创建确认写入的任务级授权。轻量驱动固定禁止 `Runtime.enable`、`Page.enable`、`Network.enable`、`WebMCP.enable` 和 `Target.setAutoAttach`。切换浏览器会解绑旧 Runtime 并废弃页面引用，但不得关闭或清理用户浏览器。
+浏览器能力由 Host 映射到 Browser Bridge，再由 Avery 浏览器扩展在用户日常 Chrome/Edge 中执行。目标实现不使用隔离 Electron 浏览器、独立 Profile、`agent-browser` CLI 或远程调试端口。扩展通过仅监听 `127.0.0.1` 的随机令牌鉴权长轮询连接 Backend，并只附着 Avery 创建的任务标签页。模型只能调用冻结的 `Browser*` 工具，不能接触扩展 API、本机通信令牌、选择器、任意 JavaScript、Cookie 或本地文件路径。
 
-隔离伴随进程只承载招聘网页 target，不初始化 Avery Renderer 或 Backend，因此 CLI 无法枚举主应用页面。第一阶段仍只实施应用层网络限制：导航及重定向仅接受经校验的公开 `http/https` 地址，拒绝本机、内网和特殊协议；页面输出使用内容边界并限长；上传只接受 Host 签发的文件引用；提交、发送和敏感上传继续由 Harness 判断并确认。这里的进程隔离是页面与身份隔离，不等同于受控代理或完整网络出口隔离。
+扩展首次启用时由用户一次性授予网页访问权限，用于覆盖 BOSS、第三方招聘平台、未知企业官网和跨域投递流程。每次 Run 只登记任务创建的标签页，其他个人标签页不得进入模型结果或 Trace。个人浏览器沿用用户网络环境，允许访问公开或内网招聘页面；导航仅接受 `http/https`，拒绝浏览器内部页面、扩展页面、本地文件和携带明文凭据的 URL。页面输出限长，上传只接受 Host 签发的文件引用；提交、发送和敏感上传继续由 Harness 和 CronTask 的冻结任务授权控制。
 
 规划工具列表：
 
 | 工具 | 职责 | 执行映射 |
 | --- | --- | --- |
-| `BrowserNavigate` | 在当前标签页导航到指定 URL | 隔离：`agent-browser open`；个人：`Target.createTarget` / `Page.navigate` |
-| `BrowserSnapshot` | 获取当前页面结构、可交互元素及稳定引用 | 隔离：CLI Snapshot；个人：固定语义扫描表达式 |
-| `BrowserScreenshot` | 截取当前视口并仅向支持视觉输入的模型注入下一轮；不接受输出路径、不生成元素引用 | Host 生成临时路径；隔离使用 CLI，个人使用 `Page.captureScreenshot`；读取后立即删除 |
-| `BrowserReadPage` | 读取当前页面的正文内容 | 隔离：CLI Read；个人：固定限长读取表达式 |
-| `BrowserClick` | 点击指定页面元素 | 隔离：CLI Click；个人：命中校验后发送真实鼠标事件 |
-| `BrowserFill` | 清空并填写指定输入框 | 隔离：CLI Fill；个人：鼠标聚焦、清空、`Input.insertText` |
+| `BrowserNavigate` | 在当前标签页导航到指定 URL | 扩展创建任务标签页或导航当前任务标签页，记录最终 URL |
+| `BrowserSnapshot` | 获取当前页面结构、可交互元素及稳定引用 | 固定页面操作模块执行语义扫描并返回截断信息 |
+| `BrowserScreenshot` | 截取当前视口并仅向支持视觉输入的模型注入下一轮；不接受输出路径、不生成元素引用 | 扩展截取任务标签页，Host 读取后立即删除临时内容 |
+| `BrowserReadPage` | 读取当前页面的正文内容 | 固定页面操作模块返回限长正文、标题和 URL |
+| `BrowserClick` | 点击指定页面元素 | 重新校验 ref、可见性和命中目标后点击 |
+| `BrowserFill` | 清空并填写指定输入框 | 固定页面操作模块聚焦、填写并触发页面输入事件 |
 | `BrowserFillForm` | 选择投递档案和/或已绑定简历，由 Host 内部检查当前表单，经精确校验、上下文语义评分和全局冲突消解后填写文本框、原生下拉、日期选择器、自定义下拉、最多三级级联菜单或普通单选项；通过 `continuationId` 续填，并用短 `fieldId + candidateId` 处理歧义 | Host 保存短寿命来源和续填状态；动态控件每批最多执行两个并重新绑定 DOM，单字段失败进入 `skipped` 而不中断其余字段；结果返回摘要、`remainingCount`、`done`、`ambiguous`、`unmatched` 与 `missingFields` |
 | `BrowserValidateForm` | 填写后重新检查必填项和浏览器原生校验结果；不触发提交 | 复用受控页面快照，仅返回字段引用、标签和问题，不回显字段值 |
-| `BrowserSelect` | 选择指定下拉选项 | 隔离：CLI Select；个人：固定逻辑处理原生 `select` |
-| `BrowserSetChecked` | 设置复选框或单选项的选中状态 | 隔离：CLI Check；个人：状态校验后发送真实鼠标事件 |
-| `BrowserPressKey` | 在当前页面按下指定按键 | 隔离：CLI Press；个人：受限 `Input.dispatchKeyEvent` |
-| `BrowserUploadFile` | 将 Host 授权的文件上传到指定网页控件 | 隔离：CLI Upload；个人：`DOM.setFileInputFiles`，路径仅由 Host 注入 |
-| `BrowserWait` | 等待元素、页面状态或 URL 变化 | 隔离：CLI Wait；个人：固定轮询，`networkidle` 降级为 DOM 稳定 |
-| `BrowserSwitchTab` | 切换到指定浏览器标签页 | 隔离：CLI Tab；个人：只允许专用 BOSS 任务标签页 |
-| `BrowserGoBack` | 返回当前标签页的上一历史页面 | 隔离：CLI Back；个人：受限页面历史导航 |
+| `BrowserSelect` | 选择指定下拉选项 | 固定页面操作模块处理原生下拉和已识别的自定义选项 |
+| `BrowserSetChecked` | 设置复选框或单选项的选中状态 | 检查当前状态后在任务页面执行点击 |
+| `BrowserPressKey` | 在当前页面按下指定按键 | 扩展只执行既有按键枚举 |
+| `BrowserUploadFile` | 将 Host 授权的文件上传到指定网页控件 | Bridge 校验并读取资源，扩展绑定到目标上传控件 |
+| `BrowserWait` | 等待元素、页面状态或 URL 变化 | 固定页面操作模块有界轮询 URL、文本、元素或 DOM 稳定 |
+| `BrowserSwitchTab` | 切换到指定浏览器标签页 | 只允许当前浏览器任务已登记标签页 |
+| `BrowserGoBack` | 返回当前标签页的上一历史页面 | 在任务标签页执行历史返回并推进 revision |
 
 `BrowserFillForm → 按 continuationId 续填 → BrowserValidateForm` 构成低成本填表闭环。Inspect 是 FillForm 的 Host 内部步骤，不再作为 Agent 工具暴露；字段特征仅在 Host 的短寿命计划中使用，不进入模型上下文。首次调用只选择资料来源，后续调用只携带 `continuationId`、可选的短 `fieldId + candidateId` 决议，以及用户明确提供的规范字段 `decisions`。页面版本、DOM 引用、来源路径、类型兼容和不可复用来源冲突全部由 Host 保存并校验。稳定文本控件使用 Host 生成的 Batch；日期编辑器、自定义下拉和最多三级级联由 Host 每批最多执行两个，批次间重新检查页面并重绑定字段。表单批次超时只终止当前写操作，不把可见浏览器直接判定为崩溃并关闭。任何路径都不接受模型提供的 selector、CLI 参数、脚本或资料正文，也不执行上传、协议、导航和提交。
 
@@ -474,7 +500,7 @@ interface ToolEnvelope<T> {
 - 模型可见工具名全部符合 PascalCase 规则且跨 Provider 可接受。
 - 默认场景按意图进一步收窄工具，不暴露任何投递或浏览器能力。
 - 0.2.0 默认场景不注册、不展示也不执行 `SearchJobs`、`ReadUrl`。
-- 默认场景暴露冻结的 18 个工具；投递场景暴露冻结的 35 个工具，不包含 `CreateResume`、`UpdateResume`、`UpdateProfile`、`SearchJobs` 或 `ReadUrl`。
+- 默认场景暴露冻结的 18 个工具；投递场景暴露冻结的 36 个工具，不包含 `CreateResume`、`UpdateResume`、`UpdateProfile`、`SearchJobs` 或 `ReadUrl`。
 - CronTask 创建确认前数据库与 OS 调度均无新增记录；无人值守 Run 即使恢复旧快照也不能调用 CronTask 工具。
 - 多次逾期只执行最近 occurrence；既有 Run 活跃、浏览器长期占用、登录或验证码接管均写入明确的 `missed`/`needsAttention` 原因。
 - 投递 Agent 在浏览器执行前读取投递状态，并只在有效回执后更新 `applied`。

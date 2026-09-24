@@ -1,12 +1,12 @@
 # 投递场景 Agent E2E：开发规划与进度
 
-> 状态：开发中
-> 更新时间：2026-08-24
+> 状态：个人浏览器扩展链路已接入；完整发布门禁仍需独立验收
+> 更新时间：2026-09-24
 > 依赖：[Browser Tools 开发规划](./07-browser-tools-development-plan.md)、[Tools](./03-tools.md)、[Harness](./06-harness.md)
 
 ## 1. 目标与验收边界
 
-本规划补齐投递场景的正式端到端验证。验证必须从 `AgentHost.Send` 或桌面发送入口开始，经场景快照、System Prompt、模型 Provider、Agent Loop、Tools Module、Harness、浏览器 Runtime、`agent-browser` CLI 和隔离 Electron 浏览器到达网页；测试不得直接调用 CLI 或 `AgentBrowserRuntime.Execute` 后声称 Agent 能力通过。
+本规划补齐投递场景的正式端到端验证。目标验证必须从 `AgentHost.Send` 或桌面发送入口开始，经场景快照、System Prompt、模型 Provider、Agent Loop、Tools Module、Harness、Browser Bridge 和 Avery 扩展到达个人 Chrome/Edge 中的任务标签页；测试不得直接调用扩展内部操作或 Browser Runtime 后声称 Agent 能力通过。
 
 第一阶段测试站只在本机临时启动，不部署公网环境。自动回归使用确定性的 `ScriptedProvider`，真实模型只作为本地人工评估项，不能替代稳定回归。生产环境仍使用公开 URL/DNS 校验；本地测试通过构造参数注入“仅允许本次随机 loopback origin”的测试策略，禁止环境变量、隐藏开关或通配 localhost 放行。
 
@@ -17,12 +17,12 @@
 | 层级 | 入口 | Provider | 浏览器 | 目的 | 发布门禁 |
 | --- | --- | --- | --- | --- | --- |
 | 契约/单元测试 | 模块或 Runtime | Stub | Stub | Schema、白名单、风险、URL 策略、引用失效 | 必须 |
-| Agent 集成 E2E | `AgentHost.Send` | `ScriptedProvider` | 真实隔离 Electron + CLI | 确定性验证完整 Agent 数据流 | 必须 |
-| 桌面冒烟 | Renderer 发送入口 | `ScriptedProvider` 或受控模型 | 打包后的隔离 Electron | IPC、安装包路径、确认 UI 与浏览器可见性 | 发布前必须 |
+| Agent 集成 E2E | `AgentHost.Send` | `ScriptedProvider` | Browser Bridge + 扩展 + 本地任务标签页 | 确定性验证完整 Agent 数据流 | 必须 |
+| 桌面冒烟 | Renderer 发送入口 | `ScriptedProvider` 或受控模型 | 已配对个人 Chrome/Edge | IPC、扩展连接、确认 UI 与浏览器可见性 | 发布前必须 |
 | 真实模型评估 | 桌面发送入口 | OpenAI / DeepSeek | 本地测试站 | 评估模型识别页面和规划能力 | 非阻断诊断；形成基线后再设阈值 |
-| 真实招聘站人工兼容性 | 桌面发送入口 | 已支持 Provider | 隔离 Electron | 登录、验证码、站点差异与条款适配 | 正式开放投递前必须 |
+| 真实招聘站人工兼容性 | 桌面发送入口 | 已支持 Provider | 已登录个人 Chrome/Edge | 登录、验证码、站点差异与条款适配 | 正式开放投递前必须 |
 
-自动化的主证据是 Agent 集成 E2E，而不是直接 CLI 冒烟。CLI 伴随进程冒烟继续保留，用于快速定位执行层故障。
+自动化的主证据是 Agent 集成 E2E，而不是直接扩展命令冒烟。扩展与 Browser Bridge 的契约测试用于定位执行层故障，不能替代完整链路。
 
 ## 3. 本地测试站设计
 
@@ -131,23 +131,23 @@ ScriptedProvider 每一步校验可见工具清单等于投递场景冻结白名
 
 - 实现仅测试使用的 `ScriptedProvider`。
 - 从 `AgentHost.Send` 发起多个连续 Run，处理上传、协议与最终提交确认。
-- 使用真实 `agent-browser` CLI 和隔离 Electron companion 操作本地测试站。
+- 使用真实 Browser Bridge、Avery 扩展和个人浏览器任务标签页操作本地测试站。
 - 断言事件、历史、工具账本、proposal、receipt 和站点最终状态。
 
 验收标准：
 
-- [ ] 测试入口是 `AgentHost.Send`，不直接调用 Runtime/CLI 完成业务步骤。
+- [ ] 测试入口是 `AgentHost.Send`，不直接调用 Runtime 或扩展内部操作完成业务步骤。
 - [ ] 完整执行搜索、JD、文本填写、普通下拉、两组级联、上传、协议与提交。
 - [ ] 每个强制确认在用户同意前站点状态不变化；拒绝确认时动作不执行。
 - [ ] 确认后页面变化使旧 proposal 失效；后续 Run 首个页面操作前重新 Snapshot。
 - [ ] 最终 `submissionCount === 1`，receipt 存在，Agent 最终回复与站点状态一致。
-- [ ] 全程没有简历/档案写入、越权工具调用或主窗口 CDP target 暴露。
+- [ ] 全程没有简历/档案写入、越权工具调用或用户其他标签页内容暴露。
 
 ### AP-05：取消、失败与人工接管 E2E
 
 开发内容：
 
-- 增加用户拒绝确认、取消、过期 ref、页面变化、伴随进程退出、提交结果未知、登录/验证码接管用例。
+- 增加用户拒绝确认、取消、过期 ref、页面变化、扩展断线、提交结果未知、登录/验证码接管用例。
 - 对外部动作设置断言：失败或未知时不自动重试，不生成虚假完成声明。
 
 验收标准：
@@ -157,19 +157,19 @@ ScriptedProvider 每一步校验可见工具清单等于投递场景冻结白名
 - [x] 旧 ref 和旧 proposal 均被稳定错误拒绝。
 - [x] `STATUS_UNKNOWN` 时 `submissionCount` 至多为 1，Agent 要求用户核对而不重试。
 - [x] 登录/验证码触发 `browser_user_action`，恢复后先 Snapshot 再操作。
-- [x] companion 异常退出可恢复，但不会复用失效引用或重复外部动作。
+- [ ] 扩展断线后可恢复，但不会复用失效引用或重复外部动作。
 
 ### AP-06：桌面、打包与真实模型评估
 
 开发内容：
 
-- 在打包目录运行同一本地 fixture，验证 Renderer → IPC → AgentHost → companion 链路。
+- 在打包目录运行同一本地 fixture，验证 Renderer → IPC → AgentHost → Browser Bridge → 扩展链路。
 - 用 DeepSeek 在固定任务上进行本地测试站评估，记录模型、参数、轮数、工具错误与完成率；OpenAI 暂不接入，不以兼容接口冒充正式支持。
 - 在正式开放前执行真实招聘站人工兼容性检查，登录和验证码始终由用户接管。
 
 验收标准：
 
-- [ ] 打包应用无需全局 Node、CLI 或额外浏览器即可完成本地测试站流程。
+- [ ] 打包应用通过已安装扩展和用户配置的 Chrome/Edge 完成本地测试站流程，不依赖全局 Node、CLI 或额外浏览器。
 - [ ] 确认卡、浏览器可见窗口、停止/恢复和最终状态在桌面 UI 可观察。
 - [x] DeepSeek 至少运行 10 次固定评估并保留结构化结果；首份基线为 10/10 完成，不据此立即设置发布阈值。
 - [ ] 真实站点测试使用测试账号和可撤销材料，不向真实雇主产生未经明确批准的投递。
@@ -182,9 +182,9 @@ ScriptedProvider 每一步校验可见工具清单等于投递场景冻结白名
 代码完成后统一执行，不以分部测试代替整体验证：
 
 1. 受影响的 TypeScript 构建和全部 Vitest/Workspace 测试。
-2. 隔离浏览器 companion 冒烟。
+2. Browser Bridge、扩展连接和任务标签页冒烟。
 3. AgentHost 投递场景 E2E 冒烟。
-4. Windows 目录打包与打包 companion/Agent E2E 冒烟。
+4. Windows 目录打包与个人浏览器 Agent E2E 冒烟。
 5. `git diff --check`、进程清理、临时目录清理和状态核对。
 
 ## 7. 进度
@@ -194,9 +194,9 @@ ScriptedProvider 每一步校验可见工具清单等于投递场景冻结白名
 | AP-01 投递场景协议 | 已完成 | 已同步开发态/未发布状态；场景冻结 18 个非浏览器工具和 16 个浏览器工具，表单使用 Inspect/Fill/Validate 闭环 |
 | AP-02 本地多岗位测试站 | 已完成 | 6 个岗位、普通下拉、所在地/职类两组级联、上传、条款、回执与重复提交保护 |
 | AP-03 测试注入边界 | 已完成 | Host 构造期模块/Runtime 注入；Runtime 默认公网策略不变，单元测试验证 E2E 仅允许精确 fixture origin |
-| AP-04 AgentHost 主路径 E2E | 已完成 | `smoke:agent-application` 从 `AgentHost.Send` 驱动生产 CLI 执行器/真实 companion，完成确认链路并取得唯一回执 |
-| AP-05 失败与人工接管 E2E | 已完成 | 三类确认拒绝/重规划、取消迟到、旧 ref/proposal、状态未知、用户接管及 companion 恢复回归通过 |
-| AP-06 桌面/打包/真实模型 | 公开测试中 | 应用已开放真实投递入口；打包链路、完整根构建及 DeepSeek 10 次基线通过，同一事务桌面 UI 自动化和真实站点人工检查待完成 |
+| AP-04 AgentHost 主路径 E2E | 待迁移 | 旧 CLI/companion 链路已完成；需改由 Browser Bridge、扩展和个人浏览器复验 |
+| AP-05 失败与人工接管 E2E | 待迁移 | 既有确认、取消、旧 ref/proposal 和状态未知用例保留；补扩展断线恢复 |
+| AP-06 桌面/打包/真实模型 | 待迁移 | 旧链路与 DeepSeek 10 次基线保留；个人浏览器打包链路和真实站点检查待完成 |
 
 ### 7.1 2026-08-24 AP-01～AP-04 统一验证
 
@@ -240,4 +240,4 @@ ScriptedProvider 每一步校验可见工具清单等于投递场景冻结白名
 
 ## 9. 总结
 
-投递场景的完成标准不是“CLI 能点击网页”，而是 Agent 在冻结权限和用户确认边界内，能可靠地理解多个岗位、操作真实表单结构并用回执证明外部动作。本地多岗位测试站提供稳定、可重复的主链路证据；生产 URL 安全策略、真实模型能力和真实招聘站兼容性分别保留独立验证，不能相互替代。
+投递场景的完成标准不是“扩展能点击网页”，而是 Agent 在冻结权限和用户确认边界内，能可靠地理解多个岗位、操作真实表单结构并用回执证明外部动作。本地多岗位测试站提供稳定、可重复的主链路证据；生产导航策略、真实模型能力和真实招聘站兼容性分别保留独立验证，不能相互替代。

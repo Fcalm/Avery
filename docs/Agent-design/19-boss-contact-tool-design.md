@@ -122,6 +122,8 @@ requiredResources: [bound_resume, personal_browser]
 7. 验证当前会话中出现新的己方图片消息。
 8. 批次不再使用临时文件后立即清理物化副本。
 
+`ExportResumeFile({ format: 'png' })` 可在交互 Run 中生成已绑定简历的 PNG 文件资源；返回的 `fileId` 用作 `ContactBossJobs.imageAssetId`，无需用户先在简历页面手动导出。该资源仍须通过本节的文件头、MIME、扩展名、大小与当前 Run 授权校验；简历绑定本身不等于图片授权。
+
 交互 Run 可以使用本轮授权的持久图片资源。CronTask 只能使用创建或更新任务时冻结授权的持久图片资源，不继承普通会话的临时附件。
 
 ## 6. 执行前校验

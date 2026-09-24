@@ -1,12 +1,14 @@
-# 投递 Agent 发布验证
+# 投递 Agent 发布验证（旧 Runtime 归档）
 
 ## 1. 目标与证据边界
 
 本文件承接 AP-06，只记录正式发布前的桌面、打包、真实模型和真实站点验证。三类证据不可互相替代：
 
 - `smoke-packaged-app` 证明打包 Renderer、preload、IPC、Backend 与 AgentHost/Browser Runtime 状态查询可达。
-- `smoke-packaged-agent-application` 证明 AgentHost 使用打包目录内的 CLI 与隔离浏览器 companion 能完成确定性本地投递站流程；它不证明 Renderer 已驱动整条投递业务流。
+- `smoke-packaged-agent-application` 的旧结果证明隔离 Runtime 曾完成确定性本地投递流程；目标发布门禁必须改由 AgentHost、Browser Bridge、扩展和个人浏览器任务标签页完成，旧结果不能替代新链路验收。
 - `evaluate:deepseek-application` 证明真实 DeepSeek 在相同本地站点上的规划能力；它不改变工具、确认、导航和资源授权安全边界。
+
+本文件后续章节均为隔离/CDP Runtime 的历史验证记录。个人浏览器扩展的当前发布门禁统一以 `07-browser-tools-development-plan.md` 和 `09-application-agent-e2e-development-plan.md` 为准。
 
 当前 AP-06 只评估 DeepSeek。OpenAI Adapter 暂不开发，也不以“自定义 OpenAI-compatible”配置替代正式 OpenAI 支持。
 

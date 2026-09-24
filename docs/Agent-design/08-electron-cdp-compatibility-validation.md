@@ -8,7 +8,7 @@
 
 当前方案不能直接替换独立 Chromium Runtime。Electron 的 `--remote-debugging-port` 暴露整个应用进程的全部 DevTools targets，`agent-browser` 可以切换到 Avery 主界面；`--pin-tab` 和直接传入 page WebSocket URL 都不能形成安全隔离。该问题属于发布阻断，不应只依靠 system prompt 或工具白名单规避。
 
-本文结论只适用于 Electron 隔离浏览器。2026-09-04 起，Chrome/Edge 个人浏览器不再由 `agent-browser` 附着：真实 BOSS 实测确认其初始化中的 `Runtime.enable` 会触发站点风控，因此改由 Avery 轻量 CDP 驱动只附着一个 BOSS 任务 target，并显式禁止高风险调试域。Electron companion 仍沿用本文验证通过的 CLI 方案。
+本文只保留 Electron/CDP 的历史兼容性证据，不再定义目标浏览器架构。当前应用通过 Avery 扩展和本地 Browser Bridge 操作用户日常 Chrome/Edge；隔离 companion 已移除，受限 CDP 动作实现保留在扩展 Bridge 后面。
 
 ## 2. 验证环境
 

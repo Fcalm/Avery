@@ -132,7 +132,7 @@ interface RunLease {
 
 `CreateCronTask` 的确认是针对整个 occurrence 周期的一次性授权，不属于某次浏览器动作确认。系统调度器只唤醒应用；Backend 从数据库原子 claim 到期 occurrence，创建独立 Session，把保存的消息作为真实 `user` 消息，再通过内部 `SendScheduled` 入口执行。该入口固定 `fully_trusted + unattended`，移除四个 CronTask 工具，并自行持久化 assistant 输出，不能依赖 Renderer 消费流事件。
 
-投递 CronTask 的周期确认同时写入绑定该 `cronTaskId` 的持久个人浏览器授权；该授权不等于浏览器在线或 BOSS 已登录。Cron Runner 只从数据库读取授权并通过内部 `SendScheduled` 传入，Renderer 不能伪造；执行时连接失败、登录失效或需要人工批准仍进入 `needsAttention`。旧任务和已撤销任务不得自动补授权。
+投递 CronTask 的周期确认同时写入绑定该 `cronTaskId` 的持久个人浏览器任务授权，冻结用途、可执行动作和持久文件资源。Cron Runner 只从数据库读取授权并通过内部 `SendScheduled` 传入，Renderer 不能伪造。执行时由 Browser Bridge 连接或正常启动用户配置的 Chrome/Edge，再由扩展创建任务标签页；不等待用户授权标签页或批准远程调试。扩展离线、浏览器启动失败、登录失效、验证码或需要人工处理时进入 `needsAttention`。旧任务和已撤销任务不得自动补授权。
 
 多个逾期 occurrence 只 claim 最近一次，更早项写为 `missed(superseded_by_latest)`；同任务前次仍运行时写为 `missed(previous_run_active)`。登录、验证码、短信或必要信息缺失写为 `needsAttention`，不弹阻塞确认框。completed、failed、missed、needsAttention 都消费次数，单次失败不取消后续计划。
 

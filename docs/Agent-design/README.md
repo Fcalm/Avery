@@ -1,7 +1,7 @@
 # Avery Agent 设计总览
 
 > 状态：v0.2 已通过 PM 复审；Runtime Reminder 与 Session 前缀快照已进入实现
-> 更新时间：2026-08-27
+> 更新时间：2026-09-12
 > 适用范围：Avery 0.2.0 默认场景；0.3.0 网络能力边界与未来候选仅作版本化设计
 
 ## 1. 文档目标
@@ -17,14 +17,14 @@
 
 专项开发规划：
 
-- [Browser Tools 开发规划与进度](./07-browser-tools-development-plan.md)：`agent-browser` CLI、登录持久化、工具契约、安全边界、Harness、取消恢复、测试与发布进度。
+- [Browser Tools 个人浏览器迁移规划](./07-browser-tools-development-plan.md)：浏览器扩展、本地 Bridge、任务标签页、工具适配、CronTask 授权、旧 Runtime 移除与验收进度。
 - [Electron CDP 兼容性验证](./08-electron-cdp-compatibility-validation.md)：记录主进程 `WebContentsView` 的兼容性与越权风险，以及隔离 Electron 伴随进程的方案决定。
 - [投递场景 Agent E2E 开发规划](./09-application-agent-e2e-development-plan.md)：本地多岗位测试站、真实表单控件、ScriptedProvider、AgentHost 完整链路与发布门禁。
-- [投递 Agent 发布验证](./10-application-release-validation.md)：打包桌面/浏览器证据边界、DeepSeek 10 次评估运行器和真实招聘站人工安全门禁。
+- [投递 Agent 旧 Runtime 发布验证](./10-application-release-validation.md)：归档隔离/CDP 打包证据、DeepSeek 10 次评估和真实招聘站验证记录。
 - [拟真浏览器 Agent 测评分支需求](./11-realistic-browser-evaluation-branch.md)：记录后续复杂 DOM、动态组件、安全干扰、可复现用例和测评指标需求；当前不开发。
 - [Agent 测评系统开发规划](./12-agent-evaluation-system-development-plan.md)：定义开发者模式下的应用内测评控制台、Prompt/Browser Runner、多候选快照、评分、存储、页面和分阶段验收。
 - [Agent 测评系统评分与 Trace 修正方案](./13-evaluation-system-scoring-and-trace-revision.md)：记录 Prompt Judge 主评分、浏览器函数评分、Trace 可视化、页面分流和 Judge 原因展示的修正依据。
-- [个人浏览器轻量 CDP 开发规划](./14-personal-browser-lightweight-cdp-development-plan.md)：记录 BOSS 风控根因、Chrome/Edge 受限 CDP 驱动、单任务 target、安全白名单与最小验证进度。
+- [个人浏览器轻量 CDP 验证归档](./14-personal-browser-lightweight-cdp-development-plan.md)：保留 BOSS 风控根因和过渡 CDP Runtime 的历史验证，当前目标方案以 Browser Tools 迁移规划为准。
 - [动态表单填写开发规划](./15-dynamic-form-fill-development-plan.md)：定义 `BrowserFillForm` 对自定义下拉、三级级联、缺失字段和有限收敛的职责与验收。
 - [地区与纯点选日期开发规划](./16-region-and-date-picker-development-plan.md)：定义纯点选日期和需要显式确认的地区级联状态机。
 - [表单字段混合匹配开发规划](./17-hybrid-form-field-matching-development-plan.md)：定义网页与用户数据特征包、精确校验、上下文语义匹配、全局冲突消解和 Agent 指定映射续填。
@@ -67,7 +67,7 @@
 
 `SearchJobs` 仅是未承诺版本的候选设计。启用前必须另行更新 PRD 和路线图，并通过来源白名单、SSRF、预算、取消、超时、脱敏、审计和站点条款专项验收。无界翻页、后台监控、周期搜索和持续全网爬取永久禁止。
 
-投递场景已进入开发态：新会话可冻结独立的 Prompt、100 轮预算和 35 个工具白名单，并通过受控浏览器执行原子动作、视觉模型截图、档案驱动批量填表、独立保存岗位、批量联系 BOSS 岗位、读取/更新投递状态及管理 CronTask；确定性本地 AgentHost E2E、打包浏览器冒烟与 BOSS 真实 CDP 联系链路已通过，但真实站点发布门禁仍需持续验证。场景切换仍须新建会话，不能临时继承默认场景权限。
+投递场景已接入 Avery 浏览器扩展与 Browser Bridge：新会话可冻结独立的 Prompt、100 轮预算和 36 个工具白名单，并通过受控任务标签页执行原子动作、视觉模型截图、档案驱动批量填表、独立保存岗位、批量联系 BOSS 岗位、读取/更新投递状态及管理 CronTask。旧隔离/直连 Runtime 已退出生产入口；当前验收状态以 [Browser Tools 个人浏览器迁移规划](./07-browser-tools-development-plan.md) 为准。场景切换仍须新建会话，不能临时继承默认场景权限。
 
 ## 3. 边界与数据流
 

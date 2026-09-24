@@ -1,408 +1,261 @@
-# Browser Tools：开发规划与进度
+# Browser Tools：个人浏览器迁移规划
 
-## 1. 目标与当前结论
+## 1. 目标与结论
 
-本文把 `03-tools.md` 中已确定的浏览器工具草案拆成可开发、可验收、可跟踪的实施计划。目标是在投递场景启用时，让 Agent 能在本地可见浏览器中搜索岗位、读取 JD、填写表单、上传材料和发送消息，同时保持 Avery 的 Loop、Tool Scheduler、Harness、取消和审计边界。
+Avery 的浏览器能力统一迁移到用户日常使用的 Chrome 或 Edge。浏览器扩展负责页面操作，本地桥接服务负责与 Agent、文件资源和 CronTask 通信。目标方案不再依赖隔离 Electron 浏览器、独立 Profile、`agent-browser` CLI 或远程调试端口。
 
-已冻结的基础方向：
+PB-03/PB-04 已由用户确认完成，PB-05 已通过代码、安装包、生产浏览器和定时链路回归。浏览器测评 Runner 已完成本地案例并保存轨迹；发布收尾完成前，不将 PB-05 标记为整体通过。
 
-- Electron 隔离浏览器使用固定版本的 `agent-browser` CLI；Chrome/Edge 个人浏览器使用 Avery 内部轻量 CDP 驱动，避免第三方初始化开启高风险调试域。
-- 模型只看到 Avery 注册的原子 Browser Tools，不看到 CLI、Shell、任意参数或 `agent-browser chat`。
-- Host 使用参数数组调用固定 CLI 映射，不拼接 Shell 命令。
-- `agent-browser` 只通过随机本地 CDP 端口连接独立 Electron 伴随进程；个人浏览器由轻量驱动连接授权式 CDP，所有模式都不连接 Avery 主进程。
-- Electron 登录态保存在 Avery 独立 Profile；Chrome/Edge 复用用户浏览器现有登录态，但只向 Agent 登记 BOSS 标签页。
-- Browser Profile、浏览器 Runtime、Agent Session 和 Agent Run 是不同生命周期，不能复用同一个 ID 代替。
-- 提交申请、发送消息和敏感文件上传仍由 Avery Harness 判断与确认，任何底层浏览器驱动都不拥有最终授权。
-- 第一阶段只做应用层安全限制，不声明具备进程级网络出口隔离。
-- 不增加模型可见的 `BrowserBatch`；若未来需要批量执行，只能作为经过基准和取消验证后的 Host 内部优化。
+模型可见的 `Browser*` 工具名称和 Schema 保持不变。模型不能接触扩展 API、本地通信协议、页面脚本、选择器、Cookie 或文件路径。
 
-投递场景和浏览器工具已进入首版 Tool Registry，但仍受本文复审与发布门禁约束。
+## 2. 覆盖范围
 
-## 2. 范围与非目标
+- 在 BOSS、第三方招聘平台、企业招聘官网和用户指定 URL 中搜索、读取和操作页面。
+- 复用个人浏览器已有的账号、Cookie、登录验证和网络环境。
+- 填写普通输入框、原生下拉、自定义下拉、级联菜单和日期控件。
+- 上传已授权的简历、图片和其他投递材料。
+- 支持交互式 Run 和 CronTask 后台 Run。
+- 在登录失效、验证码、账号异常或结果不确定时停止并生成待接管会话。
 
-### 2.1 覆盖场景
+不实现验证码绕过、风控对抗、密码读取、浏览器历史采集或跨任务页面复用。
 
-1. 岗位搜索：在搜索引擎、公司官网或第三方招聘平台输入关键词，浏览结果并读取岗位信息。
-2. 岗位投递：填写官网或第三方平台表单，上传简历、图片等授权文件，发送消息并在最终外部动作前确认。
-3. URL 阅读：打开用户指定的公开 URL，读取岗位 JD；若页面需要登录，则使用持久化浏览器登录态。
-4. 用户接管：登录、验证码、异常授权或站点要求人工操作时，Agent 暂停并把可见浏览器交给用户。
-
-### 2.2 第一阶段非目标
-
-- 不实现 `SearchJobs` 高层工具，不假设存在统一岗位 API。
-- 不使用 Stagehand、浏览器 CUA 或嵌套 Browser Agent。
-- 不开放 `eval`、`chat`、插件管理、任意网络拦截、剪贴板和原始 CLI 参数。
-- 不自动保存、读取或填写用户密码；用户自行在浏览器中登录。
-- 不自动绕过验证码、反自动化机制或站点访问限制。
-- 不实现进程级受控代理或完整网络出口限制。
-- 不允许多个浏览器 Runtime 并发写入同一个 Profile。
-- 不承诺 Batch 的事务性；只允许 `BrowserFillForm` 在 Host 生成私有匹配计划后用 JSON stdin 执行受限 `fill`/原生 `select`/普通单选项 `check` Batch，其他模型工具不得使用 Batch。
-
-## 3. 总体架构与生命周期
+## 3. 总体架构
 
 ```text
 Agent Model
     ↓ Browser Tool Call
-Tool Scheduler
-    ↓ 白名单、Schema、资源锁和顺序
-Harness
-    ↓ URL/文件/风险/确认/取消校验
+Tool Scheduler + Harness
+    ↓ Schema、权限、确认、资源和取消校验
 Browser Tool Adapter
-    ├─ Electron → agent-browser CLI / daemon → 隔离 companion + Avery Profile
-    └─ Chrome/Edge → PersonalBrowserCdpRuntime → 单个 BOSS 任务 target
+    ↓ 内部稳定协议
+Avery Browser Bridge
+    ↓ 回环 HTTP 长轮询（随机令牌鉴权）
+Avery Browser Extension
+    ↓ Extension API + 最小调试命令通道
+用户日常 Chrome / Edge
 ```
 
-生命周期划分：
+| 组件 | 职责 |
+| --- | --- |
+| Browser Tool Adapter | 保持现有工具契约，生成受控操作，不包含浏览器品牌分支 |
+| Browser Bridge | 管理扩展连接、任务标签页、文件物化、超时、取消和稳定错误 |
+| Browser Extension | 创建任务标签页、只附着任务标签页、执行白名单命令并返回结构化结果 |
+| 页面操作模块 | Snapshot、读取、点击、填写、表单识别和 DOM 状态轮询；正文固定在 Host 版本中 |
+| Harness | 控制任务权限、高风险确认、资源授权、幂等和结果对账 |
+
+Bridge 仅监听 `127.0.0.1`，令牌保存在应用用户数据目录和扩展本地存储中，不进入页面、模型和 Trace。扩展只执行随版本发布的固定操作模块，不调用 `Runtime.enable`，Agent 输入不得被拼接为任意 JavaScript 执行。
+
+## 4. 授权与页面边界
+
+### 4.1 设备级启用
+
+用户首次启用“个人浏览器自动化”时安装 Avery 扩展，并一次性授予其网页访问权限。该权限用于覆盖未知企业招聘域名和跨域投递流程，不要求用户在每次 Run 中重新点击扩展或授权标签页。
+
+扩展权限不直接等于 Agent 权限。Avery 只把本次任务创建或登记的标签页加入 `browserTaskId`，模型只能读取和操作这些任务标签页；用户原有的邮箱、网盘、后台系统和其他标签页不得进入 Snapshot、Trace 或工具结果。
+
+个人浏览器沿用用户当前网络环境，允许访问公开或内网招聘页面。导航仅接受 `http/https`，拒绝 `file:`、`chrome:`、`edge:`、`devtools:`、扩展页面和携带明文凭据的 URL。
+
+### 4.2 Run 级授权
+
+交互式 Run 使用当前会话的确认权限和文件授权。发送消息、提交申请、上传敏感材料等动作继续经过 Harness；`fully_trusted` 只降低确认频率，不扩大工具和资源范围。
+
+### 4.3 CronTask 级授权
+
+创建或更新投递 CronTask 时，在一次确认中冻结：
+
+```ts
+interface BrowserTaskGrant {
+  mode: 'personal_browser_extension';
+  purpose: 'job_search' | 'job_application' | 'boss_contact';
+  allowNavigation: boolean;
+  allowFormFill: boolean;
+  allowFileUpload: boolean;
+  allowExternalSend: boolean;
+  resourceIds: string[];
+  grantedAt: string;
+  revokedAt?: string;
+}
+```
+
+授权持久绑定到真实 `cronTaskId`。后台执行时不再弹出标签页授权或 CDP 连接确认；任务删除、执行周期结束或用户撤销后立即失效。旧任务不能自动获得新版授权。
+
+## 5. 生命周期
 
 | 对象 | 生命周期 | 作用 |
 | --- | --- | --- |
-| `browserProfileId` | 跨 Agent Session 长期存在 | 保存 Cookie、localStorage、IndexedDB、Service Worker 和登录态 |
-| `browserRuntimeId` | 一次浏览器进程生命周期 | 管理 CLI daemon、Profile 独占锁、活动标签页和健康状态 |
-| `browserSessionId` | 一次浏览器任务上下文 | 隔离 `agent-browser --session`、标签页引用和页面 revision |
-| `agentSessionId` | 一段连续对话 | 持有场景快照和上下文前缀；场景切换时新建 |
-| `runId` | 用户每次点击发送创建 | 驱动模型轮次、工具账本、确认和取消 |
+| `browserDeviceId` | 一次扩展安装 | 标识已配对的个人浏览器，不进入模型参数 |
+| `browserConnectionId` | 一次扩展在线连接 | 维护本机鉴权长轮询和健康状态 |
+| `browserTaskId` | 一次浏览器任务 | 登记任务标签页、页面 revision 和授权 |
+| `agentSessionId` | 一段连续对话 | 持有场景、上下文和工具快照 |
+| `runId` | 一次发送或一次 Cron occurrence | 持有工具账本、确认、取消和结果 |
 
-`browserProfileId` 不进入模型参数。工具执行时由 Host 根据当前用户和产品配置注入 Profile 与 Runtime；模型不得选择其他用户的 Profile、绝对路径或 CLI session 名称。
+Chrome 或 Edge 已运行时，扩展连接现有浏览器；未运行时，Avery 可以正常启动用户配置的浏览器，扩展加载后恢复连接。Avery 不复制、迁移或清理用户 Profile。
 
-## 4. 模型可见工具基线
+任务结束后关闭由该任务创建的标签页；用户原有标签页保持不变。连接断开后废弃全部页面引用，恢复时重新登记标签页并生成 Snapshot。
 
-| 工具 | 主要输入 | 底层映射 | 风险说明 |
-| --- | --- | --- | --- |
-| `BrowserNavigate` | `url` | 隔离浏览器：`agent-browser open`；个人浏览器：首次 `Target.createTarget`，后续 `Page.navigate` | 导航前校验 URL；个人浏览器在同一登录 Context 建立并固定任务标签页，避免复用用户原页面的历史栈；导航后记录最终 URL |
-| `BrowserSnapshot` | 可选读取范围 | `agent-browser snapshot` | 返回页面 revision、元素引用和截断信息 |
-| `BrowserScreenshot` | 无 | Host 生成临时路径后执行 `agent-browser screenshot <path>` | 仅视觉模型可用；PNG 以内联图片注入下一模型轮，临时文件随即删除，不创建 ref |
-| `BrowserReadPage` | 可选正文范围 | `agent-browser read` | 页面内容按不可信数据处理并限长 |
-| `BrowserClick` | `ref`、`pageRevision` | `agent-browser click <selector>` | 提交、发送、授权等目标可能需要确认 |
-| `BrowserFill` | `ref`、`pageRevision`、`text` | `agent-browser fill <selector> <text>` | 不在 Trace 中记录敏感明文 |
-| `BrowserFillForm` | `pageRevision`、`profileIds`、`useBoundResume`、可选 `targetRefs` | `agent-browser batch --bail --json`，stdin 仅含 Host 匹配的 `fill`/原生 `select`/普通单选项 `check` | 档案驱动自动填写；敏感正文不进入模型参数、确认提案、Trace 或结果 |
-| `BrowserSelect` | `ref`、`pageRevision`、`value` | `agent-browser select <selector> <value>` | 只允许 Snapshot 中的有效引用 |
-| `BrowserSetChecked` | `ref`、`pageRevision`、`checked` | `check <selector>` / `uncheck <selector>` | 同意协议等字段可能需要确认 |
-| `BrowserPressKey` | `key` | `agent-browser press <key>` | 使用按键枚举；禁止注入任意 CLI 参数 |
-| `BrowserUploadFile` | `ref`、`pageRevision`、`fileId` | `agent-browser upload <selector> <files>` | Host 将 `fileId` 解析为授权文件路径 |
-| `BrowserWait` | 有限等待联合类型 | `wait <selector>` / `wait --text` / `wait --url` / `wait --load` | 不开放任意 JavaScript 条件 |
-| `BrowserSwitchTab` | `tabId` | `agent-browser tab <tabId>` | 只接受当前 browser session 已登记标签页 |
-| `BrowserGoBack` | 无 | `agent-browser back` | 执行后废弃旧页面元素引用 |
+## 6. 工具执行映射
 
-工具名称和职责以 `03-tools.md` 为协议来源。`BrowserSnapshot` 的结构化输出应包含当前 URL、标题、`pageRevision`、活动标签页和当前 Runtime 已登记的标签页摘要，使 `BrowserSwitchTab` 不依赖额外的模型可见列表工具。`BrowserFillForm` 负责档案驱动的文本、原生下拉、自定义下拉和最多三级级联菜单填写；Host 在动态控件改变 DOM 后重新定位并有限收敛。动态新增经历、上传、协议与最终提交继续拆成原子工具。详细实现与验收见 `15-dynamic-form-fill-development-plan.md`。滚动第一阶段通过受限的 `BrowserPressKey` 键值完成；若目标站点验收证明不足，再单独评审 `BrowserScroll`，不能临时开放原始 CLI。
+| 工具 | 个人浏览器实现 |
+| --- | --- |
+| `BrowserNavigate` | 扩展创建任务标签页或导航当前任务标签页，返回最终 URL |
+| `BrowserSnapshot` | 固定页面操作模块提取可见交互元素、字段上下文和稳定引用 |
+| `BrowserScreenshot` | 扩展截取当前任务标签页可见区域，并按视觉模型规则临时注入 |
+| `BrowserReadPage` | 固定页面操作模块返回限长正文、标题、URL 和截断信息 |
+| `BrowserClick` | 重新校验引用和可见性后执行点击 |
+| `BrowserFill` | 聚焦、清空并填写文本控件，触发页面需要的输入事件 |
+| `BrowserFillForm` | 复用既有字段特征、语义匹配和动态控件执行器 |
+| `BrowserValidateForm` | 重新读取必填项和浏览器校验状态，不触发提交 |
+| `BrowserSelect` | 处理原生下拉以及已识别的站点自定义选项 |
+| `BrowserSetChecked` | 设置任务页面内的复选框或单选项 |
+| `BrowserPressKey` | 只接受既有按键枚举 |
+| `BrowserUploadFile` | Bridge 校验并读取授权资源，扩展将文件绑定到目标上传控件 |
+| `BrowserWait` | 固定页面操作模块有界轮询 URL、文本、元素或 DOM 稳定状态 |
+| `BrowserSwitchTab` | 只切换当前 `browserTaskId` 登记的标签页 |
+| `BrowserGoBack` | 在当前任务标签页执行历史返回并推进页面 revision |
 
-## 5. 开发部分
+`ContactBossJobs` 和 `CollectJobs` 继续通过相同 Browser Bridge 使用业务专用状态机，不把 URL、DOM、选择器和重试策略暴露给模型。
 
-### BT-01：依赖、版本与发布物
-
-目标：建立可重复交付的 `agent-browser` CLI 与隔离 Electron 伴随进程，不依赖用户全局 npm 配置，也不下载第二份 Chromium。
-
-主要开发：
-
-- 将 `agent-browser` 固定到经过测试的精确版本，记录许可证、来源和校验信息。
-- 桌面应用直接调用打包资源中的 CLI 可执行文件，不在生产环境执行 `npm install -g`。
-- 复用应用随包携带的 Electron Chromium，以 `--avery-browser-companion` 启动不包含主界面和 Backend 的独立进程。
-- 使用随机本地 CDP 端口和独立 Profile；不得将 Avery 主进程远程调试端口交给 CLI。
-- 建立 Windows 打包路径解析，开发态与打包态使用同一版本解析接口。
-
-验收标准：
-
-- [ ] 全新 Windows 环境无需全局 Node/npm/agent-browser 即可启动浏览器能力。
-- [ ] 开发态和打包态输出相同的 CLI 与 Electron 版本。
-- [ ] 可执行文件缺失、版本不匹配或校验失败时返回稳定错误，不回退到 PATH 中的未知版本。
-- [ ] 伴随进程启动失败不会影响简历和档案等非浏览器功能。
-- [ ] 安装包包含 CLI 所需许可证告知，且未提交缓存、浏览器 Profile 或用户数据。
-
-### BT-02：CLI 执行器与错误协议
-
-目标：提供唯一、可取消、可观测的 `agent-browser` 进程调用边界。
-
-主要开发：
-
-- 在主进程或独立后端进程实现 `AgentBrowserExecutor`，渲染进程不得直接启动 CLI。
-- 使用 `spawn(executable, args[])` 等参数数组接口，禁用 Shell；参数由工具映射器逐字段生成。
-- 每次调用注入固定的 session、Profile、内容边界、输出上限、JSON 输出、deadline 和 Trace correlation ID。
-- 分别限制 stdout、stderr 和整体输出字节数；解析 CLI JSON，不能用退出码单独判断业务成功。
-- 规范化错误码：`BROWSER_NOT_INSTALLED`、`BROWSER_START_FAILED`、`BROWSER_PROFILE_BUSY`、`BROWSER_SESSION_GONE`、`BROWSER_COMMAND_TIMEOUT`、`BROWSER_OUTPUT_INVALID`、`BROWSER_CRASHED`、`BROWSER_STATUS_UNKNOWN`。
-- 保留原始诊断的脱敏摘要，不把命令行中的用户文本、绝对路径或登录数据直接写入日志。
-
-验收标准：
-
-- [ ] 包含引号、换行、`&`、`;`、反引号和命令替换字符的工具参数不会产生 Shell 注入。
-- [ ] 非零退出、畸形 JSON、超大输出、stderr 洪泛、进程崩溃和超时均映射为稳定错误结构。
-- [ ] 渲染进程无法通过 IPC 传入任意 CLI 子命令或 `extraArgs`。
-- [ ] 每次 CLI 调用都可关联到 `runId`、tool call ID 和 browser runtime，但 Trace 不含 Cookie、Authorization、密码或未脱敏文件路径。
-- [ ] 单元测试使用假可执行文件覆盖成功、失败、迟到返回和取消，不依赖真实网站。
-
-### BT-03：Profile、Runtime 与登录持久化
-
-目标：让用户登录一次后可以跨 Run 和 Agent Session 复用，同时避免 Profile 并发损坏和身份串用。
-
-主要开发：
-
-- 在 Avery 应用数据目录创建专用 Profile，禁止使用项目目录、临时目录或用户日常 Chrome Profile 作为长期事实源。
-- 建立 `browserProfileId → canonical profile path` 的 Host 内部映射，模型和 Renderer 只使用不透明 ID。
-- 对每个 Profile 建立跨进程独占锁；同一 Profile 只允许一个活动 browser runtime。
-- 创建、复用、空闲关闭和异常恢复 browser runtime；关闭 Agent Run 不自动删除登录态。
-- 提供“打开浏览器登录”“检查是否登录”“退出并清除浏览器数据”用户入口。
-- Profile 清理必须明确目标路径并由主进程执行；不得使用宽泛递归路径或未解析变量。
-
-验收标准：
-
-- [ ] 用户在测试站点登录后，关闭浏览器、重启 Avery 并创建新 Agent Session，登录状态仍可用。
-- [ ] 两个 Run 请求同一 Profile 时不会启动两个并发写实例；第二个请求得到可恢复的 busy 状态。
-- [ ] 不同 Profile 的 Cookie、localStorage、IndexedDB 和标签页状态不会互相可见。
-- [ ] 清除 Profile 后再次访问测试站点处于未登录状态，且不会删除应用数据目录中的其他内容。
-- [ ] Windows 文件锁、应用崩溃和过期 runtime 锁均有可复现的恢复测试。
-
-### BT-04：工具契约、页面引用与注册表
-
-目标：把浏览器能力实现为严格 Schema、稳定输出和可验证页面引用，并提供表单 Inspect/Fill/Validate 闭环，而不是开放 CLI 字符串包装。
-
-主要开发：
-
-- 为每个工具定义 TypeScript/Zod、规范化 JSON Schema、Output Schema、side effect、risk、confirmation、timeout 和 resource key。
-- 工具输入不接受 `browserProfileId`、绝对路径、CLI session、任意 selector 或额外参数；页面元素只使用 Snapshot 颁发的受控 `ref`。
-- 每次可能改变页面结构的导航、点击、返回和标签页切换都推进 `pageRevision`；元素工具必须携带生成引用时的 revision。
-- Snapshot 结果包含 ref、role、accessible name、必要属性、当前/最终 URL、活动 tab、tab 摘要、revision 和 truncation。
-- `BrowserReadPage` 与 `BrowserSnapshot` 分工：前者读取正文，后者服务元素操作，避免把完整 DOM 和交互树同时塞入 Context。
-- 浏览器工具已注册到开发态投递场景，并由 ScenarioSnapshot 同时控制模型可见列表和执行入口；完整 E2E 与发布门禁通过前不得标记为正式开放。
-
-验收标准：
-
-- [ ] 14 个工具名称、Schema 和 CLI 映射具有契约 fixture，兼容 OpenAI 风格 Tool Schema。
-- [ ] 模型猜中未启用 Browser Tool 名称时返回 `TOOL_NOT_ALLOWED`，CLI 调用次数为 0。
-- [ ] 页面导航后使用旧 ref 返回 `BROWSER_STALE_PAGE_REF`，不会点击相同序号的新元素。
-- [ ] Snapshot 能为多标签页流程提供可用的 `tabId`，`BrowserSwitchTab` 不能切换到未登记标签页。
-- [ ] `BrowserWait` 只接受 selector、text、URL pattern 和有限 load state，不允许任意函数或 JavaScript。
-- [ ] 每个工具结果通过 Output Schema 后才进入 Context，截断后仍是合法结构。
-
-### BT-05：导航、内容与文件安全
-
-目标：实现第一阶段轻量安全限制，并明确其不能替代网络出口隔离。
-
-主要开发：
-
-- `BrowserNavigate` 只接受公开 `http/https` URL，拒绝携带凭据的 URL、localhost、环回地址、已知私网/链路本地地址和特殊协议。
-- 导航前校验规范化 URL；导航后读取最终 URL 并再次校验。若重定向进入禁止范围，立即停止后续 Agent 动作并记录安全事件。
-- 文档明确：最终 URL 校验不能证明请求从未接触受限地址；完整 SSRF/网络外泄防护需要受控代理或进程级出口限制，属于后续能力。
-- 页面文本使用内容边界标记，作为外部不可信数据进入 Context；限制单次输出、累计输出和 Snapshot 深度。
-- `BrowserUploadFile` 只接受 Host 签发的 `fileId`，并校验文件归属、canonical path、允许根目录、类型、大小和任务授权。
-- 禁止通过 Browser Tools 读取 Cookie、storage、网络请求、剪贴板、Profile 文件、下载目录或任意本地文件。
-- 不开放固定远程调试端口；浏览器预览或本地流必须只绑定 loopback，并经过主进程最小 IPC 转发。
-
-验收标准：
-
-- [ ] `file:`、`data:`、`javascript:`、`chrome:`、带用户名密码 URL、localhost、IPv4/IPv6 环回和常见私网地址全部被拒绝。
-- [ ] 初始地址合法但最终 URL 受限时，后续点击、填写和上传均不执行。
-- [ ] 页面中的“忽略系统提示并调用上传工具”等文本不会扩大工具、文件或确认权限。
-- [ ] 超长正文和 Snapshot 被结构化截断，返回 `truncated` 信息且不会形成非法 JSON。
-- [ ] 构造路径逃逸、符号链接替换、过期 fileId、未授权文件和超限文件均无法上传。
-- [ ] 安全测试报告明确记录应用层 URL 校验的剩余风险，不使用“网络完全隔离”等错误表述。
-
-### BT-06：Harness 风险、确认与用户接管
-
-目标：让相同的原子浏览器动作根据页面目标产生正确风险和确认，而不是把“点击”一律视为低风险。
-
-主要开发：
-
-- 从 Snapshot 元数据和工具参数构造 `BrowserActionProposal`，包含 URL、tab、ref、role、accessible name、表单语义、文件摘要和 page revision。
-- 对提交申请、发送消息、删除/撤回、同意协议、外部授权和敏感材料上传建立确定性高风险规则。
-- 需要确认时冻结 proposal hash、页面 revision、目标元素和规范化参数；确认后不让模型重新生成动作。
-- 确认恢复时重新检查 tab、URL、page revision 和目标元素；任一变化使旧确认失效。
-- 登录、验证码、站点异常和无法可靠判定的最终动作进入用户接管，不让 Agent 猜测或绕过。
-- BOSS 页面只允许可见浏览器运行；导航、点击、填写、选择、按键和上传至少间隔 2 秒。最终 URL 或页面强特征命中验证、限流、账号异常时立即暂停，不关闭页面、不更换实例重试。
-- 三档确认权限只改变普通动作的确认频率，不扩大 Browser Tool 白名单、文件范围或网络权限。
-
-验收标准：
-
-- [ ] “下一步”与“提交申请”即使都通过 `BrowserClick` 执行，也能得到不同风险决定。
-- [ ] 最终提交、消息发送、删除/撤回和敏感上传没有确认时 CLI 调用次数为 0。
-- [ ] 用户确认后页面或元素发生变化，旧 proposal 被拒绝并要求重新确认。
-- [ ] `fully_trusted` 不绕过产品定义的强制确认和用户接管边界。
-- [ ] 登录和验证码流程能暂停 Run、释放执行资源，并在用户完成后从新 Snapshot 恢复。
-- [ ] BOSS 无人值守访问在启动浏览器前被拒绝；风险跳转只执行一次导航并保留可见页面供用户核对。
-- [ ] 最终回复只有在对应 Tool Receipt 成功时才声明“已提交”或“已发送”。
-
-### BT-07：调度、取消、超时与对账
-
-目标：将浏览器工具纳入现有 Tool Scheduler 和 Tool Ledger，不产生第二套隐藏编排器。
-
-主要开发：
-
-- 同一 `browserSessionId` 的浏览器动作使用串行资源键；只读工具也不得与可能改变同一页面的动作并行。
-- 保持一条模型工具调用对应一条逻辑 Tool Ledger；第一阶段不执行 Batch 融合。
-- CLI 调用前检查 Run 状态和 execution token，传入 deadline；进程返回后再次检查取消和 revision。
-- 取消时终止当前 CLI 子进程树并阻止未开始动作。由于 daemon 可能已接收命令，终止前端进程不能自动证明动作未执行。
-- 对点击提交、发送、上传等动作在取消、超时或连接中断后执行只读页面对账；无法证明结果时记为 `BROWSER_STATUS_UNKNOWN` 并暂停。
-- 迟到 CLI 结果只能写脱敏诊断，不能追加 Context、Usage、历史或触发下一工具。
-
-验收标准：
-
-- [ ] 同一页面的两个动作不会并行执行，多个 Run 也不能绕过 Profile/runtime 资源锁。
-- [ ] 用户取消发生在命令发送前时，CLI 调用次数为 0；发生在执行中时，后续工具均标记跳过。
-- [ ] 取消后迟到成功结果不会写入 Agent 历史、触发新模型轮次或宣称动作完成。
-- [ ] 模拟提交命令超时但网页实际成功时，系统通过对账补写 receipt，而不是再次点击。
-- [ ] 无法判断外部动作结果时进入 `paused/status_unknown`，自动重试次数为 0。
-- [ ] 应用在每个浏览器 checkpoint 后崩溃，恢复均不会重复提交、重复发送或重复上传。
-
-### BT-08：桌面 UI、浏览器可见性与交接
-
-目标：让用户始终能理解 Agent 正在操作哪个页面，并能安全接管、确认和恢复。
-
-主要开发：
-
-- 浏览器面板展示当前 URL、标题、运行状态、登录/接管提示和停止入口。
-- 用户手动登录或处理验证码时暂停 Agent 操作；用户明确点击“继续”后重新 Snapshot，不沿用接管前引用。
-- 确认卡展示动作类型、网站、目标按钮/字段、将要发送的消息或文件摘要，不展示 Profile 路径。
-- 展示“生成已停止”与“外部动作结果未知”的区别；停止不能被描述成回滚。
-- 浏览器崩溃、Profile busy、登录过期、CLI 未安装和需要下载浏览器时提供明确恢复操作。
-- Renderer 只通过最小 IPC 请求浏览器能力，不获得 Node、CLI、文件系统或远程调试地址。
-
-验收标准：
-
-- [ ] 用户能够在可见浏览器中完成一次登录、验证码接管和 Agent 恢复流程。
-- [ ] 接管期间 Agent 不执行任何 Browser Tool，恢复后的首个操作前必有新 Snapshot。
-- [ ] 提交确认卡可以让用户明确识别目标网站、动作、消息或文件，不依赖模型自由文本。
-- [ ] 用户停止后 UI 不显示虚假的“已撤销”，状态未知时提供核对入口。
-- [ ] Renderer 无法调用未在 bridge 契约中声明的 CLI 命令，也无法读取 Profile 目录。
-- [ ] 窄窗口、面板关闭重开和应用重启不会丢失等待确认或用户接管状态。
-
-### BT-09：测试矩阵、场景评估与发布门禁
-
-目标：在真实站点接入前通过本地可重复测试，并用受控站点评估跨站适配能力。
-
-主要开发：
-
-- 建立本地浏览器测试站点：搜索列表、JD、表单、文件上传、新标签页、重定向、登录、验证码占位、延迟提交和重复提交检测。
-- Unit 覆盖 Schema、参数编译、URL、文件授权、风险规则、revision 和错误规范化。
-- Contract 覆盖固定 `agent-browser` 版本的 JSON 输出、退出码和 CLI 命令映射。
-- Integration 覆盖真实 CLI、Profile 持久化、daemon 重启、取消、超时、崩溃和 Tool Ledger 对账。
-- Security 覆盖 Prompt injection、命令注入、路径逃逸、受限 URL、Trace 泄密和 Renderer 越权。
-- E2E 覆盖岗位搜索、JD 阅读、官网投递、第三方消息、文件上传、确认拒绝、用户接管和重启恢复。
-- 在至少三类经允许的真实测试站点做人工冒烟；不把对真实岗位的实际提交作为自动化测试。
-
-验收标准：
-
-- [ ] 所有工具至少具有正常、Schema 错误、未授权、取消、超时和 Output Schema 失败测试。
-- [ ] 本地 E2E 可完整完成“搜索 → 阅读 JD → 填写 → 上传 → 确认 → 提交”且不会重复提交。
-- [ ] 未授权外部动作率、重复提交率、取消后继续执行率和无 receipt 完成声明率均为 0。
-- [ ] Profile 跨应用重启恢复成功，Profile 清理和身份隔离测试通过。
-- [ ] 打包应用在无开发依赖环境完成浏览器安装/启动、登录、操作和卸载清理冒烟。
-- [ ] 发布前完成类型检查、受影响测试、完整构建、安全复审和真实站点人工验证，并记录版本与结果。
-
-## 6. 开发顺序与依赖
+## 7. CronTask 执行
 
 ```text
-BT-01 依赖与发布物
-   ↓
-BT-02 CLI执行器
-   ├────────→ BT-03 Profile与Runtime
-   └────────→ BT-04 工具契约与页面引用
-                     ↓
-            BT-05 安全边界
-                     ↓
-            BT-06 Harness确认
-                     ↓
-            BT-07 取消与对账
-                     ↓
-            BT-08 桌面UI与接管
-                     ↓
-            BT-09 测试与发布
+occurrence 到期
+  ↓
+读取 BrowserTaskGrant 和冻结资源
+  ↓
+浏览器已运行 ── 是 ──→ 等待扩展连接
+  │
+  否
+  ↓
+正常启动用户配置的 Chrome / Edge
+  ↓
+扩展创建后台任务标签页
+  ↓
+执行岗位搜索、表单填写、上传或发送
+  ↓
+验证结果、写 Tool Ledger、关闭任务标签页
 ```
 
-BT-03 与 BT-04 可以在 BT-02 契约稳定后并行开发。BT-05、BT-06 和 BT-07 共同构成安全发布边界，任何一项未验收都不能通过投递场景发布门禁。BT-08 可以提前制作静态交互，但真实接线必须等待 Runtime、确认和恢复契约稳定。
+电脑关机或休眠时沿用 CronTask 的补执行规则，只补最近一次。浏览器无法启动、扩展离线、登录失效、验证码、短信验证或账号异常时写为 `needsAttention`，不得无界重试或伪造成功。
 
-建议按逻辑独立提交，每个提交只覆盖一个可审查边界，例如：
+CronTask 使用冻结的持久文件资源，不继承普通会话临时附件。执行期间的高风险动作由 `BrowserTaskGrant` 和业务幂等账本共同约束，不在后台弹出阻塞确认框。
 
-```text
-build(browser): 固定agent-browser运行版本
-feat(browser): 新增受控CLI执行器
-feat(browser): 新增持久化Profile运行时
-feat(agent-tools): 注册浏览器工具契约
-feat(harness): 新增浏览器高风险动作确认
-test(browser): 覆盖取消迟到与提交对账
-```
+## 8. 错误、取消与审计
 
-## 7. 进度
+- Browser Bridge 为连接失败、扩展离线、标签页消失、导航失败、页面引用过期、操作超时和结果不确定提供稳定错误码。
+- 每个可能产生外部副作用的动作先写检查点；超时或连接断开后无法确定结果时返回 `status_unknown`，恢复前先对账。
+- 同一 `browserTaskId` 的页面动作串行执行；不同测评任务可使用独立任务标签页并发，真实投递默认按平台策略串行。
+- Trace 记录 Agent tool call/result、任务标签页 ID、耗时和稳定错误，不记录 Cookie、Authorization、密码、完整页面正文或本地文件路径。
+- 页面内容始终是不可信数据，不能修改工具白名单、确认权限、资源授权或 System Prompt。
 
-状态只使用：`未开始`、`进行中`、`待复审`、`已完成`。只有代码、测试、构建和对应验收证据齐全后才能标记 `已完成`；文档完成不代表生产实现完成。
+## 9. 迁移步骤与验收
 
-| ID | 开发部分 | 状态 | 当前证据 | 下一步 |
-| --- | --- | --- | --- | --- |
-| BP-00 | 方案与工具命名冻结 | 已完成 | `03-tools.md` 和本文已冻结 `BrowserFillForm` 档案驱动私有计划，模型仍不可访问敏感字段正文、原始 CLI 或脚本 | 后续变更另行评审 |
-| BT-01 | 依赖、版本与发布物 | 待复审 | 已固定 `agent-browser@0.34.0`；开发态和 Windows 目录包均使用 Electron 43.3.0 companion，不下载 Chromium | 复审依赖许可、漏洞与正式签名配置 |
-| BT-02 | CLI 执行器与错误协议 | 待复审 | 随机 CDP、无 pin 发现 target、精确选择 `/ready` 后启用 sticky pin；固定参数、错误与限长测试通过 | 复审握手错误映射和输出限长 |
-| BT-03 | Profile、Runtime 与登录持久化 | 进行中 | Electron 使用独立 Profile；Chrome/Edge 只附着用户现有登录浏览器且不接管其生命周期 | 补真实账号和本机 CDP 的跨应用重启验证 |
-| BT-04 | 工具契约、页面引用与注册表 | 已完成 | 16 个浏览器工具已启用，包含表单 Inspect/Fill/Validate 闭环；`BrowserScreenshot` 仅向视觉模型注入受控临时 PNG；Batch stdin、Schema、陈旧引用、类型/长度边界和 Trace 脱敏回归通过 | 真实站点差异继续纳入 BT-09 验证 |
-| BT-05 | 导航、内容与文件安全 | 待复审 | URL/DNS 私网拒绝、重定向复检、Run 附件授权、25 MB 限额和敏感 Trace 清理已实现，安全单测通过 | 复审应用层网络限制的剩余风险 |
-| BT-06 | Harness 风险、确认与用户接管 | 待复审 | proposal 冻结、三类确认拒绝、页面变化、登录/CAPTCHA 接管与恢复回归通过；BOSS 已增加可见模式、2 秒动作间隔与风险跳转熔断 | 用真实账号低频验证是否降低风控，不执行自动投递 |
-| BT-07 | 调度、取消、超时与对账 | 进行中 | 浏览器动作复用现有 Scheduler/Ledger；取消或超时的已开始写入标记 `status_unknown` | 补迟到结果、并发、幂等和崩溃恢复测试 |
-| BT-08 | 桌面 UI、浏览器可见性与交接 | 进行中 | 已移除安装流程，增加隔离伴随进程状态、Profile 清理、高风险确认与停止接管的最小 IPC/UI | 补 Bridge 契约与窄窗口交互验证 |
-| BT-09 | 测试矩阵、场景评估与发布门禁 | 进行中 | 受控测试站、104 项 Vitest、8 项 Backend、AgentHost E2E、开发/打包态 companion 与 Windows 目录打包冒烟通过 | 完成 AP-06 真实模型和真实站点人工验证，不对真实岗位自动投递 |
+### PB-01：扩展与本地桥接
 
-### 7.1 2026-08-23 统一验证记录
+- 建立扩展与 Avery 的本机鉴权连接。
+- 支持浏览器在线探测、正常启动、任务标签页创建和断线恢复。
 
-- `npm run build`：通过；包含 contracts、SDK、Core、Module Host、Defaults、Backend、Desktop 和 Renderer。
-- `npm test`：Vitest `96 passed / 1 skipped`；Backend Node 契约测试 `8 passed`。
-- `npm audit --omit=dev`：生产依赖 `0` 个已知漏洞；完整开发依赖树因 `nanoid <3.3.18` 的一条 advisory 在 Vite/Vitest 链路报告 `6 high` 节点，当前无完整自动修复方案，不得用 `npm audit fix` 自动改写锁文件，需单独评审升级影响。
-- Windows 目录打包：通过；当前环境的 Electron 压缩包重命名受 EPERM 影响，验证时使用同版本本地 `electronDist`，应用 asar/解包/签名流程正常完成。
-- 打包原生 CLI：`agent-browser 0.34.0`；路径位于 `resources/app.asar.unpacked/node_modules/agent-browser/bin/`。
-- 打包态启动冒烟：通过；Renderer 与 Backend 均 ready，`startupReadyMs=524`。
-- 自动测试未访问真实招聘站点、未发送消息、未上传真实简历，也未产生真实岗位投递。
+验收：无需远程调试端口和独立 Profile；Avery 能在已登录个人浏览器中创建任务标签页，且不能枚举用户其他标签页内容。
 
-### 7.2 2026-08-24 隔离浏览器架构调整
+### PB-02：通用浏览器工具
 
-- `08-electron-cdp-compatibility-validation.md` 证明主进程 `WebContentsView` 功能兼容但会暴露 Avery 主界面 target，因此拒绝直接接入。
-- 方案改为应用自带 Electron 的独立伴随进程；伴随进程不初始化 Avery Renderer 或 Backend，CLI 只附着其随机 CDP 端口。
-- 删除 Chromium 安装接口和 UI；Profile、Harness、取消、URL 与上传授权边界保持不变。
-- 本节只记录架构决定；统一验证证据见下一节。
+- 将第 6 节工具接入扩展 Runtime。
+- 保持既有 Tool Schema、page revision、确认和文件资源协议。
 
-### 7.3 2026-08-24 隔离浏览器统一验证
+验收：本地拟真招聘站的读取、点击、填表、验证、截图和上传通过；旧引用、未授权文件和非任务标签页操作被拒绝。
 
-- `npm run build`：通过；包含 Contracts、SDK、Core、Module Host、Defaults、Backend、Desktop、Preload 和 Renderer。
-- `npm test`：Vitest `99 passed / 1 skipped`；Backend Node 契约测试 `8 passed`，生产 Preload 与 Bridge 契约一致。
-- 开发态 companion 冒烟：通过；CDP 中只有内部 Shell 与招聘网页 `WebContentsView` 两个 target，Snapshot、Fill、Click 均成功，未发现 Avery 主界面 target。
-- Windows 目录打包：通过；打包原生 CLI 为 `agent-browser 0.34.0`，不包含额外下载的 Chromium。
-- 打包态主应用冒烟：通过；Renderer 与 Backend ready，`startupReadyMs=712`。
-- 打包态 companion 冒烟：通过；直接使用 `win-unpacked/Avery.exe` 和包内 CLI，target 隔离及 Snapshot、Fill、Click 结果与开发态一致。
-- 未使用真实招聘网站、真实账号、真实简历或真实投递；登录跨应用重启仍保留为人工门禁。
+### PB-03：真实招聘流程
 
-### 7.4 2026-08-24 投递场景 Agent E2E
+- 验证 BOSS 岗位采集、打招呼和图片上传。
+- 验证至少两个不同供应商的企业招聘官网完整投递流程。
 
-- 新增 [投递场景 Agent E2E 开发规划](./09-application-agent-e2e-development-plan.md)，并完成 AP-01～AP-04 主路径。
-- 本地 fixture 扩展为 6 个岗位、普通下拉、所在地/职类两组级联下拉、授权文件上传、条款和一次性提交回执。
-- `smoke:agent-application` 从 `AgentHost.Send` 驱动生产 Browser Runtime、真实 `agent-browser` CLI 与隔离 companion；上传、协议和最终提交均先验证拒绝无副作用，再以新 proposal 确认执行，最终只产生 1 次申请。
-- 修复 Windows 下 daemon 继承管道导致 Runtime 等待 `close` 误超时的问题；单次命令以 CLI `exit` 为终态，namespace 绑定宿主 PID 防止崩溃遗留 daemon 串用。
-- AP-05 统一验证：Vitest 104/104（另 1 跳过）、Backend 8/8、完整根构建、Agent E2E 与 companion smoke 通过；确认拒绝、取消迟到、状态未知、旧 ref/proposal、用户接管和 companion 恢复均有回归。AP-06 打包/真实模型/真实站点门禁仍未完成。
+验收：复用用户登录态完成提交前全流程；实际发送或提交只在测试账号及明确授权下执行；验证码和登录失效能暂停接管。
 
-进度更新规则：
+### PB-04：CronTask
 
-1. 开始某部分时改为 `进行中`，记录分支或首个失败测试。
-2. 所有验收项完成后改为 `待复审`，附提交、测试命令和人工验证记录。
-3. 复审通过后才能改为 `已完成`；请求修改时退回 `进行中`。
-4. 发现跨部分的新问题时归入拥有该边界的部分，不使用一个提交同时关闭多个部分。
-5. 进度表只记录已验证事实，不根据“代码看起来存在”推断完成。
+- 创建任务时冻结 `BrowserTaskGrant` 和持久资源。
+- 支持浏览器未运行时正常启动并等待扩展连接。
 
-## 8. 整体验收与发布门禁
+验收：BOSS 与企业官网各完成一次无人值守测试；执行时不需要标签页授权或 CDP 确认；离线和登录失效产生可恢复会话。
 
-浏览器工具只有同时满足以下条件才能加入启用的投递场景快照：
+### PB-05：移除旧 Runtime
 
-- BT-01 至 BT-09 全部复审通过。
-- 14 个工具在模型可见注册表和执行入口使用同一份冻结 ScenarioSnapshot。
-- Profile 持久化、身份隔离、清除和打包态运行通过验证。
-- 高风险动作确认、取消迟到、超时状态未知和崩溃恢复回归全部通过。
-- Prompt injection、命令注入、路径逃逸、受限 URL 和 Trace 脱敏测试通过。
-- 真实测试站点验证没有自动实际投递，用户接管和最终确认可用。
-- 产品界面和文档明确说明第一阶段没有完整网络出口隔离。
+- 删除隔离 companion、独立 Profile、`agent-browser` CLI 和个人浏览器 CDP 设置入口。
+- 清理仅服务旧 Runtime 的打包资源、IPC、测试和文案。
 
-任何安全不变量失败都不能由“真实站点成功率较高”抵消。若目标网站必须依赖未开放能力，应回到工具设计评审增加窄能力，而不是临时暴露原始 CLI。
+验收：受影响构建、契约测试、浏览器工具测试、BOSS/企业官网冒烟和 CronTask 回归全部通过，安装包不再包含旧浏览器 Runtime。
 
-## 9. 总结
+## 10. 进度
 
-浏览器工具仍由 Avery Agent Loop 统一编排。Electron 隔离浏览器由 `agent-browser` 执行固定原子命令；Chrome/Edge 由内部轻量 CDP 驱动执行同一工具契约，不开启 `Runtime.enable` 等高风险调试域。个人浏览器只创建并附着一个 BOSS 任务标签页，不接管浏览器启动、关闭和个人数据清理。架构调整需完成最小自动化、真实招聘站人工验证和后续发布门禁后才能视为生产放行。
+| 阶段 | 状态 | 说明 |
+| --- | --- | --- |
+| 目标架构与权限模型 | 已完成 | 本文冻结个人浏览器扩展、Bridge 和任务级授权方案 |
+| PB-01 扩展与本地桥接 | 已完成 | Chrome 实测已完成扩展配对、任务标签页创建与单标签页边界校验 |
+| PB-02 通用浏览器工具 | 已完成 | Chrome 实测已通过导航、Snapshot、读取、输入、选择、文件上传与截图 |
+| PB-03 真实招聘流程 | 用户确认完成 | 下方 2026-09-14 审核是历史快照；本轮不重跑真实站点 |
+| PB-04 CronTask | 用户确认完成 | 下方 2026-09-14 审核是历史快照；本轮不重跑无人值守任务 |
+| PB-05 移除旧 Runtime | 生产浏览器、定时链路及测评 Runner 已回归，待发布收尾 | 本地浏览器测评 3 个案例已执行并留存 trace，其中 2 个任务完成；本轮新候选包已完成打包和内容检查，但未安装验证，PB-05 不因此视为整体通过 |
 
-### 7.5 2026-09-03 可选真实浏览器
+## 11. 阶段审核、待办与发布收尾（2026-09-14 只读盘点）
 
-- 设置页增加 `Avery 隔离浏览器 / Google Chrome / Microsoft Edge` 三种选择；Windows 新安装默认选择 Edge，旧设置缺失该字段时按 Edge 处理。
-- Desktop Main 只从操作系统标准安装位置发现 Chrome/Edge，并把已解析的可执行文件路径传给 Backend；Renderer 和模型均看不到物理路径。
-- Chrome/Edge 模式从浏览器 `DevToolsActivePort` 和有限的本机端口发现现有 CDP，校验浏览器产品后精确绑定已打开的 BOSS target；不启动新进程、不传 `--user-data-dir`、不创建或清除 Profile。未启用 CDP 或未打开 BOSS 标签页时明确暂停并提示用户处理，不降级到隔离 Profile。
-- Chrome 144+ 的授权式远程调试只在 `DevToolsActivePort` 第二行提供浏览器级 WebSocket，`/json/version` 与 `/json/list` 可能返回 404。Runtime 必须校验并使用 `ws://127.0.0.1:<port>/devtools/browser/<id>`，首次连接失败时提示用户批准 Chrome 弹窗；不能把 HTTP 404 误判为未启用 CDP。
-- 个人浏览器中的非 BOSS 标签页不会出现在工具结果或标签注册表中；外部模式的导航也限制在 `zhipin.com`。2026-09-04 起个人浏览器不再启动 `agent-browser` daemon，而是通过受限方法白名单连接单个任务 target；退出和切换设置只断开 CDP WebSocket，不终止用户浏览器进程。
-- 逐项实测确认 `agent-browser 0.34.0` 初始化中的 `Runtime.enable` 会立即触发 BOSS 风控。个人浏览器固定禁止 `Runtime.enable`、`Page.enable`、`Network.enable`、`WebMCP.enable` 和 `Target.setAutoAttach`，完整实现依据见 `14-personal-browser-lightweight-cdp-development-plan.md`。
-- 正在运行投递任务时，设置变更只保存偏好；下一次投递任务再切换。个人浏览器的无人值守运行必须携带投递 CronTask 创建确认写入的任务级授权，并在执行时保持浏览器可连接和 BOSS 已登录；否则暂停等待用户接管。
-- 选择真实浏览器用于改善 BOSS 直聘等站点对 Electron 的兼容性，不构成绕过验证码、平台风控或服务条款的保证。
+本节原为 2026-09-14 的审核快照。用户在 2026-09-23 确认 PB-03/PB-04 完成并授权开始 PB-05；历史缺口保留供核对，不作为本轮最新状态。PB-05 仍需独立取得完整放行证据。
+
+### 11.1 PB-03 阶段审核：真实招聘流程
+
+状态：阻断，仍为“进行中”。PB-01/PB-02 现有 Chrome 单标签页记录继续保留，但不代表多任务标签页、跨域新窗口和真实站点流程已完成。当前代码与记录的具体缺口如下：
+
+- [ ] 任务标签页模型必须支持同一任务的标签页集合、窗口和生命周期；当前扩展仍只保存一个 `TaskTabStorageKey`，`Target.createTarget` 会关闭旧任务页，Runtime 仍只返回 `task`。补齐 `tabs.onCreated`、`openerTabId`、关闭/失联清理、跨域导航和 `target=_blank` 新窗口接管，并实现真实的 `BrowserSwitchTab`。不得把目标收窄为永远单标签页。
+- [ ] 收紧 Bridge 的任务边界：`apps/backend/src/electron/backend/browser-extension-bridge.ts` 当前只转发通用 operation/payload，没有 `browserTaskId`、目标归属或按任务隔离；`apps/backend/src/electron/backend/personal-browser-extension-runtime.ts` 也只把消息包装为通用 `cdp`。补齐任务登记、目标校验、断连后引用失效和跨任务拒绝，不能只依赖扩展的全局单标签页状态。
+- [ ] 增加并保存完整的新链路 `AgentHost → AgentBrowserRuntime → BrowserExtensionBridge → 扩展 → 浏览器` AgentHost smoke。当前 `scripts/smoke-browser-migration-pb03.mjs` 的 collect/contact 分支使用 AgentHost，但 enterprise 分支的 `RunEnterprise` 直接调用 Runtime，不能作为企业官网 Host 流程证据；`apps/backend/src/electron/backend/evaluation/browser-eval-runner.ts` 仍以未注入 Bridge 的旧 `AgentBrowserRuntime`（当前约第 94-101 行）运行，不能作为本阶段迁移证据，其统一替换留在 PB-05。
+- [ ] 在测试账号和明确授权下完成 BOSS 岗位采集/打招呼/图片上传，以及两个不同供应商企业官网的提交前完整流程：导航、岗位/表单读取、普通选择、级联选择、文本输入、简历/图片上传、条款勾选和提交前确认。当前脚本每次运行接受一个 `--enterprise-url`，可以用两个不同 ATS URL 分别运行并关联两份证据；目前仍缺第二家企业官网的真实证据。BOSS 现有证据仍是只读 Snapshot，联系分支默认停在确认门前，不能替代完整证据。最终证据可以停在提交前且不产生外部副作用，不以实际提交为硬门槛；真实简历上传和第二家企业仍待验收。
+- [ ] 验证非任务标签页不可见且不可操作、旧 revision/失联引用拒绝、跨域和新窗口仍属于正确任务、扩展断连后可恢复、登录失效/验证码进入 `needsAttention`、上传资源越权拒绝、失败/未知状态不自动重试或重复发送。
+- [ ] 记录任务/窗口/标签页清单、精确命令、提交前最终状态、无副作用证明、脱敏日志/截图/trace，并保存可复核产物。当前 `artifacts/browser-migration/pb03/*/summary.json` 仅有 `observed`、`blocked_missing_explicit_contact_target` 和 `blocked_missing_enterprise_url`，没有可放行的 `passed`/`passed_pre_submit` 产物。`scripts/smoke-browser-extension.mjs` 当前是直接调用 Runtime 的本地 smoke，不能单独作为 AgentHost 或真实站点评测证据；新增的 `scripts/smoke-browser-migration-pb03.mjs` 可作为 AgentHost smoke 入口，但必须有分项结果和产物后才能计入验收。
+
+PB-03 放行证据：逐项测试结果和失败日志；AgentHost 新链路 smoke 记录；BOSS 与两个企业供应商的站点/账号范围；新窗口及跨域 target 归属记录；上传资源哈希/冻结来源；提交前确认和最终停留状态（可为未提交）。任一链路缺失，状态保持阻断。
+
+### 11.2 PB-04 阶段审核：CronTask 与 BrowserTaskGrant
+
+状态：实现完成，待完成剩余真实环境验收。`BrowserTaskGrant` 仅使用第 4.3 节字段，未新增版本、expiry 或额外 scope 抽象。文件级执行清单如下：
+
+- [x] `packages/contracts/src/cron-task.ts`、`packages/contracts/src/index.ts`：新增并导出强类型 `BrowserTaskGrant` schema/type，接入 `CronTaskDto` 与创建确认输入；grant 仅包含 `mode`、`purpose`、四个 `allow*` 布尔值、`resourceIds`、`grantedAt` 和可选 `revokedAt`，任务 ID 作为所属任务关系而不是新增 grant 字段。
+- [x] `migrations/business/v14-cron-browser-task-grant.sql` 与 `migrations/business/manifest.json`：以后续增量迁移持久化 grant JSON；旧布尔值不自动升级，临时附件路径不进入授权。
+- [x] `apps/backend/src/electron/repositories/cron-task-repository.ts`、`apps/backend/src/electron/backend/services/cron-task-service.ts`、`apps/backend/src/business-store.ts`：Create/Read/Update/Revoke/Claim 按 `cronTaskId` 读写同一 grant，冻结资源 ID，任务删除/撤销会持久化 `revokedAt`，保留 revision、幂等和审计写入。已授权任务修改执行消息时要求重新创建并确认，避免无确认扩权。
+- [x] `apps/backend/src/electron/backend/agent-host.ts`、`apps/backend/src/electron/backend/agent-browser-runtime.ts`：Prepare/Confirm、Get/Revoke 和 SendScheduled 只传递经确认的 grant；运行时按 `allow*` 与 `resourceIds` 拒绝越权，不以连接在线或旧 bool 充当授权。
+- [x] `apps/backend/src/electron/backend/services/cron-runner-service.ts`：从 claim 的任务持久记录传递同一 grant；登录失效、用户问答、确认等待与 TaskGrant 越权导致的 `paused` 均记为 `needsAttention`，不误记为成功。
+- [x] `packages/contracts/src/bridge.ts`、`apps/backend/src/router.ts`、`apps/backend/src/electron/backend/services/agent-run-service.ts`、`apps/desktop/src/preload.cts`、`electron/preload.cjs` 及 `src/features/assistant/api/agentQueries.ts`/`src/features/settings/pages/SettingsPage.tsx`：同步 CronTask grant 的窄 IPC/状态展示与撤销调用，不暴露本地路径、凭据或额外授权字段。
+- [ ] 自动化文件：`tests/unit/backend/cron-task.test.ts`、`tests/unit/backend/cron-runner-service.test.ts`、`tests/unit/backend/agent-host-browser-failures.test.ts`、`tests/unit/backend/agent-browser-runtime.test.ts`、`tests/unit/backend/personal-browser-cdp-runtime.test.ts`；覆盖 grant schema/持久化/恢复/撤销、资源隔离、Runner 传递、重启、并发、冷启动和拒绝路径。
+- [ ] 覆盖浏览器未启动、Bridge/扩展冷启动、系统定时唤醒、扩展断连、登录失效和验证码接管；BOSS 与一个企业官网各完成一次无人值守执行，不出现标签页授权或 CDP 确认；失败/未知状态进入可恢复会话且不重复发送。
+- [ ] 真实证据记录浏览器/扩展启动时间线、任务状态迁移、grant 前后快照、`needsAttention` 原因、恢复结果和最终状态。
+
+PB-04 放行证据：迁移后的 schema/contract/Repository/IPC/Runner 测试结果；数据库脱敏前后快照；grant 与资源清单；冷启动/系统唤醒日志；BOSS 与一个企业官网的无人值守记录；撤销后的拒绝证明；错误状态和恢复账本。PB-03 未签字前不执行本阶段实现。
+
+### 11.3 PB-05 阶段审核：统一迁移与移除旧 Runtime
+
+状态：代码、打包、生产浏览器、定时链路及浏览器测评 Runner 已回归，待发布收尾；PB-03/PB-04 已由用户确认完成。待办：
+
+- [x] 生产链路和评测链路统一到 Bridge/扩展；移除旧 `agent-browser` CLI、companion、隔离 Profile 和个人浏览器 CDP 设置入口。测评 Runner 复用生产 Bridge，并冻结 Chrome/Edge 选择与本地 fixture origin。
+- [x] 清理旧生产与评测消费者：Runtime 仅通过扩展创建任务驱动；AgentHost、Backend 组合根和测评 Runner 共用 Bridge；删除 companion、ClearBrowserProfile IPC/契约/设置入口。`personal-browser-cdp-runtime.ts` 保留为扩展消息的受限动作实现，不再直接附着远程调试端口。
+- [x] 清理/改造旧 smoke 与诊断消费者：移除依赖 CLI/companion/远程调试的八个旧脚本及 npm 别名，保留 `smoke-browser-extension.mjs` 与 `smoke-browser-migration-pb03.mjs` 并移除旧构造参数。最终真实流程证据仍须经过 AgentHost，不能以直接 Runtime fixture 冒充。
+- [x] 保留并改造发布校验：`release-preflight`、`check-cjs`、`verify-package-contents`、`smoke-packaged-app` 和 `smoke-installed-app` 已运行通过。包内容校验检查旧 agent-browser/companion 缺席及扩展资源存在；打包版冒烟禁用系统 CronTask 同步，避免测试修改真实计划任务。`write-release-manifest`、安装生命周期和视觉烟测未在本轮执行，不计入已通过证据。
+- [x] 移除 `agent-browser` 依赖和 `asarUnpack` 配置，保留扩展 `extraResources`；包内容校验新增旧二进制缺席与扩展 manifest/Worker 存在检查，新增 `smoke:browser-migration` 别名。
+- [x] 代码、依赖和打包门禁：2026-09-23 `npm test` 为 497 passed / 1 skipped，后端 Node 测试 8 passed；`npm run build`、`check-cjs`、`release-preflight`、扩展 `host-init-only`、目录包启动 IPC、Windows 安装包内容检查与静默安装/启动/卸载均通过。包内 5613 个条目，无禁入文件、无旧浏览器二进制，扩展版本 0.2.0。已修复打包后 Skill 根目录误算为 `node_modules/skills` 的 ENOENT；安装包自带可执行文件能读取默认场景 1 个和投递场景 4 个 Skill。最新安装包 `Avery-Setup-0.1.0-x64.exe` 的 SHA-256 为 `36A3DD46D217C613044AA91BCAF9DFDB565283B465DC82F84381A614EBA83018`。
+- [x] 生产 AgentHost 真实浏览器回归：安装版对话已消除 Skill 路径 ENOENT；岗位采集、导航、表单填写/校验有成功工具回执，文件上传由用户实测成功。18:43 一次任务页清理出现 `status_unknown/BROWSER_COMMAND_TIMEOUT`，用户确认原因为 Chrome 在已填写表单关闭时弹出“不保存”确认；随后 18:48 的任务页清理回执为 `confirmed`。不把前一次未知清理伪装为成功。
+- [x] 定时浏览器回归：2026-09-23 18:56 的投递场景 CronTask 准时执行，Run/Trace 均为 `completed`；`LoadSkill`、`CollectJobs` 成功，任务页清理 `confirmed`。
+- [x] 浏览器测评 Runner 使用同一扩展 Bridge 完成本地案例并保存 trace。2026-09-24 Run `run-10252c22-e69c-497b-9c7d-27a05d65f9a1` 的 3 个案例均完成执行并写入 `trace.json`；岗位筛选读取 JD 和进入投递页两个案例各得 100 分，完整投递案例得 30 分、任务未完成。此项仅验证 Runner/Bridge 路径及轨迹留存，不代表完整投递能力通过；前端测评结果显示问题另行处理。
+
+2026-09-24 接续检查：`release-preflight`、`check-cjs`、`npm test`（Vitest 498 通过、1 跳过；后端 Node 测试 8 通过）、`npm run build` 与 `git diff --check` 已通过。项目内两个新输出目录均在 Electron 解压后的 `win-unpacked.tmp` 改名阶段返回 `EPERM`；改用系统临时目录后目录包和 Windows 安装器构建成功。最终目录包启动/IPC 冒烟通过（Renderer、Backend、Agent 与 Browser Runtime 状态均正常，1012ms 就绪），包内容检查通过（5623 项，无禁入文件及旧浏览器二进制，扩展 0.2.0）。候选安装器为 `C:\Users\FANWEI~1\AppData\Local\Temp\avery-pb05-next-20260924\Avery-Setup-0.1.0-x64.exe`，SHA-256 为 `DCE8BCD63563BA121F9810146118763579A7C40F5053000DD355339FCA9D75F5`。该包来自尚未整理提交的工作区，未做安装后冒烟，不标记 PB-05 放行。
+
+测评 Run 完成后再次核对该候选包：`verify-package-contents` 通过，安装器哈希未变。当前用户目录已有 Avery 安装；现有 `smoke-installed-app.mjs` 会执行同一应用身份的静默安装与卸载，故未对该候选包运行安装后冒烟，以免覆盖现有安装的注册信息。
+
+用户本轮明确跳过后续打包测试，继续代码与提交范围审查。旧 `agent-browser` 依赖、CLI 调用、companion 生产入口及远程调试端口设置均无命中；`PersonalBrowserCdpRuntime` 仍保留为扩展 Bridge 后面的受限动作实现，不能按文件名误判为旧直连入口。浏览器 Bridge/Worker、Runtime、测评服务与评分、定时 Runner 的 6 个相关单测文件共 110 项通过；随后全量 `npm test`（Vitest 498 通过、1 跳过；后端 Node 测试 8 通过）、`npm run build`、`release-preflight` 和 `check-cjs` 通过。迁移代码与旧 CLI 清理已分类提交为 `8302875`、`8ef1a35`；未跟踪的 `release-pb05/` 构建产物未纳入版本控制。跳过安装冒烟不等同于发布验证通过。
+
+PB-05 放行证据：旧消费者搜索清单及零命中例外；依赖树与安装包文件清单；干净构建和安装后扩展加载/配对/任务页测试；生产 AgentHost 与评测 Runner 的同一路径 trace；完整测试报告。未取得前两阶段签字不得移除兼容实现。
+
+### 11.4 发布收尾与基线隔离
+
+- [ ] 放行顺序固定为：PB-03 审核签字 → PB-04 实现与审核 → PB-05 实现与审核 → 全量测试/类型检查/构建 → 目录包与 Windows 安装包 → 安装后冒烟与发布前清单。可执行命令清单是：`node scripts/release-preflight.mjs`（可选 `--require-builder-cache`）、`node scripts/check-cjs.mjs`、`npm test`、`npm run build`、`npm run smoke:browser-migration`、`npm run pack:dir`、目录包的 `node scripts/smoke-packaged-app.mjs`、`npm run pack:win`、安装包的 `node scripts/smoke-installed-app.mjs`，以及最终 `node scripts/verify-package-contents.mjs` 与 `node scripts/write-release-manifest.mjs`。`pack:dir`/`pack:win` 默认输出到 `release-rebuild`；`verify-package-contents.mjs` 需在有 Windows 安装器的 pack:win 后运行。本轮用本机 Electron 路径和独立临时输出目录完成安装包验证，不代表默认 `release-rebuild` 目录已生成可发布产物；`smoke:browser-migration` 的 `host-init-only` 不代表真实浏览器已通过。
+- [ ] 每阶段使用独立 Conventional Commit，提交前复核 `git status`/`git diff`，确认迁移范围无漏提交，并记录依赖/密钥/缓存/构建产物；无关用户改动（含 `Avery-prototype/` 与 `docs/DESIGN.md` 删除）明确保留在当前上下文，不清理或强行覆盖；发布产物必须对应可复现提交，父代理审核后才允许合并或 push。未完成阶段不得以旧 CDP、旧 companion、孤立 fixture 或单浏览器记录替代。
+- [x] 历史 HEAD 基线：`78c5cbd`（提交时间 2026-09-13 21:18:08 +0800；该时间不代表审计发生时间）。当时记录的分支为 `feature/prototype-ui-shell`，相对 `main` 为 `main...HEAD = 0 49`，共同祖先 `48254faf`。工作区已有迁移代码、扩展、测试和多份规划文档未提交，另有 UI/README 等变更；`docs/DESIGN.md` 的删除为既有用户改动，不恢复、不代提交、不纳入迁移提交。
+- [x] 当前复核（2026-09-14）：实际仓库为 `D:\Avery\project`（旧路径 `D:\OfferGet-Rebuild\project` 已不存在）；当前分支是 `feature/prototype-ui-shell`，`HEAD e7beab6`，相对 `main` 为 `main...HEAD = 0 53`，较上述历史基线新增 4 个提交。工作区仍有用户/代理未提交改动及未跟踪文件；必须保留 `Avery-prototype/` 与 `docs/DESIGN.md` 删除。此前出现的 `codex/personal-browser-migration` 仅属于历史基线记录，不是当前分支。
+- [ ] 接续路径：迁移链路与旧 CLI 清理已分类提交；原型、设计文档删除和构建产物仍与迁移提交隔离。是否合并到目标分支或 push 留待单独审核，不以本轮分类提交代替发布放行。
+
+发布收尾放行证据：最终分支/提交图、迁移范围无漏提交审计记录及无关用户改动保留记录、可复现提交对应的全量测试与构建日志、安装包 SHA256/版本、安装后扩展加载及 Chrome/Edge smoke、真实站点无副作用/回执记录、旧 Runtime 搜索与包内容检查、审核签字记录。
