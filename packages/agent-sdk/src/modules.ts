@@ -39,7 +39,7 @@ export interface ModelProviderModule extends ModuleManifest {
   Configure(input: unknown): Promise<{ configured: boolean; provider: string; model: string }>;
   TestConnection(input: unknown): Promise<{ connected: boolean; provider: string; baseUrl: string }>;
   GetBalance(): Promise<{ available: boolean; balances: Array<{ currency: string; totalBalance: string }> }>;
-  GetModels(provider?: string): Promise<{ models: string[] }>;
+  GetModels(provider?: string): Promise<{ provider: string; models: string[] }>;
   GetProviderCatalog(): Promise<{ providers: Array<{ provider: string; configured: boolean; model: string; models: string[]; baseUrl: string; contextLimit: number; contextLimitMode: 'default' | 'custom'; compressionThreshold: number; thinkingEnabled: boolean }> }>;
   GetStatus(provider?: string): Promise<{
     configured: boolean;
@@ -64,7 +64,7 @@ export interface ModelProviderModule extends ModuleManifest {
     onRequest?: (snapshot: ProviderRequestSnapshot) => void;
     /** 运行前由 Prompt Compiler 编译的指令；Provider 不再持有业务 System Prompt 所有权。 */
     instructions: CompiledInstructions;
-    /** 严格 JSON 输出：DeepSeek 与智谱（Z.AI）通道会发送 response_format: {type: 'json_object'}；调用方须保证提示词包含 JSON 样例。 */
+    /** 严格 JSON 输出：DeepSeek、智谱（Z.AI）与 MiMo（MIMO）通道会发送 response_format: {type: 'json_object'}；调用方须保证提示词包含 JSON 样例。 */
     responseFormat?: { type: 'json_object' };
     /** 输出 token 上限：防止结构化输出被中途截断；省略时沿用 Provider 默认。 */
     maxTokens?: number;

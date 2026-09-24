@@ -6,8 +6,8 @@
  * 只有当前选中模型的上下文窗口与思考模式会在保存时下发宿主配置，缓存同时是这两项的界面来源。
  */
 
-/** 供应商 ID 与宿主侧的 Provider 一一对应；官方三家由宿主固定，本地只决定启用状态与模型列表。 */
-export type ModelCatalogProviderId = 'DeepSeek' | 'Z.AI' | '自定义';
+/** 供应商 ID 与宿主侧的 Provider 一一对应；推荐供应商由宿主固定官方端点，本地只决定启用状态与模型列表。 */
+export type ModelCatalogProviderId = 'DeepSeek' | 'Z.AI' | 'MIMO' | '自定义';
 
 export type ModelApiFormat = 'chat' | 'responses' | 'messages';
 
@@ -70,10 +70,11 @@ export const DefaultMaxOutput = 8_192;
 export const MinimumContextWindow = 128_000;
 export const MaximumContextWindow = 1_000_000;
 
-/** 各供应商的模型初值：DeepSeek 使用官方 V4 默认列表，自定义供应商从空列表开始。 */
+/** 各供应商的模型初值：DeepSeek 使用官方 V4 默认列表，MiMo 使用官方 V2.6 对话模型，自定义供应商从空列表开始。 */
 const DefaultProviderSeeds: Array<{ id: ModelCatalogProviderId; name: string; custom: boolean; models: string[] }> = [
   { id: 'DeepSeek', name: 'DeepSeek', custom: false, models: ['deepseek-v4-flash', 'deepseek-v4-pro', 'deepseek-v4-flash-vision-exp'] },
   { id: 'Z.AI', name: '智谱 GLM', custom: false, models: ['glm-5.3-flash'] },
+  { id: 'MIMO', name: 'MIMO', custom: false, models: ['mimo-v2.6-flash', 'mimo-v2.6-pro', 'mimo-v2.6-pro-ultraspeed'] },
   { id: '自定义', name: '自定义提供商', custom: true, models: [] },
 ];
 
@@ -126,11 +127,48 @@ function NormalizeProvider(value: unknown): ModelCatalogProvider | null {
   if (!value || typeof value !== 'object') return null;
   const record = value as Record<string, unknown>;
   const id = record.id;
-  if (id !== 'DeepSeek' && id !== 'Z.AI' && id !== '自定义') return null;
+  if (id !== 'DeepSeek' && id !== 'Z.AI' && id !== 'MIMO' && id !== '自定义') return null;
   const name = typeof record.name === 'string' && record.name.trim() ? record.name.trim() : id;
   const apiFormat = ModelApiFormats.some((option) => option.key === record.apiFormat) ? record.apiFormat as ModelApiFormat : 'chat';
   const models = Array.isArray(record.models) ? record.models.map(NormalizeModel).filter((item): item is ModelCatalogModel => item !== null) : [];
-  return { id, name, custom: id === '自定义', enabled: record.enabled !== false, apiFormat, models };
+  return { id, name, custom: id === '自定义', enabled: record.enabled !== false, apiFormat, models: RetainOwnModels(id, models) };
+}
+
+/** 推荐供应商的模型 ID 命名空间：用于清掉历史版本串到别的供应商里的模型（曾出现 MiMo 列表混入 DeepSeek 模型）。 */
+const ProviderModelNamespaces: Partial<Record<ModelCatalogProviderId, RegExp>> = {
+  DeepSeek: /^deepseek-/i,
+  'Z.AI': /^glm-/i,
+  MIMO: /^mimo-/i,
+};
+
+/**
+ * 只保留属于该供应商命名空间的模型：命中其它推荐供应商命名空间的条目一律丢弃。
+ * 历史版本的模型同步曾把 A 供应商的模型写进 B 供应商，缓存里的这类脏数据必须清掉，否则会被一直沿用；
+ * 自定义供应商的模型名无法判定归属，不做清洗。
+ */
+function RetainOwnModels(providerId: ModelCatalogProviderId, models: ModelCatalogModel[]): ModelCatalogModel[] {
+  if (!ProviderModelNamespaces[providerId]) return models;
+  return models.filter((model) => !Object.entries(ProviderModelNamespaces).some(([id, pattern]) => id !== providerId && pattern.test(model.id)));
+}
+
+/** 清洗整个目录：任何入口（读缓存、合并宿主目录、写入缓存）产生的跨供应商模型都在这里被剔除。 */
+export function SanitizeModelCatalog(catalog: ModelCatalog): ModelCatalog {
+  return {
+    ...catalog,
+    providers: catalog.providers.map((provider) => {
+      const models = RetainOwnModels(provider.id, provider.models);
+      return models.length === provider.models.length ? provider : { ...provider, models };
+    }),
+  };
+}
+
+/**
+ * 模型列表同步结果是否可并入本地目录：必须与请求的供应商一致。
+ * 结果为其它供应商（例如运行中的后端是漏转发 provider 参数的旧版本）时丢弃，绝不并入——
+ * 否则会把别的供应商的模型写进目标供应商（曾导致 MiMo 列表混入 DeepSeek 模型）。
+ */
+export function IsSyncedModelsTrusted(requested: ModelCatalogProviderId, result: { provider?: unknown }): boolean {
+  return result?.provider === requested;
 }
 
 /**
@@ -146,8 +184,7 @@ export function LoadModelCatalog(): ModelCatalog {
     const record = parsed as Record<string, unknown>;
     const providers = Array.isArray(record.providers)
       ? record.providers.map(NormalizeProvider).filter((item): item is ModelCatalogProvider => item !== null)
-      : [];
-    // 缓存里缺少官方供应商时补回默认项，避免升级后目录不完整。
+      : [];    // 缓存里缺少官方供应商时补回默认项，避免升级后目录不完整。
     const defaults = CreateDefaultModelCatalog();
     for (const provider of defaults.providers) {
       if (!providers.some((item) => item.id === provider.id)) providers.push(provider);
@@ -159,10 +196,10 @@ export function LoadModelCatalog(): ModelCatalog {
   }
 }
 
-/** 写入应用内缓存并通知订阅者；存储不可用时忽略，不阻断设置页操作。 */
+/** 写入应用内缓存并通知订阅者；写入前清洗跨供应商模型，存储不可用时忽略，不阻断设置页操作。 */
 export function SaveModelCatalog(catalog: ModelCatalog): void {
   try {
-    window.localStorage.setItem(ModelCatalogStorageKey, JSON.stringify(catalog));
+    window.localStorage.setItem(ModelCatalogStorageKey, JSON.stringify(SanitizeModelCatalog(catalog)));
   } catch { /* 存储不可用时目录仅本次会话生效 */ }
   for (const listener of listeners) listener();
 }
@@ -194,7 +231,7 @@ export function MergeBackendProviders(catalog: ModelCatalog, snapshots: BackendP
   let next: ModelCatalog = { ...catalog, providers: catalog.providers.map((provider) => ({ ...provider })) };
   for (const snapshot of snapshots ?? []) {
     const id = snapshot?.provider;
-    if (id !== 'DeepSeek' && id !== 'Z.AI' && id !== '自定义') continue;
+    if (id !== 'DeepSeek' && id !== 'Z.AI' && id !== 'MIMO' && id !== '自定义') continue;
     if (!next.providers.some((item) => item.id === id)) {
       next.providers.push({ id, name: id === '自定义' ? '自定义提供商' : id, custom: id === '自定义', enabled: true, apiFormat: 'chat', models: [] });
     }

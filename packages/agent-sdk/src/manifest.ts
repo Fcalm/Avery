@@ -1,5 +1,8 @@
 /** 模块清单与槽位契约：Host 依据清单校验槽位、加载顺序与版本兼容性。 */
 
+/** SDK 契约版本的唯一来源；模块发布 version 可独立变化，sdkVersion 必须引用此常量。 */
+export const AgentSdkContractVersion = '0.1.0';
+
 /** 六槽固定加载顺序：模块数组按此顺序排序与快照。 */
 export const SlotOrder = ['model-provider', 'context-builder', 'compaction', 'tools', 'interaction', 'observability'] as const;
 

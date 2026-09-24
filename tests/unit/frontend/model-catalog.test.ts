@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ApplyModelCatalogToProviders, ApplyModelRuntime, CreateCatalogModel, CreateDefaultModelCatalog, FindCatalogModel, FormatContextWindow, IsValidContextWindow, IsValidMaxOutput, LoadModelCatalog, MergeBackendProviders, MergeProviderModels, ModelCatalogStorageKey, SaveModelCatalog, SubscribeModelCatalog, type ModelCatalog } from '../../../src/features/settings/api/modelCatalog';
+import { ApplyModelCatalogToProviders, ApplyModelRuntime, CreateCatalogModel, CreateDefaultModelCatalog, FindCatalogModel, FindCatalogProvider, FormatContextWindow, IsSyncedModelsTrusted, IsValidContextWindow, IsValidMaxOutput, LoadModelCatalog, MergeBackendProviders, MergeProviderModels, ModelCatalogStorageKey, SaveModelCatalog, SubscribeModelCatalog, type ModelCatalog } from '../../../src/features/settings/api/modelCatalog';
 
 /** 应用内缓存以 localStorage 为唯一后端；用内存实现替换，避免测试依赖真实浏览器环境。 */
 function StubStorage() {
@@ -26,19 +26,20 @@ describe('模型目录的应用内缓存', () => {
     const entries = StubStorage();
     const defaults = LoadModelCatalog();
     expect(defaults.seeded).toBe(false);
-    expect(defaults.providers.map((item) => item.id)).toEqual(['DeepSeek', 'Z.AI', '自定义']);
+    expect(defaults.providers.map((item) => item.id)).toEqual(['DeepSeek', 'Z.AI', 'MIMO', '自定义']);
     expect(defaults.providers.every((item) => item.enabled)).toBe(true);
 
     entries.set(ModelCatalogStorageKey, '{not json');
-    expect(LoadModelCatalog().providers.map((item) => item.id)).toEqual(['DeepSeek', 'Z.AI', '自定义']);
+    expect(LoadModelCatalog().providers.map((item) => item.id)).toEqual(['DeepSeek', 'Z.AI', 'MIMO', '自定义']);
   });
 
   it('保存后原样读回启用状态、接口格式与模型能力', () => {
     StubStorage();
     const catalog = CreateDefaultModelCatalog();
+    const customIndex = catalog.providers.findIndex((item) => item.id === '自定义');
     catalog.providers[1] = { ...catalog.providers[1], enabled: false, apiFormat: 'messages' };
-    catalog.providers[2] = {
-      ...catalog.providers[2],
+    catalog.providers[customIndex] = {
+      ...catalog.providers[customIndex],
       models: [CreateCatalogModel('local-model', { contextWindow: 64_000, maxOutput: 4_096, inputImage: true, thinking: false })],
     };
 
@@ -50,8 +51,7 @@ describe('模型目录的应用内缓存', () => {
     expect(FindCatalogModel(loaded, '自定义', 'local-model')).toMatchObject({ contextWindow: 64_000, maxOutput: 4_096, inputImage: true, thinking: false });
   });
 
-  it('丢弃非法的供应商与模型条目，并补回缓存里缺失的官方供应商', () => {
-    const entries = StubStorage();
+  it('丢弃非法的供应商与模型条目，并补回缓存里缺失的官方供应商', () => {    const entries = StubStorage();
     entries.set(ModelCatalogStorageKey, JSON.stringify({
       seeded: true,
       providers: [
@@ -61,7 +61,7 @@ describe('模型目录的应用内缓存', () => {
     }));
 
     const loaded = LoadModelCatalog();
-    expect(loaded.providers.map((item) => item.id)).toEqual(['DeepSeek', 'Z.AI', '自定义']);
+    expect(loaded.providers.map((item) => item.id)).toEqual(['DeepSeek', 'Z.AI', 'MIMO', '自定义']);
     // enabled 只认布尔值，apiFormat 回退 chat，只有字段完整的模型被保留
     expect(loaded.providers[0]).toMatchObject({ enabled: true, apiFormat: 'chat', custom: false });
     expect(loaded.providers[0].models.map((item) => item.id)).toEqual(['deepseek-v4-pro']);
@@ -91,12 +91,12 @@ describe('模型目录的应用内缓存', () => {
     StubStorage();
     const merged = MergeBackendProviders(CreateDefaultModelCatalog(), BackendSnapshots);
     const disabled: ModelCatalog = { ...merged, providers: merged.providers.map((item) => item.id === 'Z.AI' ? { ...item, enabled: false } : item) };
-    const entries = ApplyModelCatalogToProviders(disabled, BackendSnapshots as Array<{ provider: 'DeepSeek' | 'Z.AI' | '自定义'; model: string; models: string[] }>);
+    const entries = ApplyModelCatalogToProviders(disabled, BackendSnapshots as Array<{ provider: 'DeepSeek' | 'Z.AI' | 'MIMO' | '自定义'; model: string; models: string[] }>);
 
     expect(entries.map((item) => item.provider)).toEqual(['DeepSeek', '自定义']);
 
     // 尚未与宿主合并过时原样返回，避免用不完整的本地列表覆盖宿主可用模型
-    expect(ApplyModelCatalogToProviders(CreateDefaultModelCatalog(), BackendSnapshots as Array<{ provider: 'DeepSeek' | 'Z.AI' | '自定义'; model: string; models: string[] }>)).toEqual(BackendSnapshots);
+    expect(ApplyModelCatalogToProviders(CreateDefaultModelCatalog(), BackendSnapshots as Array<{ provider: 'DeepSeek' | 'Z.AI' | 'MIMO' | '自定义'; model: string; models: string[] }>)).toEqual(BackendSnapshots);
   });
 
   it('保存目录后通知订阅者，供对话页重新裁剪模型选择', () => {
@@ -138,5 +138,46 @@ describe('模型目录的应用内缓存', () => {
     expect(IsValidContextWindow(1_000_001)).toBe(false);
     expect(IsValidMaxOutput(8_192)).toBe(true);
     expect(IsValidMaxOutput(0)).toBe(false);
+  });
+
+  it('清掉串入其它推荐供应商的模型，自定义供应商不做清洗', () => {
+    const entries = StubStorage();
+    entries.set(ModelCatalogStorageKey, JSON.stringify({
+      seeded: true,
+      providers: [
+        {
+          id: 'MIMO', name: 'MIMO', enabled: true, apiFormat: 'chat',
+          // 历史版本把 DeepSeek / 智谱的模型串进了 MiMo：缓存里读到时必须剔除
+          models: [
+            { id: 'mimo-v2.6-flash', contextWindow: 256_000, maxOutput: 8_192 },
+            { id: 'deepseek-v4-flash', contextWindow: 256_000, maxOutput: 8_192 },
+            { id: 'glm-5.3-flash', contextWindow: 256_000, maxOutput: 8_192 },
+          ],
+        },
+        {
+          id: '自定义', name: '自定义提供商', enabled: true, apiFormat: 'chat',
+          // 自定义供应商可以用任意模型名（含别家命名空间），不能被清洗
+          models: [{ id: 'deepseek-v4-flash', contextWindow: 128_000, maxOutput: 4_096 }],
+        },
+      ],
+    }));
+
+    const loaded = LoadModelCatalog();
+    expect(FindCatalogProvider(loaded, 'MIMO')?.models.map((item) => item.id)).toEqual(['mimo-v2.6-flash']);
+    expect(FindCatalogProvider(loaded, '自定义')?.models.map((item) => item.id)).toEqual(['deepseek-v4-flash']);
+
+    // 写入缓存前同样清洗，脏数据不会再次落盘
+    const entries2 = StubStorage();
+    SaveModelCatalog({ seeded: true, providers: [{ id: 'MIMO', name: 'MIMO', custom: false, enabled: true, apiFormat: 'chat', models: [CreateCatalogModel('deepseek-v4-flash'), CreateCatalogModel('mimo-v2.6-pro')] }] });
+    const persisted = JSON.parse(entries2.get(ModelCatalogStorageKey) ?? '{}') as { providers?: Array<{ models?: Array<{ id?: string }> }> };
+    expect(persisted.providers?.[0]?.models?.map((item) => item.id)).toEqual(['mimo-v2.6-pro']);
+  });
+
+  it('同步结果只有来源与请求供应商一致时才可并入目录', () => {
+    expect(IsSyncedModelsTrusted('MIMO', { provider: 'MIMO' })).toBe(true);
+    // 后端漏转发 provider 参数时会按 DeepSeek 返回：必须丢弃，否则 DeepSeek 模型会写进 MiMo
+    expect(IsSyncedModelsTrusted('MIMO', { provider: 'DeepSeek' })).toBe(false);
+    // 旧版本后端不返回来源回执，同样不可信
+    expect(IsSyncedModelsTrusted('MIMO', {})).toBe(false);
   });
 });

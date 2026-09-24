@@ -199,7 +199,7 @@ describe('agent-modules-defaults', () => {
     expect(saveConfig).toHaveBeenCalledWith(expect.objectContaining({
       provider: 'Z.AI', model: GlmFlashModel, baseUrl: DefaultZaiBaseUrl, apiKey: 'zai-user-key', thinkingEnabled: true,
     }));
-    await expect(provider.GetModels()).resolves.toEqual({ models: [GlmFlashModel] });
+    await expect(provider.GetModels()).resolves.toEqual({ provider: 'Z.AI', models: [GlmFlashModel] });
   });
 
   it('加载旧 GLM 配置时自动从国际站迁移到智谱中国区端点', async () => {
@@ -953,6 +953,111 @@ describe('agent-modules-defaults', () => {
     });
   });
 
+  it('MiMo 按官方参数发送思考开关，并把 OpenAI 明细 usage 解析为 token 计数与缓存命中', async () => {
+    let requestBody: Record<string, unknown> = {};
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+      expect(String(url)).toBe('https://api.xiaomimimo.com/v1/chat/completions');
+      requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      return SseResponse([
+        { choices: [{ delta: { reasoning_content: '推理' } }] },
+        { choices: [{ delta: { content: '完成' } }] },
+        // MiMo 的 usage 随流式 chunk 下发：缓存命中在 prompt_tokens_details.cached_tokens，
+        // image_tokens / reasoning_tokens 等明细与缓存命中无关，不参与一致性校验。
+        {
+          choices: [{ finish_reason: 'stop', delta: {} }],
+          usage: {
+            prompt_tokens: 50, completion_tokens: 20, total_tokens: 70,
+            prompt_tokens_details: { cached_tokens: 30, image_tokens: 4, audio_tokens: 0, video_tokens: 0 },
+            completion_tokens_details: { reasoning_tokens: 8 },
+          },
+        },
+        '[DONE]',
+      ]);
+    }));
+    vi.resetModules();
+    const { CreateProviderModule, DefaultMimoBaseUrl } = await import('../../../packages/agent-modules-defaults/src/provider');
+    const provider = CreateProviderModule(CreatePorts({
+      getConfig: vi.fn(async () => ({ provider: 'MIMO', baseUrl: DefaultMimoBaseUrl, model: 'mimo-v2.6-flash', thinkingEnabled: true, contextLimit: 256_000, contextLimitMode: 'default', compressionThreshold: 80, apiKey: 'mimo-key' })),
+    }));
+
+    const result = await provider.StreamCompletion({
+      requestId: 'mimo-request', model: 'mimo-v2.6-flash', reasoningEffort: 'high', history: [{ role: 'user', content: '完成任务' }],
+      tools: [], signal: new AbortController().signal, instructions: BuildDefaultCompiledInstructions(), onDelta: vi.fn(),
+    });
+
+    // MiMo 无 reasoning_effort / temperature / stream_options 文档参数：思考模式只发 thinking.type，多余参数不多发。
+    expect(requestBody).toMatchObject({ model: 'mimo-v2.6-flash', stream: true, thinking: { type: 'enabled' } });
+    expect(requestBody).not.toHaveProperty('reasoning_effort');
+    expect(requestBody).not.toHaveProperty('stream_options');
+    expect(requestBody).not.toHaveProperty('temperature');
+    expect(result).toMatchObject({
+      content: '完成', reasoningContent: '推理',
+      usage: { promptTokens: 50, completionTokens: 20, totalTokens: 70, cachedInputTokens: 30 },
+    });
+  });
+
+  it('MiMo 关闭思考时发送 disabled，严格 JSON 输出使用官方 max_completion_tokens 参数', async () => {
+    const requestBodies: Array<Record<string, unknown>> = [];
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
+      requestBodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return SseResponse([{ choices: [{ delta: { content: '{"score":80}' } }] }, '[DONE]']);
+    }));
+    vi.resetModules();
+    const { CreateProviderModule, DefaultMimoBaseUrl } = await import('../../../packages/agent-modules-defaults/src/provider');
+    const provider = CreateProviderModule(CreatePorts({
+      getConfig: vi.fn(async () => ({ provider: 'MIMO', baseUrl: DefaultMimoBaseUrl, model: 'mimo-v2.6-pro', thinkingEnabled: false, contextLimit: 256_000, contextLimitMode: 'default', compressionThreshold: 80, apiKey: 'mimo-key' })),
+    }));
+
+    await provider.StreamCompletion({
+      requestId: 'mimo-strict', model: 'mimo-v2.6-pro', reasoningEffort: 'medium', history: [], tools: [],
+      signal: new AbortController().signal, instructions: BuildDefaultCompiledInstructions(), onDelta: vi.fn(),
+      responseFormat: { type: 'json_object' }, maxTokens: 4096,
+    });
+
+    expect(requestBodies[0]).toMatchObject({ thinking: { type: 'disabled' }, response_format: { type: 'json_object' }, max_completion_tokens: 4096 });
+    expect(requestBodies[0]).not.toHaveProperty('max_tokens');
+  });
+
+  it('MiMo 官方 /models 同步只保留对话模型，取不到有效项回落固定列表，未知 Provider 直接报错', async () => {
+    // Provider 模块在创建时捕获 fetch 引用：同一实例内按调用次序返回不同响应。
+    const responses: unknown[] = [
+      { data: [
+        { id: 'mimo-v2.6-flash', object: 'model', owned_by: 'xiaomi' },
+        { id: 'mimo-v2.6-pro', object: 'model', owned_by: 'xiaomi' },
+        { id: 'mimo-v2.5-pro', object: 'model', owned_by: 'xiaomi' },
+        { id: 'mimo-v2.5-asr', object: 'model', owned_by: 'xiaomi' },
+        { id: 'mimo-v2.5-tts', object: 'model', owned_by: 'xiaomi' },
+        { id: 'mimo-v2.5-tts-voiceclone', object: 'model', owned_by: 'xiaomi' },
+      ] },
+      { data: [{ id: 'mimo-v2.5-asr' }] },
+    ];
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify(responses.shift()), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    vi.stubGlobal('fetch', fetchMock);
+    vi.resetModules();
+    const { CreateProviderModule, DefaultMimoBaseUrl } = await import('../../../packages/agent-modules-defaults/src/provider');
+    const provider = CreateProviderModule(CreatePorts({
+      getConfig: vi.fn(async () => ({ provider: 'MIMO', baseUrl: DefaultMimoBaseUrl, model: 'mimo-v2.6-flash', thinkingEnabled: true, contextLimit: 256_000, contextLimitMode: 'default', compressionThreshold: 80, apiKey: 'mimo-key' })),
+    }));
+
+    // GET {baseUrl}/models 同步：ASR/TTS 系语音模型被过滤，返回带 provider 回执，请求带 Bearer 鉴权且只发一次
+    await expect(provider.GetModels('MIMO')).resolves.toEqual({ provider: 'MIMO', models: ['mimo-v2.5-pro', 'mimo-v2.6-flash', 'mimo-v2.6-pro'] });
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(String(fetchMock.mock.calls[0][0])).toBe('https://api.xiaomimimo.com/v1/models');
+    expect(fetchMock.mock.calls[0][1]).toMatchObject({ headers: { Authorization: 'Bearer mimo-key' } });
+
+    // ASR/TTS 系 ID 与其它供应商的模型不能当 MiMo 对话模型使用
+    expect(() => provider.ResolveRequestModel('mimo-v2.5-tts', 'MIMO')).toThrow();
+    expect(() => provider.ResolveRequestModel('glm-5.3-flash', 'MIMO')).toThrow();
+    expect(provider.ResolveRequestModel('mimo-v2.6-pro-ultraspeed', 'MIMO')).toBe('mimo-v2.6-pro-ultraspeed');
+
+    // 显式未知 Provider 必须报错：静默回退 DeepSeek 曾把 DeepSeek 模型列表合并进 MiMo
+    await expect(provider.GetModels('unknown-provider')).rejects.toThrow(/Unsupported provider/);
+    expect(fetchMock).toHaveBeenCalledOnce();
+
+    // /models 返回空或全部非法（只剩语音模型）时回落官方固定列表，不产生空列表
+    await expect(provider.GetModels('MIMO')).resolves.toEqual({ provider: 'MIMO', models: ['mimo-v2.6-flash', 'mimo-v2.6-pro', 'mimo-v2.6-pro-ultraspeed'] });
+  });
+
   it('缓存命中字段矛盾时整块 Usage 不进入账本，仅由 prompt_tokens_details 提供时正常采用', async () => {
     const responses: unknown[] = [
       { choices: [], usage: { prompt_tokens: 11, prompt_cache_hit_tokens: 8, prompt_tokens_details: { cached_tokens: 3 }, completion_tokens: 7, total_tokens: 18 } },
@@ -1068,6 +1173,7 @@ describe('agent-modules-defaults', () => {
     ['数字字符串', { prompt_tokens: '11', completion_tokens: '7', total_tokens: '18' }],
     ['null 字段', { prompt_tokens: null, completion_tokens: 7, total_tokens: 7 }],
     ['总数不等于输入输出之和', { prompt_tokens: 11, completion_tokens: 7, total_tokens: 19 }],
+    ['缓存命中超过输入', { prompt_tokens: 11, completion_tokens: 7, total_tokens: 18, prompt_tokens_details: { cached_tokens: 12 } }],
   ])('Provider 拒绝%s usage，不把协议异常冒充为真实值', async (_name, usage) => {
     vi.stubGlobal('fetch', vi.fn(async () => SseResponse([{ choices: [], usage }, '[DONE]'])));
     vi.resetModules();

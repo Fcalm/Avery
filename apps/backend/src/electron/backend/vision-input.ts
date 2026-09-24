@@ -58,9 +58,14 @@ async function ReadImage(uri: string, displayName: string, resolveAttachment: (u
   };
 }
 
+/** MiMo 官方声明支持图片输入的对话模型（mimo-v2.5-pro 不支持），其余 MiMo 模型只收文本。 */
+const MimoVisionModels = ['mimo-v2.6-flash', 'mimo-v2.6-pro', 'mimo-v2.6-pro-ultraspeed', 'mimo-v2.5'];
+
 /** 仅官方声明支持视觉内容的 Provider/模型组合才接收图片块。 */
 export function SupportsVisionInput(provider: unknown, model: unknown): boolean {
-  return (provider === 'DeepSeek' && model === DeepSeekVisionModel) || (provider === 'Z.AI' && model === GlmVisionModel);
+  return (provider === 'DeepSeek' && model === DeepSeekVisionModel)
+    || (provider === 'Z.AI' && model === GlmVisionModel)
+    || (provider === 'MIMO' && typeof model === 'string' && MimoVisionModels.includes(model));
 }
 
 /** 将本轮附件转换为官方 OpenAI 兼容的 text + image_url 块，同时只保留可持久化的虚拟 URI 引用。 */

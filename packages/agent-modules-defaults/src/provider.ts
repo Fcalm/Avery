@@ -1,3 +1,4 @@
+import { AgentSdkContractVersion } from '@avery/agent-sdk';
 import type { AgentMessage, ModelCompletion, ModelDelta, ModelProviderModule, ModelUsage, ReasoningEffort, RegisteredAgentTool } from '@avery/agent-sdk';
 import { AgentDefaultPorts, ProviderConfig } from './ports';
 import { RequireString } from './helpers';
@@ -24,6 +25,16 @@ const DeepSeekModelContextLimits: Readonly<Record<string, number>> = {
   'deepseek-v4-flash-vision-exp': 1_000_000,
 };
 const ZaiModelContextLimits: Readonly<Record<string, number>> = { [GlmFlashModel]: 1_000_000 };
+/** MiMo 官方 API 根地址（OpenAI 兼容）；对话补全请求发往 {baseUrl}/chat/completions。 */
+export const DefaultMimoBaseUrl = 'https://api.xiaomimimo.com/v1';
+export const DefaultMimoModel = 'mimo-v2.6-flash';
+/** MiMo 官方对话模型固定列表：既是模型列表同步失败时的兜底，也是新装默认值；v2.5 系列已公告退役计划，不作为初值。 */
+const DefaultMimoModels = ['mimo-v2.6-flash', 'mimo-v2.6-pro', 'mimo-v2.6-pro-ultraspeed'];
+/** MiMo 官方文档只对 v2.5 系列标注 1M 上下文；v2.6 系列未标注数字，不虚构上限，由通用可配置区间兜底。 */
+const MimoModelContextLimits: Readonly<Record<string, number>> = {
+  'mimo-v2.5': 1_000_000,
+  'mimo-v2.5-pro': 1_000_000,
+};
 
 export type ContextLimitMode = 'default' | 'custom';
 
@@ -34,10 +45,11 @@ export function ResolveDeepSeekReasoningEffort(value: ReasoningEffort): 'low' | 
   return 'high';
 }
 
-type SupportedProvider = 'DeepSeek' | 'Z.AI' | '自定义';
+type SupportedProvider = 'DeepSeek' | 'Z.AI' | 'MIMO' | '自定义';
 
 function NormalizeProvider(value: unknown): SupportedProvider {
   if (value === 'Z.AI') return 'Z.AI';
+  if (value === 'MIMO') return 'MIMO';
   if (value === '自定义') return '自定义';
   return 'DeepSeek';
 }
@@ -45,18 +57,21 @@ function NormalizeProvider(value: unknown): SupportedProvider {
 function ResolveOfficialBaseUrl(provider: SupportedProvider, customBaseUrl?: unknown): string {
   if (provider === 'DeepSeek') return DefaultBaseUrl;
   if (provider === 'Z.AI') return DefaultZaiBaseUrl;
+  if (provider === 'MIMO') return DefaultMimoBaseUrl;
   return RequireString(customBaseUrl, 'baseUrl', 500).replace(/\/$/, '');
 }
 
 function ResolveProviderModel(provider: SupportedProvider, value: unknown): string {
   if (provider === 'Z.AI') return GlmFlashModel;
   if (provider === 'DeepSeek') return NormalizeDeepSeekModel(value);
+  if (provider === 'MIMO') return NormalizeMimoModel(value);
   return RequireString(value, 'model', 200);
 }
 
 function ResolveModelMaximum(provider: SupportedProvider, model: string): number | undefined {
   if (provider === 'DeepSeek') return DeepSeekModelContextLimits[model];
   if (provider === 'Z.AI') return ZaiModelContextLimits[model];
+  if (provider === 'MIMO') return MimoModelContextLimits[model];
   return undefined;
 }
 
@@ -90,6 +105,16 @@ function NormalizeDeepSeekModel(model: unknown) {
   return /^deepseek-[a-z0-9][a-z0-9._-]{0,199}$/i.test(value) ? value : 'deepseek-v4-flash';
 }
 
+/**
+ * MiMo 对话补全只接受 mimo-v 前缀的官方 chat 模型 ID；
+ * MiMo 同时提供 ASR / TTS 系语音模型，这些 ID 不能当对话模型保存或使用（无论来自手工添加还是其它来源）。
+ */
+function NormalizeMimoModel(model: unknown) {
+  const value = typeof model === 'string' ? model.trim() : '';
+  const isChatModel = /^mimo-v\d[a-z0-9._-]*$/i.test(value) && !/(?:^|-)(?:asr|tts)(?:-|$)/i.test(value);
+  return isChatModel ? value : DefaultMimoModel;
+}
+
 /** 将 SSE 读取块拆为完整的数据行。 */
 function CreateSseParser(onData: (value: string) => void) {
   let buffer = '';
@@ -107,7 +132,8 @@ function CreateSseParser(onData: (value: string) => void) {
 
 /**
  * 缓存命中输入 token 的字段位置随 Provider 不同：DeepSeek 用顶层 prompt_cache_hit_tokens，
- * GLM 等 OpenAI 风格响应放在 prompt_tokens_details.cached_tokens。两者是同一事实的两种写法，
+ * GLM、MiMo 等 OpenAI 风格响应放在 prompt_tokens_details.cached_tokens（MiMo 该对象还含
+ * image/audio/video_tokens 等明细，与命中数无关）。两者是同一事实的两种写法，
  * 同时出现时必须一致，否则整块 Usage 按矛盾值拒绝（沿用本合同对 usage 的唯一性要求）。
  * 返回 undefined 表示两个字段都未提供；返回 null 表示字段存在但值非法或互相矛盾。
  */
@@ -249,7 +275,7 @@ export function CreateProviderModule(ports: AgentDefaultPorts): ModelProviderMod
       ...defaultConfig,
       provider,
       baseUrl: ResolveOfficialBaseUrl(provider, provider === '自定义' ? DefaultBaseUrl : undefined),
-      model: ResolveProviderModel(provider, provider === 'Z.AI' ? GlmFlashModel : provider === 'DeepSeek' ? 'deepseek-v4-flash' : 'custom-model'),
+      model: ResolveProviderModel(provider, provider === 'Z.AI' ? GlmFlashModel : provider === 'DeepSeek' ? 'deepseek-v4-flash' : provider === 'MIMO' ? DefaultMimoModel : 'custom-model'),
       apiKey: '',
     };
   }
@@ -264,7 +290,7 @@ export function CreateProviderModule(ports: AgentDefaultPorts): ModelProviderMod
     packageName: '@avery/agent-modules-defaults',
     name: 'avery.agent-defaults',
     version: '0.1.0',
-    sdkVersion: '0.1.0',
+    sdkVersion: AgentSdkContractVersion,
     slot: 'model-provider',
     capabilities: ['model'],
     /** 保存经校验的模型配置，并将 API Key 经端口移交宿主 safeStorage 加密落盘。 */
@@ -278,6 +304,7 @@ export function CreateProviderModule(ports: AgentDefaultPorts): ModelProviderMod
       if (apiKey && /\*/.test(apiKey)) throw new Error('Please enter the complete API Key before saving.');
       const model = ResolveProviderModel(provider, requestedModel);
       if (provider === 'DeepSeek' && model !== requestedModel) throw new Error('请选择 DeepSeek 当前支持的模型。');
+      if (provider === 'MIMO' && model !== requestedModel) throw new Error('请选择 MiMo 当前支持的对话模型。');
       const existing = configs.get(provider);
       const next = {
         provider,
@@ -345,12 +372,18 @@ export function CreateProviderModule(ports: AgentDefaultPorts): ModelProviderMod
         compressionThreshold: selected.compressionThreshold,
       };
     },
-    /** 校验单轮模型切换，DeepSeek 仅允许预设，自定义 Provider 固定使用已保存模型。 */
+    /** 校验单轮模型切换，DeepSeek/MiMo 仅允许官方对话模型，自定义 Provider 固定使用已保存模型。 */
     ResolveRequestModel(requestedModel, providerValue) {
       const selected = ConfigFor(providerValue);
       if (selected.provider === 'Z.AI') {
         if (requestedModel !== undefined && requestedModel !== GlmFlashModel) throw new Error('The requested model is not available for Z.AI.');
         return GlmFlashModel;
+      }
+      if (selected.provider === 'MIMO') {
+        if (requestedModel === undefined) return selected.model;
+        const model = NormalizeMimoModel(requestedModel);
+        if (model !== requestedModel) throw new Error('The requested model is not available for MIMO.');
+        return model;
       }
       if (selected.provider !== 'DeepSeek') return selected.model;
       if (requestedModel === undefined) return selected.model;
@@ -374,12 +407,35 @@ export function CreateProviderModule(ports: AgentDefaultPorts): ModelProviderMod
       if (json.is_available !== true || balances.length === 0) throw new Error('当前账户余额不可用。');
       return { available: true, balances };
     },
-    /** 从 DeepSeek 官方 /models 同步当前凭据可用的模型；网络失败由调用层保留本地 V4 兜底。 */
+    /**
+     * 读取当前凭据可访问的模型列表。DeepSeek 与 MiMo 走官方 GET /models 同步（MiMo 端点为 /v1/models）；
+     * MiMo 返回里含 ASR/TTS 系非对话模型，只保留对话 ID，取不到有效项时回落官方固定列表。
+     * 返回值带 provider 回执：调用方据此确认结果确实来自请求的供应商。
+     * 显式传入的 Provider 必须精确匹配，绝不静默回退到 DeepSeek——
+     * 回退会把其它供应商的模型列表交出去，被调用方合并进错误的供应商（曾导致 MiMo 列表混入 DeepSeek 模型）。
+     */
     async GetModels(providerValue?: string) {
       await EnsureConfig();
+      if (providerValue !== undefined && providerValue !== 'DeepSeek' && providerValue !== 'Z.AI' && providerValue !== 'MIMO' && providerValue !== '自定义') {
+        throw new Error(`Unsupported provider: ${String(providerValue)}.`);
+      }
       const selected = ConfigFor(providerValue);
-      if (selected.provider === 'Z.AI') return { models: [GlmFlashModel] };
-      if (selected.provider === '自定义') return { models: [selected.model] };
+      if (selected.provider === 'Z.AI') return { provider: selected.provider, models: [GlmFlashModel] };
+      if (selected.provider === 'MIMO') {
+        if (!selected.apiKey) throw new Error('请先保存 MiMo API Key。');
+        const response = await providerFetch(`${DefaultMimoBaseUrl}/models`, {
+          method: 'GET', headers: { Authorization: `Bearer ${selected.apiKey}` }, signal: AbortSignal.timeout(15000),
+        });
+        if (!response.ok) throw new Error(`模型列表获取失败（${response.status}）。`);
+        const json = await response.json() as { data?: Array<{ id?: unknown }> };
+        // /models 同时返回 ASR/TTS 系语音模型，只保留对话补全可用的 ID；全部非法时回落官方固定列表。
+        const models = Array.isArray(json.data) ? json.data
+          .map((item) => typeof item?.id === 'string' ? item.id.trim() : '')
+          .filter((id) => id && id === NormalizeMimoModel(id)) : [];
+        const available = [...new Set(models)].sort((left, right) => left.localeCompare(right));
+        return { provider: selected.provider, models: available.length ? available : DefaultMimoModels };
+      }
+      if (selected.provider === '自定义') return { provider: selected.provider, models: [selected.model] };
       if (!selected.apiKey) throw new Error('请先保存 DeepSeek API Key。');
       const response = await providerFetch(`${DefaultBaseUrl}/models`, {
         method: 'GET', headers: { Authorization: `Bearer ${selected.apiKey}` }, signal: AbortSignal.timeout(15000),
@@ -390,17 +446,17 @@ export function CreateProviderModule(ports: AgentDefaultPorts): ModelProviderMod
         .map((item) => typeof item?.id === 'string' ? item.id.trim() : '')
         .filter((id) => id === NormalizeDeepSeekModel(id)) : [];
       const available = [...new Set(models)].sort((left, right) => left.localeCompare(right));
-      return { models: available.length ? available : DefaultDeepSeekModels };
+      return { provider: selected.provider, models: available.length ? available : DefaultDeepSeekModels };
     },
     async GetProviderCatalog() {
       await EnsureConfig();
-      const providers = await Promise.all((['DeepSeek', 'Z.AI', '自定义'] as SupportedProvider[]).map(async (provider) => {
+      const providers = await Promise.all((['DeepSeek', 'Z.AI', 'MIMO', '自定义'] as SupportedProvider[]).map(async (provider) => {
         const selected = ConfigFor(provider);
         const metadata = { baseUrl: selected.baseUrl, contextLimit: selected.contextLimit, contextLimitMode: selected.contextLimitMode ?? 'default' as const, compressionThreshold: selected.compressionThreshold, thinkingEnabled: selected.thinkingEnabled };
         if (!selected.apiKey) return { provider, configured: false, model: selected.model, models: [], ...metadata };
         let models: string[];
         try { models = (await this.GetModels(provider)).models; }
-        catch { models = provider === 'DeepSeek' ? DefaultDeepSeekModels : [selected.model]; }
+        catch { models = provider === 'DeepSeek' ? DefaultDeepSeekModels : provider === 'MIMO' ? DefaultMimoModels : [selected.model]; }
         return { provider, configured: true, model: selected.model, models, ...metadata };
       }));
       return { providers };
@@ -419,14 +475,18 @@ export function CreateProviderModule(ports: AgentDefaultPorts): ModelProviderMod
           ? selected.thinkingEnabled
             ? { thinking: { type: 'enabled' }, reasoning_effort: ResolveDeepSeekReasoningEffort(request.reasoningEffort) }
             : { thinking: { type: 'disabled' } }
-          : {};
+          // MiMo 仅接受 thinking.type 开关；官方文档未提供 reasoning_effort，思考模式下温度参数也会被服务端强制默认值。
+          : selected.provider === 'MIMO'
+            ? { thinking: { type: selected.thinkingEnabled ? 'enabled' : 'disabled' } }
+            : {};
       const body = SerializeCompletionBody({
         model: requestModel, stream: true, ...thinking,
         ...(selected.provider === 'DeepSeek' ? { stream_options: { include_usage: true } } : {}),
-        // 严格 JSON 输出：DeepSeek 与智谱官方文档均支持 response_format json_object，两家通道发送 API 参数；
+        // 严格 JSON 输出：DeepSeek、智谱与 MiMo 官方文档均支持 response_format json_object，三条通道发送 API 参数；
         // 自定义通道的端点能力未知，仅保留提示词侧的 JSON 样例约束，避免不支持的端点报 400。
-        ...((selected.provider === 'DeepSeek' || selected.provider === 'Z.AI') && request.responseFormat ? { response_format: request.responseFormat } : {}),
-        ...(request.maxTokens ? { max_tokens: request.maxTokens } : {}),
+        ...((selected.provider === 'DeepSeek' || selected.provider === 'Z.AI' || selected.provider === 'MIMO') && request.responseFormat ? { response_format: request.responseFormat } : {}),
+        // 输出上限字段名随 Provider 不同：MiMo 官方参数是 max_completion_tokens（含推理 token），其余通道用 max_tokens。
+        ...(request.maxTokens ? (selected.provider === 'MIMO' ? { max_completion_tokens: request.maxTokens } : { max_tokens: request.maxTokens }) : {}),
         messages: providerMessages, tools: request.tools.map((tool) => tool.definition), tool_choice: 'auto',
       }, selected.provider === 'DeepSeek');
       request.onRequest?.({ kind: 'completion', model: requestModel, messages: providerMessages, toolCount: request.tools.length });

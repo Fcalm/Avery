@@ -16,6 +16,12 @@ describe('vision input', () => {
     expect(SupportsVisionInput('Z.AI', 'glm-5.3-flash')).toBe(true);
     expect(SupportsVisionInput('DeepSeek', 'deepseek-v4-flash')).toBe(false);
     expect(SupportsVisionInput('自定义', 'glm-5.3-flash')).toBe(false);
+    // MiMo 官方声明 v2.6 全系与 mimo-v2.5 支持图片输入；mimo-v2.5-pro 与语音系模型不支持
+    expect(SupportsVisionInput('MIMO', 'mimo-v2.6-flash')).toBe(true);
+    expect(SupportsVisionInput('MIMO', 'mimo-v2.6-pro-ultraspeed')).toBe(true);
+    expect(SupportsVisionInput('MIMO', 'mimo-v2.5')).toBe(true);
+    expect(SupportsVisionInput('MIMO', 'mimo-v2.5-pro')).toBe(false);
+    expect(SupportsVisionInput('MIMO', 'mimo-v2.5-tts')).toBe(false);
   });
   it('按真实文件签名识别官方支持格式，不信任文件名', () => {
     expect(DetectSupportedImageMimeType(Buffer.from([0xff, 0xd8, 0xff, 0x00]))).toBe('image/jpeg');
