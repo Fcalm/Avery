@@ -176,7 +176,7 @@ Avery/
 
 - [产品需求文档](docs/PRD.md)
 - [项目架构](docs/ARCHITECTURE.md)
-- [界面设计规范](docs/DESIGN.md)
+- [界面原型与样式参考](Avery-prototype/avery-style-guide.html)
 - [Agent 设计文档](docs/Agent-design/README.md)
 - [版本路线图](docs/VERSION-ROADMAP.md)
 

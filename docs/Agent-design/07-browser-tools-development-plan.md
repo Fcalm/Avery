@@ -253,9 +253,9 @@ PB-05 放行证据：旧消费者搜索清单及零命中例外；依赖树与�
 ### 11.4 发布收尾与基线隔离
 
 - [ ] 放行顺序固定为：PB-03 审核签字 → PB-04 实现与审核 → PB-05 实现与审核 → 全量测试/类型检查/构建 → 目录包与 Windows 安装包 → 安装后冒烟与发布前清单。可执行命令清单是：`node scripts/release-preflight.mjs`（可选 `--require-builder-cache`）、`node scripts/check-cjs.mjs`、`npm test`、`npm run build`、`npm run smoke:browser-migration`、`npm run pack:dir`、目录包的 `node scripts/smoke-packaged-app.mjs`、`npm run pack:win`、安装包的 `node scripts/smoke-installed-app.mjs`，以及最终 `node scripts/verify-package-contents.mjs` 与 `node scripts/write-release-manifest.mjs`。`pack:dir`/`pack:win` 默认输出到 `release-rebuild`；`verify-package-contents.mjs` 需在有 Windows 安装器的 pack:win 后运行。本轮用本机 Electron 路径和独立临时输出目录完成安装包验证，不代表默认 `release-rebuild` 目录已生成可发布产物；`smoke:browser-migration` 的 `host-init-only` 不代表真实浏览器已通过。
-- [ ] 每阶段使用独立 Conventional Commit，提交前复核 `git status`/`git diff`，确认迁移范围无漏提交，并记录依赖/密钥/缓存/构建产物；无关用户改动（含 `Avery-prototype/` 与 `docs/DESIGN.md` 删除）明确保留在当前上下文，不清理或强行覆盖；发布产物必须对应可复现提交，父代理审核后才允许合并或 push。未完成阶段不得以旧 CDP、旧 companion、孤立 fixture 或单浏览器记录替代。
-- [x] 历史 HEAD 基线：`78c5cbd`（提交时间 2026-09-13 21:18:08 +0800；该时间不代表审计发生时间）。当时记录的分支为 `feature/prototype-ui-shell`，相对 `main` 为 `main...HEAD = 0 49`，共同祖先 `48254faf`。工作区已有迁移代码、扩展、测试和多份规划文档未提交，另有 UI/README 等变更；`docs/DESIGN.md` 的删除为既有用户改动，不恢复、不代提交、不纳入迁移提交。
-- [x] 当前复核（2026-09-14）：实际仓库为 `D:\Avery\project`（旧路径 `D:\OfferGet-Rebuild\project` 已不存在）；当前分支是 `feature/prototype-ui-shell`，`HEAD e7beab6`，相对 `main` 为 `main...HEAD = 0 53`，较上述历史基线新增 4 个提交。工作区仍有用户/代理未提交改动及未跟踪文件；必须保留 `Avery-prototype/` 与 `docs/DESIGN.md` 删除。此前出现的 `codex/personal-browser-migration` 仅属于历史基线记录，不是当前分支。
-- [ ] 接续路径：迁移链路与旧 CLI 清理已分类提交；原型、设计文档删除和构建产物仍与迁移提交隔离。是否合并到目标分支或 push 留待单独审核，不以本轮分类提交代替发布放行。
+- [ ] 每阶段使用独立 Conventional Commit，提交前复核 `git status`/`git diff`，确认迁移范围无漏提交，并记录依赖/密钥/缓存/构建产物；无关用户改动明确保留在当前上下文，不清理或强行覆盖；发布产物必须对应可复现提交，父代理审核后才允许合并或 push。未完成阶段不得以旧 CDP、旧 companion、孤立 fixture 或单浏览器记录替代。
+- [x] 历史 HEAD 基线：`78c5cbd`（提交时间 2026-09-13 21:18:08 +0800；该时间不代表审计发生时间）。当时记录的分支为 `feature/prototype-ui-shell`，相对 `main` 为 `main...HEAD = 0 49`，共同祖先 `48254faf`。工作区已有迁移代码、扩展、测试和多份规划文档未提交，另有 UI/README 等变更；旧版设计文档的删除为既有用户改动，当时不恢复、不代提交、不纳入迁移提交。
+- [x] 历史复核（2026-09-14）：实际仓库为 `D:\Avery\project`（旧路径 `D:\OfferGet-Rebuild\project` 已不存在）；当时分支是 `feature/prototype-ui-shell`，`HEAD e7beab6`，相对 `main` 为 `main...HEAD = 0 53`，较上述历史基线新增 4 个提交。工作区仍有用户/代理未提交改动及未跟踪文件；当时保留 `Avery-prototype/` 与旧版设计文档删除。此前出现的 `codex/personal-browser-migration` 仅属于历史基线记录，不是当时分支。
+- [ ] 接续路径：迁移链路与旧 CLI 清理已分类提交；2026-09-27 经用户确认，原型单独提交，旧版 DESIGN 文档作废并清理依赖引用，视频文档暂不提交；上述变更与迁移提交及构建产物隔离。是否合并到目标分支或 push 留待单独审核，不以本轮分类提交代替发布放行。
 
 发布收尾放行证据：最终分支/提交图、迁移范围无漏提交审计记录及无关用户改动保留记录、可复现提交对应的全量测试与构建日志、安装包 SHA256/版本、安装后扩展加载及 Chrome/Edge smoke、真实站点无副作用/回执记录、旧 Runtime 搜索与包内容检查、审核签字记录。
