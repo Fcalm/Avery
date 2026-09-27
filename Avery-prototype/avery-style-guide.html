@@ -1,0 +1,705 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Avery 设计风格总结</title>
+
+<!-- Type: Manrope carries anything that reads as data (numbers, labels, times),
+     the system UI face carries prose. Both are the fonts the prototype uses. -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Manrope:wght@200..800&display=swap">
+
+<style>
+/* ============================================================================
+   AVERY 设计风格总结
+   ---------------------------------------------------------------------------
+   本文档的令牌与 avery-prototype.html 的 :root 完全一致，所以它既是说明，
+   也是那套设计系统的一次实时渲染。
+   ============================================================================ */
+:root{
+  --r-card:14px; --r-control:10px; --r-pill:999px;
+
+  --bg:#ffffff;
+  --surface:#fafafa;
+  --surface-2:#f4f4f5;
+  --panel:#ffffff;
+  --raised:#ffffff;
+  --border:#e8e8ea;
+  --border-2:#d8d8dc;
+  --text:#18181b;
+  --text-2:#55555e;
+  --text-3:#8b8b94;
+  --accent:#17654f;
+  --accent-hover:#12543f;
+  --accent-soft:#eaf2ee;
+  --accent-on:#ffffff;
+  --shadow:0 1px 2px rgba(24,24,27,.05), 0 8px 24px -12px rgba(24,24,27,.14);
+  --shadow-lg:0 12px 40px -12px rgba(24,24,27,.22);
+
+  --seg-a:#17654f;
+  --seg-b:#7fb3a2;
+  --seg-c:#dcdce0;
+
+  --tr-system:rgba(24,24,27,.035);
+  --tr-tool:rgba(24,24,27,.065);
+  --tr-user:rgba(24,24,27,.10);
+  --tr-assistant:rgba(24,24,27,.14);
+
+  --ease:cubic-bezier(.16,1,.3,1);
+  --font-sans:"Segoe UI Variable Text","Segoe UI",-apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,sans-serif;
+  --font-data:"Manrope","Segoe UI Variable Text","Segoe UI",-apple-system,BlinkMacSystemFont,system-ui,sans-serif;
+}
+[data-theme="dark"]{
+  --bg:#111113;
+  --surface:#161619;
+  --surface-2:#1f1f24;
+  --panel:#131315;
+  --raised:#1a1a1e;
+  --border:#2a2a30;
+  --border-2:#3a3a42;
+  --text:#f4f4f5;
+  --text-2:#a8a8b2;
+  --text-3:#7b7b85;
+  --accent:#3e9e7e;
+  --accent-hover:#4fb08e;
+  --accent-soft:#17261f;
+  --accent-on:#07201a;
+  --shadow:0 1px 2px rgba(0,0,0,.4), 0 10px 28px -14px rgba(0,0,0,.7);
+  --shadow-lg:0 16px 48px -16px rgba(0,0,0,.8);
+
+  --seg-a:#3e9e7e;
+  --seg-b:#2b6d5a;
+  --seg-c:#3a3a42;
+
+  --tr-system:rgba(255,255,255,.035);
+  --tr-tool:rgba(255,255,255,.065);
+  --tr-user:rgba(255,255,255,.10);
+  --tr-assistant:rgba(255,255,255,.14);
+}
+
+html,body{margin:0}
+body{
+  font-family:var(--font-sans);
+  font-size:14px;
+  line-height:1.55;
+  color:var(--text);
+  background:var(--bg);
+  -webkit-font-smoothing:antialiased;
+  text-rendering:optimizeLegibility;
+}
+button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:6px}
+::selection{background:var(--accent-soft);color:var(--text)}
+
+/* theme cross-fade, same as the prototype */
+.sg-top,.card,.sw,.sg-hero,.tag{
+  transition:background-color .3s var(--ease), border-color .3s var(--ease), color .3s var(--ease);
+}
+
+/* ------------------------------------------------------------------- shell */
+.sg-top{
+  position:sticky;top:0;z-index:10;
+  display:flex;align-items:center;gap:12px;
+  padding:11px 22px;background:var(--bg);
+  background:color-mix(in srgb, var(--bg) 88%, transparent);
+  backdrop-filter:blur(10px);border-bottom:1px solid var(--border);
+}
+.sg-mark{
+  width:24px;height:24px;flex:none;display:grid;place-items:center;border-radius:7px;
+  background:var(--accent);color:var(--accent-on);font-family:var(--font-data);
+  font-size:12.5px;font-weight:700;
+}
+.sg-brand{font-size:14.5px;font-weight:650;letter-spacing:-.01em}
+.sg-brand small{display:block;font-size:11.5px;font-weight:400;color:var(--text-3);letter-spacing:0}
+.sg-top .sp{flex:1}
+.tbtn{
+  display:inline-flex;align-items:center;gap:6px;height:30px;padding:0 11px;
+  border:1px solid var(--border);border-radius:var(--r-control);
+  font-size:12.5px;font-weight:550;color:var(--text-2);
+  transition:background-color .18s var(--ease), border-color .18s var(--ease), color .18s var(--ease);
+}
+.tbtn:hover{background:var(--surface-2);border-color:var(--border-2);color:var(--text)}
+
+.sg-wrap{max-width:1000px;margin:0 auto;padding:0 22px 90px}
+
+.sg-hero{padding:44px 0 26px;border-bottom:1px solid var(--border)}
+.sg-hero h1{margin:0;font-size:30px;font-weight:660;letter-spacing:-.025em}
+.sg-hero p{margin:10px 0 0;max-width:74ch;font-size:13.5px;color:var(--text-2)}
+.locks{display:flex;flex-wrap:wrap;gap:7px;margin-top:16px}
+.tag{
+  font-family:var(--font-data);font-size:11px;padding:3px 9px;border-radius:var(--r-pill);
+  background:var(--surface-2);color:var(--text-2);white-space:nowrap;
+}
+.tag.accent{background:var(--accent-soft);color:var(--accent)}
+
+.sg-sec{margin-top:48px}
+.sg-sec > h2{
+  display:flex;align-items:center;gap:10px;margin:0 0 6px;
+  font-size:21px;font-weight:640;letter-spacing:-.015em;
+}
+.sg-sec > h2 .n{
+  flex:none;display:grid;place-items:center;width:22px;height:22px;border-radius:7px;
+  background:var(--accent);color:var(--accent-on);
+  font-family:var(--font-data);font-size:12px;font-weight:700;
+}
+.sg-sec > .lead{margin:0 0 18px;max-width:76ch;font-size:13px;color:var(--text-2)}
+.sg-label{
+  margin:22px 0 9px;font-size:11px;font-weight:600;letter-spacing:.07em;
+  text-transform:uppercase;color:var(--text-3);
+}
+.sg-label:first-child{margin-top:0}
+
+.card{
+  background:var(--raised);border:1px solid var(--border);border-radius:var(--r-card);
+  padding:16px 18px;
+}
+.grid{display:grid;gap:10px}
+.grid.two{grid-template-columns:repeat(2,minmax(0,1fr))}
+.grid.auto{grid-template-columns:repeat(auto-fill,minmax(186px,1fr))}
+
+/* --------------------------------------------------------------- typography */
+.face{display:flex;align-items:center;gap:14px}
+.face .sp{flex:1;min-width:0}
+.face .spec{
+  flex:none;font-size:34px;line-height:1;font-weight:600;letter-spacing:-.02em;
+  color:var(--text);
+}
+.face .spec.data{font-family:var(--font-data)}
+.face .spec.sans{font-family:var(--font-sans)}
+.face h3{margin:0;font-size:13.5px;font-weight:600}
+.face code{
+  font-family:var(--font-data);font-size:11.5px;color:var(--accent);
+  background:var(--accent-soft);border-radius:5px;padding:1px 6px;
+}
+.face p{margin:5px 0 0;font-size:12.5px;color:var(--text-2);line-height:1.55}
+.face .stack{
+  margin-top:6px;font-family:var(--font-data);font-size:11px;color:var(--text-3);
+  overflow-wrap:anywhere;
+}
+.weights{display:flex;flex-wrap:wrap;gap:8px}
+.wchip{
+  display:flex;align-items:baseline;gap:8px;padding:8px 12px;border-radius:var(--r-control);
+  background:var(--surface);border:1px solid var(--border);
+}
+.wchip b{font-family:var(--font-data);font-size:19px;line-height:1;font-weight:var(--w)}
+.wchip span{font-family:var(--font-data);font-size:10.5px;color:var(--text-3)}
+
+.ty{border-top:1px solid var(--border);padding:12px 0;display:grid;grid-template-columns:minmax(0,1fr) 260px;gap:16px;align-items:center}
+.ty:first-child{border-top:0;padding-top:0}
+.ty .sample{min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;line-height:1.25}
+.ty .sample.data{font-family:var(--font-data)}
+.ty .meta{font-family:var(--font-data);font-size:11px;color:var(--text-3);line-height:1.8}
+.ty .meta b{color:var(--text-2);font-weight:600}
+.ty .use{font-size:12px;color:var(--text-2);line-height:1.55;margin-top:2px;font-family:var(--font-sans)}
+@media (max-width:720px){
+  .ty{grid-template-columns:minmax(0,1fr)}
+  .grid.two{grid-template-columns:minmax(0,1fr)}
+  .face{flex-wrap:wrap}
+}
+
+/* ------------------------------------------------------------------ motion */
+.mo{border-top:1px solid var(--border);padding:14px 0;display:grid;grid-template-columns:210px minmax(0,1fr);gap:18px;align-items:center}
+.mo:first-child{border-top:0;padding-top:0}
+.mo .info h3{margin:0 0 4px;font-size:13px;font-weight:600}
+.mo .info code{font-family:var(--font-data);font-size:11px;color:var(--accent)}
+.mo .info p{margin:5px 0 0;font-size:12px;color:var(--text-2);line-height:1.5}
+.mo .info .dur{font-family:var(--font-data);font-size:11px;color:var(--text-3);margin-top:4px}
+.mo .right{display:flex;align-items:center;gap:12px;min-width:0}
+.stage{
+  flex:1;min-width:0;height:74px;border-radius:var(--r-control);
+  background:var(--surface-2);border:1px solid var(--border);
+  display:flex;align-items:center;gap:10px;padding:0 14px;overflow:hidden;
+}
+.stage .item{
+  height:38px;border-radius:9px;background:var(--raised);border:1px solid var(--border-2);
+  display:flex;align-items:center;justify-content:center;
+  font-family:var(--font-data);font-size:11px;color:var(--text-3);
+}
+.rp{
+  flex:none;height:30px;padding:0 12px;border-radius:var(--r-control);
+  border:1px solid var(--border);font-size:12.5px;font-weight:550;color:var(--text-2);
+  transition:background-color .18s var(--ease), border-color .18s var(--ease), color .18s var(--ease), transform .12s var(--ease);
+}
+.rp:hover{background:var(--surface-2);border-color:var(--border-2);color:var(--text)}
+.rp:active{transform:scale(.97)}
+
+/* stage variants: the animation only runs while .run is present, so each
+   stage rests in its finished state and replays on demand */
+.stage .bar{width:2px;height:18px;border-radius:2px;background:var(--accent)}
+.stage.run .bar{animation:barIn .34s var(--ease) both}
+.stage.run .v-item{animation:viewIn .5s var(--ease) both}
+.stage.run .m-item{animation:msgIn .48s var(--ease) both}
+.stage.run .c-item{animation:childIn .5s var(--ease) both;animation-delay:calc(var(--i) * 90ms)}
+@keyframes viewIn{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+@keyframes msgIn{from{opacity:0;transform:translateY(10px) scale(.99)}to{opacity:1;transform:none}}
+@keyframes childIn{from{opacity:0;transform:translateY(7px)}to{opacity:1;transform:none}}
+@keyframes barIn{from{height:0;opacity:0}to{height:18px;opacity:1}}
+.stage .dot{width:6px;height:6px;border-radius:50%;background:var(--text-3)}
+.stage.run .dot{animation:bounce .9s var(--ease) infinite}
+.stage .dot:nth-child(2){animation-delay:.13s}
+.stage .dot:nth-child(3){animation-delay:.26s}
+@keyframes bounce{0%,60%,100%{transform:translateY(0);opacity:.5}30%{transform:translateY(-4px);opacity:1}}
+.caret{display:inline-block;width:7px;height:15px;margin-left:2px;vertical-align:-2px;background:var(--accent);border-radius:1.5px}
+.stage.run .caret{animation:blink 1s steps(1,end) infinite}
+@keyframes blink{0%,49%{opacity:1}50%,100%{opacity:0}}
+
+.tbl{width:100%;border-collapse:collapse}
+.tbl th,.tbl td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--border);vertical-align:top}
+.tbl th{font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--text-3)}
+.tbl td{font-size:12.5px;color:var(--text-2)}
+.tbl td.num{font-family:var(--font-data);color:var(--text);white-space:nowrap}
+.tbl tr:last-child td{border-bottom:0}
+
+/* ------------------------------------------------------------------ colors */
+.sw{background:var(--raised);border:1px solid var(--border);border-radius:var(--r-control);overflow:hidden}
+.sw .chip{height:56px;border-bottom:1px solid var(--border)}
+.sw .body{padding:9px 11px 11px}
+.sw .nm{font-family:var(--font-data);font-size:12px;font-weight:600;color:var(--text);overflow-wrap:anywhere}
+.sw .hex{font-family:var(--font-data);font-size:11.5px;color:var(--text-3);margin-top:2px;overflow-wrap:anywhere}
+.sw .use{margin-top:6px;font-size:11.5px;color:var(--text-2);line-height:1.5}
+.legend{display:flex;align-items:center;gap:9px;margin:26px 0 10px}
+.legend .dot{width:9px;height:9px;border-radius:50%;background:var(--text-3);flex:none}
+.legend h3{margin:0;font-size:13px;font-weight:600}
+.legend .tag{margin-left:auto}
+
+.note{
+  display:flex;gap:10px;padding:12px 14px;border-radius:var(--r-control);
+  background:var(--surface);border:1px solid var(--border);font-size:12.5px;color:var(--text-2);line-height:1.6;
+}
+.note b{color:var(--text);font-weight:600}
+
+@media (prefers-reduced-motion: reduce){
+  *,*::before,*::after{animation-duration:.001ms !important;animation-iteration-count:1 !important;transition-duration:.001ms !important}
+}
+</style>
+</head>
+<body>
+
+<header class="sg-top">
+  <div class="sg-mark">A</div>
+  <div class="sg-brand">Avery 设计风格总结<small>求职辅助 Agent 桌面原型</small></div>
+  <div class="sp"></div>
+  <button class="tbtn" id="themeBtn" type="button">切换深色</button>
+</header>
+
+<main class="sg-wrap">
+
+  <section class="sg-hero">
+    <h1>设计风格总结</h1>
+    <p>本文汇总 <code style="font-family:var(--font-data);font-size:12px;color:var(--accent)">avery-prototype.html</code> 与
+      <code style="font-family:var(--font-data);font-size:12px;color:var(--accent)">avery-settings.html</code> 共用的设计系统，
+      分为字体、动画、颜色三部分，并附形状与阴影规则。下列令牌与原型 <code style="font-family:var(--font-data);font-size:12px;color:var(--accent)">:root</code>
+      中的定义逐项对应，本页本身就是这套系统的实时渲染，可点击右上角切换深浅主题对照。</p>
+    <div class="locks">
+      <span class="tag accent">单一主色：深松绿</span>
+      <span class="tag">中性灰阶，无暖米色</span>
+      <span class="tag">无橙色，无蓝紫渐变</span>
+      <span class="tag">圆角三档规则</span>
+      <span class="tag">动效只用于进场与状态变化</span>
+      <span class="tag">无破折号文案</span>
+    </div>
+  </section>
+
+  <!-- ================================================================= 1 -->
+  <section class="sg-sec" id="type">
+    <h2><span class="n">1</span>字体设计</h2>
+    <p class="lead">两套字族分工明确：正文与界面用系统字体，任何读起来像数据的文字用 Manrope。字号从 9px 到 30px 共十余档，
+      字重集中在 400 至 660 之间；大标题收紧字距，大写小标题放开字距。</p>
+
+    <div class="sg-label">字体名称</div>
+    <div class="grid two">
+      <div class="card face">
+        <div class="spec sans">Aa</div>
+        <div class="sp">
+          <h3>界面与正文字体</h3>
+          <code>--font-sans</code>
+          <p>优先 Segoe UI Variable Text，依次回退 Segoe UI、SF Pro Text、system-ui。承担所有中文正文、按钮、导航与说明，保证与系统界面融合。</p>
+          <div class="stack">"Segoe UI Variable Text", "Segoe UI", -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif</div>
+        </div>
+      </div>
+      <div class="card face">
+        <div class="spec data">Aa 128</div>
+        <div class="sp">
+          <h3>数据与标签字体</h3>
+          <code>--font-data</code>
+          <p>Manrope 可变字重 200 至 800，CDN 引入。用于数字、时间、计数、百分比、代码片段、图表坐标轴与快捷键提示，让数字有统一的宽度与节奏。</p>
+          <div class="stack">"Manrope", "Segoe UI Variable Text", "Segoe UI", -apple-system, BlinkMacSystemFont, system-ui, sans-serif</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="sg-label">字重</div>
+    <div class="weights">
+      <span class="wchip" style="--w:400"><b>400</b><span>正文</span></span>
+      <span class="wchip" style="--w:500"><b>500</b><span>导航项、对话标题</span></span>
+      <span class="wchip" style="--w:550"><b>550</b><span>按钮、菜单项、次级标题</span></span>
+      <span class="wchip" style="--w:600"><b>600</b><span>强调按钮、分组小标题</span></span>
+      <span class="wchip" style="--w:640"><b>640</b><span>页面标题、统计数字</span></span>
+      <span class="wchip" style="--w:650"><b>650</b><span>品牌名、消息署名</span></span>
+      <span class="wchip" style="--w:660"><b>660</b><span>最大号标题、公司名</span></span>
+    </div>
+    <p class="lead" style="margin:12px 0 0">Manrope 是可变字体，因此 550、640、650、660 这些非整百字重可以被精确渲染；
+      当字体 CDN 不可用、回退到系统字体时，浏览器会落到最接近的字重，排版节奏基本保持。</p>
+
+    <div class="sg-label">字号、字重与使用场景</div>
+    <div class="card">
+      <div class="ty">
+        <div class="sample" style="font-size:30px;font-weight:660;letter-spacing:-.025em">你好，需要什么帮助？</div>
+        <div class="meta"><b>30px</b> / 660 / 字距 -0.025em<div class="use">文档主标题（本页）</div></div>
+      </div>
+      <div class="ty">
+        <div class="sample" style="font-size:26px;font-weight:640;letter-spacing:-.02em">你好，需要什么帮助？</div>
+        <div class="meta"><b>26px</b> / 640 / 字距 -0.02em<div class="use">新对话页欢迎语，居中于输入框</div></div>
+      </div>
+      <div class="ty">
+        <div class="sample data" style="font-size:24px;font-weight:640;letter-spacing:-.02em">86%</div>
+        <div class="meta"><b>24px</b> / 640 / 数据字体<div class="use">环形图中心数值</div></div>
+      </div>
+      <div class="ty">
+        <div class="sample data" style="font-size:22px;font-weight:640;letter-spacing:-.02em">12,480</div>
+        <div class="meta"><b>22px</b> / 640 / 数据字体<div class="use">统计面板数值、上下文占用百分比</div></div>
+      </div>
+      <div class="ty">
+        <div class="sample" style="font-size:21px;font-weight:640;letter-spacing:-.015em">投递记录</div>
+        <div class="meta"><b>21px</b> / 640 / 字距 -0.015em<div class="use">静态视图页标题</div></div>
+      </div>
+      <div class="ty">
+        <div class="sample" style="font-size:19px;font-weight:660;letter-spacing:-.015em">张伟的简历</div>
+        <div class="meta"><b>19px</b> / 660<div class="use">简历文档名、用量面板大标题</div></div>
+      </div>
+      <div class="ty">
+        <div class="sample" style="font-size:16px;font-weight:660;letter-spacing:-.015em">字节跳动</div>
+        <div class="meta"><b>16px</b> / 660<div class="use">职位卡片公司名</div></div>
+      </div>
+      <div class="ty">
+        <div class="sample" style="font-size:15px;font-weight:640;letter-spacing:-.01em">归档对话</div>
+        <div class="meta"><b>15px</b> / 640<div class="use">抽屉标题、确认弹窗标题、文档标题</div></div>
+      </div>
+      <div class="ty">
+        <div class="sample" style="font-size:14.5px;font-weight:650;letter-spacing:-.01em">Avery</div>
+        <div class="meta"><b>14.5px</b> / 650<div class="use">顶栏品牌名</div></div>
+      </div>
+      <div class="ty">
+        <div class="sample" style="font-size:14px;font-weight:400">帮你把简历和岗位对齐</div>
+        <div class="meta"><b>14px</b> / 400 / 行高 1.55<div class="use">正文、输入框输入文本</div></div>
+      </div>
+      <div class="ty">
+        <div class="sample" style="font-size:13.5px;font-weight:600">新建对话</div>
+        <div class="meta"><b>13.5px</b> / 600（未选中导航项 500）<div class="use">主按钮、导航项</div></div>
+      </div>
+      <div class="ty">
+        <div class="sample" style="font-size:13px;font-weight:500">简历与岗位匹配</div>
+        <div class="meta"><b>13px</b> / 500 至 550<div class="use">菜单项标题、侧栏对话标题、面包屑</div></div>
+      </div>
+      <div class="ty">
+        <div class="sample" style="font-size:12.5px;font-weight:550">查看详情</div>
+        <div class="meta"><b>12.5px</b> / 550<div class="use">幽灵按钮、强调按钮、输入栏工具、场景按钮、参数行</div></div>
+      </div>
+      <div class="ty">
+        <div class="sample" style="font-size:12px;font-weight:400">当前没有匹配的对话</div>
+        <div class="meta"><b>12px</b> / 400；消息署名用 650<div class="use">菜单说明、空状态、时间、消息署名</div></div>
+      </div>
+      <div class="ty">
+        <div class="sample" style="font-size:11.5px;color:var(--text-3)">工作 · 围绕简历与面试</div>
+        <div class="meta"><b>11.5px</b> / 400<div class="use">对话副标题（场景标签）、上下文 chip、标签</div></div>
+      </div>
+      <div class="ty">
+        <div class="sample" style="font-size:11px;font-weight:600;letter-spacing:.07em;text-transform:uppercase;color:var(--text-3)">最近 / 外观</div>
+        <div class="meta"><b>11px</b> / 600 / 大写 / 字距 0.06em 至 0.07em<div class="use">分组小标题</div></div>
+      </div>
+      <div class="ty">
+        <div class="sample data" style="font-size:11px;color:var(--text-2)">14:32 · 1.2k tokens</div>
+        <div class="meta"><b>11px</b> / 400 / 数据字体<div class="use">数据标签、时间戳、图表坐标轴</div></div>
+      </div>
+      <div class="ty">
+        <div class="sample data" style="font-size:10.5px;color:var(--text-3)">Ctrl + K</div>
+        <div class="meta"><b>10.5px</b> / 500 / 数据字体<div class="use">键盘快捷键提示、徽标计数</div></div>
+      </div>
+    </div>
+
+    <div class="sg-label">排版细则</div>
+    <div class="note">
+      <span>大标题一律负字距（-0.01em 至 -0.025em），字号越大收得越多；大写分组小标题用正字距（0.06em 至 0.07em）拉开呼吸。
+      行高按用途分层：正文 1.55，输入框 1.5，菜单说明 1.45，长段落描述 1.65 至 1.7。正文里出现数字时切换到数据字体，
+      让数字在列表中列对齐。字体 CDN 不可用时整体回退系统字体，布局不塌。</span>
+    </div>
+  </section>
+
+  <!-- ================================================================= 2 -->
+  <section class="sg-sec" id="motion">
+    <h2><span class="n">2</span>动画设计</h2>
+    <p class="lead">统一使用一条自定义缓动曲线 <code style="font-family:var(--font-data);color:var(--accent)">--ease: cubic-bezier(.16,1,.3,1)</code>，
+      起步快、收尾柔，属于强缓出。动画只出现在三处：进场、流式输出、视图切换；每处动画都承担反馈或状态变化。
+      点击右侧按钮可重播对应的动画。</p>
+
+    <div class="sg-label">缓动</div>
+    <div class="card">
+      <div class="face">
+        <div class="spec data" style="font-size:22px">ease</div>
+        <div class="sp">
+          <h3>cubic-bezier(.16, 1, .3, 1)</h3>
+          <code>--ease</code>
+          <p>原型中几乎所有过渡与进场动画共用这一条曲线，读作平滑缓出。唯一例外是流式输出光标的 <code>steps(1, end)</code> 硬切，为了模拟真实的打字方块，而不是淡出。</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="sg-label">关键帧动画</div>
+    <div class="card">
+      <div class="mo">
+        <div class="info"><h3>viewIn</h3><code>opacity + translateY(10px)</code>
+          <p>视图切换时整块内容上移淡入。</p><div class="dur">0.4s 至 0.5s / ease / both</div></div>
+        <div class="right"><div class="stage" data-stage><div class="item v-item" style="width:120px">新视图</div></div>
+          <button class="rp" type="button">重播</button></div>
+      </div>
+      <div class="mo">
+        <div class="info"><h3>msgIn</h3><code>opacity + translateY(10px) + scale(.99)</code>
+          <p>新消息进入，带极轻微缩放，避免生硬。</p><div class="dur">0.48s / ease / both</div></div>
+        <div class="right"><div class="stage" data-stage><div class="item m-item" style="width:120px">新消息</div></div>
+          <button class="rp" type="button">重播</button></div>
+      </div>
+      <div class="mo">
+        <div class="info"><h3>childIn</h3><code>opacity + translateY(7px)</code>
+          <p>消息内的子元素依次进场，用 --d 变量逐个错开延迟，形成节奏。</p><div class="dur">0.34s 至 0.5s / ease / both</div></div>
+        <div class="right"><div class="stage" data-stage>
+            <div class="item c-item" style="--i:0;width:56px">工具</div>
+            <div class="item c-item" style="--i:1;width:56px">结果</div>
+            <div class="item c-item" style="--i:2;width:56px">引用</div>
+          </div>
+          <button class="rp" type="button">重播</button></div>
+      </div>
+      <div class="mo">
+        <div class="info"><h3>barIn</h3><code>height 0 至 18px</code>
+          <p>侧栏当前对话左侧的竖条，高度展开并淡入。</p><div class="dur">0.34s / ease / both</div></div>
+        <div class="right"><div class="stage" data-stage style="padding:0 22px"><div class="bar"></div></div>
+          <button class="rp" type="button">重播</button></div>
+      </div>
+      <div class="mo">
+        <div class="info"><h3>bounce</h3><code>translateY(-4px) + opacity</code>
+          <p>正在输入的三个点上下跳动，逐点延迟 0.13s，无限循环。</p><div class="dur">0.9s / ease / infinite</div></div>
+        <div class="right"><div class="stage" data-stage style="gap:6px">
+            <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+          </div>
+          <button class="rp" type="button">重播</button></div>
+      </div>
+      <div class="mo">
+        <div class="info"><h3>blink</h3><code>steps(1, end)</code>
+          <p>流式输出时的方形光标，硬切闪烁，不做淡出。</p><div class="dur">1s / 无限</div></div>
+        <div class="right"><div class="stage" data-stage>
+            <div style="flex:1;font-size:13.5px;color:var(--text-2)">正在生成回答<span class="caret"></span></div>
+          </div>
+          <button class="rp" type="button">重播</button></div>
+      </div>
+      <div class="mo">
+        <div class="info"><h3>chipOut</h3><code>scale(.9) + 收拢外边距</code>
+          <p>删除上下文 chip 时缩小淡出，并把右侧空间收回去。</p><div class="dur">0.24s / ease / both</div></div>
+        <div class="right"><div class="stage" data-stage><div class="item" style="width:140px">简历.pdf ×</div></div>
+          <button class="rp" type="button">重播</button></div>
+      </div>
+      <div class="mo">
+        <div class="info"><h3>areaIn / dotIn</h3><code>opacity 渐显</code>
+          <p>图表区域与散点在数据就绪后渐显，延迟 0.3s，等待坐标轴先落位。</p><div class="dur">0.7s / 0.34s / forwards</div></div>
+        <div class="right"><div class="stage" data-stage>
+            <div class="item" style="width:100%;background:var(--surface);border-style:dashed">数据图表</div>
+          </div>
+          <button class="rp" type="button">重播</button></div>
+      </div>
+    </div>
+
+    <div class="sg-label">过渡时长分层</div>
+    <div class="card" style="padding:6px 6px">
+      <table class="tbl">
+        <thead><tr><th>时长</th><th>对象</th><th>说明</th></tr></thead>
+        <tbody>
+          <tr><td class="num">0.12s</td><td>按压反馈</td><td>按钮 active 时缩放至 0.92 至 0.98</td></tr>
+          <tr><td class="num">0.15 至 0.18s</td><td>悬停</td><td>背景色、边框色、文字与图标颜色</td></tr>
+          <tr><td class="num">0.20s</td><td>菜单淡入</td><td>同时配合 0.26s 的位移与缩放</td></tr>
+          <tr><td class="num">0.22 / 0.28s</td><td>确认弹窗</td><td>淡入 0.22s，scale(.97) 定位 0.28s</td></tr>
+          <tr><td class="num">0.24s</td><td>chip 移除</td><td>缩小淡出并收拢外边距</td></tr>
+          <tr><td class="num">0.25s</td><td>箭头旋转</td><td>下拉箭头 180 度翻转、阴影过渡、Toast 淡入</td></tr>
+          <tr><td class="num">0.30s</td><td>主题换肤 / 搜索展开</td><td>背景、边框、文字色交叉淡入；搜索框宽度展开</td></tr>
+          <tr><td class="num">0.32s</td><td>Toast 位移</td><td>配合 0.25s 淡入，从下方 10px 升起</td></tr>
+          <tr><td class="num">0.34s</td><td>子元素 / 竖条</td><td>childIn 单次进场、barIn 展开</td></tr>
+          <tr><td class="num">0.36s</td><td>导航指示器</td><td>选中底块滑动到新位置，高度同步过渡</td></tr>
+          <tr><td class="num">0.38s</td><td>侧栏 / 抽屉</td><td>侧栏折叠宽度、抽屉 translateX(102%) 滑入</td></tr>
+          <tr><td class="num">0.40 至 0.50s</td><td>视图 / 消息</td><td>viewIn、msgIn 进场</td></tr>
+          <tr><td class="num">0.60s</td><td>环形进度</td><td>描边 dashoffset 过渡</td></tr>
+          <tr><td class="num">0.70s</td><td>图表渐显</td><td>延迟 0.3s，先轴后数据</td></tr>
+          <tr><td class="num">0.90s</td><td>正在输入</td><td>三点循环跳动</td></tr>
+          <tr><td class="num">1.00s</td><td>光标</td><td>steps(1, end) 硬切闪烁</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="sg-label">降级</div>
+    <div class="note">
+      <span>系统开启减少动态效果时，<b>@media (prefers-reduced-motion: reduce)</b> 会把所有动画与过渡时长压到 0.001ms，
+      并停止光标闪烁；脚本侧也用 <b>matchMedia</b> 的 reduceMotion 结果跳过非必要的动画分支。功能不因动效关闭而缺失。</span>
+    </div>
+  </section>
+
+  <!-- ================================================================= 3 -->
+  <section class="sg-sec" id="color">
+    <h2><span class="n">3</span>颜色设计</h2>
+    <p class="lead">一套主色加深浅两套中性灰。主色是深松绿，浅色主题为 #17654f，深色主题提亮为 #3e9e7e 以保证对比度。
+      界面里没有第二种彩色，也没有暖米色、橙色或蓝紫渐变。所有颜色通过 CSS 变量定义，切换主题只换变量值。</p>
+
+    <div class="legend"><span class="dot" style="background:#17654f"></span><h3>浅色主题</h3><span class="tag">默认</span></div>
+    <div class="grid auto">
+      <div class="sw"><div class="chip" style="background:#17654f"></div><div class="body"><div class="nm">accent</div><div class="hex">#17654f</div><div class="use">主色：主按钮、激活态、图标强调、图表主段</div></div></div>
+      <div class="sw"><div class="chip" style="background:#12543f"></div><div class="body"><div class="nm">accent-hover</div><div class="hex">#12543f</div><div class="use">主色按钮悬停</div></div></div>
+      <div class="sw"><div class="chip" style="background:#eaf2ee"></div><div class="body"><div class="nm">accent-soft</div><div class="hex">#eaf2ee</div><div class="use">主色浅底：选中底块、焦点环、强调标签</div></div></div>
+      <div class="sw"><div class="chip" style="background:#ffffff"></div><div class="body"><div class="nm">accent-on</div><div class="hex">#ffffff</div><div class="use">主色之上的文字与图标</div></div></div>
+
+      <div class="sw"><div class="chip" style="background:#ffffff"></div><div class="body"><div class="nm">bg</div><div class="hex">#ffffff</div><div class="use">应用底色</div></div></div>
+      <div class="sw"><div class="chip" style="background:#fafafa"></div><div class="body"><div class="nm">surface</div><div class="hex">#fafafa</div><div class="use">侧栏底色</div></div></div>
+      <div class="sw"><div class="chip" style="background:#f4f4f5"></div><div class="body"><div class="nm">surface-2</div><div class="hex">#f4f4f5</div><div class="use">悬停态、用户气泡、次级底块</div></div></div>
+      <div class="sw"><div class="chip" style="background:#ffffff"></div><div class="body"><div class="nm">panel</div><div class="hex">#ffffff</div><div class="use">右侧面板与抽屉底色</div></div></div>
+      <div class="sw"><div class="chip" style="background:#ffffff"></div><div class="body"><div class="nm">raised</div><div class="hex">#ffffff</div><div class="use">卡片、菜单、弹层等抬起表面</div></div></div>
+
+      <div class="sw"><div class="chip" style="background:#e8e8ea"></div><div class="body"><div class="nm">border</div><div class="hex">#e8e8ea</div><div class="use">常规描边、分隔线</div></div></div>
+      <div class="sw"><div class="chip" style="background:#d8d8dc"></div><div class="body"><div class="nm">border-2</div><div class="hex">#d8d8dc</div><div class="use">强化描边：输入框、图表轨道、悬停边框</div></div></div>
+
+      <div class="sw"><div class="chip" style="background:#18181b"></div><div class="body"><div class="nm">text</div><div class="hex">#18181b</div><div class="use">主文字</div></div></div>
+      <div class="sw"><div class="chip" style="background:#55555e"></div><div class="body"><div class="nm">text-2</div><div class="hex">#55555e</div><div class="use">次级文字：说明、正文辅色</div></div></div>
+      <div class="sw"><div class="chip" style="background:#8b8b94"></div><div class="body"><div class="nm">text-3</div><div class="hex">#8b8b94</div><div class="use">弱文字：占位符、时间、分组小标题</div></div></div>
+
+      <div class="sw"><div class="chip" style="background:#b4413c"></div><div class="body"><div class="nm">danger</div><div class="hex">#b4413c</div><div class="use">破坏性操作文字，如退出登录</div></div></div>
+      <div class="sw"><div class="chip" style="background:#7fb3a2"></div><div class="body"><div class="nm">seg-b</div><div class="hex">#7fb3a2</div><div class="use">图表第二段，主色的浅调</div></div></div>
+      <div class="sw"><div class="chip" style="background:#dcdce0"></div><div class="body"><div class="nm">seg-c</div><div class="hex">#dcdce0</div><div class="use">图表第三段与其余量</div></div></div>
+    </div>
+
+    <div class="sg-label">浅色主题的半透明层级</div>
+    <div class="grid auto">
+      <div class="sw"><div class="chip" style="background:rgba(24,24,27,.035)"></div><div class="body"><div class="nm">tr-system</div><div class="hex">rgba(24,24,27,.035)</div><div class="use">追踪面板：系统角色底</div></div></div>
+      <div class="sw"><div class="chip" style="background:rgba(24,24,27,.065)"></div><div class="body"><div class="nm">tr-tool</div><div class="hex">rgba(24,24,27,.065)</div><div class="use">追踪面板：工具角色底</div></div></div>
+      <div class="sw"><div class="chip" style="background:rgba(24,24,27,.10)"></div><div class="body"><div class="nm">tr-user</div><div class="hex">rgba(24,24,27,.10)</div><div class="use">追踪面板：用户角色底</div></div></div>
+      <div class="sw"><div class="chip" style="background:rgba(24,24,27,.14)"></div><div class="body"><div class="nm">tr-assistant</div><div class="hex">rgba(24,24,27,.14)</div><div class="use">追踪面板：助手角色底</div></div></div>
+      <div class="sw"><div class="chip" style="background:rgba(24,24,27,.36)"></div><div class="body"><div class="nm">scrim</div><div class="hex">rgba(24,24,27,.36)</div><div class="use">抽屉与弹窗背后的遮罩</div></div></div>
+      <div class="sw"><div class="chip" style="background:rgba(180,65,60,.08)"></div><div class="body"><div class="nm">danger-hover</div><div class="hex">rgba(180,65,60,.08)</div><div class="use">破坏性菜单项悬停底色</div></div></div>
+    </div>
+
+    <div class="legend"><span class="dot" style="background:#3e9e7e"></span><h3>深色主题</h3><span class="tag">data-theme="dark"</span></div>
+    <div class="grid auto">
+      <div class="sw"><div class="chip" style="background:#3e9e7e"></div><div class="body"><div class="nm">accent</div><div class="hex">#3e9e7e</div><div class="use">主色，在深底上提亮以维持对比度</div></div></div>
+      <div class="sw"><div class="chip" style="background:#4fb08e"></div><div class="body"><div class="nm">accent-hover</div><div class="hex">#4fb08e</div><div class="use">主色按钮悬停</div></div></div>
+      <div class="sw"><div class="chip" style="background:#17261f"></div><div class="body"><div class="nm">accent-soft</div><div class="hex">#17261f</div><div class="use">主色浅底，深色下是低饱和墨绿</div></div></div>
+      <div class="sw"><div class="chip" style="background:#07201a"></div><div class="body"><div class="nm">accent-on</div><div class="hex">#07201a</div><div class="use">主色之上的文字，用深墨绿而非纯白</div></div></div>
+
+      <div class="sw"><div class="chip" style="background:#111113"></div><div class="body"><div class="nm">bg</div><div class="hex">#111113</div><div class="use">应用底色</div></div></div>
+      <div class="sw"><div class="chip" style="background:#161619"></div><div class="body"><div class="nm">surface</div><div class="hex">#161619</div><div class="use">侧栏底色</div></div></div>
+      <div class="sw"><div class="chip" style="background:#1f1f24"></div><div class="body"><div class="nm">surface-2</div><div class="hex">#1f1f24</div><div class="use">悬停态、用户气泡</div></div></div>
+      <div class="sw"><div class="chip" style="background:#131315"></div><div class="body"><div class="nm">panel</div><div class="hex">#131315</div><div class="use">面板与抽屉，比底色更沉</div></div></div>
+      <div class="sw"><div class="chip" style="background:#1a1a1e"></div><div class="body"><div class="nm">raised</div><div class="hex">#1a1a1e</div><div class="use">卡片、菜单、弹层</div></div></div>
+
+      <div class="sw"><div class="chip" style="background:#2a2a30"></div><div class="body"><div class="nm">border</div><div class="hex">#2a2a30</div><div class="use">常规描边、分隔线</div></div></div>
+      <div class="sw"><div class="chip" style="background:#3a3a42"></div><div class="body"><div class="nm">border-2</div><div class="hex">#3a3a42</div><div class="use">强化描边：输入框、图表轨道</div></div></div>
+
+      <div class="sw"><div class="chip" style="background:#f4f4f5"></div><div class="body"><div class="nm">text</div><div class="hex">#f4f4f5</div><div class="use">主文字</div></div></div>
+      <div class="sw"><div class="chip" style="background:#a8a8b2"></div><div class="body"><div class="nm">text-2</div><div class="hex">#a8a8b2</div><div class="use">次级文字</div></div></div>
+      <div class="sw"><div class="chip" style="background:#7b7b85"></div><div class="body"><div class="nm">text-3</div><div class="hex">#7b7b85</div><div class="use">弱文字、占位符</div></div></div>
+
+      <div class="sw"><div class="chip" style="background:#e0796f"></div><div class="body"><div class="nm">danger</div><div class="hex">#e0796f</div><div class="use">破坏性操作文字</div></div></div>
+      <div class="sw"><div class="chip" style="background:#2b6d5a"></div><div class="body"><div class="nm">seg-b</div><div class="hex">#2b6d5a</div><div class="use">图表第二段</div></div></div>
+      <div class="sw"><div class="chip" style="background:#3a3a42"></div><div class="body"><div class="nm">seg-c</div><div class="hex">#3a3a42</div><div class="use">图表第三段与其余量</div></div></div>
+    </div>
+
+    <div class="sg-label">深色主题的半透明层级</div>
+    <div class="grid auto">
+      <div class="sw"><div class="chip" style="background:rgba(255,255,255,.035)"></div><div class="body"><div class="nm">tr-system</div><div class="hex">rgba(255,255,255,.035)</div><div class="use">追踪面板：系统角色底</div></div></div>
+      <div class="sw"><div class="chip" style="background:rgba(255,255,255,.065)"></div><div class="body"><div class="nm">tr-tool</div><div class="hex">rgba(255,255,255,.065)</div><div class="use">追踪面板：工具角色底</div></div></div>
+      <div class="sw"><div class="chip" style="background:rgba(255,255,255,.10)"></div><div class="body"><div class="nm">tr-user</div><div class="hex">rgba(255,255,255,.10)</div><div class="use">追踪面板：用户角色底</div></div></div>
+      <div class="sw"><div class="chip" style="background:rgba(255,255,255,.14)"></div><div class="body"><div class="nm">tr-assistant</div><div class="hex">rgba(255,255,255,.14)</div><div class="use">追踪面板：助手角色底</div></div></div>
+      <div class="sw"><div class="chip" style="background:rgba(0,0,0,.56)"></div><div class="body"><div class="nm">scrim</div><div class="hex">rgba(0,0,0,.56)</div><div class="use">遮罩，深色下更重</div></div></div>
+      <div class="sw"><div class="chip" style="background:rgba(180,65,60,.08)"></div><div class="body"><div class="nm">danger-hover</div><div class="hex">rgba(180,65,60,.08)</div><div class="use">破坏性菜单项悬停底色，两套主题共用</div></div></div>
+    </div>
+
+    <div class="sg-label">用色规则</div>
+    <div class="note">
+      <span><b>单色强调。</b>整个界面只有一种彩色，即主色松绿；它的所有变体都由同一色相推导，深色主题提亮、浅色主题压深，保证按钮文字始终可读。<br>
+      <b>层级靠灰阶。</b>面板、卡片、悬停、气泡等区分依赖 bg、surface、surface-2、panel、raised 五个中性层次，而不是第二次上色。<br>
+      <b>半透明层级。</b>追踪面板的角色底色与遮罩用同色相的透明值，深浅主题只需把黑色换成白色，透明度不变。<br>
+      <b>状态色克制。</b>只有破坏性操作使用红系 #b4413c / #e0796f，其余全部由主色与灰阶表达。</span>
+    </div>
+  </section>
+
+  <!-- ============================================================== appendix -->
+  <section class="sg-sec" id="shape">
+    <h2><span class="n">附</span>形状与阴影</h2>
+    <p class="lead">圆角遵循三档规则，全项目不出现第四种圆角值。阴影只用于抬起的表面，且极其克制。</p>
+
+    <div class="sg-label">圆角</div>
+    <div class="grid auto">
+      <div class="card" style="text-align:center;padding:20px 18px">
+        <div style="height:56px;border-radius:var(--r-card);background:var(--surface-2);border:1px solid var(--border-2)"></div>
+        <div class="face" style="display:block;margin-top:12px"><h3>--r-card</h3>
+          <div class="hex" style="font-family:var(--font-data);font-size:11.5px;color:var(--text-3);margin-top:2px">14px</div>
+          <p>卡片、面板、菜单、弹窗、气泡</p></div>
+      </div>
+      <div class="card" style="text-align:center;padding:20px 18px">
+        <div style="height:56px;border-radius:var(--r-control);background:var(--surface-2);border:1px solid var(--border-2)"></div>
+        <div class="face" style="display:block;margin-top:12px"><h3>--r-control</h3>
+          <div class="hex" style="font-family:var(--font-data);font-size:11.5px;color:var(--text-3);margin-top:2px">10px</div>
+          <p>按钮、输入框、列表项</p></div>
+      </div>
+      <div class="card" style="text-align:center;padding:20px 18px">
+        <div style="height:56px;border-radius:var(--r-pill);background:var(--surface-2);border:1px solid var(--border-2)"></div>
+        <div class="face" style="display:block;margin-top:12px"><h3>--r-pill</h3>
+          <div class="hex" style="font-family:var(--font-data);font-size:11.5px;color:var(--text-3);margin-top:2px">999px</div>
+          <p>chip、标签、计数徽标、Toast</p></div>
+      </div>
+    </div>
+
+    <div class="sg-label">阴影</div>
+    <div class="grid two">
+      <div class="card">
+        <div style="height:52px;border-radius:var(--r-control);background:var(--raised);border:1px solid var(--border);box-shadow:var(--shadow)"></div>
+        <div class="face" style="margin-top:12px"><div class="sp"><h3>--shadow</h3>
+          <div class="stack">0 1px 2px rgba(24,24,27,.05), 0 8px 24px -12px rgba(24,24,27,.14)</div>
+          <p>输入框等常驻表面的轻抬起。</p></div></div>
+      </div>
+      <div class="card">
+        <div style="height:52px;border-radius:var(--r-control);background:var(--raised);border:1px solid var(--border);box-shadow:var(--shadow-lg)"></div>
+        <div class="face" style="margin-top:12px"><div class="sp"><h3>--shadow-lg</h3>
+          <div class="stack">0 12px 40px -12px rgba(24,24,27,.22)</div>
+          <p>菜单、抽屉、确认弹窗、Toast 等浮层。</p></div></div>
+      </div>
+    </div>
+    <p class="lead" style="margin-top:14px">深色主题下阴影改用黑色且更重：--shadow 为 0 1px 2px rgba(0,0,0,.4), 0 10px 28px -14px rgba(0,0,0,.7)；
+      --shadow-lg 为 0 16px 48px -16px rgba(0,0,0,.8)。</p>
+  </section>
+
+</main>
+
+<script>
+/* theme toggle, same mechanism as the prototype: one attribute on the root */
+(function(){
+  var root = document.documentElement, btn = document.getElementById('themeBtn');
+  function sync(){
+    var dark = root.dataset.theme === 'dark';
+    btn.textContent = dark ? '切换浅色' : '切换深色';
+  }
+  btn.addEventListener('click', function(){
+    root.dataset.theme = root.dataset.theme === 'dark' ? 'light' : 'dark';
+    sync();
+  });
+  sync();
+})();
+
+/* replay a single stage: drop the class, force reflow, add it back */
+function replay(stage){
+  stage.classList.remove('run');
+  void stage.offsetWidth;
+  stage.classList.add('run');
+}
+document.querySelectorAll('.mo').forEach(function(row){
+  var stage = row.querySelector('[data-stage]');
+  var btn = row.querySelector('.rp');
+  if(!stage || !btn) return;
+  btn.addEventListener('click', function(){ replay(stage); });
+});
+</script>
+</body>
+</html>
