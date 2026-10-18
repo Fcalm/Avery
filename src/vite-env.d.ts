@@ -10,10 +10,10 @@ interface DesktopWindowBridge {
   Close: () => Promise<boolean>;
   OnMaximizedChange: (listener: (maximized: boolean) => void) => () => void;
   GetWorkspaceDirectory: () => Promise<string>;
+  WriteClipboardText: (text: string) => Promise<ResultEnvelope<boolean>>;
   OpenWorkspaceDirectory: () => Promise<boolean>;
   SetLoginItemSettings: (openAtLogin: boolean) => Promise<boolean>;
 }
-  WriteClipboardText: (text: string) => Promise<ResultEnvelope<boolean>>;
 
 declare global {
   /** 构建时由 vite define 注入的应用版本（package.json version）；文件含顶层 import，须在 global 内声明。 */

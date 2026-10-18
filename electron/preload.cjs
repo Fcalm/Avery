@@ -135,8 +135,8 @@ electron_1.contextBridge.exposeInMainWorld('averyWindow', {
         return () => electron_1.ipcRenderer.removeListener('window:maximized-change', handler);
     },
     GetWorkspaceDirectory: () => invoke('app:get-workspace-directory'),
+    /** 只写入纯文本；来源与长度由主进程校验，不向页面暴露 Electron clipboard。 */
+    WriteClipboardText: (text) => invoke('app:write-clipboard-text', text),
     OpenWorkspaceDirectory: () => invoke('app:open-workspace-directory'),
     SetLoginItemSettings: (openAtLogin) => invoke('app:set-login-item', openAtLogin),
 });
-    /** 只写入纯文本；来源与长度由主进程校验，不向页面暴露 Electron clipboard。 */
-    WriteClipboardText: (text) => invoke('app:write-clipboard-text', text),

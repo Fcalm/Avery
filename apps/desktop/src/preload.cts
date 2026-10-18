@@ -143,8 +143,8 @@ contextBridge.exposeInMainWorld('averyWindow', {
     return () => ipcRenderer.removeListener('window:maximized-change', handler);
   },
   GetWorkspaceDirectory: () => invoke('app:get-workspace-directory') as Promise<string>,
+  /** 只写入纯文本；来源与长度由主进程校验，不向页面暴露 Electron clipboard。 */
+  WriteClipboardText: (text: string) => invoke('app:write-clipboard-text', text) as Promise<ResultEnvelope<boolean>>,
   OpenWorkspaceDirectory: () => invoke('app:open-workspace-directory') as Promise<boolean>,
   SetLoginItemSettings: (openAtLogin: boolean) => invoke('app:set-login-item', openAtLogin) as Promise<boolean>,
 });
-  /** 只写入纯文本；来源与长度由主进程校验，不向页面暴露 Electron clipboard。 */
-  WriteClipboardText: (text: string) => invoke('app:write-clipboard-text', text) as Promise<ResultEnvelope<boolean>>,
