@@ -1,5 +1,5 @@
 param(
-  [string]$SourcePath = (Join-Path $PSScriptRoot '..\public\assets\avery-mark.png'),
+  [string]$SourcePath = (Join-Path $PSScriptRoot '..\public\assets\avery-guiding-elf-icon-v2.png'),
   [string]$OutputPath = (Join-Path $PSScriptRoot '..\build\icon.ico')
 )
 
