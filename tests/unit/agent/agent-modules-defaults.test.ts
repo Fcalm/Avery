@@ -238,12 +238,12 @@ describe('agent-modules-defaults', () => {
     });
   });
 
-  it('默认场景暴露 18 个 PascalCase 本地工具，网络与投递能力不混入白名单', () => {
+  it('默认场景暴露19个PascalCase本地工具，含岗位库读取但不含网络与投递', () => {
     const tools = CreateToolsModule(CreatePorts()).GetToolDefinitions();
     const names = tools.map((tool) => tool.definition.function.name);
 
     expect(new Set(names)).toEqual(new Set(DefaultScenario.toolNames));
-    expect(names).toHaveLength(18);
+    expect(names).toHaveLength(19);
     expect(names).toContain('DeleteTodo');
     expect(names.every((name) => /^[A-Z][A-Za-z0-9]{0,63}$/.test(name))).toBe(true);
     expect(names).not.toEqual(expect.arrayContaining(['SearchJobs', 'ReadUrl', 'Shell', 'Browser', 'SubmitApplication']));
@@ -252,7 +252,7 @@ describe('agent-modules-defaults', () => {
     expect(ApplicationScenarioPlaceholder.enabled).toBe(true);
     const applicationNames = CreateToolsModule(CreatePorts()).GetToolDefinitions('application').map((tool) => tool.definition.function.name);
     expect(new Set(applicationNames)).toEqual(new Set(ApplicationScenario.toolNames));
-    expect(applicationNames).toHaveLength(36);
+    expect(applicationNames).toHaveLength(37);
     expect(applicationNames).toContain('DeleteTodo');
     expect(CreateToolsModule(CreatePorts()).GetToolDefinitions('application').find((tool) => tool.definition.function.name === 'ExportResumeFile')?.definition.function.description)
       .toMatch(/^Use when a company application form requires a resume file upload or BOSS chat requires a resume image/);
@@ -265,7 +265,7 @@ describe('agent-modules-defaults', () => {
     expect(instructions.compiled).toContain('exact fileId returned by ExportResumeFile');
     expect(instructions.compiled).toContain('last and only browser action');
     expect(instructions.compiled).toContain('ReadApplicationStatus');
-    expect(instructions.compiled).toContain('they do not require a bound resume');
+    expect(instructions.compiled).toContain('do not require a bound resume');
     const defaultInstructions = BuildDefaultCompiledInstructions('default-tools');
     expect(defaultInstructions.compiled).toContain('searching jobs, reading a rendered job description, or viewing BOSS直聘');
     expect(defaultInstructions.compiled).toContain('set scenarioId to application');
@@ -326,16 +326,17 @@ describe('agent-modules-defaults', () => {
     expect(JSON.parse(result.content)).toMatchObject({ ok: false, code: 'TOOL_NOT_ALLOWED' });
   });
 
-  it('CollectJobs 将会话与截止时间交给 Host 端口且不会写入岗位库', async () => {
-    const collect = vi.fn(async () => ({ status: 'completed' as const, collectionId: 'collection-1', candidates: [], counts: { collected: 0, duplicates: 0, filtered: 0 }, truncated: false, warnings: [] }));
+  it('CollectJobs 使用页面相同条件直接入库，返回摘要、回执和实际数量，无需绑定简历', async () => {
+    const collect = vi.fn(async () => ({ status: 'completed' as const, taskId: 'collection-1', requestedCount: 20, collected: 20, inserted: 15, existing: 5, failedWrites: 0, scanned: 20, skippedDeleted: 0, warnings: [], sources: [] }));
     const deadline = Date.now() + 10_000;
-    const context = CreateToolContext({ scenarioId: 'application', deadline, ports: { ...CreateToolContext().ports, jobCollection: { Collect: collect, SaveCandidate: vi.fn() } } });
+    const context = CreateToolContext({ scenarioId: 'application', deadline, boundResume: null, ports: { ...CreateToolContext().ports, jobLibrary: { Collect: collect, Read: vi.fn() } } });
     const result = await CreateToolsModule(CreatePorts()).ExecuteToolCall({
-      id: 'collect-1', type: 'function', function: { name: 'CollectJobs', arguments: JSON.stringify({ platforms: ['boss_zhipin'], queries: [{ keyword: '产品经理', city: '佛山' }], sort: 'relevance', maxResults: 10 }) },
+      id: 'collect-1', type: 'function', function: { name: 'CollectJobs', arguments: JSON.stringify({ channel: 'boss_zhipin', keyword: '产品经理', city: '佛山', targetCount: 20 }) },
     }, context);
 
-    expect(collect).toHaveBeenCalledWith(expect.objectContaining({ sessionId: 'session-1', maxResults: 10, deadline }));
-    expect(JSON.parse(result.content)).toMatchObject({ ok: true, collectionId: 'collection-1' });
+    expect(collect).toHaveBeenCalledWith(expect.objectContaining({ request: { channel: 'boss_zhipin', keyword: '产品经理', city: '佛山', targetCount: 20 }, idempotencyKey: expect.any(String), deadline, signal: expect.any(AbortSignal) }));
+    expect(JSON.parse(result.content)).toMatchObject({ ok: true, taskId: 'collection-1', collected: 20, inserted: 15, existing: 5 });
+    expect(result.receipt?.resourceIds).toEqual(['jobs:library', 'collection-1']);
   });
 
   it('无人值守岗位采集缺少 BrowserTaskGrant 时暂停且不调用端口', async () => {
@@ -343,10 +344,10 @@ describe('agent-modules-defaults', () => {
     const base = CreateToolContext();
     const context = CreateToolContext({
       scenarioId: 'application', unattended: true,
-      ports: { ...base.ports, jobCollection: { Collect: collect, SaveCandidate: vi.fn() } },
+      ports: { ...base.ports, jobLibrary: { Collect: collect, Read: vi.fn() } },
     });
     const result = await CreateToolsModule(CreatePorts()).ExecuteToolCall({
-      id: 'collect-ungranted', type: 'function', function: { name: 'CollectJobs', arguments: JSON.stringify({ platforms: ['boss_zhipin'], queries: [{ keyword: 'Agent', city: '佛山' }], sort: 'relevance', maxResults: 10 }) },
+      id: 'collect-ungranted', type: 'function', function: { name: 'CollectJobs', arguments: JSON.stringify({ channel: 'boss_zhipin', keyword: 'Agent', city: '佛山', targetCount: 10 }) },
     }, context);
 
     expect(collect).not.toHaveBeenCalled();
@@ -354,15 +355,66 @@ describe('agent-modules-defaults', () => {
     expect(JSON.parse(result.content)).toMatchObject({ ok: false, code: 'BROWSER_CRON_SCOPE_DENIED' });
   });
 
-  it('SaveJob 引用模式只把候选引用与决策分传给 Host', async () => {
+  it('企业官网默认使用应用维护的来源，定时运行无需浏览器授权，数量不足保留真实摘要', async () => {
+    const collect = vi.fn(async () => ({ status: 'completed_with_shortage' as const, taskId: 'collection-ats', requestedCount: 100, collected: 15, inserted: 15, existing: 0, failedWrites: 0, scanned: 15, skippedDeleted: 0, warnings: ['来源耗尽'], sources: [] }));
+    const context = CreateToolContext({ scenarioId: 'application', unattended: true, ports: { ...CreateToolContext().ports, jobLibrary: { Collect: collect, Read: vi.fn() } } });
+    const result = await CreateToolsModule(CreatePorts()).ExecuteToolCall({ id: 'ats', type: 'function', function: { name: 'CollectJobs', arguments: '{"channel":"company_website"}' } }, context);
+    expect(JSON.parse(result.content)).toMatchObject({ ok: true, status: 'completed_with_shortage', collected: 15, warnings: ['来源耗尽'] });
+    expect(collect).toHaveBeenCalledWith(expect.objectContaining({ request: { channel: 'company_website' } }));
+  });
+
+  it('采集 Schema 拒绝旧协议、BOSS缺少城市、企业城市和超过上限的数量', async () => {
+    const collect = vi.fn();
+    const context = CreateToolContext({ scenarioId: 'application', ports: { ...CreateToolContext().ports, jobLibrary: { Collect: collect, Read: vi.fn() } } });
+    for (const args of [{ platforms: ['boss_zhipin'], queries: [] }, { channel: 'boss_zhipin', keyword: '产品' }, { channel: 'company_website', city: '广州' }, { channel: 'company_website', targetCount: 1001 }]) {
+      const result = await CreateToolsModule(CreatePorts()).ExecuteToolCall({ id: 'bad-ats', type: 'function', function: { name: 'CollectJobs', arguments: JSON.stringify(args) } }, context);
+      expect(JSON.parse(result.content).ok).toBe(false);
+    }
+    expect(collect).not.toHaveBeenCalled();
+  });
+
+  it('SaveJob 旧引用明确失效，不从会话残留文本重建旧候选', async () => {
     const saveCandidate = vi.fn(async () => ({ jobId: 'job-boss-a1', jobRevision: 2 }));
     const context = CreateToolContext({ scenarioId: 'application', ports: { ...CreateToolContext().ports, jobCollection: { Collect: vi.fn(), SaveCandidate: saveCandidate } } });
     const result = await CreateToolsModule(CreatePorts()).ExecuteToolCall({
       id: 'save-collected-1', type: 'function', function: { name: 'SaveJob', arguments: JSON.stringify({ collectionId: 'collection-1', candidateId: 'candidate-1', matchScore: 88 }) },
     }, context);
 
-    expect(saveCandidate).toHaveBeenCalledWith({ sessionId: 'session-1', collectionId: 'collection-1', candidateId: 'candidate-1', matchScore: 88 });
-    expect(result.receipt?.resourceIds).toEqual(['jobs:job-boss-a1']);
+    expect(saveCandidate).not.toHaveBeenCalled();
+    expect(JSON.parse(result.content)).toMatchObject({ ok: false, code: 'JOB_COLLECTION_EXPIRED' });
+  });
+
+  it('ReadJobs 在两个场景均只读且无需简历；采集声明写入和浏览器资源', async () => {
+    const tools = CreateToolsModule(CreatePorts());
+    expect(tools.GetToolDefinitions().find((tool) => tool.definition.function.name === 'ReadJobs')?.sideEffect).toBe('none');
+    const collect = tools.GetToolDefinitions('application').find((tool) => tool.definition.function.name === 'CollectJobs')!;
+    expect(collect.sideEffect).toBe('local_write'); expect(collect.idempotency).toBe('required');
+    expect(collect.requiredResources).toBeUndefined(); expect(collect.timeoutMs).toBe(1800000);
+    expect(collect.resourceKeys!({ channel: 'boss_zhipin' })).toContain('browser:avery-default');
+    expect(collect.resourceKeys!({ channel: 'company_website' })).not.toContain('browser:avery-default');
+    const read = vi.fn(async () => ({ total: 1, hasMore: false, items: [{ jobId: 'job-1' }] }));
+    const context = CreateToolContext({ boundResume: null, ports: { ...CreateToolContext().ports, jobLibrary: { Read: read, Collect: vi.fn() } } });
+    const result = await tools.ExecuteToolCall({ id: 'read-jobs', type: 'function', function: { name: 'ReadJobs', arguments: '{"channel":"boss_zhipin","maxResults":5}' } }, context);
+    expect(JSON.parse(result.content)).toMatchObject({ ok: true, total: 1 });
+    expect(read).toHaveBeenCalledWith({ channel: 'boss_zhipin', maxResults: 5 });
+  });
+
+  it('采集取消等待收尾后返回实际计数，而不是提前报告STATUS_UNKNOWN', async () => {
+    const controller = new AbortController();
+    let started!: () => void, cancelled!: () => void, finish!: () => void;
+    const ready = new Promise<void>((resolve) => { started = resolve; });
+    const aborted = new Promise<void>((resolve) => { cancelled = resolve; });
+    const cleanup = new Promise<void>((resolve) => { finish = resolve; });
+    const collect = vi.fn(async ({ signal }) => {
+      signal.addEventListener('abort', cancelled, { once: true }); started(); await cleanup;
+      return { status: 'cancelled' as const, taskId: 'collection-cancel', requestedCount: 100, collected: 1, inserted: 1, existing: 0, failedWrites: 0, scanned: 1, skippedDeleted: 0, warnings: [], sources: [] };
+    });
+    const context = CreateToolContext({ scenarioId: 'application', signal: controller.signal, ports: { ...CreateToolContext().ports, jobLibrary: { Collect: collect, Read: vi.fn() } } });
+    let returned = false;
+    const pending = CreateToolsModule(CreatePorts()).ExecuteToolCall({ id: 'cancel-collect', type: 'function', function: { name: 'CollectJobs', arguments: '{"channel":"company_website"}' } }, context).then((result) => { returned = true; return result; });
+    await ready; controller.abort(); await aborted;
+    expect(returned).toBe(false); finish();
+    expect(JSON.parse((await pending).content)).toMatchObject({ ok: false, code: 'CANCELLED', collected: 1, status: 'cancelled' });
   });
 
   it('ContactBossJobs 冻结一个批次并使用现有浏览器确认通道', async () => {

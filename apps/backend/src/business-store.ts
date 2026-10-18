@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import type { JobQueryInput, JobQueryResult } from '@avery/contracts';
 import { copyFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync, unlinkSync, rmdirSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { ResolveBusinessMigrationRoot } from './migration-paths';
@@ -283,10 +284,20 @@ export class BusinessStore {
   DeleteResumeRevision(resumeId: string, revisionId: string): any { return this.resumeService.DeleteRevision(resumeId, revisionId); }
   /** 创建或编辑岗位；透传期望版本供外部修改冲突检测。 */
   UpsertJob(job: any, expectedRevision?: number): any { return this.jobService.Upsert(job, expectedRevision); }
+  /** 岗位库共享分页查询，由数据库 Worker 执行，不在渲染进程扫描整库。 */
+  QueryJobs(input: JobQueryInput): JobQueryResult { return this.jobService.Query(input); }
+  /** 仅后端Agent端口使用，不向Renderer新增数据库能力。 */
+  ReadJobLibrary(input: JobQueryInput): JobQueryResult { return this.jobService.QueryForAgent(input); }
+  /** 后端采集标准化后的事实通过业务 Worker 幂等入库，不绕过用户数据仓库。 */
+  ImportCollectedJobs(batch: import('@avery/contracts').CollectedJob[]): import('@avery/contracts').JobImportResult {
+    return this.jobService.ImportCollectedJobs(batch);
+  }
   /** 切换岗位收藏状态；透传期望版本供外部修改冲突检测。 */
   SetJobFavorite(id: string, favorite: boolean, expectedRevision?: number): any { return this.jobService.SetFavorite(id, favorite, expectedRevision); }
   /** 逻辑删除岗位。 */
   DeleteJob(id: string): any { return this.jobService.Delete(id); }
+  /** 批量删除在业务 Worker 的同一事务中完成。 */
+  DeleteJobs(ids: string[]): { ids: string[] } { return this.jobService.DeleteMany(ids); }
   /** Agent 岗位保存：只写岗位库，不创建投递记录，也不依赖简历。 */
   SaveTrackedJob(input: any): any {
     if (!input || typeof input !== 'object') throw new Error('Job tracking input is invalid.');
@@ -297,6 +308,7 @@ export class BusinessStore {
       ...(existingJob ?? {}), id: input.jobId, company: input.company, title: input.title,
       city: input.city ?? existingJob?.city ?? '', salary: input.salary ?? existingJob?.salary,
       experience: input.experience ?? existingJob?.experience ?? '', jobSeekingType: input.jobSeekingType ?? input.employmentType ?? existingJob?.jobSeekingType ?? 'social_recruitment',
+      education: input.education ?? existingJob?.education, companySize: input.companySize ?? existingJob?.companySize,
       channel: input.channel ?? existingJob?.channel ?? 'company_website', favorite: input.favorite ?? existingJob?.favorite ?? false,
       url: input.url, jd: input.jd ?? existingJob?.jd ?? '', matchScore: input.matchScore ?? existingJob?.matchScore,
       contactStatus: input.contactStatus ?? existingJob?.contactStatus,

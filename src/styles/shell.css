@@ -1087,9 +1087,8 @@ button { background: none; border: 0; }
 }
 
 /* ------------------------------------------------------------ 条件选择面板 */
-/* 8 项条件 + 采集按钮共 10 个格子：关键词占两列，5 列正好排满两行，按钮落在第二行末尾。 */
+/* 条件各占一列，清空按钮与第二行筛选控件底部对齐。 */
 .job-view .cond { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; align-items: end; margin-top: 18px; }
-.job-view .cond > .field:first-child { grid-column: span 2; }
 .job-view .cond .field { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
 .job-view .cond .field > span { padding-left: 1px; color: var(--text-3); font-size: 11px; font-weight: 600; letter-spacing: .05em; }
 /* 输入框与下拉触发器共用同一组盒模型数值，两者高度不会因各自的默认内边距与行高产生差异。 */
@@ -1107,9 +1106,13 @@ button { background: none; border: 0; }
 .job-view .cond-go { justify-self: end; height: 32px; white-space: nowrap; }
 
 /* ------------------------------------------------------------- 列表 + 详情 */
+.job-view .cond-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
+.job-view .cond-actions > button { height: 32px; white-space: nowrap; }
+.job-result-count { flex: 1 1 85px; min-width: 0; padding: 8px 0; color: var(--text-2); font-size: 12px; }
+.job-pagination { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; margin-top: 12px; font-size: 12px; color: var(--text-2); }
 .jlib { display: grid; grid-template-columns: minmax(300px, 1fr) minmax(340px, 1.15fr); gap: 14px; margin-top: 14px; align-items: start; }
 .jlib .panel { padding: 14px; }
-.jsearch { display: flex; align-items: center; gap: 8px; padding: 0 6px 0 11px; border: 1px solid var(--border-2); border-radius: var(--r-control); background: var(--panel); transition: border-color .2s var(--ease); }
+.jsearch { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 4px 6px 4px 11px; border: 1px solid var(--border-2); border-radius: var(--r-control); background: var(--panel); transition: border-color .2s var(--ease); }
 .jsearch:focus-within { border-color: var(--accent); }
 .jsearch > i.ph { flex: none; font-size: 15px; color: var(--text-3); }
 .jsearch input { flex: 1; min-width: 0; height: 32px; border: 0; outline: 0; background: none; font-size: 13px; }
@@ -1137,6 +1140,21 @@ button { background: none; border: 0; }
 .jrow.active { background: var(--accent-soft); border-color: var(--accent); }
 .jr-main { min-width: 0; flex: 1; }
 .jr-co { display: block; font-size: 13.5px; font-weight: 600; color: var(--text); }
+.jrow-open { display: flex; flex: 1; align-items: center; gap: 11px; min-width: 0; padding: 0; border: 0; background: transparent; text-align: left; }
+.jrow-open:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; border-radius: var(--r-control); }
+.job-bulk-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.job-selection { display: inline-flex; flex: none; align-items: center; gap: 6px; min-height: 26px; cursor: pointer; font-size: 12px; color: var(--text-2); white-space: nowrap; }
+.job-selection .job-selection-circle {
+  /* 同时覆盖全局输入框的最小高度，避免复选框在列表和工具栏中被拉成椭圆。 */
+  appearance: none; box-sizing: border-box; flex: 0 0 14px; aspect-ratio: 1;
+  width: 14px; min-width: 14px; max-width: 14px; height: 14px; min-height: 14px; max-height: 14px; margin: 0; padding: 0;
+  border: 1.5px solid var(--text-3); border-radius: 50%; background: transparent; cursor: pointer;
+}
+.job-selection .job-selection-circle:checked { background: var(--accent); border-color: var(--accent); }
+.job-selection .job-selection-circle:indeterminate { background: radial-gradient(circle, var(--accent) 0 4px, transparent 4.5px); border-color: var(--accent); }
+.job-selection .job-selection-circle:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.job-selection .job-selection-circle:disabled { opacity: .45; cursor: not-allowed; }
+.job-bulk-actions .filter-btn:disabled { opacity: .45; cursor: not-allowed; }
 .jr-role { display: block; margin-top: 2px; font-size: 12.5px; color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .jr-tags { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 7px; }
 .jtag { border-radius: var(--r-pill); padding: 1px 7px; background: var(--surface-2); color: var(--text-2); font-family: var(--font-data); font-size: 10.5px; white-space: nowrap; }
@@ -1181,22 +1199,19 @@ button { background: none; border: 0; }
 .dw-drawer.is-job { width: min(560px, 92vw); }
 
 @media (max-width: 1180px){
-  /* 3 列时关键词不再占两列：9 个格子正好排满三行，按钮落在末行末列。 */
+  /* 窄窗口下操作区另起一行，避免按钮挤压筛选控件。 */
   .job-view .cond { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-  .job-view .cond > .field:first-child { grid-column: span 1; }
+  .job-view .cond-actions { grid-column: 1 / -1; }
 }
 @media (max-width: 860px){
   .jlib { grid-template-columns: 1fr; }
-  /* 2 列时关键词独占一行：9 个格子正好排满五行。 */
   .job-view .cond { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .job-view .cond > .field:first-child { grid-column: span 2; }
 }
 @media (max-width: 619px){
   .job-view.standard-page { padding: 25px 17px; }
   .job-view .view-h { align-items: stretch; flex-direction: column; }
   .job-view .view-h .vh-act { margin-left: 0; }
   .job-view .cond { grid-template-columns: 1fr; }
-  .job-view .cond > .field:first-child { grid-column: span 1; }
   .job-view .cond-go { justify-self: stretch; }
   .jrows { max-height: none; }
   .job-view .kv-r { align-items: flex-start; flex-direction: column; gap: 3px; }
@@ -1651,3 +1666,23 @@ body.settings-has-configured-api-key .model-set-scope .set-field:has(input[type=
 }
 .acc-sw:hover { transform: scale(1.07); }
 .acc-sw[aria-pressed="true"] { box-shadow: 0 0 0 2px var(--raised), 0 0 0 4px var(--text-3); }
+
+/* 岗位采集面板：沿用全局弹窗，仅补充来源列表和任务进度的布局。 */
+.job-collection-form { display: grid; gap: 14px; }
+.job-collection-form fieldset { border: 0; padding: 0; margin: 0; min-width: 0; display: grid; gap: 14px; }
+.job-collection-form input:not([type="checkbox"]) { width: 100%; }
+.job-collection-hint { margin: 0; color: var(--text-2); font-size: 13px; line-height: 1.65; }
+.job-source-list { display: grid; gap: 8px; max-height: 200px; overflow: auto; }
+.job-source-list label, .job-source-setting { display: flex; gap: 9px; align-items: flex-start; font-size: 13px; }
+.job-source-list small { color: var(--text-3); margin-left: auto; }
+.job-source-settings { border-top: 1px solid var(--border); padding-top: 12px; }
+.job-source-settings summary { cursor: pointer; margin-bottom: 10px; }
+.job-source-setting { padding: 8px 0; }
+.job-source-setting span { min-width: 0; }
+.job-source-setting b { font-weight: 550; }
+.job-source-setting small { display: block; overflow-wrap: anywhere; color: var(--text-3); line-height: 1.5; }
+.job-source-error { color: #b83b35 !important; overflow-wrap: anywhere; }
+.job-collection-progress { padding: 12px; border: 1px solid var(--border); border-radius: 10px; }
+.job-collection-progress h3 { margin: 0 0 10px; font-size: 15px; }
+.job-collection-progress progress { width: 100%; accent-color: var(--accent); }
+.job-collection-progress p { margin: 8px 0 0; color: var(--text-2); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }

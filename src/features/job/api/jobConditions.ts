@@ -1,9 +1,9 @@
 /**
- * 岗位采集条件的应用内缓存。
+ * 岗位库筛选条件的应用内缓存。
  *
- * 条件只决定“让 Avery 去采集什么”，本身不是岗位事实，也不参与投递或简历链路，
- * 因此按产品要求只缓存在应用本地（localStorage），不写入业务数据库，也不进入工作空间快照。
+ * 条件用于岗位查询及已有采集指令入口，不修改岗位事实，只缓存在应用本地。
  */
+import { ParseJobQuery, type JobQuery, type JobLibraryView } from '@avery/contracts';
 
 export type JobConditionKey = 'channel' | 'city' | 'jobSeekingType' | 'salary' | 'experience' | 'education' | 'companySize';
 
@@ -78,7 +78,7 @@ export function LoadJobConditions(): JobConditions {
     const parsed: unknown = JSON.parse(raw);
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return { ...DefaultJobConditions };
     const record = parsed as Record<string, unknown>;
-    const keyword = typeof record.keyword === 'string' ? record.keyword : DefaultJobConditions.keyword;
+    const keyword = typeof record.keyword === 'string' ? record.keyword.slice(0, 500) : DefaultJobConditions.keyword;
     const conditions: JobConditions = { ...DefaultJobConditions, keyword };
     for (const group of JobConditionGroups) {
       const value = record[group.key];
@@ -91,11 +91,23 @@ export function LoadJobConditions(): JobConditions {
   }
 }
 
-/** 写入应用内缓存；存储不可用时忽略，不阻断采集流程。 */
+/** 写入应用内缓存；存储不可用时忽略，不阻断筛选流程。 */
 export function SaveJobConditions(conditions: JobConditions): void {
   try {
     window.localStorage.setItem(JobConditionsStorageKey, JSON.stringify(conditions));
   } catch { /* 存储不可用时条件仅本次会话生效 */ }
+}
+
+/** 将界面“不限”转成缺省维度；共享契约校验保证页面与后续工具使用相同条件语义。 */
+export function BuildJobLibraryQuery(conditions: JobConditions, view: JobLibraryView, sort: JobQuery['sort'], page: number): JobQuery {
+  const selected = (value: string) => value === 'any' ? [] : [value];
+  return ParseJobQuery({
+    keyword: conditions.keyword, channels: selected(conditions.channel), cities: selected(conditions.city),
+    jobSeekingTypes: selected(conditions.jobSeekingType), experiences: selected(conditions.experience),
+    educations: selected(conditions.education), companySizes: selected(conditions.companySize),
+    ...(conditions.salary === 'any' ? {} : { minMonthlySalary: Number(conditions.salary.replace('k', '')) * 1000 }),
+    view, sort, page, pageSize: 20,
+  });
 }
 
 /** 条件转采集指令：与原型一致，仅带上已明确选择的项，全部不限时退化为“不限”。 */

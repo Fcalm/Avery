@@ -30,6 +30,7 @@
 - [表单字段混合匹配开发规划](./17-hybrid-form-field-matching-development-plan.md)：定义网页与用户数据特征包、精确校验、上下文语义匹配、全局冲突消解和 Agent 指定映射续填。
 - [脚本化岗位采集方案](./18-scripted-job-collection-design.md)：定义 `CollectJobs`、会话级临时候选缓存、引用式 `SaveJob`、多平台采集适配结构和清理边界。
 - [BOSS 批量打招呼工具方案](./19-boss-contact-tool-design.md)：定义 `ContactBossJobs`、首条常用语与图片发送、BOSS 页面状态机、紧凑批次确认、防重、检查点和恢复规则。
+- [岗位库筛选与批量采集开发规划](./20-job-library-collection-development-plan.md)：按岗位筛选、界面采集直接入库、Agent采集与按需读取顺序实施；包含企业来源名单、自定义入口、数据规则、验收标准及进度。
 
 对应产品与总体架构依据：
 

@@ -1,8 +1,8 @@
 import Ajv from 'ajv';
 import { createHash, randomUUID } from 'node:crypto';
-import { AgentSdkContractVersion } from '@avery/agent-sdk';
+import { AgentSdkContractVersion, JobLibraryReadLimits } from '@avery/agent-sdk';
 import type {
-  BrowserActionProposal, BrowserToolName, RegisteredAgentTool, ToolCallFragment, ToolContext, ToolExecutionResult, ToolLedgerEntry,
+  BrowserActionProposal, BrowserToolName, JobLibraryPort, RegisteredAgentTool, ToolCallFragment, ToolContext, ToolExecutionResult, ToolLedgerEntry,
   ToolReceipt, ToolsModule,
 } from '@avery/agent-sdk';
 import { AgentDefaultPorts } from './ports';
@@ -253,24 +253,38 @@ function BuildRegistry(): RegisteredAgentTool[] {
       resourceKeys: () => ['resume:export'], requiredResources: ['bound_resume'], allowedScenarios: ['application'],
     },
     {
-      definition: CreateDefinition('CollectJobs', 'Collect up to 10 temporary BOSS job candidates from explicit search criteria. Results live only in this conversation for 15 minutes and are not saved automatically. Review the returned candidates, then call SaveJob with collectionId and candidateId only for selected jobs.', {
+      definition: CreateDefinition('CollectJobs', 'Use to collect jobs directly into the persistent job library, without a bound resume. It does not apply or send messages. Uses the same service and conditions as the job-library collection button. BOSS requires keyword, city and an authorized logged-in personal browser. Company websites use enabled application-maintained sources; omit sourceIds to use all enabled sources, and never invent source IDs or supply recruitment URLs. Waits for completion and returns taskId, actual inserted/existing counts and warnings, not job bodies. targetCount counts unique successfully stored or existing jobs; a shortage or failure may retain partial writes. Call ReadJobs afterwards to select jobs; do not SaveJob for collected results. Example: {"channel":"boss_zhipin","keyword":"产品经理","city":"广州","targetCount":20,"jobSeekingTypes":["intern"],"educations":["bachelor"]}.', {
         type: 'object', properties: {
-          platforms: { type: 'array', minItems: 1, maxItems: 1, uniqueItems: true, items: { type: 'string', enum: ['boss_zhipin'] } },
-          queries: { type: 'array', minItems: 1, maxItems: 10, items: { type: 'object', properties: { keyword: { type: 'string', minLength: 1, maxLength: 100 }, city: { type: 'string', minLength: 1, maxLength: 50 } }, required: ['keyword', 'city'], additionalProperties: false } },
-          filters: { type: 'object', properties: {
-            jobTypes: { type: 'array', uniqueItems: true, items: { type: 'string', enum: ['intern', 'campus_recruitment', 'social_recruitment'] } },
-            experience: { type: 'array', uniqueItems: true, items: { type: 'string', minLength: 1, maxLength: 50 } },
-            education: { type: 'array', uniqueItems: true, items: { type: 'string', minLength: 1, maxLength: 50 } },
-            salaryMinMonthlyK: { type: 'number', minimum: 0, maximum: 1000 },
-            companySizes: { type: 'array', uniqueItems: true, items: { type: 'string', minLength: 1, maxLength: 50 } },
-            industries: { type: 'array', uniqueItems: true, items: { type: 'string', minLength: 1, maxLength: 100 } },
-            excludeKeywords: { type: 'array', uniqueItems: true, items: { type: 'string', minLength: 1, maxLength: 100 } },
-          }, additionalProperties: false },
-          sort: { type: 'string', enum: ['relevance', 'newest'] },
-          maxResults: { type: 'integer', minimum: 1, maximum: 10 },
-        }, required: ['platforms', 'queries', 'sort', 'maxResults'], additionalProperties: false,
+          channel: { type: 'string', enum: ['boss_zhipin', 'company_website'], description: 'Collection channel: BOSS or company recruitment websites.' },
+          keyword: { type: 'string', maxLength: 500, description: 'Job keyword, e.g. 产品经理. Required and nonempty for BOSS; optional for company websites.' },
+          targetCount: { type: 'integer', minimum: 1, maximum: 1000, default: 100, description: 'Target number of unique jobs successfully stored or already in the library. Default 100, maximum 1000.' },
+          jobSeekingTypes: { type: 'array', maxItems: 3, uniqueItems: true, items: { type: 'string', enum: ['intern', 'campus_recruitment', 'social_recruitment'] }, description: 'Job types: internship, campus or social recruitment. Omit or [] for unrestricted. OR within this list.' },
+          educations: { type: 'array', maxItems: 4, uniqueItems: true, items: { type: 'string', enum: ['college', 'bachelor', 'master', 'doctor'] }, description: 'Education requirements. Omit or [] for unrestricted. AND with keyword and job type.' },
+          city: { type: 'string', minLength: 1, maxLength: 100, description: 'BOSS search city in Chinese, e.g. 广州 or 全国. Do not supply for company websites.' },
+          sourceIds: { type: 'array', minItems: 1, maxItems: 1000, uniqueItems: true, items: { type: 'string', minLength: 1, maxLength: 100 }, description: 'Optional existing enabled company source IDs. Omit to use all enabled sources. Do not supply for BOSS.' },
+        }, required: ['channel'], additionalProperties: false,
+        allOf: [{ if: { properties: { channel: { const: 'boss_zhipin' } } }, then: { required: ['keyword', 'city'], properties: { keyword: { minLength: 1 } }, not: { required: ['sourceIds'] } }, else: { not: { required: ['city'] } } }],
       }),
-      timeoutMs: 120_000, isConcurrencySafe: false, sideEffect: 'none', risk: 'low', confirmation: 'never', idempotency: 'not_needed', allowedScenarios: ['application'], resourceKeys: () => ['browser:avery-default', 'jobs:collection-cache'],
+      timeoutMs: 1_800_000, isConcurrencySafe: false, sideEffect: 'local_write', risk: 'low', confirmation: 'scenario_policy', idempotency: 'required', allowedScenarios: ['application'],
+      resourceKeys: (input) => input.channel === 'boss_zhipin' ? ['jobs:library', 'jobs:collection', 'browser:avery-default'] : ['jobs:library', 'jobs:collection'],
+      limits: { timeoutMs: 1_800_000, maxInputBytes: 131072, maxOutputBytes: 131072 },
+    },
+    {
+      definition: CreateDefinition('ReadJobs', 'Use to search the persistent job library after collection or before selecting a job. Read-only; no browser or bound resume required. List mode returns at most maxResults jobs with short JD summaries, saved application statuses, total and nextCursor. To continue, repeat the same filters and maxResults with the returned cursor. Use jobId alone to read one job in detail. truncatedFields explicitly lists shortened fields. This tool does not collect, save, apply or send messages.', {
+        type: 'object', properties: {
+          jobId: { type: 'string', minLength: 1, maxLength: 200, description: 'One persisted job ID. Use separately from list filters and cursor.' },
+          channel: { type: 'string', enum: ['boss_zhipin', 'company_website', 'other'] },
+          keyword: { type: 'string', maxLength: 500, description: 'Search job title, company and JD.' },
+          maxResults: { type: 'integer', minimum: 1, maximum: JobLibraryReadLimits.maxCount, default: JobLibraryReadLimits.defaultCount, description: 'Maximum jobs in this response, default 20 and at most 100. Keep unchanged when using nextCursor.' },
+          cursor: { type: 'string', minLength: 1, maxLength: 500, description: 'Exact nextCursor from the preceding result; do not construct or edit it.' },
+          cities: { type: 'array', maxItems: 50, items: { type: 'string', minLength: 1, maxLength: 100 } },
+          jobSeekingTypes: { type: 'array', maxItems: 3, items: { type: 'string', enum: ['intern', 'campus_recruitment', 'social_recruitment'] } },
+          educations: { type: 'array', maxItems: 4, items: { type: 'string', enum: ['college', 'bachelor', 'master', 'doctor'] } },
+          view: { type: 'string', enum: ['all', 'favorites', 'pending', 'applied'] }, sort: { type: 'string', enum: ['created', 'score'] },
+        }, additionalProperties: false,
+      }),
+      timeoutMs: 10000, isConcurrencySafe: true, sideEffect: 'none', risk: 'low', confirmation: 'never', idempotency: 'not_needed',
+      allowedScenarios: ['default', 'application'], resourceKeys: () => ['jobs:library'], limits: { maxRecords: JobLibraryReadLimits.maxCount, maxOutputBytes: 524288 },
     },
     {
       definition: CreateDefinition('ContactBossJobs', 'Contact 1 to 10 saved BOSS jobs as one confirmed serial batch in the authorized personal browser. The Host—not the model—loads trusted job URLs, verifies the target, records the preset greeting sent by BOSS when initial contact starts, optionally sends a frozen custom message and one authorized PNG/JPEG image, and prevents duplicate sends.', {
@@ -297,7 +311,7 @@ function BuildRegistry(): RegisteredAgentTool[] {
       timeoutMs: 10000, isConcurrencySafe: true, sideEffect: 'none', risk: 'low', confirmation: 'never', idempotency: 'not_needed', allowedScenarios: ['application'], resourceKeys: () => ['applications'],
     },
     {
-      definition: CreateDefinition('SaveJob', 'Save one selected job to the local job library. It does not create an application record and does not require a bound resume. For CollectJobs results, pass only collectionId, candidateId, and optional matchScore; the Host copies the trusted cached candidate. For a job observed directly in the browser, pass its complete observed fields. Call ReadApplicationStatus first for directly observed jobs.', {
+      definition: CreateDefinition('SaveJob', 'Save one job observed directly in the browser to the local job library. Call ReadApplicationStatus first, then pass the complete observed fields. It does not create an application record and does not require a bound resume. CollectJobs already saves its results; use ReadJobs instead of SaveJob for them. Old collectionId/candidateId references are no longer available.', {
         // 顶层必须声明 type: object：DeepSeek 只接受对象型参数 Schema，纯 oneOf 会被判为 type: null 而整轮请求 400。
         type: 'object',
         oneOf: [
@@ -1016,26 +1030,40 @@ export function CreateToolsModule(ports: AgentDefaultPorts): ToolsModule {
   }
 
   async function CollectJobs(context: ToolContext, callId: string, args: Record<string, unknown>): Promise<ToolExecutionResult> {
-    const collection = context.ports.jobCollection;
+    const collection = context.ports.jobLibrary;
     if (!collection) return CreateToolResult(callId, { ok: false, code: 'RESOURCE_NOT_AUTHORIZED', message: 'Scripted job collection is unavailable in the current host.' });
-    if (context.unattended && (!context.browserTaskGrant || context.browserTaskGrant.revokedAt || !context.browserTaskGrant.allowNavigation)) {
+    if (args.channel === 'boss_zhipin' && context.unattended && (!context.browserTaskGrant || context.browserTaskGrant.revokedAt || !context.browserTaskGrant.allowNavigation)) {
       return CreateToolResult(callId, { ok: false, code: 'BROWSER_CRON_SCOPE_DENIED', message: 'This CronTask has no active BrowserTaskGrant for job navigation.' }, { disposition: 'pause' });
     }
+    const idempotencyKey = CreateIdempotencyKey(context, 'CollectJobs', HashArguments({ callId, args }));
+    const previous = await GetLedger(context).FindByIdempotencyKey(idempotencyKey);
+    if (previous?.status === 'succeeded' && previous.receipt) return CreateToolResult(callId, {
+      ok: true, replayed: true, taskId: previous.receipt.resourceIds.find((id) => id.startsWith('collection-')),
+      message: 'This collection already finished. Use ReadJobs to read the saved results; no collection was restarted.',
+    }, { receipt: previous.receipt });
+    const ledger = await StartLedger(context, 'CollectJobs', args, idempotencyKey);
     try {
-      const result = await collection.Collect({
-        sessionId: context.sessionId,
-        platforms: args.platforms as Array<'boss_zhipin'>,
-        queries: args.queries as Array<{ keyword: string; city: string }>,
-        filters: args.filters as any,
-        sort: args.sort as 'relevance' | 'newest',
-        maxResults: args.maxResults as number,
-        signal: context.signal,
-        deadline: context.deadline,
-      });
-      return CreateToolResult(callId, { ok: true, ...result });
+      const result = await collection.Collect({ request: args as Parameters<JobLibraryPort['Collect']>[0]['request'], idempotencyKey,
+        signal: context.signal, deadline: context.deadline, ...(previous ? { reconcileOnly: true } : {}) });
+      const ok = result.status === 'completed' || result.status === 'completed_with_shortage';
+      const code = result.status === 'cancelled' ? 'CANCELLED' : result.status === 'timed_out' ? 'TIMEOUT' : 'JOB_COLLECTION_FAILED';
+      const receipt: ToolReceipt = { receiptId: `receipt-${randomUUID()}`, toolDefinitionId: 'CollectJobs', resourceIds: ['jobs:library', result.taskId], idempotencyKey };
+      await FinishLedger(context, ledger, ok ? 'succeeded' : 'failed', { receipt, ...(ok ? {} : { errorCode: code }) });
+      return CreateToolResult(callId, { ok, ...result, ...(ok ? {} : { code }) }, { receipt });
     } catch (error) {
       const value = error as { code?: unknown; message?: unknown };
-      return CreateToolResult(callId, { ok: false, code: typeof value.code === 'string' ? value.code : 'JOB_COLLECTION_FAILED', message: typeof value.message === 'string' ? value.message : 'Job collection failed.' });
+      const code = typeof value.code === 'string' ? value.code : 'JOB_COLLECTION_FAILED';
+      await FinishLedger(context, ledger, 'failed', { errorCode: code });
+      return CreateToolResult(callId, { ok: false, code, message: typeof value.message === 'string' ? value.message : 'Job collection failed.' });
+    }
+  }
+
+  async function ReadJobs(context: ToolContext, callId: string, args: Record<string, unknown>): Promise<ToolExecutionResult> {
+    if (!context.ports.jobLibrary) return CreateToolResult(callId, { ok: false, code: 'RESOURCE_NOT_AUTHORIZED', message: 'The persistent job library is unavailable in the current host.' });
+    try { return CreateToolResult(callId, { ok: true, ...await context.ports.jobLibrary.Read(args) }); }
+    catch (error) {
+      const value = error as { code?: string; message?: string };
+      return CreateToolResult(callId, { ok: false, code: value.code ?? 'JOB_READ_FAILED', message: value.message ?? 'Job reading failed.' });
     }
   }
 
@@ -1105,17 +1133,15 @@ export function CreateToolsModule(ports: AgentDefaultPorts): ToolsModule {
 
   async function SaveJob(context: ToolContext, callId: string, args: Record<string, unknown>): Promise<ToolExecutionResult> {
     const fromCollection = typeof args.collectionId === 'string';
+    if (fromCollection) return CreateToolResult(callId, { ok: false, code: 'JOB_COLLECTION_EXPIRED', message: 'Temporary collection references are no longer supported. Use CollectJobs to save directly, then ReadJobs. Do not reconstruct old candidates from conversation text.' });
     const tracking = context.ports.applicationTracking;
     if (!fromCollection && !tracking) return CreateToolResult(callId, { ok: false, code: 'RESOURCE_NOT_AUTHORIZED', message: 'Job tracking is unavailable in the current host.' });
-    if (fromCollection && !context.ports.jobCollection) return CreateToolResult(callId, { ok: false, code: 'RESOURCE_NOT_AUTHORIZED', message: 'The collected job cache is unavailable in the current host.' });
     const idempotencyKey = CreateIdempotencyKey(context, 'SaveJob', HashArguments(args));
     const previous = await GetLedger(context).FindByIdempotencyKey(idempotencyKey);
     if (previous?.status === 'succeeded') return CreateToolResult(callId, { ok: true, replayed: true }, { receipt: previous.receipt });
     const ledgerEntry = await StartLedger(context, 'SaveJob', args, idempotencyKey);
     try {
-      const result = fromCollection
-        ? await context.ports.jobCollection!.SaveCandidate({ sessionId: context.sessionId, collectionId: String(args.collectionId), candidateId: String(args.candidateId), ...(typeof args.matchScore === 'number' ? { matchScore: args.matchScore } : {}) })
-        : await tracking!.SaveJob(args);
+      const result = await tracking!.SaveJob(args);
       const jobId = String((result as any)?.jobId ?? args.jobId ?? '');
       const receipt: ToolReceipt = { receiptId: `receipt-${randomUUID()}`, toolDefinitionId: 'SaveJob', resourceIds: [`jobs:${jobId}`], idempotencyKey };
       await FinishLedger(context, ledgerEntry, 'succeeded', { receipt });
@@ -1364,6 +1390,16 @@ export function CreateToolsModule(ports: AgentDefaultPorts): ToolsModule {
         },
       } : {}),
     };
+    // 采集取消/超时必须等待在途写入计数完成并释放任务锁，不能race后留下后台写入。
+    if (toolName === 'CollectJobs') {
+      const timer = setTimeout(() => executionController.abort(new Error('Tool execution timed out.')), remainingMs);
+      try { return await execution(executionContext); }
+      catch (error) {
+        const value = error as { code?: string; message?: string };
+        return CreateToolResult(callId, { ok: false, code: value.code ?? 'JOB_COLLECTION_FAILED', message: value.message ?? 'Collection failed to settle.' }, { disposition: 'pause' });
+      }
+      finally { clearTimeout(timer); context.signal?.removeEventListener('abort', abortFromRun); }
+    }
     return await new Promise<ToolExecutionResult>((resolve) => {
       let timer: ReturnType<typeof setTimeout> | undefined;
       const timeout = new Promise<ToolExecutionResult>((resolveTimeout) => {
@@ -1414,7 +1450,7 @@ export function CreateToolsModule(ports: AgentDefaultPorts): ToolsModule {
     version: '0.1.0',
     sdkVersion: AgentSdkContractVersion,
     slot: 'tools',
-    capabilities: ['tools:default:18', 'tools:application:36', 'browser:atomic', 'browser:vision-screenshot', 'browser:fill-batch', 'skills:progressive', 'cron:scheduled', 'applications:tracking', 'jobs:collection', 'boss:contact-batch'],
+    capabilities: [`tools:default:${registry.filter((tool) => tool.allowedScenarios?.includes('default')).length}`, `tools:application:${registry.filter((tool) => tool.allowedScenarios?.includes('application')).length}`, 'browser:atomic', 'browser:vision-screenshot', 'browser:fill-batch', 'skills:progressive', 'cron:scheduled', 'applications:tracking', 'jobs:collection', 'jobs:library', 'boss:contact-batch'],
     /** 返回设计文档 MVP 白名单工具；旧名仅兼容旧快照，不再向新模型暴露。 */
     GetToolDefinitions(scenarioId = 'default') { return registry.filter((tool) => tool.allowedScenarios?.includes(scenarioId)); },
     /** 统一执行管道：Schema 校验与一次修复、写工具幂等账本、按工具超时、结构化错误码、统一 disposition。 */
@@ -1469,6 +1505,7 @@ export function CreateToolsModule(ports: AgentDefaultPorts): ToolsModule {
           case 'UpdateCronTask': return await UpdateCronTask(executionContext, call.id, args);
           case 'DeleteCronTask': return await DeleteCronTask(executionContext, call.id, args);
           case 'CollectJobs': return await CollectJobs(executionContext, call.id, args);
+          case 'ReadJobs': return await ReadJobs(executionContext, call.id, args);
           case 'ContactBossJobs': return await ContactBossJobs(executionContext, call.id, args);
           case 'ReadApplicationStatus': return await ReadApplicationStatus(executionContext, call.id, args);
           case 'SaveJob': return await SaveJob(executionContext, call.id, args);

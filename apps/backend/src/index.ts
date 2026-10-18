@@ -36,6 +36,8 @@ const { BrowserExtensionBridge } = require('./electron/backend/browser-extension
 const { ResumeLockStore } = require('./electron/backend/resume-lock-store.js') as any;
 const { EvalService, AssertEvaluationDeveloperModePreserved } = require('./electron/backend/evaluation/eval-service.js') as any;
 const { CronRunnerService } = require('./electron/backend/services/cron-runner-service.js') as any;
+const { JobLibraryCollectionService } = require('./electron/backend/job-library-collection-service.js') as typeof import('./electron/backend/job-library-collection-service');
+const { CollectBossJobsToLibrary } = require('./electron/backend/job-collection-service.js') as typeof import('./electron/backend/job-collection-service');
 
 /** 组装业务/可观测性 DB Worker、Agent 运行时与 Router，经 parentPort 服务 Main 命令；桌面能力与凭据经反向 RPC 交由 Main 适配器执行。 */
 async function Bootstrap(): Promise<void> {
@@ -95,6 +97,19 @@ async function Bootstrap(): Promise<void> {
     Emit: (event: unknown) => PostMessage({ kind: 'event', channel: 'evaluation:event', payload: { type: 'evaluation_event', event } }),
   });
   await evaluationService.Initialize();
+  const AssertCollectionBrowserAvailable = () => {
+    if (evaluationService.HasActiveRuns()) throw Object.assign(new Error('测评运行时不能占用浏览器采集。'), { code: 'RESOURCE_LOCKED' });
+  };
+  const jobCollection = new JobLibraryCollectionService({
+    workspacePath: currentWorkspacePath,
+    importJobs: (batch) => host.business.ImportCollectedJobs(batch),
+    collectBoss: (input) => {
+      AssertCollectionBrowserAvailable();
+      return agent.WithCollectionBrowser(`job-collection-${randomUUID()}`, (browser: import('@avery/agent-sdk').BrowserAutomationPort) => CollectBossJobsToLibrary(browser, input));
+    },
+  });
+  await jobCollection.Initialize();
+  agent.SetJobLibraryCollectionService(jobCollection, AssertCollectionBrowserAvailable);
   cronRunner = new CronRunnerService({
     business: host.business,
     agent,
@@ -107,7 +122,7 @@ async function Bootstrap(): Promise<void> {
 
   /** 工作空间迁移编排：Agent 空闲校验、弹目录选择、复制校验并切换业务 Worker；迁移全程门禁写命令，原目录保留为安全副本。 */
   async function MigrateWorkspace(): Promise<any> {
-    if (agent.IsBusy() || evaluationService.HasActiveRuns()) throw new Error('Cannot migrate the workspace while an Agent or evaluation run is active.');
+    if (agent.IsBusy() || evaluationService.HasActiveRuns() || jobCollection.HasActiveTask()) throw new Error('Cannot migrate the workspace while an Agent, evaluation or collection run is active.');
     migrating = true;
     try {
       const destinationPath = await desktop.Call('SelectWorkspaceDirectory');
@@ -116,6 +131,7 @@ async function Bootstrap(): Promise<void> {
       await host.business.SwitchWorkspace(destinationPath);
       currentWorkspacePath = destinationPath;
       agent.SetWorkspacePath(destinationPath);
+      await jobCollection.SetWorkspacePath(destinationPath);
       return { ...(await host.business.GetStatus()), migration: { succeeded: true, retainedSource: true, integrity: result.integrity } };
     } finally {
       migrating = false;
@@ -153,7 +169,7 @@ async function Bootstrap(): Promise<void> {
     },
   };
   const resumes = Facade(['UpsertResume', 'RenameResume', 'DeleteResume', 'GetResumeRevisions', 'GetResumeRevision', 'RestoreResumeRevision', 'DeleteResumeRevision']);
-  const jobs = Facade(['UpsertJob', 'SetJobFavorite', 'DeleteJob']);
+  const jobs = Facade(['UpsertJob', 'QueryJobs', 'SetJobFavorite', 'DeleteJob', 'DeleteJobs']);
   const applications = Facade(['UpsertApplication', 'MoveApplicationStatus', 'DeleteApplication']);
   const profiles = Facade(['GetProfiles', 'SaveProfiles', 'ReloadProfiles']);
   const settings = {
@@ -174,6 +190,7 @@ async function Bootstrap(): Promise<void> {
       conversations,
       resumes,
       jobs,
+      jobCollection,
       applications,
       profiles,
       settings,
@@ -215,6 +232,10 @@ async function Bootstrap(): Promise<void> {
           return;
         }
         const args = Array.isArray(typed.payload) ? typed.payload : [typed.payload];
+        if (typed.channel === 'evaluation:run-start' && jobCollection.HasActiveBrowserTask()) {
+          PostMessage({ kind: 'result', requestId: typed.requestId, result: { ok: false, error: { code: 'RESOURCE_LOCKED', message: 'BOSS 采集正在占用浏览器，请等待或取消后再运行测评。', retryable: true } } });
+          return;
+        }
         const result = await backend.HandleCommand(typed.channel, typed.requestId, typed.idempotencyKey, ...args);
         PostMessage({ kind: 'result', requestId: typed.requestId, result });
       } catch (error) {
@@ -228,6 +249,7 @@ async function Bootstrap(): Promise<void> {
     }
     if (typed.kind === 'shutdown') {
       cronRunner.Close();
+      await jobCollection.Close();
       await evaluationService.Close();
       await agent.Close();
       host.Close();

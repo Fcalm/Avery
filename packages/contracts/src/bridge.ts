@@ -5,6 +5,8 @@ import type {
 import type { WriteCommandOptions } from './envelope';
 import type { DesktopEvaluationBridge } from './evaluation';
 import type { BrowserTaskGrant } from './cron-task';
+import type { JobQueryInput, JobQueryResult } from './job-query';
+import type { JobCollectionInput, JobCollectionTask, RecruitmentSource } from './job-collection';
 
 /** Agent 确认级别；完全信任仍受场景白名单、Schema、资源授权与幂等约束。 */
 export type ConfirmationMode = 'always_confirm' | 'allow_low_risk' | 'fully_trusted';
@@ -224,8 +226,18 @@ export interface WorkspaceBridge {
   RenameResume: (id: string, name: string, expectedRevision?: number, options?: WriteCommandOptions) => Promise<{ id: string; name: string; revision: number }>;
   DeleteResume: (id: string, options?: WriteCommandOptions) => Promise<{ id: string }>;
   UpsertJob: (job: JobDto, expectedRevision?: number, options?: WriteCommandOptions) => Promise<{ id: string; revision: number }>;
+  /** 查询岗位库当前页；条件、排序和总数均由业务 Worker 计算。 */
+  QueryJobs: (query: JobQueryInput) => Promise<JobQueryResult>;
+  /** 采集独立于 Agent 对话；启动立即返回任务，轮询只读进度，取消保留已入库批次。 */
+  ListRecruitmentSources: () => Promise<RecruitmentSource[]>;
+  SetRecruitmentSourceEnabled: (sourceId: string, enabled: boolean, options?: WriteCommandOptions) => Promise<RecruitmentSource>;
+  StartJobCollection: (input: JobCollectionInput, options?: WriteCommandOptions) => Promise<JobCollectionTask>;
+  GetJobCollectionTask: (taskId?: string) => Promise<JobCollectionTask | null>;
+  CancelJobCollection: (taskId: string, options?: WriteCommandOptions) => Promise<JobCollectionTask>;
   SetJobFavorite: (id: string, favorite: boolean, expectedRevision?: number, options?: WriteCommandOptions) => Promise<{ id: string; isFavorite: boolean; revision: number }>;
   DeleteJob: (id: string, options?: WriteCommandOptions) => Promise<{ id: string }>;
+  /** 批量逻辑删除明确选中的岗位；单次最多 10000 个，不删除关联投递记录。 */
+  DeleteJobs: (ids: string[], options?: WriteCommandOptions) => Promise<{ ids: string[] }>;
   UpsertApplication: (application: ApplicationDto, expectedRevision?: number, options?: WriteCommandOptions) => Promise<{ id: string; revision: number }>;
   MoveApplicationStatus: (id: string, status: string, expectedRevision?: number, options?: WriteCommandOptions) => Promise<{ id: string; status: string; revision: number }>;
   DeleteApplication: (id: string, options?: WriteCommandOptions) => Promise<{ id: string }>;
@@ -263,7 +275,8 @@ export const BridgeNamespaces = {
     'GetStatus', 'GetViewModel', 'GetSettings', 'SaveSettings',
     'CreateConversation', 'RenameConversation', 'SetConversationPinned', 'SetConversationArchived', 'DeleteConversation', 'AppendConversationMessages',
     'CompleteConversationMessage', 'RemoveConversationMessage', 'UpsertResume', 'RenameResume',
-    'DeleteResume', 'UpsertJob', 'SetJobFavorite', 'DeleteJob', 'UpsertApplication',
+    'DeleteResume', 'UpsertJob', 'QueryJobs', 'SetJobFavorite', 'DeleteJob', 'DeleteJobs', 'UpsertApplication',
+    'ListRecruitmentSources', 'SetRecruitmentSourceEnabled', 'StartJobCollection', 'GetJobCollectionTask', 'CancelJobCollection',
     'MoveApplicationStatus', 'DeleteApplication', 'GetProfiles', 'SaveProfiles', 'ReloadProfiles',
     'ImportAttachment', 'CleanupAttachments', 'GetRecoveryStatus', 'RecoverOperations', 'GetDatabaseRecoveryStatus',
     'RestoreLatestBackup', 'RestoreBackup', 'ExportRecoveryDiagnostic', 'CreateBackup', 'GetResumeRevisions', 'GetResumeRevision', 'RestoreResumeRevision', 'DeleteResumeRevision',

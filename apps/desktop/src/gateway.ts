@@ -1,4 +1,4 @@
-import { app, ipcMain, Notification, shell } from 'electron';
+import { app, clipboard, ipcMain, Notification, shell } from 'electron';
 import type { BrowserWindow, IpcMain, IpcMainInvokeEvent } from 'electron';
 import { FunctionRouteChannels, MethodRoutes, WriteCommandChannels } from '@avery/backend/dist/router';
 import { WriteCommandEnvelopeSchema } from '@avery/contracts';
@@ -117,8 +117,23 @@ async function NotifyRunCompleted({ backendHost, webContentsGetter, iconPath }: 
   }
 }
 
-/** 常规设置的系统能力通道：工作空间目录展示/打开与开机自启；每条通道都要通过来源校验。 */
+/** 系统能力通道：文本复制、工作空间目录与开机自启；每条通道都要通过来源校验。 */
 export function RegisterGeneralControls({ webContentsGetter, workspacePath, ipcMainApi = ipcMain }: { webContentsGetter: () => BrowserWindow | undefined; workspacePath: string; ipcMainApi?: IpcMainPort }): void {
+  const clipboardLimiter = CreateGatewayLimiter();
+  // 网页剪贴板权限默认拒绝；只向可信应用窗口开放有界的纯文本写入，不开放读取或任意格式。
+  ipcMainApi.handle('app:write-clipboard-text', (event, ...args: unknown[]): ResultEnvelope => {
+    if (!ValidateSender(event, webContentsGetter)) return { ok: false, error: { code: 'PERMISSION_DENIED', message: '剪贴板请求来源无效。', retryable: false } };
+    if (!clipboardLimiter.Allow(`${event.sender.id}:clipboard`)) return { ok: false, error: { code: 'WORKSPACE_BUSY', message: '复制操作过于频繁，请稍后重试。', retryable: true } };
+    if (args.length !== 1 || typeof args[0] !== 'string' || !args[0].length || Buffer.byteLength(args[0], 'utf8') > 64 * 1024) {
+      return { ok: false, error: { code: 'VALIDATION_ERROR', message: '复制内容必须是非空文本，且不超过64KB。', retryable: false } };
+    }
+    try {
+      clipboard.writeText(args[0]);
+      return { ok: true, data: true };
+    } catch {
+      return { ok: false, error: { code: 'INTERNAL_ERROR', message: '无法写入系统剪贴板，请稍后重试。', retryable: true } };
+    }
+  });
   const handlers: Record<(typeof GeneralControlChannels)[number], (input: unknown) => Promise<unknown> | unknown> = {
     'app:get-workspace-directory': () => workspacePath,
     'app:open-workspace-directory': async () => {

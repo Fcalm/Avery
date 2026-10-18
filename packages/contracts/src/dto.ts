@@ -55,7 +55,11 @@ export interface JobDto {
   city: string;
   salary?: string;
   experience: string;
-  jobSeekingType: JobSeekingType;
+  /** 来源明确给出的学历要求与企业规模；旧岗位缺省时保持未知，不从 JD 推测。 */
+  education?: string;
+  companySize?: string;
+  /** 来源未明确招聘类别时保持缺失，不自动归为社招。 */
+  jobSeekingType?: JobSeekingType;
   channel: Channel;
   favorite: boolean;
   matchScore?: number;

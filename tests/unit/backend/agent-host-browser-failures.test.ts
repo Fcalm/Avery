@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AgentHost } from '../../../apps/backend/src/electron/backend/agent-host';
 import { CreateDefaultModules } from '../../../packages/agent-modules-defaults/src/index';
 import type { BrowserActionProposal, BrowserAutomationPort, ModelCompletion } from '../../../packages/agent-sdk/src/index';
+import { JobLibraryCollectionService } from '../../../apps/backend/src/electron/backend/job-library-collection-service';
 
 const temporaryRoots: string[] = [];
 afterEach(async () => { await Promise.all(temporaryRoots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
@@ -70,7 +71,7 @@ async function CreateHost(
     createDefaultModules: (ports) => ({ ...CreateDefaultModules(ports), modelProvider: provider }),
   });
   (host as any).currentSessionId = 'failure-session';
-  return { host, events, business, observability };
+  return { host, events, business, observability, root };
 }
 
 function Send(host: AgentHost, requestId: string, content: string) {
@@ -78,6 +79,54 @@ function Send(host: AgentHost, requestId: string, content: string) {
 }
 
 describe('AgentHost 浏览器失败与用户接管', () => {
+  it('Agent运行中可调用共享BOSS采集并读取已入库岗位，不重入页面独占锁或要求简历', async () => {
+    const provider = CreateProvider((index) => index === 0 ? ToolCall(0, 'CollectJobs', { channel: 'boss_zhipin', keyword: '产品', city: '广州', targetCount: 1 })
+      : index === 1 ? ToolCall(1, 'ReadJobs', { channel: 'boss_zhipin' }) : { content: '岗位已入库', toolCalls: [] });
+    const browser = {
+      Prepare: vi.fn(async ({ toolName, arguments: args }) => Proposal(toolName, args)),
+      Execute: vi.fn(async () => ({ status: 'succeeded' as const, data: {} })),
+      EvaluateTrustedPage: vi.fn(async ({ expression }) => expression.includes("risk: 'verification'") ? { risk: null }
+        : expression.includes('const pageText') ? { title: '产品经理', company: '测试企业', jd: '负责产品设计', url: 'https://www.zhipin.com/job_detail/one.html' }
+          : [{ title: '产品经理', company: '测试企业', url: 'https://www.zhipin.com/job_detail/one.html' }]),
+      GetStatus: vi.fn(async () => ({ engine: 'chrome', state: 'running' })), SetEngine: vi.fn(), SetUnattended: vi.fn(),
+      CloseTask: vi.fn(async () => undefined), ResetPageReferences: vi.fn(), Close: vi.fn(async () => undefined),
+    };
+    const { host, business, root } = await CreateHost(provider, browser as never, { browserEngine: 'chrome' });
+    const rows: any[] = [];
+    const read = vi.fn(async () => ({ items: rows, total: rows.length, page: 1, pageSize: 20, pageCount: 1 }));
+    Object.assign(business, { ReadJobLibrary: read });
+    const service = new JobLibraryCollectionService({ workspacePath: root,
+      importJobs: async (batch) => { rows.push(...batch.map((entry) => entry.job)); return { items: batch.map((entry) => ({ identity: entry.identity, jobId: entry.job.id, status: 'inserted' as const })) }; },
+      collectBoss: async () => { throw new Error('不能进入页面独占采集流程'); },
+    });
+    host.SetJobLibraryCollectionService(service);
+    const exclusive = vi.spyOn(host, 'WithCollectionBrowser');
+    try {
+      await Send(host, 'agent-collection', '采集1个产品岗位');
+      expect(provider.getCallCount()).toBe(3); expect(rows).toHaveLength(1); expect(rows[0].id).toBe('job-boss-one');
+      expect(read).toHaveBeenCalledOnce(); expect(exclusive).not.toHaveBeenCalled();
+      expect((await service.GetJobCollectionTask())?.status).toBe('completed');
+      host.DeleteSessionResources('failure-session');
+      expect(rows).toHaveLength(1); expect((await service.GetJobCollectionTask())?.collected).toBe(1);
+    } finally { await service.Close(); await host.Close(); }
+  });
+
+  it('岗位页采集同步占用浏览器互斥锁，阻止 Agent 导航，失败后释放而不关闭共享 Bridge', async () => {
+    const provider = CreateProvider(() => ({ content: 'unused', toolCalls: [] }));
+    const browser = { Prepare: vi.fn(), Execute: vi.fn(), GetStatus: vi.fn(), SetEngine: vi.fn(), SetUnattended: vi.fn(),
+      CloseTask: vi.fn(async () => undefined), ResetPageReferences: vi.fn(), Close: vi.fn(async () => undefined) };
+    const { host } = await CreateHost(provider, browser as never, { browserEngine: 'chrome' });
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const work = host.WithCollectionBrowser('collection-1', async () => { await gate; throw new Error('采集失败'); });
+    expect(host.IsBusy()).toBe(true);
+    await expect(Send(host, 'agent-during-collection', '搜索岗位')).rejects.toMatchObject({ code: 'AGENT_BUSY' });
+    await expect(host.WithCollectionBrowser('collection-2', async () => undefined)).rejects.toMatchObject({ code: 'AGENT_BUSY' });
+    release(); await expect(work).rejects.toThrow('采集失败');
+    expect(host.IsBusy()).toBe(false); expect(browser.Close).not.toHaveBeenCalled();
+    expect(browser.SetUnattended).toHaveBeenCalledWith(false);
+    await host.Close();
+  });
   it('按已保存设置同步浏览器引擎后再返回运行状态', async () => {
     const provider = CreateProvider(() => ({ content: 'unused', toolCalls: [] }));
     const browser = {

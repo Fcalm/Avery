@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { ParseJobQuery, type JobQueryInput, type JobQueryResult } from '@avery/contracts';
 import {
   copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync,
 } from 'node:fs';
@@ -117,6 +118,12 @@ export class DatabaseRecoveryStore {
   }
 
   LoadViewModel(): any { return { conversations: [], resumes: [], jobs: [], applications: [] }; }
+  /** 恢复模式与聚合视图保持一致：只读查询返回空库，不尝试访问损坏的数据库。 */
+  QueryJobs(input: JobQueryInput): JobQueryResult {
+    const query = ParseJobQuery(input);
+    return { items: [], total: 0, page: 1, pageSize: query.pageSize, pageCount: 0 };
+  }
+  ReadJobLibrary(input: JobQueryInput): JobQueryResult { return this.QueryJobs(input); }
   GetStoredSettings(): any { return { workspaceName: path.basename(this.workspacePath) }; }
   GetProfiles(): any { return { items: [], hash: null, modified: false }; }
   GetWorkspaceRecoveryStatus(): any { return { recovering: false, blocked: true, recovered: 0, failed: 1, blockedCount: 1 }; }

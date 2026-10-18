@@ -7,6 +7,8 @@ import {
   CreateResultFailure,
   CreateResultSuccess,
   JobUpsertSchema,
+  JobCollectionInputSchema,
+  ParseJobQuery,
   NormalizeError,
   ProfileItemsSchema,
   ResumeUpsertSchema,
@@ -20,6 +22,8 @@ export const MaxCommandPayloadBytes = 10 * 1024 * 1024;
 /** 只读命令通道集合：工作空间迁移期间仍放行，保证 UI 能读到当前数据。 */
 export const ReadOnlyChannels = new Set<string>([
   'workspace:status', 'workspace:get-view-model', 'workspace:get-settings',
+  'workspace:jobs-query',
+  'workspace:job-collection-sources', 'workspace:job-collection-task',
   'workspace:get-profiles', 'workspace:get-resume-revisions', 'workspace:get-resume-revision',
   'workspace:recovery-status',
   'workspace:database-recovery-status',
@@ -110,8 +114,15 @@ export const MethodRoutes: Record<string, MethodRoute> = {
   'workspace:resumes-rename': { service: 'resumes', method: 'RenameResume' },
   'workspace:resumes-delete': { service: 'resumes', method: 'DeleteResume' },
   'workspace:jobs-upsert': { service: 'jobs', method: 'UpsertJob' },
+  'workspace:jobs-query': { service: 'jobs', method: 'QueryJobs' },
+  'workspace:job-collection-sources': { service: 'jobCollection', method: 'ListRecruitmentSources' },
+  'workspace:job-collection-source-enabled': { service: 'jobCollection', method: 'SetRecruitmentSourceEnabled' },
+  'workspace:job-collection-start': { service: 'jobCollection', method: 'StartJobCollection' },
+  'workspace:job-collection-task': { service: 'jobCollection', method: 'GetJobCollectionTask' },
+  'workspace:job-collection-cancel': { service: 'jobCollection', method: 'CancelJobCollection' },
   'workspace:jobs-set-favorite': { service: 'jobs', method: 'SetJobFavorite' },
   'workspace:jobs-delete': { service: 'jobs', method: 'DeleteJob' },
+  'workspace:jobs-delete-many': { service: 'jobs', method: 'DeleteJobs' },
   'workspace:applications-upsert': { service: 'applications', method: 'UpsertApplication' },
   'workspace:applications-move-status': { service: 'applications', method: 'MoveApplicationStatus' },
   'workspace:applications-delete': { service: 'applications', method: 'DeleteApplication' },
@@ -182,6 +193,10 @@ const WriteArgsSchemas: Record<string, z.ZodTuple> = {
   'workspace:jobs-upsert': z.tuple([JobUpsertSchema, Revision]),
   'workspace:jobs-set-favorite': z.tuple([EntityId, z.boolean(), Revision]),
   'workspace:jobs-delete': z.tuple([EntityId]),
+  'workspace:jobs-delete-many': z.tuple([z.array(EntityId).min(1).max(10000)]),
+  'workspace:job-collection-start': z.tuple([JobCollectionInputSchema]),
+  'workspace:job-collection-source-enabled': z.tuple([EntityId, z.boolean()]),
+  'workspace:job-collection-cancel': z.tuple([EntityId]),
   'workspace:applications-upsert': z.tuple([ApplicationUpsertSchema, Revision]),
   'workspace:applications-move-status': z.tuple([EntityId, z.string().min(1).max(50), Revision]),
   'workspace:applications-delete': z.tuple([EntityId]),
@@ -302,6 +317,16 @@ export function CreateBackend(options: CreateBackendOptions) {
         }
 
         const writeSchema = WriteArgsSchemas[channel];
+        if (channel === 'workspace:job-collection-task' && !z.tuple([EntityId.optional()]).safeParse(args).success) {
+          throw Object.assign(new Error('采集任务 ID 无效。'), { code: 'VALIDATION_ERROR' });
+        }
+        if (channel === 'workspace:job-collection-sources' && args.length) {
+          throw Object.assign(new Error('来源列表不接受参数。'), { code: 'VALIDATION_ERROR' });
+        }
+        if (channel === 'workspace:jobs-query') {
+          if (args.length !== 1) throw Object.assign(new Error('岗位查询需要且仅需要一组条件。'), { code: 'VALIDATION_ERROR' });
+          args[0] = ParseJobQuery(args[0]);
+        }
         if (writeSchema) {
           const parsed = writeSchema.safeParse(args);
           if (!parsed.success) {

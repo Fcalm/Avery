@@ -6,7 +6,7 @@ import { RunAgentLoop } from '@avery/agent-core';
 import { CreateRunSnapshot, HostSdkVersion, ResolveModules } from '@avery/agent-module-host';
 import { ApplicationScenario, BuildApplicationCompiledInstructions, BuildDefaultCompiledInstructions, CreateDefaultModules, DefaultScenario } from '@avery/agent-modules-defaults';
 import { IsRuntimeContextMessage } from '@avery/agent-sdk';
-import type { AgentMessage, AgentModules, BossContactPort, BrowserAutomationPort, BrowserEngine, CompiledInstructions, ConfirmationMode, JobCollectionPort, ProviderUsageFact, ReasoningEffort, ResumeSnapshot, ScenarioSnapshot, SkillSnapshot } from '@avery/agent-sdk';
+import type { AgentMessage, AgentModules, BossContactPort, BrowserAutomationPort, BrowserEngine, CompiledInstructions, ConfirmationMode, JobLibraryPort, ProviderUsageFact, ReasoningEffort, ResumeSnapshot, ScenarioSnapshot, SkillSnapshot } from '@avery/agent-sdk';
 import { AgentFileReader } from './agent-file-reader';
 import { AgentResumePort } from './agent-resume-port';
 import { ResumeLockStore } from './resume-lock-store';
@@ -14,7 +14,9 @@ import { CreateVisionUserMessage, HydrateVisionMessage, SupportsVisionInput } fr
 import { AgentBrowserRuntime } from './agent-browser-runtime';
 import { BrowserExtensionBridge, type BrowserTaskCleanupOutcome } from './browser-extension-bridge';
 import { AgentSkillRegistry } from './agent-skill-registry';
-import { JobCollectionService } from './job-collection-service';
+import { CollectBossJobsToLibrary } from './job-collection-service';
+import { CreateAgentJobLibrary } from './agent-job-library';
+import type { JobLibraryCollectionService } from './job-library-collection-service';
 import { BossContactService } from './boss-contact-service';
 import { BrowserTaskGrantSchema, CreateCronTaskSchema, type BrowserTaskGrant, type BrowserTaskGrantPurpose } from '@avery/contracts';
 
@@ -175,8 +177,8 @@ export interface AgentHostOptions {
   createDefaultModules?: (ports: Parameters<typeof CreateDefaultModules>[0]) => AgentModules;
   /** 构造期测试接缝；用于完整链路测试连接精确本地 fixture origin。 */
   browserRuntime?: AgentHostBrowserRuntime;
-  /** 构造期测试接缝；生产环境由 Host 创建会话级短寿命岗位采集缓存。 */
-  jobCollectionPort?: JobCollectionPort;
+  /** 构造期测试接缝；生产环境在组合根绑定与岗位页面共享的持久采集服务。 */
+  jobLibraryPort?: JobLibraryPort;
   /** 测评宿主专用接缝：生产组合根不传入，候选 Prompt 只能在隔离 AgentHost 内生效。 */
   compileInstructions?: (scenarioId: 'default' | 'application', toolPolicyHash: string) => CompiledInstructions;
   /** 测评宿主专用冻结场景；可收窄工具和轮数，不能由生产 Renderer 请求设置。 */
@@ -237,8 +239,7 @@ export class AgentHost {
   private resumeReadPort: AgentResumePort;
   private resumeWritePort: AgentResumePort;
   private browserRuntime: AgentHostBrowserRuntime;
-  private jobCollectionPort: JobCollectionPort | null = null;
-  private jobCollectionService: JobCollectionService | null = null;
+  private jobLibraryPort: JobLibraryPort | null = null;
   private bossContactPort: BossContactPort | null = null;
   private createDefaultModules: (ports: Parameters<typeof CreateDefaultModules>[0]) => AgentModules;
   private moduleError: string | null = null;
@@ -313,16 +314,7 @@ export class AgentHost {
       },
       recordLog: (level, event, detail) => options.observability?.RecordLog?.(level, event, detail),
     });
-    if (options.jobCollectionPort) {
-      this.jobCollectionPort = options.jobCollectionPort;
-    } else if (typeof this.browserRuntime.EvaluateTrustedPage === 'function') {
-      this.jobCollectionService = new JobCollectionService({
-        browser: this.browserRuntime,
-        loadViewModel: () => this.business.LoadViewModel(),
-        saveJob: (input) => this.business.SaveTrackedJob(input),
-      });
-      this.jobCollectionPort = this.jobCollectionService;
-    }
+    this.jobLibraryPort = options.jobLibraryPort ?? null;
     if (typeof this.browserRuntime.EvaluateTrustedPage === 'function') {
       this.bossContactPort = new BossContactService({
         browser: this.browserRuntime,
@@ -351,8 +343,15 @@ export class AgentHost {
     this.fileReader.SetOcrCacheRoot(workspacePath ? path.join(workspacePath, 'derived', 'ocr') : null);
   }
 
+  /** 组合根注入同一个采集实例；Agent采集沿用当前运行的浏览器及Cron授权，不走页面独占启动流程。 */
+  SetJobLibraryCollectionService(collection: JobLibraryCollectionService, assertBrowserAvailable: () => void = () => undefined): void {
+    this.jobLibraryPort = CreateAgentJobLibrary({ collection,
+      query: (query) => this.business.ReadJobLibrary(query),
+      collectBoss: (input) => { assertBrowserAvailable(); return CollectBossJobsToLibrary(this.browserRuntime, input); },
+    });
+  }
+
   async Close(): Promise<void> {
-    this.jobCollectionService?.Close();
     await this.browserRuntime.Close();
     this.generatedAssets.clear();
     this.browserSessionId = null;
@@ -386,7 +385,6 @@ export class AgentHost {
 
   /** 会话删除后清除全部会话私有运行态；Tool Ledger 与 Trace 作为外部动作审计继续保留。 */
   DeleteSessionResources(sessionId: string): void {
-    this.jobCollectionService?.DeleteSession(sessionId);
     for (const [fileId, asset] of this.generatedAssets) if (asset.sessionId === sessionId) this.generatedAssets.delete(fileId);
     const requestIds = new Set<string>();
     for (const [requestId, snapshot] of this.runSnapshots) {
@@ -533,6 +531,23 @@ export class AgentHost {
 
   /** 返回是否有未结束的 Agent 请求；工作空间迁移期间必须保持空闲。 */
   IsBusy(): boolean { return this.controllers.size > 0 || this.browserRunId !== null; }
+
+  /** 岗位页短期占用同一授权浏览器；同步加锁防止 Agent/Cron 与采集互相导航或清理。 */
+  async WithCollectionBrowser<T>(taskId: string, run: (browser: BrowserAutomationPort) => Promise<T>): Promise<T> {
+    if (this.IsBusy()) throw Object.assign(new Error('Agent 正在运行，请稍后采集 BOSS 岗位。'), { code: 'AGENT_BUSY' });
+    this.browserRunId = taskId;
+    try {
+      await this.SyncBrowserEngine(true);
+      await this.CloseBrowserTask();
+      this.browserSessionId = null;
+      await this.browserRuntime.SetUnattended?.(false);
+      this.browserRuntime.ResetPageReferences();
+      return await run(this.browserRuntime);
+    } finally {
+      await this.CloseBrowserTask();
+      if (this.browserRunId === taskId) this.browserRunId = null;
+    }
+  }
 
   /** 读取不含密钥的会话与任务状态；损坏文件只会回退为空状态。 */
   private LoadState(): void {
@@ -1761,7 +1776,13 @@ export class AgentHost {
         },
         browser: scenarioId === 'application' ? this.browserRuntime : undefined,
         resumeExport: scenarioId === 'application' ? { Export: (input: { resume: ResumeSnapshot; format: 'pdf' | 'png'; sessionId: string; signal?: AbortSignal }) => this.ExportBoundResumeFile(input.resume, input.format, input.sessionId, input.signal) } : undefined,
-        jobCollection: scenarioId === 'application' ? this.jobCollectionPort ?? undefined : undefined,
+        jobLibrary: this.jobLibraryPort ? {
+          Read: (input: Parameters<JobLibraryPort['Read']>[0]) => this.jobLibraryPort!.Read(input),
+          Collect: (input: Parameters<JobLibraryPort['Collect']>[0]) => {
+            if (scenarioId !== 'application') throw Object.assign(new Error('Collection requires the application scenario.'), { code: 'TOOL_NOT_ALLOWED' });
+            return this.jobLibraryPort!.Collect(input);
+          },
+        } : undefined,
         bossContact: scenarioId === 'application' ? this.bossContactPort ?? undefined : undefined,
         skill: {
           Load: async (skillInput: { skillId: string; resource?: string }) => this.skillRegistry.Load(snapshots.skills, scenarioId, skillInput),

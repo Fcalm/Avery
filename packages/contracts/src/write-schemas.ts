@@ -45,6 +45,8 @@ export const JobUpsertSchema = z.object({
   city: z.string().max(100).optional(),
   salary: z.string().max(100).optional(),
   experience: z.string().max(100).optional(),
+  education: z.string().max(100).optional(),
+  companySize: z.string().max(100).optional(),
   jobSeekingType: z.enum(JobSeekingTypeValues).optional(),
   channel: z.string().max(100).optional(),
   favorite: z.boolean().optional(),

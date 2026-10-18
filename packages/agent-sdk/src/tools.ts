@@ -67,7 +67,7 @@ export interface JobCollectionFilters {
 
 export interface JobCollectionCandidate {
   candidateId: string;
-  platform: 'boss_zhipin';
+  platform: 'boss_zhipin' | 'beisen' | 'moka' | 'hotjob';
   sourceJobId: string;
   title: string;
   company: string;
@@ -75,19 +75,21 @@ export interface JobCollectionCandidate {
   salary: string;
   experience: string;
   education: string;
-  jobType: 'intern' | 'campus_recruitment' | 'social_recruitment';
+  jobType?: 'intern' | 'campus_recruitment' | 'social_recruitment';
   jd: string;
   url: string;
   alreadySaved: boolean;
   contactStatus: string;
 }
 
-/** 会话级岗位采集端口：候选只进入短寿命缓存，显式 SaveCandidate 后才写岗位库。 */
+/** @deprecated 仅供旧采集实现及历史回归兼容；生产AgentHost不再注入，新工具使用JobLibraryPort。 */
 export interface JobCollectionPort {
   Collect(input: {
     sessionId: string;
-    platforms: Array<'boss_zhipin'>;
+    platforms: Array<'boss_zhipin' | 'beisen' | 'moka' | 'hotjob'>;
     queries: JobCollectionQuery[];
+    /** ATS 来源由企业公开招聘 URL 指定，事实同步与筛选后的会话候选分离。 */
+    sources?: Array<{ url: string; company: string; maxPages?: 5 | 10 | 20 }>;
     filters?: JobCollectionFilters;
     sort: 'relevance' | 'newest';
     maxResults: number;
@@ -100,6 +102,9 @@ export interface JobCollectionPort {
     counts: { collected: number; duplicates: number; filtered: number };
     truncated: boolean;
     warnings: string[];
+    /** ATS 条件匹配统计；语义理解及是否保存仍交给 Agent。 */
+    matching?: { processed: number; reused: number; failed: number };
+    sourceRuns?: Array<{ sourceId: string; ats?: 'beisen' | 'moka' | 'hotjob'; health: string; snapshotStatus: string; transport: string; jobCount: number; nextPage?: number; errors: Array<{ code: string; message: string }> }>;
   }>;
   SaveCandidate(input: {
     sessionId: string;
@@ -107,6 +112,34 @@ export interface JobCollectionPort {
     candidateId: string;
     matchScore?: number;
   }): Promise<{ jobId: string; jobRevision: number }>;
+}
+
+/** Agent列表数量和正文长度集中配置；Host投影与工具Schema共用同一上限。 */
+export const JobLibraryReadLimits = { defaultCount: 20, maxCount: 100, summaryJdChars: 300, detailJdChars: 20000 } as const;
+
+/** 持久化岗位库端口；采集与页面共用任务和入库语义，不返回会话临时候选。 */
+export interface JobLibraryPort {
+  Collect(input: {
+    request: {
+      channel: 'boss_zhipin' | 'company_website'; keyword?: string; targetCount?: number;
+      jobSeekingTypes?: Array<'intern' | 'campus_recruitment' | 'social_recruitment'>;
+      educations?: Array<'college' | 'bachelor' | 'master' | 'doctor'>; city?: string; sourceIds?: string[];
+    };
+    idempotencyKey: string; signal?: AbortSignal; deadline?: number; reconcileOnly?: boolean;
+  }): Promise<{
+    taskId: string; status: 'completed' | 'completed_with_shortage' | 'failed' | 'cancelled' | 'timed_out' | 'interrupted';
+    requestedCount: number; collected: number; inserted: number; existing: number; failedWrites: number;
+    scanned: number; skippedDeleted: number; warnings: string[];
+    sourceCount?: number; warningCount?: number; truncated?: boolean;
+    sources: Array<{ sourceId: string; company: string; status: string; received: number; error?: string }>;
+  }>;
+  Read(input: {
+    jobId?: string; channel?: 'boss_zhipin' | 'company_website' | 'other'; keyword?: string;
+    maxResults?: number; cursor?: string; cities?: string[];
+    jobSeekingTypes?: Array<'intern' | 'campus_recruitment' | 'social_recruitment'>;
+    educations?: Array<'college' | 'bachelor' | 'master' | 'doctor'>;
+    view?: 'all' | 'favorites' | 'pending' | 'applied'; sort?: 'created' | 'score';
+  }): Promise<Record<string, unknown>>;
 }
 
 export interface BossContactPort {
@@ -297,7 +330,9 @@ export interface ToolPorts {
   resumeWrite: ResumeWritePort;
   profileWrite?: ProfileWritePort;
   jobSearch?: JobSearchPort;
+  /** @deprecated 旧模块类型兼容；生产宿主只提供jobLibrary。 */
   jobCollection?: JobCollectionPort;
+  jobLibrary?: JobLibraryPort;
   bossContact?: BossContactPort;
   urlRead?: UrlReadPort;
   browser?: BrowserAutomationPort;

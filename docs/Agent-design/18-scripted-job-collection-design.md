@@ -1,8 +1,16 @@
 # 脚本化岗位采集方案
 
-> 状态：已实现，真实 BOSS 冒烟通过
-> 更新时间：2026-09-11
+> 状态：现行入口已升级为直接入库；下文保留旧版历史实现与验收
+> 更新时间：2026-10-18
 > 适用场景：投递场景 `application`
+
+> 2026-10-18新入口BOSS真实Agent验收通过：CollectJobs新增5条、ReadJobs查询返回库中14条匹配岗位，与数据库核对一致；无逐条SaveJob或实际投递。证据及覆盖边界见20号规划5.5节。
+
+> 现行规范以[20-岗位库筛选与批量采集规划](20-job-library-collection-development-plan.md)第5节及[工具文档](03-tools.md)为准。`CollectJobs`与页面共享批量入库服务，参数为channel、keyword、targetCount、jobSeekingTypes、educations、city、sourceIds；默认100、最多1000，返回持久任务与真实写入摘要。`ReadJobs`按条件分页读取岗位库，或按jobId读取详情。无需逐个SaveJob；会话删除不删除已入库岗位。取消与超时等待写入收尾；旧集合引用明确失效。
+
+## 历史版本：临时候选采集（非现行规范）
+
+以下10候选、15分钟会话缓存及引用保存规则仅用于记录2026-09版本与当时验收，不约束或指导现行工具调用。
 
 ## 1. 目标范围
 
@@ -96,6 +104,36 @@
 
 `alreadySaved` 和 `contactStatus` 由 Host 只读关联现有岗位库与投递记录生成。页面 DOM、浏览器动作和完整调试日志不进入工具结果。
 
+### 3.3 企业 ATS 来源
+
+`platforms` 支持 `beisen`、`moka`、`hotjob`，可同时选择三个 ATS，但不得与 `boss_zhipin` 混用。ATS 必须提供 1–10 个 `sources`，每项包含企业名称和公开招聘 URL，可指定 `maxPages: 5 | 10 | 20`，默认 20。BOSS 仍必须提供非空 `queries`；ATS 可使用 `queries: []` 获取来源中的候选，或以关键词和城市执行本地筛选。缺失的薪资、经验、学历、招聘类型不进行猜测。
+
+Hotjob 先支持公开 pb 分类页：`/SU<租户>/pb/social.html`、`school.html`、`interns.html`、`overseas.html`。门户有多种招聘类别时须指定具体分类，不猜选；旧 wt 或 mc 模板尚不支持。公开表单编码用于列表及详情读取，不携带Cookie或认证头。按30s/30请求预算分段，逐条详情游标与事实库一起原子保存；重复调用相同来源续跑，完整集合前始终partial。申请链接使用公开 `posDetail.html?postId=...&postType=...` 路由。
+
+```json
+{
+  "platforms": ["beisen"],
+  "sources": [{"url": "https://iflytek.zhiye.com/", "company": "科大讯飞", "maxPages": 20}],
+  "queries": [{"keyword": "算法", "city": "合肥"}],
+  "sort": "newest",
+  "maxResults": 10
+}
+```
+
+返回增加 `sourceRuns`，逐来源说明 ATS、健康状态、快照状态、传输方式、岗位数与错误。正常完整、部分、空、授权受阻和不支持来源分别记录；一个来源失败不终止其他来源。候选总上限、缓存期限、会话清理和 SaveJob 引用方式不变。
+
+ATS 使用匿名公开 HTTP 请求，不携带 Cookie、用户登录态或企业授权。完整事实集合写入用户数据目录的 `ats-facts.json`，与用户岗位库分开保存。先采集完整或标记为部分的来源快照，再进行关键词/城市/过滤器筛选；禁止把筛选结果当完整快照关闭岗位。仅非空、成功且完整的快照可关闭缺失岗位；部分、未知、失败和空快照均不关闭。
+
+事实落盘后进入 `AtsCandidateMatcher`。相同平台、查询和过滤条件使用同一匹配分区；新增或关键内容变化重新筛选，未变化复用已有结果。薪资、学历、经验及招聘类型改变也重算相关条件匹配。关闭、unknown、stale 清除匹配记录并排除候选。不同条件各自匹配，最多保留最近 32 组条件；使用 `ats-facts.json.matches.json` 保留跨重启结果，不恢复会话临时候选引用。
+
+工具结果增加 `matching: { processed, reused, failed }`。单岗位匹配异常单独记录，其他岗位继续；匹配存储故障返回明确警告，不回滚事实、不将未筛选岗位作为成功候选。Agent 继续负责简历语义理解与是否保存，不由采集器生成简历匹配分数。
+
+北森从 `/portal/registerSystemInfo` 的 JSON 或 BSGlobal HTML 获取 PortalId，`PageIndex` 从 0 开始，并传入 `DisplayFields` 获取地点、薪资等公开字段。Moka 从标准招聘 URL 提取组织、招聘类型及 siteId，调用匿名可用的公开 Job API；私有加密接口明确返回不支持。具体数据契约与固定 50 企业回归见 [ATS POC](../china-ats-poc-summary.md)。
+
+北森新接口明确返回 Not Found 时检查旧 CMS `/alljob/`。已识别的 `jobsTable` 与 `positionlist-newdefault` 表格按表头映射地点、类别和发布时间，沿公开分页读取 `/zpdetail/<id>` 职责及要求。详情只允许同一公开招聘 origin，不执行页面脚本，不访问登录、内推或申请接口。旧 CMS 使用 `public_portal_html` 传输标记；定制布局不冒充全量，返回不支持原因。
+
+每个来源执行段最多 30s、30 次实际 HTTP 请求（含重试与重定向），页面数仍为 5/10/20。JSON 大列表将 `nextPage`、已收集岗位、总数、租户签名和第一页校验值原子保存至事实库。再次使用同一来源时重读第一页；签名、列表或总数变化、检查点超过 30 分钟则重新从头采集。未遍历完保持 partial，全部遍历且没有异常才发布 complete；完成后删除检查点。`sourceRuns.nextPage` 表示可以继续的来源，不需要模型提交游标或岗位正文。
+
 ## 4. 临时候选缓存
 
 Host 使用以下会话级内存结构保存采集结果：
@@ -167,7 +205,10 @@ CollectJobs Tool
   -> JobCollectionService
       -> PlatformCollectorRegistry
           -> BossCollector
-          -> FuturePlatformCollector
+      -> AtsSourceRunner
+          -> BeisenCareerAdapter
+          -> MokaPublicAdapter
+          -> AtsFactStore (来源/岗位事实/运行记录/隔离)
       -> JobCollectionCache
       -> Job/Application read ports
 ```

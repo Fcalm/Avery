@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { ValidateRecoverySet } from '../../../apps/backend/src/electron/backend/services/database-recovery-service';
+import migrationManifest from '../../../migrations/business/manifest.json';
 
 const require = createRequire(import.meta.url);
 const Database = require('better-sqlite3');
@@ -33,8 +34,9 @@ describe('ValidateRecoverySet', () => {
     ];
     const insert = db.prepare('INSERT INTO schema_migrations(version, checksum) VALUES(?, ?)');
     seeds.forEach((seed, index) => insert.run(index + 1, createHash('sha256').update(seed).digest('hex')));
-    // schema_version 必须大于当前 manifest 的最新版本（v14）才会触发"未来 Schema"拒绝。
-    db.prepare("INSERT INTO workspace_meta(id, schema_version) VALUES('workspace', 15)").run();
+    // 始终使用当前清单之后的版本，避免正常新增迁移使未来版本用例失效。
+    const futureVersion = Math.max(...migrationManifest.migrations.map((entry) => entry.version)) + 1;
+    db.prepare("INSERT INTO workspace_meta(id, schema_version) VALUES('workspace', ?)").run(futureVersion);
     db.close();
 
     expect(() => ValidateRecoverySet(databasePath, join(directory, 'profile.json'))).toThrow('schema version is unsupported');

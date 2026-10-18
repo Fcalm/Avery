@@ -8,6 +8,10 @@ export { ExtractDetails, NormalizeError } from './error-normalizer';
 export type { NormalizedError } from './error-normalizer';
 export { CreateResumeDocumentMarkup } from './resume-template';
 export type { ResumeDocumentInput } from './resume-template';
+export { JobQuerySchema, ParseJobQuery } from './job-query';
+export type { JobQueryInput, JobQuery, JobLibraryView, JobQueryResult } from './job-query';
+export { JobCollectionInputSchema, JobCollectionLimits } from './job-collection';
+export type { JobCollectionInput, JobCollectionRequest, JobCollectionTask, JobCollectionState, JobCollectionSourceResult, RecruitmentSource, CollectedJob, JobImportResult } from './job-collection';
 export {
   ApplicationUpsertSchema, ChatMessageInputSchema, ChatMessagesSchema, ConversationCreateSchema,
   JobUpsertSchema, ProfileItemSchema, ProfileItemsSchema, ResumeUpsertSchema, SettingsSubmitSchema,

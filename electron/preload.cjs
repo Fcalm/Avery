@@ -69,8 +69,15 @@ const workspaceBridge = {
     RenameResume: (id, name, revision, options) => invokeWorkspaceWrite('workspace:resumes-rename', [id, name, revision], options),
     DeleteResume: (id, options) => invokeWorkspaceWrite('workspace:resumes-delete', [id], options),
     UpsertJob: (value, revision, options) => invokeWorkspaceWrite('workspace:jobs-upsert', [value, revision], options),
+    QueryJobs: (query) => invoke('workspace:jobs-query', query),
+    ListRecruitmentSources: () => invoke('workspace:job-collection-sources'),
+    SetRecruitmentSourceEnabled: (id, enabled, options) => invokeWorkspaceWrite('workspace:job-collection-source-enabled', [id, enabled], options),
+    StartJobCollection: (input, options) => invokeWorkspaceWrite('workspace:job-collection-start', [input], options),
+    GetJobCollectionTask: (id) => invoke('workspace:job-collection-task', id),
+    CancelJobCollection: (id, options) => invokeWorkspaceWrite('workspace:job-collection-cancel', [id], options),
     SetJobFavorite: (id, favorite, revision, options) => invokeWorkspaceWrite('workspace:jobs-set-favorite', [id, favorite, revision], options),
     DeleteJob: (id, options) => invokeWorkspaceWrite('workspace:jobs-delete', [id], options),
+    DeleteJobs: (ids, options) => invokeWorkspaceWrite('workspace:jobs-delete-many', [ids], options),
     UpsertApplication: (value, revision, options) => invokeWorkspaceWrite('workspace:applications-upsert', [value, revision], options),
     MoveApplicationStatus: (id, status, revision, options) => invokeWorkspaceWrite('workspace:applications-move-status', [id, status, revision], options),
     DeleteApplication: (id, options) => invokeWorkspaceWrite('workspace:applications-delete', [id], options),
@@ -131,3 +138,5 @@ electron_1.contextBridge.exposeInMainWorld('averyWindow', {
     OpenWorkspaceDirectory: () => invoke('app:open-workspace-directory'),
     SetLoginItemSettings: (openAtLogin) => invoke('app:set-login-item', openAtLogin),
 });
+    /** 只写入纯文本；来源与长度由主进程校验，不向页面暴露 Electron clipboard。 */
+    WriteClipboardText: (text) => invoke('app:write-clipboard-text', text),

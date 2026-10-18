@@ -91,6 +91,7 @@ interface AgentToolDefinition<TInput, TOutput> {
 | UTF-8 文件读取 | `Read`、`Glob`、`Grep` |
 | 档案 | `ReadProfile`、`UpdateProfile` |
 | 简历 | `ReadResume`、`CreateResume`、`UpdateResume` |
+| 已有岗位库只读查询 | `ReadJobs` |
 | Run Todo | `CreateTodo`、`UpdateTodo`、`DeleteTodo`、`ReadTodo` |
 | Skill 渐进披露 | `LoadSkill` |
 | 用户交互 | `AskUserQuestion` |
@@ -129,7 +130,7 @@ interface AgentToolDefinition<TInput, TOutput> {
     'Read', 'Glob', 'Grep', 'ReadProfile', 'ReadResume',
     'CreateTodo', 'UpdateTodo', 'DeleteTodo', 'ReadTodo', 'AskUserQuestion', 'LoadSkill',
     'CreateCronTask', 'ReadCronTask', 'UpdateCronTask', 'DeleteCronTask',
-    'ExportResumeFile', 'CollectJobs', 'ContactBossJobs', 'ReadApplicationStatus', 'SaveJob', 'UpdateApplicationStatus',
+    'ExportResumeFile', 'CollectJobs', 'ReadJobs', 'ContactBossJobs', 'ReadApplicationStatus', 'SaveJob', 'UpdateApplicationStatus',
     'BrowserNavigate', 'BrowserSnapshot', 'BrowserScreenshot', 'BrowserReadPage', 'BrowserClick',
     'BrowserFill', 'BrowserFillForm', 'BrowserValidateForm', 'BrowserSelect', 'BrowserSetChecked', 'BrowserPressKey',
     'BrowserUploadFile', 'BrowserWait', 'BrowserSwitchTab', 'BrowserGoBack'
@@ -141,7 +142,9 @@ interface AgentToolDefinition<TInput, TOutput> {
 
 `ExportResumeFile` 属于投递场景，用于把已绑定的简历准备成可上传文件；默认场景继续通过简历页面导出文件。工具契约见 5.2 节。
 
-`CollectJobs` 使用 Host 内置平台适配器采集最多 10 个 BOSS 候选，只写入 15 分钟的会话内存缓存，不自动写岗位库。Agent 判断后使用 `SaveJob(collectionId, candidateId)` 保存选中候选；浏览器直接观察岗位的完整字段模式作为独立 Schema 分支保留。
+`CollectJobs`与岗位页共享确定性采集和直接入库服务，仅投递场景开放，无需绑定简历。参数为`channel`、`keyword`、`targetCount`、`jobSeekingTypes`、`educations`、可选`city/sourceIds`，默认100、最多1000；BOSS沿用当前授权浏览器，企业官网省略sourceIds时使用应用维护的已启用来源。工具声明local_write、业务幂等、串行任务锁，返回taskId、实际新增/已有/失败数量及来源摘要，不返回全部JD。取消、超时和失败保留已落盘部分并等待在途写入收尾；不发送或投递。
+
+`ReadJobs`在默认及投递场景均开放，只读持久岗位库；支持渠道、关键词、城市、求职类型、学历、视图、排序、maxResults及cursor，默认20、最多100。后续页必须保留相同筛选和数量，或单独使用jobId获取详情。列表JD上限300字符、详情20000字符，截断由truncatedFields标示；包含已有投递和BOSS联系状态。已入库岗位无需再SaveJob，旧collectionId/candidateId引用返回明确失效错误；SaveJob仍支持浏览器直接观察的完整字段模式。实现与验收见[岗位库采集规划](20-job-library-collection-development-plan.md)第5节。
 
 `ContactBossJobs` 每次串行联系 1 至 10 个已保存的 BOSS 岗位，使用平台预设首条招呼语或冻结的自定义消息，并可向全部目标发送同一张已授权 PNG/JPEG 图片。它只接受岗位 ID、消息模式和资源 ID；URL、DOM、选择器、页面脚本与重试策略均由 Host 持有。工具要求有效简历绑定和已授权个人浏览器，并通过批次提案确认、发送前检查点、送达验证和 `uncertain` 停止规则防止重复发送。
 
@@ -154,7 +157,7 @@ interface AgentToolDefinition<TInput, TOutput> {
 | --- | --- | --- |
 | 强制绑定 | `UpdateResume`、`UpdateApplicationStatus`、`ContactBossJobs` | 三者声明 `requiredResources: ['bound_resume']`，由 Harness 统一门禁；前者还必须匹配绑定 ID，投递状态自动写入绑定 ID，BOSS 联系批次冻结简历 revision |
 | 渐进读取并绑定 | `ReadResume` | 无参数只返回无正文索引；传入索引中的 `resumeId` 才返回正文并建立会话绑定 |
-| 不绑定 | `CreateResume`、`CollectJobs`、`ReadApplicationStatus`、`SaveJob`、浏览器搜索/读取/普通交互、Todo、Skill、Profile、CronTask 管理 | 这些动作本身不以简历作为数据归属 |
+| 不绑定 | `CreateResume`、`CollectJobs`、`ReadJobs`、`ReadApplicationStatus`、`SaveJob`、浏览器搜索/读取/普通交互、Todo、Skill、Profile、CronTask 管理 | 这些动作本身不以简历作为数据归属 |
 | 独立文件授权 | `BrowserUploadFile` | 需要 Run 中明确授权的 `fileId`；绑定简历不会自动授权某个 PDF/图片文件 |
 
 `CreateCronTask` 本身不强制绑定简历；只有定时任务实际执行到读取简历或写入投递记录时才检查冻结的简历授权。这样工作日定时搜索和保存岗位可以独立运行，而实际投递仍保留可追踪的简历关联。
@@ -500,7 +503,7 @@ interface ToolEnvelope<T> {
 - 模型可见工具名全部符合 PascalCase 规则且跨 Provider 可接受。
 - 默认场景按意图进一步收窄工具，不暴露任何投递或浏览器能力。
 - 0.2.0 默认场景不注册、不展示也不执行 `SearchJobs`、`ReadUrl`。
-- 默认场景暴露冻结的 18 个工具；投递场景暴露冻结的 36 个工具，不包含 `CreateResume`、`UpdateResume`、`UpdateProfile`、`SearchJobs` 或 `ReadUrl`。
+- 默认场景暴露冻结的19个工具；投递场景暴露冻结的37个工具，不包含 `CreateResume`、`UpdateResume`、`UpdateProfile`、`SearchJobs` 或 `ReadUrl`。
 - CronTask 创建确认前数据库与 OS 调度均无新增记录；无人值守 Run 即使恢复旧快照也不能调用 CronTask 工具。
 - 多次逾期只执行最近 occurrence；既有 Run 活跃、浏览器长期占用、登录或验证码接管均写入明确的 `missed`/`needsAttention` 原因。
 - 投递 Agent 在浏览器执行前读取投递状态，并只在有效回执后更新 `applied`。

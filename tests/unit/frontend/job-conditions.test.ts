@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { BuildCollectPrompt, DefaultJobConditions, JobConditionsStorageKey, LoadJobConditions, SaveJobConditions, type JobConditions } from '../../../src/features/job/api/jobConditions';
+import { BuildCollectPrompt, BuildJobLibraryQuery, DefaultJobConditions, JobConditionsStorageKey, LoadJobConditions, SaveJobConditions, type JobConditions } from '../../../src/features/job/api/jobConditions';
 
 /** 应用内缓存以 localStorage 为唯一后端；用内存实现替换，避免测试依赖真实浏览器环境。 */
 function StubStorage() {
@@ -16,6 +16,13 @@ function StubStorage() {
 afterEach(() => { vi.unstubAllGlobals(); });
 
 describe('岗位采集条件的应用内缓存', () => {
+  it('默认条件不限制岗位，具体条件映射到共享查询；四种视图仅改变状态条件', () => {
+    expect(BuildJobLibraryQuery(DefaultJobConditions, 'all', 'score', 1)).toMatchObject({ channels: [], cities: [], keyword: '', page: 1, pageSize: 20 });
+    for (const view of ['all', 'favorites', 'pending', 'applied'] as const) {
+      expect(BuildJobLibraryQuery({ ...DefaultJobConditions, keyword: ' AGENT ', channel: 'boss_zhipin', salary: '25k', education: 'bachelor' }, view, 'created', 2))
+        .toMatchObject({ keyword: 'AGENT', channels: ['boss_zhipin'], minMonthlySalary: 25000, educations: ['bachelor'], view, sort: 'created', page: 2 });
+    }
+  });
   it('没有缓存或缓存不可解析时回退默认条件', () => {
     const entries = StubStorage();
     expect(LoadJobConditions()).toEqual(DefaultJobConditions);

@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
-import type { DesktopAgentBridge, DesktopEvaluationBridge, WorkspaceBridge, WriteCommandOptions } from '@avery/contracts';
+import type { DesktopAgentBridge, DesktopEvaluationBridge, WorkspaceBridge, WriteCommandOptions, ResultEnvelope } from '@avery/contracts';
 
 type Invoke = (channel: string, ...args: unknown[]) => Promise<unknown>;
 const invoke: Invoke = (channel, ...args) => ipcRenderer.invoke(channel, ...args);
@@ -75,8 +75,15 @@ const workspaceBridge: WorkspaceBridge = {
   RenameResume: (id, name, revision, options) => invokeWorkspaceWrite('workspace:resumes-rename', [id, name, revision], options) as ReturnType<WorkspaceBridge['RenameResume']>,
   DeleteResume: (id, options) => invokeWorkspaceWrite('workspace:resumes-delete', [id], options) as ReturnType<WorkspaceBridge['DeleteResume']>,
   UpsertJob: (value, revision, options) => invokeWorkspaceWrite('workspace:jobs-upsert', [value, revision], options) as ReturnType<WorkspaceBridge['UpsertJob']>,
+  QueryJobs: (query) => invoke('workspace:jobs-query', query) as ReturnType<WorkspaceBridge['QueryJobs']>,
+  ListRecruitmentSources: () => invoke('workspace:job-collection-sources') as ReturnType<WorkspaceBridge['ListRecruitmentSources']>,
+  SetRecruitmentSourceEnabled: (id, enabled, options) => invokeWorkspaceWrite('workspace:job-collection-source-enabled', [id, enabled], options) as ReturnType<WorkspaceBridge['SetRecruitmentSourceEnabled']>,
+  StartJobCollection: (input, options) => invokeWorkspaceWrite('workspace:job-collection-start', [input], options) as ReturnType<WorkspaceBridge['StartJobCollection']>,
+  GetJobCollectionTask: (id) => invoke('workspace:job-collection-task', id) as ReturnType<WorkspaceBridge['GetJobCollectionTask']>,
+  CancelJobCollection: (id, options) => invokeWorkspaceWrite('workspace:job-collection-cancel', [id], options) as ReturnType<WorkspaceBridge['CancelJobCollection']>,
   SetJobFavorite: (id, favorite, revision, options) => invokeWorkspaceWrite('workspace:jobs-set-favorite', [id, favorite, revision], options) as ReturnType<WorkspaceBridge['SetJobFavorite']>,
   DeleteJob: (id, options) => invokeWorkspaceWrite('workspace:jobs-delete', [id], options) as ReturnType<WorkspaceBridge['DeleteJob']>,
+  DeleteJobs: (ids, options) => invokeWorkspaceWrite('workspace:jobs-delete-many', [ids], options) as ReturnType<WorkspaceBridge['DeleteJobs']>,
   UpsertApplication: (value, revision, options) => invokeWorkspaceWrite('workspace:applications-upsert', [value, revision], options) as ReturnType<WorkspaceBridge['UpsertApplication']>,
   MoveApplicationStatus: (id, status, revision, options) => invokeWorkspaceWrite('workspace:applications-move-status', [id, status, revision], options) as ReturnType<WorkspaceBridge['MoveApplicationStatus']>,
   DeleteApplication: (id, options) => invokeWorkspaceWrite('workspace:applications-delete', [id], options) as ReturnType<WorkspaceBridge['DeleteApplication']>,
@@ -139,3 +146,5 @@ contextBridge.exposeInMainWorld('averyWindow', {
   OpenWorkspaceDirectory: () => invoke('app:open-workspace-directory') as Promise<boolean>,
   SetLoginItemSettings: (openAtLogin: boolean) => invoke('app:set-login-item', openAtLogin) as Promise<boolean>,
 });
+  /** 只写入纯文本；来源与长度由主进程校验，不向页面暴露 Electron clipboard。 */
+  WriteClipboardText: (text: string) => invoke('app:write-clipboard-text', text) as Promise<ResultEnvelope<boolean>>,

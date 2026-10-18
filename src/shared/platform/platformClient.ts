@@ -67,6 +67,13 @@ function ResolveWriteOptions(options?: WriteCommandOptions): WriteCommandOptions
 
 /** 统一平台客户端：页面与 feature api 层访问桌面 Bridge 的唯一入口，全部返回统一结果信封。 */
 export const platformClient = {
+  desktop: {
+    /** 系统剪贴板走主进程写入，避免依赖被桌面权限策略禁止的网页 API。 */
+    WriteClipboardText: (text: string) => CallBridge(() => {
+      if (!window.averyWindow) throw new AppError(ErrorCode.INTERNAL_ERROR, '请使用 Avery 桌面客户端复制。');
+      return Unwrap(window.averyWindow.WriteClipboardText(text));
+    }),
+  },
   agent: {
     Configure: (config: Parameters<DesktopAgentBridge['Configure']>[0]) => CallBridge(() => RequireAgent().Configure(config)),
     TestConnection: (config: Parameters<DesktopAgentBridge['TestConnection']>[0]) => CallBridge(() => RequireAgent().TestConnection(config)),
@@ -102,6 +109,12 @@ export const platformClient = {
     OnStream: (listener: Parameters<DesktopAgentBridge['OnStream']>[0]) => RequireAgent().OnStream(listener),
   },
   workspace: {
+    QueryJobs: (query: Parameters<WorkspaceBridge['QueryJobs']>[0]) => CallBridge(() => RequireWorkspace().QueryJobs(query)),
+    ListRecruitmentSources: () => CallBridge(() => RequireWorkspace().ListRecruitmentSources()),
+    SetRecruitmentSourceEnabled: (id: string, enabled: boolean, options?: WriteCommandOptions) => CallBridge(() => RequireWorkspace().SetRecruitmentSourceEnabled(id, enabled, ResolveWriteOptions(options))),
+    StartJobCollection: (input: Parameters<WorkspaceBridge['StartJobCollection']>[0], options?: WriteCommandOptions) => CallBridge(() => RequireWorkspace().StartJobCollection(input, ResolveWriteOptions(options))),
+    GetJobCollectionTask: (id?: string) => CallBridge(() => RequireWorkspace().GetJobCollectionTask(id)),
+    CancelJobCollection: (id: string, options?: WriteCommandOptions) => CallBridge(() => RequireWorkspace().CancelJobCollection(id, ResolveWriteOptions(options))),
     GetStatus: () => CallBridge(() => RequireWorkspace().GetStatus()),
     GetViewModel: () => CallBridge(() => RequireWorkspace().GetViewModel()),
     GetSettings: () => CallBridge(() => RequireWorkspace().GetSettings()),
@@ -120,6 +133,7 @@ export const platformClient = {
     UpsertJob: (job: Parameters<WorkspaceBridge['UpsertJob']>[0], expectedRevision?: number, options?: WriteCommandOptions) => CallBridge(() => RequireWorkspace().UpsertJob(job, expectedRevision, ResolveWriteOptions(options))),
     SetJobFavorite: (id: string, favorite: boolean, expectedRevision?: number, options?: WriteCommandOptions) => CallBridge(() => RequireWorkspace().SetJobFavorite(id, favorite, expectedRevision, ResolveWriteOptions(options))),
     DeleteJob: (id: string, options?: WriteCommandOptions) => CallBridge(() => RequireWorkspace().DeleteJob(id, ResolveWriteOptions(options))),
+    DeleteJobs: (ids: string[], options?: WriteCommandOptions) => CallBridge(() => RequireWorkspace().DeleteJobs(ids, ResolveWriteOptions(options))),
     UpsertApplication: (application: Parameters<WorkspaceBridge['UpsertApplication']>[0], expectedRevision?: number, options?: WriteCommandOptions) => CallBridge(() => RequireWorkspace().UpsertApplication(application, expectedRevision, ResolveWriteOptions(options))),
     MoveApplicationStatus: (id: string, status: string, expectedRevision?: number, options?: WriteCommandOptions) => CallBridge(() => RequireWorkspace().MoveApplicationStatus(id, status, expectedRevision, ResolveWriteOptions(options))),
     DeleteApplication: (id: string, options?: WriteCommandOptions) => CallBridge(() => RequireWorkspace().DeleteApplication(id, ResolveWriteOptions(options))),
