@@ -47,6 +47,7 @@ function OnboardingPage({ onComplete }: { onComplete: () => void }) {
   const [roles, setRoles] = useState<string[]>(draft?.roles ?? ['前端开发工程师']);
   const [city, setCity] = useState(draft?.city ?? '');
   const [testing, setTesting] = useState(false);
+  const [completing, setCompleting] = useState(false);
   const [connectionPassed, setConnectionPassed] = useState(Boolean(draft?.apiConfigurationSaved));
   const [apiConfigurationSaved, setApiConfigurationSaved] = useState(Boolean(draft?.apiConfigurationSaved));
   const [formError, setFormError] = useState<string | null>(null);
@@ -65,12 +66,14 @@ function OnboardingPage({ onComplete }: { onComplete: () => void }) {
   }, [step, nickname, provider, baseUrl, model, contextLength, contextLimitMode, jobType, experience, education, industry, roles, city, apiConfigurationSaved]);
 
   function ToggleRole(role: string) { setRoles((current) => current.includes(role) ? current.filter((item) => item !== role) : current.length < 3 ? [...current, role] : current); }
-  function ValidateCurrentStep() {
+  function ValidateCurrentStep(requireSavedConfiguration = true) {
     if (step === 1 && !nickname.trim()) { setFormError('请填写账户昵称'); return false; }
     if (step === 2) {
-      if (!apiKey.trim()) { setFormError('请填写 API Key'); return false; }
+      // 已保存的凭据不回传 Renderer；恢复草稿后允许空白密钥框继续完成引导。
+      if (!apiKey.trim() && (!requireSavedConfiguration || !apiConfigurationSaved)) { setFormError('请填写 API Key'); return false; }
       if (provider === '自定义' && (!baseUrl.trim() || !model.trim())) { setFormError('请完整填写自定义服务配置'); return false; }
       if (contextLimitMode === 'custom' && !contextLength.trim()) { setFormError('请填写自定义上下文限制'); return false; }
+      if (requireSavedConfiguration && (!connectionPassed || !apiConfigurationSaved)) { setFormError('请先点击「测试连接」，通过并保存 API 配置后再继续'); return false; }
     }
     if (step === 5 && !education) { setFormError('请选择学历'); return false; }
     if (step === 6 && (!industry.trim() || roles.length === 0)) { setFormError('请填写期望行业并选择至少一个目标岗位'); return false; }
@@ -78,7 +81,7 @@ function OnboardingPage({ onComplete }: { onComplete: () => void }) {
     return true;
   }
   async function TestConnection() {
-    if (!ValidateCurrentStep()) return;
+    if (!ValidateCurrentStep(false)) return;
     if (!IsDesktopAgentAvailable()) { ShowNotice('请在桌面客户端中测试 API 连接'); return; }
     setTesting(true);
     try {
@@ -94,8 +97,15 @@ function OnboardingPage({ onComplete }: { onComplete: () => void }) {
     finally { setTesting(false); }
   }
   async function Complete() {
+    if (completing) return;
     if (!ValidateCurrentStep()) return;
-    if (!connectionPassed || !apiConfigurationSaved) { ShowNotice('请先返回 API 配置步骤并完成连接测试'); return; }
+    if (!connectionPassed || !apiConfigurationSaved) {
+      // 兼容旧版本留下的完成页草稿，直接返回可修正配置的步骤，不让用户停在无效入口。
+      setStep(2);
+      setFormError('请先点击「测试连接」，通过并保存 API 配置后再继续');
+      return;
+    }
+    setCompleting(true);
     try {
       const preferenceContent = `求职类型：${jobType}\n工作经验：${experience}\n最高学历：${education}\n期望行业：${industry}\n目标岗位：${roles.join('、')}\n求职城市：${city || '不限'}`;
       const preference: ProfileItem = { id: 'profile-job-preference', category: 'job_intention', title: '求职意向', content: preferenceContent, updatedAt: Date.now() };
@@ -106,7 +116,8 @@ function OnboardingPage({ onComplete }: { onComplete: () => void }) {
       setSettings(() => completedSettings);
       ShowNotice('设置已完成，API 配置已加密保存到桌面端');
       onComplete();
-    } catch (error) { ShowNotice(error instanceof Error ? error.message : 'API 配置保存失败'); }
+    } catch (error) { ShowNotice(error instanceof Error ? error.message : '首次设置保存失败', 'error'); }
+    finally { setCompleting(false); }
   }
   const title = ['欢迎来到 Avery', '怎么称呼你？', '连接你的模型服务', '这次主要寻找什么机会？', '你的工作经验处于哪个阶段？', '目前的最高学历是？', '想去哪里，做什么？', '你的求职城市是？', '准备就绪'][step];
   const description = ['让每一次经历，都成为投向理想岗位的一封好信。', '这个昵称只会显示在本地应用中。', '可使用 DeepSeek、GLM-5.3-Flash、MiMo，或填写自定义 OpenAI 兼容服务。', '它将帮助我们在后续界面中呈现更贴近你的内容。', '工作经验会影响简历建议的侧重点。', '用于整理教育背景信息。', '目标岗位最多选择三个，后续可在档案中补充。', '这一步可跳过，后续仍可补充。', '你可以从求职助手开始，继续补齐档案与简历。'][step];
@@ -120,7 +131,7 @@ function OnboardingPage({ onComplete }: { onComplete: () => void }) {
     {step === 6 && <div className="onboarding-form"><FormField label="期望行业"><input value={industry} onChange={(event) => setIndustry(event.target.value)} /></FormField><span className="field-label">目标岗位（最多三项）</span><div className="chip-options">{['前端开发工程师', '数据可视化工程师', '数据产品经理', '产品实习生'].map((role) => <button key={role} className={roles.includes(role) ? 'selected' : ''} aria-pressed={roles.includes(role)} onClick={() => ToggleRole(role)}>{roles.includes(role) ? '✓ ' : ''}{role}</button>)}</div></div>}
     {step === 7 && <div className="onboarding-form"><FormField label="求职城市（可选）"><input value={city} onChange={(event) => setCity(event.target.value)} /></FormField><div className="chip-options">{['北京', '上海', '杭州', '全国 / 不限'].map((item) => <button key={item} type="button" onClick={() => setCity(item === '全国 / 不限' ? '' : item)}>{item}</button>)}</div></div>}
     {step === 8 && <div className="setup-summary"><div><span>昵称</span><b>{nickname}</b></div><div><span>求职方向</span><b>{industry} · {roles.join('、')}</b></div><div><span>基础信息</span><b>{jobType} · {experience} · {education} · {city || '不限'}</b></div><div><span>模型服务</span><b>{provider} · 配置将加密保存在本机</b></div></div>}
-  </div><div className="onboarding-actions"><Button variant="quiet" disabled={step === 0} onClick={() => setStep((current) => current - 1)}>上一步</Button>{isLast ? <Button variant="primary" onClick={() => void Complete()}>进入 Avery</Button> : <Button variant="primary" onClick={() => { if (ValidateCurrentStep()) setStep((current) => current + 1); }}>{step === 7 ? '跳过或下一步' : '下一步'}</Button>}</div></div></div>;
+  </div><div className="onboarding-actions"><Button variant="quiet" disabled={step === 0 || completing || testing} onClick={() => setStep((current) => current - 1)}>上一步</Button>{isLast ? <Button variant="primary" disabled={completing} onClick={() => void Complete()}>{completing ? '保存中…' : '进入 Avery'}</Button> : <Button variant="primary" disabled={testing} onClick={() => { if (ValidateCurrentStep()) setStep((current) => current + 1); }}>{step === 7 ? '跳过或下一步' : '下一步'}</Button>}</div></div></div>;
 }
 
 function OptionGrid({ value, onChange, options }: { value: string; onChange: (value: string) => void; options: string[] }) { return <div className="option-grid">{options.map((option) => <button type="button" key={option} className={value === option ? 'selected' : ''} aria-pressed={value === option} onClick={() => onChange(option)}>{value === option && <span>✓</span>}{option}</button>)}</div>; }

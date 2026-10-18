@@ -60,7 +60,7 @@ function App() {
       root.style.removeProperty('--window-frame-height');
     };
   }, []);
-  return <UiStoreProvider><AppContent /></UiStoreProvider>;
+  return <UiStoreProvider><AppContent /><AppNotice /></UiStoreProvider>;
 }
 
 /** 应用启动阶段的加载占位，替代白屏。 */
@@ -76,7 +76,7 @@ function ErrorScreen({ onRetry }: { onRetry: () => void }) {
 function AppContent() {
   const workspace = useWorkspaceData();
   const { settings, setSettings } = useSettingsStore();
-  const { profileConflict, setProfileConflict, notice, ShowNotice, HideNotice, activeConversationId, setActiveConversationId } = useUiStore();
+  const { profileConflict, setProfileConflict, ShowNotice, activeConversationId, setActiveConversationId } = useUiStore();
   const profiles = useProfiles();
   const reloadProfiles = useReloadProfiles({ onFailure: ShowNotice });
   const keepProfiles = useKeepProfiles({ onFailure: ShowNotice });
@@ -163,13 +163,18 @@ function AppContent() {
     >
       本地工作空间的档案文件（profile.json）已被其他程序修改。请选择保留磁盘版本，还是覆盖为应用中的最新版本。
     </Modal>
-    {/* 原型同款通知：底部居中药丸，图标随语气区分；点击动作先收起再执行 */}
-    {notice && <div key={notice.id} className={`app-toast${notice.action ? ' has-action' : ''}`} role="status" aria-live="polite">
+  </>;
+}
+
+/** 通知常驻于路由分支之外，确保首次引导和启动错误页也能呈现操作反馈。 */
+function AppNotice() {
+  const { notice, HideNotice } = useUiStore();
+  if (!notice) return null;
+  return <div key={notice.id} className={`app-toast${notice.action ? ' has-action' : ''}`} role="status" aria-live="polite">
       <Icon name={notice.tone === 'error' ? 'error' : notice.tone === 'pending' ? 'loading' : 'check-circle'} size={14} />
       <span>{notice.message}</span>
       {notice.action && <button className="app-toast-act" type="button" onClick={() => { HideNotice(); notice.action?.run(); }}>{notice.action.label}</button>}
-    </div>}
-  </>;
+    </div>;
 }
 
 export { App };

@@ -1,6 +1,6 @@
 import { useCallback } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { platformClient } from '../../../shared/platform/platformClient';
+import { platformClient, Unwrap } from '../../../shared/platform/platformClient';
 import type { SettingsDraft } from '../../../types/domain';
 import { useWorkspaceData } from '../../workspace/api/useWorkspaceData';
 import { DefaultSettings, WORKSPACE_QUERY_KEY, type WorkspaceData } from '../../workspace/api/workspaceData';
@@ -47,7 +47,8 @@ export function useSettingsActions() {
       persistTimer = null;
     }
     const { apiKey: _apiKey, workspaceName: _workspaceName, ...safeSettings } = settings;
-    await platformClient.workspace.SaveSettings(safeSettings);
+    // Bridge 的业务失败以结果信封返回；确认成功后才能更新完成状态并离开引导页。
+    await Unwrap(platformClient.workspace.SaveSettings(safeSettings));
     queryClient.setQueryData<WorkspaceData>(WORKSPACE_QUERY_KEY, (old) => old ? { ...old, settings: { ...settings, apiKey: '' } } : old);
     latestSettings = null;
   }, [queryClient]);
