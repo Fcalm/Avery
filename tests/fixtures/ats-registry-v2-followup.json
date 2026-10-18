@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "sources": [
+    { "company": "大疆-实际招聘入口", "url": "https://apply.careers.dji.com/social-recruitment/dji/170070" },
+    { "company": "腾讯-脚本补证", "url": "https://careers.tencent.com/" },
+    { "company": "vivo-脚本补证", "url": "https://hr.vivo.com/" },
+    { "company": "中国石化-脚本补证", "url": "https://job.sinopec.com/" },
+    { "company": "小米-公开页面", "url": "https://hr.xiaomi.com/website" },
+    { "company": "比亚迪-公开页面", "url": "https://job.byd.com/portal/pc" },
+    { "company": "OPPO-脚本补证", "url": "https://careers.oppo.com/" },
+    { "company": "无问芯穹-官网", "url": "https://www.infini-ai.com/" }
+  ]
+}

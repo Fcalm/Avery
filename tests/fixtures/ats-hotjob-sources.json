@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "frozenAt": "2026-09-27",
+  "sources": [
+    { "company": "中国中车社会招聘", "url": "https://crrc.hotjob.cn/SU64d47c466202cc36e27a52d4/pb/social.html", "expect": "complete" },
+    { "company": "中国科学院力学研究所", "url": "https://wecruit.hotjob.cn/SU67b689391eb80555b7a914d0/pb/school.html", "expect": "complete" },
+    { "company": "中国中车门户", "url": "https://crrc.hotjob.cn/", "expect": "SOURCE_MULTIPLE_PORTALS" }
+  ]
+}

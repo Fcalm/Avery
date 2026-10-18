@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "frozenAt": "2026-09-27",
+  "sources": [
+    { "company": "幻方量化", "url": "https://www.high-flyer.cn/join", "expected": "access_controlled" },
+    { "company": "江苏省规划设计集团", "url": "https://www.jurp.net/job.php", "expected": "multiple_portals" },
+    { "company": "Klook", "url": "https://www.klookcareers.com/social-recruitment/klookcareers/100000176", "expected": "anonymous_access_failure" },
+    { "company": "游卡网络", "url": "https://www.yokagames.com/", "expected": "collected" }
+  ]
+}
