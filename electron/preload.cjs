@@ -128,6 +128,13 @@ electron_1.contextBridge.exposeInMainWorld('averyAgent', agentBridge);
 electron_1.contextBridge.exposeInMainWorld('averyWorkspace', workspaceBridge);
 electron_1.contextBridge.exposeInMainWorld('averyEvaluation', evaluationBridge);
 electron_1.contextBridge.exposeInMainWorld('averyWindow', {
+    /** 仅查询/订阅宿主客户区尺寸，Renderer 不直接访问窗口或屏幕 API。 */
+    GetFrameSize: () => invoke('window:get-frame-size'),
+    OnFrameSizeChange: (listener) => {
+        const handler = (_event, size) => listener(size);
+        electron_1.ipcRenderer.on('window:frame-size-change', handler);
+        return () => electron_1.ipcRenderer.removeListener('window:frame-size-change', handler);
+    },
     Minimize: () => invoke('window:minimize'), ToggleMaximize: () => invoke('window:toggle-maximize'), IsMaximized: () => invoke('window:is-maximized'), Close: () => invoke('window:close'),
     OnMaximizedChange: (listener) => {
         const handler = (_event, maximized) => listener(maximized === true);

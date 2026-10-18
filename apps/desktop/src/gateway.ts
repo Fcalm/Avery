@@ -157,7 +157,19 @@ export function RegisterGeneralControls({ webContentsGetter, workspacePath, ipcM
 }
 
 /** 无边框窗口控制也必须经过相同来源验证，绝不把 BrowserWindow 暴露给 Renderer。 */
-export function RegisterWindowControls({ webContentsGetter, ipcMainApi = ipcMain, maximize }: { webContentsGetter: () => BrowserWindow | undefined; ipcMainApi?: IpcMainPort; maximize?: { Toggle: () => boolean; IsMaximized: () => boolean } }): void {
+export function RegisterWindowControls({ webContentsGetter, ipcMainApi = ipcMain, maximize, frameSize }: { webContentsGetter: () => BrowserWindow | undefined; ipcMainApi?: IpcMainPort; maximize?: { Toggle: () => boolean; IsMaximized: () => boolean }; frameSize?: () => { width: number; height: number; unit: 'physical' } | undefined }): void {
+  // 只返回当前主窗口的尺寸；不接收窗口标识或几何参数，避免 Renderer 扩大系统能力范围。
+  ipcMainApi.handle('window:get-frame-size', (event, ...args: unknown[]) => {
+    if (args.length || !ValidateSender(event, webContentsGetter)) throw new Error('Invalid window frame request');
+    const window = webContentsGetter();
+    if (!window || window.isDestroyed()) throw new Error('Window unavailable');
+    const physicalSize = frameSize?.();
+    if (physicalSize) return physicalSize;
+    // 原生窗口边界使用 DIP，页面布局使用 CSS 像素；必须扣除页面缩放而非复用 Renderer 已取整的视口。
+    const bounds = window.getContentBounds();
+    const zoom = window.webContents.getZoomFactor();
+    return { width: bounds.width / zoom, height: bounds.height / zoom, unit: 'css' };
+  });
   const actions: Record<(typeof WindowControlChannels)[number], (window: BrowserWindow) => boolean> = {
     'window:minimize': (window) => { window.minimize(); return true; },
     // 宿主提供受控的最大化实现（透明 acrylic 窗口的原生最大化不可靠）；未提供时回退原生行为

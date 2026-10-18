@@ -9,6 +9,8 @@ import { MigrateLegacyUserData } from './brand-migration';
 
 const smokeStartedAt = Date.now();
 let mainWindow: BrowserWindow | undefined;
+/** WM_SIZE 客户区尺寸使用物理像素，避免经 DIP/CSS 多次取整后把描边推到窗口外。 */
+let nativeClientSize: { width: number; height: number; unit: 'physical' } | undefined;
 let backendHost: ReturnType<typeof CreateBackendHost> | undefined;
 let rendererLoaded = false;
 let lifecycleRunning = false;
@@ -202,6 +204,22 @@ function createWindow(): BrowserWindow {
     webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true, preload: join(__dirname, '..', '..', '..', 'electron', 'preload.cjs') },
   });
   mainWindow = window;
+  nativeClientSize = undefined;
+  if (process.platform === 'win32') {
+    const WmSize = 0x0005;
+    const SizeMinimized = 1;
+    // 只观察原生消息，不拦截系统的调整大小流程；最小化时保留最后的可见客户区尺寸。
+    window.hookWindowMessage(WmSize, (wParam, lParam) => {
+      if (wParam.length < 4 || lParam.length < 4 || wParam.readUInt32LE(0) === SizeMinimized) return;
+      const packedSize = lParam.readUInt32LE(0);
+      const width = packedSize & 0xffff;
+      const height = packedSize >>> 16;
+      if (!width || !height) return;
+      nativeClientSize = { width, height, unit: 'physical' };
+      // 原生宽高变化一个像素时，CSS 视口未必触发 resize，因此主动下发最新边界。
+      if (!window.webContents.isDestroyed()) window.webContents.send('window:frame-size-change', nativeClientSize);
+    });
+  }
   windowMaximized = false;
   windowRestoreBounds = undefined;
   window.setMenuBarVisibility(false);
@@ -456,7 +474,7 @@ async function runInstalledVisualScenario(outputDirectory: string): Promise<Reco
       desktopCapabilities: adapters,
     });
     RegisterGateway({ backendHost, webContentsGetter: () => mainWindow, notificationIconPath: resolveAppIconPath() || undefined });
-    RegisterWindowControls({ webContentsGetter: () => mainWindow, maximize: { Toggle: ToggleWindowMaximized, IsMaximized: IsWindowMaximized } });
+    RegisterWindowControls({ webContentsGetter: () => mainWindow, frameSize: () => nativeClientSize, maximize: { Toggle: ToggleWindowMaximized, IsMaximized: IsWindowMaximized } });
     RegisterGeneralControls({ webContentsGetter: () => mainWindow, workspacePath });
     Menu.setApplicationMenu(null);
     if (!cronRunnerLaunch) {

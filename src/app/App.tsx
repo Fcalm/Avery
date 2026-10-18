@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { AppShell } from './AppShell';
 import { UiStoreProvider, useUiStore } from './UiStore';
 import { useWorkspaceData } from '../features/workspace/api/useWorkspaceData';
@@ -23,6 +23,43 @@ import type { PageId } from '../types/domain';
 const LastConversationKey = 'avery-last-conversation-id';
 
 function App() {
+  useLayoutEffect(() => {
+    const root = document.getElementById('root');
+    if (!root) return;
+    const viewport = window.visualViewport;
+    let requestVersion = 0;
+    async function UpdateFrameSize() {
+      // 非整数显示/页面缩放下，Renderer 的视口可能比原生客户区多出像素。
+      // 桌面端使用宿主窗口边界；浏览器预览使用可见视口，并对齐物理像素。
+      const scale = window.devicePixelRatio;
+      const version = ++requestVersion;
+      let frame: { width: number; height: number; unit: 'physical' | 'css' } | undefined;
+      try {
+        frame = await window.averyWindow?.GetFrameSize?.();
+      } catch (error) {
+        console.error('读取窗口边界失败', error);
+        return;
+      }
+      if (version !== requestVersion) return;
+      const width = frame ? frame.width / (frame.unit === 'physical' ? scale : 1) : viewport?.width ?? window.innerWidth;
+      const height = frame ? frame.height / (frame.unit === 'physical' ? scale : 1) : viewport?.height ?? window.innerHeight;
+      if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return;
+      root!.style.setProperty('--window-frame-width', `${Math.round(width * scale) / scale}px`);
+      root!.style.setProperty('--window-frame-height', `${Math.round(height * scale) / scale}px`);
+    }
+    UpdateFrameSize();
+    const unsubscribe = window.averyWindow?.OnFrameSizeChange?.(() => { void UpdateFrameSize(); });
+    window.addEventListener('resize', UpdateFrameSize);
+    viewport?.addEventListener('resize', UpdateFrameSize);
+    return () => {
+      requestVersion += 1;
+      unsubscribe?.();
+      window.removeEventListener('resize', UpdateFrameSize);
+      viewport?.removeEventListener('resize', UpdateFrameSize);
+      root.style.removeProperty('--window-frame-width');
+      root.style.removeProperty('--window-frame-height');
+    };
+  }, []);
   return <UiStoreProvider><AppContent /></UiStoreProvider>;
 }
 
