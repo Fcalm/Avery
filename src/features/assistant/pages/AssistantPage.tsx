@@ -1024,7 +1024,7 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
                   </div>}
                 </div>
                 <div className="menu-wrap">
-                  <button className="cmp-btn reasoning-effort-button" type="button" aria-label={`思考强度：${ReasoningEffortLabels[reasoningEffort]}`} title="思考强度按会话保存，并在下一轮模型请求生效" aria-haspopup="true" aria-expanded={showReasoningEffort} onClick={() => setShowReasoningEffort((value) => !value)}><Icon name="gauge" size={15} /><span>思考 {ReasoningEffortLabels[reasoningEffort]}</span><Icon name="chevron-up" className="chev" size={10} /></button>
+                  <button className="cmp-btn reasoning-effort-button" type="button" aria-label={`思考强度：${ReasoningEffortLabels[reasoningEffort]}`} title="思考强度按会话保存，并在下一轮模型请求生效" aria-haspopup="true" aria-expanded={showReasoningEffort} onClick={() => setShowReasoningEffort((value) => !value)}><Icon name="brain" size={15} /><span>思考 {ReasoningEffortLabels[reasoningEffort]}</span><Icon name="chevron-up" className="chev" size={10} /></button>
                   {showReasoningEffort && <div className="menu pop" role="menu" aria-label="思考强度">
                     <div className="menu-label">思考强度</div>
                     <div className="seg" role="radiogroup" aria-label="思考强度">
