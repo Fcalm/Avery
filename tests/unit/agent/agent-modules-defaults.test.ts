@@ -238,13 +238,40 @@ describe('agent-modules-defaults', () => {
     });
   });
 
-  it('默认场景暴露19个PascalCase本地工具，含岗位库读取但不含网络与投递', () => {
+  it.each(['always_confirm', 'allow_low_risk', 'fully_trusted'] as const)('聊天在 %s 下均拒绝写入、浏览器与旧工具别名', async (confirmationMode) => {
+    const tools = CreateToolsModule(CreatePorts());
+    const context = CreateToolContext({ scenarioId: 'default', confirmationMode });
+    for (const name of [...ApplicationScenario.toolNames.filter((name) => !DefaultScenario.toolNames.includes(name)), 'EditResume', 'TaskCreate', 'TaskUpdate']) {
+      const result = await tools.ExecuteToolCall({ id: `chat-${name}`, type: 'function', function: { name, arguments: '{}' } }, context);
+      expect(JSON.parse(result.content), name).toMatchObject({ ok: false, code: 'TOOL_NOT_ALLOWED' });
+    }
+    expect(context.ledger?.Start).not.toHaveBeenCalled();
+    expect(context.emit).not.toHaveBeenCalled();
+  });
+
+  it.each(['always_confirm', 'allow_low_risk', 'fully_trusted'] as const)('工作档案写入在 %s 下遵守现有确认通道限制', async (confirmationMode) => {
+    const save = vi.fn(async () => ({ count: 1 }));
+    const context = CreateToolContext({ scenarioId: 'application', confirmationMode, ports: { ...CreateToolContext().ports, profileWrite: { Save: save } } });
+    const result = await CreateToolsModule(CreatePorts()).ExecuteToolCall({ id: 'profile-policy', type: 'function', function: { name: 'UpdateProfile', arguments: JSON.stringify({ items: [{ id: 'profile-1', category: 'work', title: '工作', content: '用户确认的内容' }] }) } }, context);
+    if (confirmationMode === 'fully_trusted') {
+      expect(JSON.parse(result.content)).toMatchObject({ ok: true, saved: true });
+      expect(save).toHaveBeenCalledOnce();
+    } else {
+      expect(JSON.parse(result.content)).toMatchObject({ ok: false, code: 'RESOURCE_NOT_AUTHORIZED' });
+      expect(save).not.toHaveBeenCalled();
+    }
+  });
+
+  it('聊天只读11个工具，工作完整40个工具，两者注册表与场景白名单一致', () => {
     const tools = CreateToolsModule(CreatePorts()).GetToolDefinitions();
     const names = tools.map((tool) => tool.definition.function.name);
 
     expect(new Set(names)).toEqual(new Set(DefaultScenario.toolNames));
-    expect(names).toHaveLength(19);
-    expect(names).toContain('DeleteTodo');
+    expect(names).toHaveLength(11);
+    expect(names).not.toContain('DeleteTodo');
+    expect(tools.every((tool) => tool.sideEffect === 'none')).toBe(true);
+    expect(DefaultScenario.name).toBe('聊天');
+    expect(ApplicationScenario.name).toBe('工作');
     expect(names.every((name) => /^[A-Z][A-Za-z0-9]{0,63}$/.test(name))).toBe(true);
     expect(names).not.toEqual(expect.arrayContaining(['SearchJobs', 'ReadUrl', 'Shell', 'Browser', 'SubmitApplication']));
     expect(DefaultScenario.budgets?.maxModelTurns).toBe(30);
@@ -252,12 +279,14 @@ describe('agent-modules-defaults', () => {
     expect(ApplicationScenarioPlaceholder.enabled).toBe(true);
     const applicationNames = CreateToolsModule(CreatePorts()).GetToolDefinitions('application').map((tool) => tool.definition.function.name);
     expect(new Set(applicationNames)).toEqual(new Set(ApplicationScenario.toolNames));
-    expect(applicationNames).toHaveLength(37);
+    expect(applicationNames).toHaveLength(40);
     expect(applicationNames).toContain('DeleteTodo');
     expect(CreateToolsModule(CreatePorts()).GetToolDefinitions('application').find((tool) => tool.definition.function.name === 'ExportResumeFile')?.definition.function.description)
       .toMatch(/^Use when a company application form requires a resume file upload or BOSS chat requires a resume image/);
     expect(applicationNames).toEqual(expect.arrayContaining(['CreateCronTask', 'ReadCronTask', 'UpdateCronTask', 'DeleteCronTask', 'ExportResumeFile', 'CollectJobs', 'ContactBossJobs', 'ReadApplicationStatus', 'SaveJob', 'UpdateApplicationStatus']));
-    expect(applicationNames).not.toEqual(expect.arrayContaining(['CreateResume', 'UpdateResume', 'UpdateProfile', 'SearchJobs']));
+    expect(applicationNames).toEqual(expect.arrayContaining(['CreateResume', 'UpdateResume']));
+    expect(applicationNames).toContain('UpdateProfile');
+    expect(applicationNames).not.toContain('SearchJobs');
     const instructions = BuildApplicationCompiledInstructions('application-tools');
     expect(instructions.compiled).toContain('BrowserSelect');
     expect(instructions.compiled).toContain('invalidate all refs');
@@ -268,7 +297,8 @@ describe('agent-modules-defaults', () => {
     expect(instructions.compiled).toContain('do not require a bound resume');
     const defaultInstructions = BuildDefaultCompiledInstructions('default-tools');
     expect(defaultInstructions.compiled).toContain('searching jobs, reading a rendered job description, or viewing BOSS直聘');
-    expect(defaultInstructions.compiled).toContain('set scenarioId to application');
+    expect(defaultInstructions.compiled).toContain('Chat cannot change saved resumes');
+    expect(defaultInstructions.compiled).toContain('Work (application)');
     const applicationDefinitions = CreateToolsModule(CreatePorts()).GetToolDefinitions('application');
     const createCronTask = applicationDefinitions.find((tool) => tool.definition.function.name === 'CreateCronTask');
     expect(createCronTask?.definition.function.description).toContain('scenarioId=application');
@@ -279,7 +309,7 @@ describe('agent-modules-defaults', () => {
     expect(cronScheduleDescription).toContain('{"type":"daily"');
     expect(cronScheduleDescription).toContain('{"type":"weekly"');
     expect(applicationDefinitions.find((tool) => tool.definition.function.name === 'SaveJob')?.definition.function.description).toContain('does not require a bound resume');
-    expect(tools.find((tool) => tool.definition.function.name === 'UpdateResume')?.requiredResources).toEqual(['bound_resume']);
+    expect(applicationDefinitions.find((tool) => tool.definition.function.name === 'UpdateResume')?.requiredResources).toEqual(['bound_resume']);
     expect(applicationDefinitions.find((tool) => tool.definition.function.name === 'UpdateApplicationStatus')?.requiredResources).toEqual(['bound_resume']);
     expect((applicationDefinitions.find((tool) => tool.definition.function.name === 'UpdateApplicationStatus')?.definition.function.parameters.properties?.status as { enum?: string[] })?.enum).not.toContain('saved');
     expect(applicationDefinitions.find((tool) => tool.definition.function.name === 'BrowserWait')?.definition.function.description).toContain('domcontentloaded');
@@ -943,6 +973,44 @@ describe('agent-modules-defaults', () => {
     expect(JSON.parse(result.content)).toMatchObject({ ok: false, code: 'CANCELLED' });
     expect(filePort.ResolveProjectPath).not.toHaveBeenCalled();
     expect(filePort.ReadAuthorizedFile).not.toHaveBeenCalled();
+  });
+
+  it('交互式工作模式可局部修改简历，false 编辑锁不禁用写入，且保留其他内容', async () => {
+    const original = { id: 'resume-1', name: '简历', content: '# 简历\n## 核心能力\n- 原型生产：旧描述\n- 沟通协调\n## 教育经历\n南昌大学', updatedAt: '', revision: 10 };
+    const content = original.content.replace('原型生产：旧描述', '原型生产：熟练使用 Figma 绘制产品原型');
+    const base = CreateToolContext();
+    const save = vi.fn(async () => ({ ...original, content, revision: 11 }));
+    const context = CreateToolContext({
+      scenarioId: 'application', resumeEditing: false, boundResume: original,
+      ports: { ...base.ports, resumeRead: { ...base.ports.resumeRead, ReadCurrent: vi.fn(async () => original) }, resumeWrite: {
+        AcquireLock: vi.fn(async () => ({ acquired: true as const, lock: { resumeId: original.id, owner: 'agent' as const, ownerId: 'agent-request-1', acquiredAt: 1, leaseExpiresAt: 2 } })),
+        ReleaseLock: vi.fn(), Save: save,
+      } },
+    });
+    const result = await CreateToolsModule(CreatePorts()).ExecuteToolCall({ id: 'work-resume-edit', type: 'function', function: { name: 'UpdateResume', arguments: JSON.stringify({ resumeId: original.id, content, reason: '仅调整第一条核心能力' }) } }, context);
+    expect(JSON.parse(result.content)).toMatchObject({ ok: true, saved: true, revision: 11 });
+    expect(save).toHaveBeenCalledExactlyOnceWith({ resume: { ...original, content }, baseRevision: 10 });
+    expect(context.bindResume).toHaveBeenCalledWith({ ...original, content, revision: 11 });
+    expect(context.ports.resumeWrite.ReleaseLock).toHaveBeenCalledWith(original.id, 'agent-request-1');
+  });
+
+  it('工作模式仍沿用简历提案确认，不在等待时写入或持锁', async () => {
+    const context = CreateToolContext({ scenarioId: 'application', confirmationMode: 'always_confirm', boundResume: { id: 'resume-1', name: '简历', content: '原内容', updatedAt: '', revision: 10 } });
+    context.ports.resumeRead.ReadCurrent = vi.fn(async () => context.boundResume);
+    const result = await CreateToolsModule(CreatePorts()).ExecuteToolCall({ id: 'work-resume-proposal', type: 'function', function: { name: 'UpdateResume', arguments: JSON.stringify({ resumeId: 'resume-1', content: '调整后内容', reason: '优化第一条' }) } }, context);
+    expect(result.disposition).toBe('wait_confirmation');
+    expect(JSON.parse(result.content)).toMatchObject({ code: 'CONFIRMATION_REQUIRED' });
+    expect([...context.pendingEdits.values()]).toEqual([expect.objectContaining({ sessionId: context.sessionId, baseRevision: 10, content: '调整后内容' })]);
+    expect(context.ports.resumeWrite.Save).not.toHaveBeenCalled();
+    expect(context.ports.resumeWrite.AcquireLock).not.toHaveBeenCalled();
+  });
+
+  it.each(['CreateResume', 'UpdateResume'])('后台投递禁止伪造 %s 调用且不创建确认提案', async (name) => {
+    const context = CreateToolContext({ scenarioId: 'application', unattended: true });
+    const result = await CreateToolsModule(CreatePorts()).ExecuteToolCall({ id: `background-${name}`, type: 'function', function: { name, arguments: '{}' } }, context);
+    expect(JSON.parse(result.content)).toMatchObject({ ok: false, code: 'TOOL_NOT_ALLOWED' });
+    expect(context.pendingEdits.size).toBe(0);
+    expect(context.ports.resumeWrite.Save).not.toHaveBeenCalled();
   });
 
   it('含【待确认】的简历草稿即使在无需确认模式也等待文本确认且不得直接写入', async () => {

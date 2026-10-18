@@ -82,20 +82,21 @@ interface AgentToolDefinition<TInput, TOutput> {
 
 ## 4. 场景白名单
 
-### 4.1 默认场景
+### 4.1 聊天场景
 
-默认场景 `default` 负责本地简历、档案和项目材料工作，不包含浏览器或岗位网络工具。
+聊天场景保留内部 ID `default`，用于日常问答、授权资料分析和对话内草稿，不包含业务写入、浏览器或岗位网络工具。
 
 | 能力 | 模型可见工具 |
 | --- | --- |
 | UTF-8 文件读取 | `Read`、`Glob`、`Grep` |
-| 档案 | `ReadProfile`、`UpdateProfile` |
-| 简历 | `ReadResume`、`CreateResume`、`UpdateResume` |
+| 档案 | `ReadProfile` |
+| 简历 | `ReadResume` |
 | 已有岗位库只读查询 | `ReadJobs` |
-| Run Todo | `CreateTodo`、`UpdateTodo`、`DeleteTodo`、`ReadTodo` |
+| 投递记录 | `ReadApplicationStatus` |
+| Run Todo | `ReadTodo` |
 | Skill 渐进披露 | `LoadSkill` |
 | 用户交互 | `AskUserQuestion` |
-| 定时任务 | `CreateCronTask`、`ReadCronTask`、`UpdateCronTask`、`DeleteCronTask` |
+| 定时任务 | `ReadCronTask` |
 
 明确禁止：
 
@@ -116,18 +117,18 @@ interface AgentToolDefinition<TInput, TOutput> {
 
 保留 `SearchJobs`/`ReadUrl` 草案不代表产品已承诺实现。任何启用都必须修改产品版本、ScenarioSnapshot、Prompt fragment、Tool Registry 和发布门禁，不能只切换一个配置布尔值。
 
-### 4.3 投递场景
+### 4.3 工作场景
 
-投递场景 `application` 已按浏览器开发计划启用。它只读取本地求职资料，并使用受控原子浏览器工具；不得继承默认场景的简历或档案写权限：
+工作场景保留内部 ID `application`，覆盖简历与档案编辑、Todo、定时任务、岗位库和受控浏览器求职流程。交互式会话开放下列工具；无人值守运行移除四个 CronTask 工具以及 `CreateResume`、`UpdateResume`、`UpdateProfile`，执行入口再次拒绝这些调用。
 
 ```ts
 {
   id: 'application',
-  name: '投递场景',
+  name: '工作',
   enabled: true,
   status: 'active',
   toolNames: [
-    'Read', 'Glob', 'Grep', 'ReadProfile', 'ReadResume',
+    'Read', 'Glob', 'Grep', 'ReadProfile', 'UpdateProfile', 'ReadResume', 'CreateResume', 'UpdateResume',
     'CreateTodo', 'UpdateTodo', 'DeleteTodo', 'ReadTodo', 'AskUserQuestion', 'LoadSkill',
     'CreateCronTask', 'ReadCronTask', 'UpdateCronTask', 'DeleteCronTask',
     'ExportResumeFile', 'CollectJobs', 'ReadJobs', 'ContactBossJobs', 'ReadApplicationStatus', 'SaveJob', 'UpdateApplicationStatus',
@@ -139,6 +140,10 @@ interface AgentToolDefinition<TInput, TOutput> {
 ```
 
 场景在会话首次发送时冻结；切换场景必须新建会话。浏览器工具名称与执行边界见 5.4 节和 `07-browser-tools-development-plan.md`，确认权限只改变普通动作的确认频率，不扩大工具、文件或网络权限。
+
+聊天 30 轮，工作 100 轮。三档确认策略显示为“始终确认 / 低风险自动 / 完全信任”，均不扩展场景工具或资源授权。场景白名单同时用于工具暴露和执行入口。旧策略会话须显式 `/reload` 或新建会话后继续，不自动替换冻结前缀。
+
+`UpdateProfile` 沿用现有宿主限制：目前没有档案提案确认通道，仅交互式工作且 `fully_trusted` 时可保存；其余档位返回明确限制，不以问答或文本同意替代确认授权。
 
 `ExportResumeFile` 属于投递场景，用于把已绑定的简历准备成可上传文件；默认场景继续通过简历页面导出文件。工具契约见 5.2 节。
 
@@ -164,7 +169,7 @@ interface AgentToolDefinition<TInput, TOutput> {
 
 ### 4.4 CronTask 定时任务
 
-四个 CronTask 工具同时存在于默认和投递场景。`CreateCronTask` 只冻结提案并展示一次周期级无人值守确认；确认前不写数据库、不注册系统任务。确认后每次 occurrence 创建独立会话，以真实 `user` 消息执行，并使用 `fully_trusted + unattended`，但仍受冻结场景、Schema、资源授权、网络边界与 Tool Ledger 约束。
+四个 CronTask 工具在工作场景开放，聊天仅开放 `ReadCronTask`。创建任务时，只读本地问答可选择 `scenarioId=default`，浏览器或业务写入任务选择 `application`；后台工作禁止编辑简历和档案。`CreateCronTask` 只冻结提案并展示一次周期级无人值守确认；确认前不写数据库、不注册系统任务。确认后每次 occurrence 创建独立会话，以真实 `user` 消息执行，并使用 `fully_trusted + unattended`，但仍受冻结场景、Schema、资源授权、网络边界与 Tool Ledger 约束。
 
 投递 CronTask 的创建确认同时生成个人浏览器任务授权，并持久绑定到真实 `cronTaskId`；授权冻结任务用途、导航、填表、上传、外部发送和持久资源范围。单次任务完成、周期任务结束、任务删除或用户手动撤销后不再使用。后台 Run 通过 Browser Bridge 连接或正常启动用户配置的 Chrome/Edge，由扩展创建任务标签页，不在执行时等待标签页或远程调试授权；扩展离线、浏览器启动失败、未登录或需要人工处理时暂停并保留待接管会话。旧版本任务默认不获得新版授权。
 
@@ -503,7 +508,7 @@ interface ToolEnvelope<T> {
 - 模型可见工具名全部符合 PascalCase 规则且跨 Provider 可接受。
 - 默认场景按意图进一步收窄工具，不暴露任何投递或浏览器能力。
 - 0.2.0 默认场景不注册、不展示也不执行 `SearchJobs`、`ReadUrl`。
-- 默认场景暴露冻结的19个工具；投递场景暴露冻结的37个工具，不包含 `CreateResume`、`UpdateResume`、`UpdateProfile`、`SearchJobs` 或 `ReadUrl`。
+- 聊天暴露冻结的11个只读或交互工具；工作暴露冻结的40个工具，包含简历与档案编辑；两者都不包含 `SearchJobs` 或 `ReadUrl`。
 - CronTask 创建确认前数据库与 OS 调度均无新增记录；无人值守 Run 即使恢复旧快照也不能调用 CronTask 工具。
 - 多次逾期只执行最近 occurrence；既有 Run 活跃、浏览器长期占用、登录或验证码接管均写入明确的 `missed`/`needsAttention` 原因。
 - 投递 Agent 在浏览器执行前读取投递状态，并只在有效回执后更新 `applied`。

@@ -2,6 +2,6 @@
 export { CreateDefaultModules, DefaultsPackageName, DefaultsSdkVersion, DefaultsVersion } from './defaults';
 export type { AgentDefaultPorts, ObservabilityStorePort, ProviderConfig } from './ports';
 export {
-  ApplicationScenario, ApplicationScenarioPlaceholder, BuildApplicationCompiledInstructions, BuildApplicationPromptFragments, BuildDefaultCompiledInstructions, BuildDefaultPromptFragments, CompilePrompt, DefaultScenario,
+  ApplicationScenario, ApplicationScenarioPlaceholder, BuildApplicationCompiledInstructions, BuildApplicationPromptFragments, BuildDefaultCompiledInstructions, BuildDefaultPromptFragments, CompilePrompt, DefaultScenario, ScenarioPolicyVersion,
 } from './prompts';
 export type { PromptFragment } from '@avery/agent-sdk';

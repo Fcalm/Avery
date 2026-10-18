@@ -4,7 +4,7 @@ import { readFile, realpath } from 'node:fs/promises';
 import * as path from 'node:path';
 import { RunAgentLoop } from '@avery/agent-core';
 import { CreateRunSnapshot, HostSdkVersion, ResolveModules } from '@avery/agent-module-host';
-import { ApplicationScenario, BuildApplicationCompiledInstructions, BuildDefaultCompiledInstructions, CreateDefaultModules, DefaultScenario } from '@avery/agent-modules-defaults';
+import { ApplicationScenario, BuildApplicationCompiledInstructions, BuildDefaultCompiledInstructions, CreateDefaultModules, DefaultScenario, ScenarioPolicyVersion } from '@avery/agent-modules-defaults';
 import { IsRuntimeContextMessage } from '@avery/agent-sdk';
 import type { AgentMessage, AgentModules, BossContactPort, BrowserAutomationPort, BrowserEngine, CompiledInstructions, ConfirmationMode, JobLibraryPort, ProviderUsageFact, ReasoningEffort, ResumeSnapshot, ScenarioSnapshot, SkillSnapshot } from '@avery/agent-sdk';
 import { AgentFileReader } from './agent-file-reader';
@@ -1273,7 +1273,7 @@ export class AgentHost {
       : registeredTools;
     const orderedToolNames = builtInTools.map((tool: any) => tool.definition.function.name);
     const toolsetHash = this.HashToolPolicy(builtInTools);
-    return { snapshotId: randomUUID(), sessionId, sessionRevision, scenarioId, builtInTools, mcpTools: [], orderedToolNames, toolsetHash };
+    return { snapshotId: randomUUID(), sessionId, sessionRevision, scenarioId, scenarioPolicyVersion: ScenarioPolicyVersion, builtInTools, mcpTools: [], orderedToolNames, toolsetHash };
   }
 
   private BuildModuleSnapshot(sessionId: string, sessionRevision: number): any {
@@ -1545,7 +1545,9 @@ export class AgentHost {
     const scenarioId = scenario.id as 'default' | 'application';
     const unattended = this.scheduledRequestIds.has(requestId);
     const cronToolNames = new Set(['CreateCronTask', 'ReadCronTask', 'UpdateCronTask', 'DeleteCronTask']);
-    const runScenario = unattended ? { ...scenario, toolNames: scenario.toolNames.filter((name) => !cronToolNames.has(name)) } : scenario;
+    // 后台不递归调度；工作场景后台禁止编辑简历和档案，聊天后台仍为只读。
+    const runScenario = unattended ? { ...scenario, toolNames: scenario.toolNames.filter((name) => !cronToolNames.has(name)
+      && !(scenarioId === 'application' && ['CreateResume', 'UpdateResume', 'UpdateProfile'].includes(name))) } : scenario;
     let retainBrowserTask = false;
     const cleanupOutcomes: BrowserTaskCleanupOutcome[] = [];
     if (this.browserRunId) throw Object.assign(new Error('Another browser Agent run is already active.'), { code: 'AGENT_BUSY' });
@@ -1617,6 +1619,10 @@ export class AgentHost {
     const projectId = typeof input?.projectId === 'string' ? input.projectId.slice(0, 200) : '';
     // 快照可能因 TTL 刷新并追加 Skill reset；必须先完成刷新，再读取本次请求历史。
     const snapshots = await this.LoadOrCreateSnapshots(sessionId, scenarioId);
+    // 不悄悄替换用户冻结的前缀；旧场景快照必须显式重载后才能继续执行。
+    if (snapshots.tool.scenarioPolicyVersion !== ScenarioPolicyVersion) {
+      throw Object.assign(new Error('场景权限已更新为“聊天 / 工作”。请发送 /reload 重载当前会话，或新建会话后继续。'), { code: 'SCENARIO_RELOAD_REQUIRED' });
+    }
     this.EnsureModuleSnapshotCompatible(snapshots.module);
     if (assistantStateChanged) await this.PersistSessionAssistantState(sessionId, { provider, model, confirmationMode, reasoningEffort });
     const projectRoot = await this.BindProjectEnvironment(sessionId, projectId);
@@ -1806,7 +1812,7 @@ export class AgentHost {
           },
           Delete: async (cronTaskId: string) => { const result = await this.business.DeleteCronTask(cronTaskId); await this.onCronScheduleChanged(); return result; },
         } } : {}),
-        ...(scenarioId === 'application' ? { applicationTracking: {
+        ...({ applicationTracking: {
           Read: async (filters: { company?: string; title?: string; url?: string } = {}) => {
             const view = await this.business.LoadViewModel();
             const allJobs = Array.isArray(view.jobs) ? view.jobs : [];
@@ -1837,7 +1843,7 @@ export class AgentHost {
           },
           SaveJob: async (trackingInput: Record<string, unknown>) => this.business.SaveTrackedJob(trackingInput),
           Update: async (trackingInput: Record<string, unknown>) => this.business.UpdateApplicationTracking(trackingInput),
-        } } : {}),
+        } }),
       },
       tasks: sessionTasks,
       pendingEdits: this.pendingEdits,

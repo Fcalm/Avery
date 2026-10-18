@@ -6,6 +6,7 @@ import type {
   ToolReceipt, ToolsModule,
 } from '@avery/agent-sdk';
 import { AgentDefaultPorts } from './ports';
+import { ApplicationScenario, DefaultScenario } from './prompts';
 import { CreateToolResult, RequireString, type PendingResumeEdit } from './helpers';
 
 /** 工具定义组装：声明 JSON Schema，参数表统一禁止额外字段。 */
@@ -97,7 +98,7 @@ function BuildRegistry(): RegisteredAgentTool[] {
       requiredResources: ['bound_resume'],
     },
     {
-      definition: CreateDefinition('UpdateProfile', 'Update the user profile snapshot with a structured patch.', { type: 'object', properties: { items: { type: 'array', minItems: 1, maxItems: 100, items: { type: 'object', properties: { id: { type: 'string' }, category: { type: 'string' }, title: { type: 'string' }, content: { type: 'string' } }, required: ['id', 'category', 'title', 'content'], additionalProperties: false } } }, required: ['items'], additionalProperties: false }),
+      definition: CreateDefinition('UpdateProfile', 'Save profile changes explicitly requested by the user in interactive Work, after ReadProfile. Preserve unrelated profile items. The current Host has no profile confirmation channel, so saving requires fully_trusted; other confirmation modes return an explicit limitation. User text or AskUserQuestion cannot replace this authorization. Unavailable in Chat and unattended runs.', { type: 'object', properties: { items: { type: 'array', minItems: 1, maxItems: 100, items: { type: 'object', properties: { id: { type: 'string' }, category: { type: 'string' }, title: { type: 'string' }, content: { type: 'string' } }, required: ['id', 'category', 'title', 'content'], additionalProperties: false } } }, required: ['items'], additionalProperties: false }),
       timeoutMs: 10000,
       isConcurrencySafe: false,
       sideEffect: 'local_write',
@@ -173,10 +174,10 @@ function BuildRegistry(): RegisteredAgentTool[] {
       resourceKeys: (input) => [`skill:${String(input?.skillId ?? '').toLowerCase()}`],
     },
     {
-      definition: CreateDefinition('CreateCronTask', 'Prepare a scheduled Agent task. Use only after the user explicitly asks for future or recurring execution. Use scenarioId=application whenever execution must open, search, or read a recruitment website; use default only for local non-browser work. Creation is saved only after the user confirms the displayed unattended-execution warning. For application tasks, that confirmation also grants this task personal-browser access for its lifetime; the browser must still be connected and logged in when each run starts.', {
+      definition: CreateDefinition('CreateCronTask', 'Prepare a scheduled Agent task from Work. Use only after the user explicitly asks for future or recurring execution. Use scenarioId=application (Work) for job search, browser operations or persistent changes; use default (Chat) only for read-only local questions and summaries. Unattended Work cannot edit resumes or profiles. Creation is saved only after the user confirms the displayed unattended-execution warning. For Work tasks, that confirmation also grants this task personal-browser access for its lifetime; the browser must still be connected and logged in when each browser run starts.', {
         type: 'object', properties: {
           title: { type: 'string', minLength: 1, maxLength: 200 }, message: { type: 'string', minLength: 1, maxLength: 20000 },
-          scenarioId: { type: 'string', enum: ['default', 'application'], description: 'Use application for any recruitment-site navigation, job search, or rendered JD reading, even when no application or resume is involved. Use default only for local non-browser tasks.' },
+          scenarioId: { type: 'string', enum: ['default', 'application'], description: 'Execution scenario: application means Work, for job search, browser operations and persistent changes; default means Chat, for read-only local questions and summaries. Unattended Work cannot edit resumes or profiles.' },
           schedule: {
             description: 'Execution schedule. Pass a JSON object, not a string containing JSON. Use exact property names, double-quoted strings, and no trailing commas. Choose exactly one shape according to type. Valid JSON examples: once = {"type":"once","executeAt":"2026-09-24T09:00:00+08:00","timeZone":"Asia/Shanghai"}; daily = {"type":"daily","startAt":"2026-09-24T09:00:00+08:00","timeZone":"Asia/Shanghai","intervalDays":1,"occurrences":7}; weekly workdays = {"type":"weekly","startAt":"2026-09-28T09:00:00+08:00","timeZone":"Asia/Shanghai","daysOfWeek":["monday","tuesday","wednesday","thursday","friday"],"intervalWeeks":1,"occurrences":10}.',
             oneOf: [
@@ -241,11 +242,6 @@ function BuildRegistry(): RegisteredAgentTool[] {
       timeoutMs: 10000, isConcurrencySafe: false, sideEffect: 'local_write', risk: 'medium', confirmation: 'scenario_policy', idempotency: 'required', resourceKeys: (input) => [`cron:tasks:${String(input?.cronTaskId ?? '')}`],
     },
   ];
-  const sharedApplicationTools = new Set(['Read', 'Glob', 'Grep', 'ReadProfile', 'ReadResume', 'CreateTodo', 'UpdateTodo', 'DeleteTodo', 'ReadTodo', 'AskUserQuestion', 'LoadSkill', 'CreateCronTask', 'ReadCronTask', 'UpdateCronTask', 'DeleteCronTask']);
-  for (const tool of registry) {
-    const name = tool.definition.function.name;
-    tool.allowedScenarios = sharedApplicationTools.has(name) ? ['default', 'application'] : ['default'];
-  }
   registry.push(
     {
       definition: CreateDefinition('ExportResumeFile', 'Use when a company application form requires a resume file upload or BOSS chat requires a resume image, after binding the intended resume with ReadResume. Export it as PDF for company forms or PNG for BOSS chat. The Host returns a fileId; use that exact ID with BrowserUploadFile or ContactBossJobs.imageAssetId. Do not provide resume text or a local path.', { type: 'object', properties: { format: { type: 'string', enum: ['pdf', 'png'], description: 'pdf for company resume upload; png for a BOSS chat image.' } }, required: ['format'], additionalProperties: false }),
@@ -467,6 +463,12 @@ function BuildRegistry(): RegisteredAgentTool[] {
       sideEffect: 'none', risk: 'low', confirmation: 'never', idempotency: 'not_needed',
     },
   );
+  // 暴露列表与执行入口共用场景白名单，避免注册表新增工具时权限漂移。
+  for (const tool of registry) {
+    tool.allowedScenarios = [DefaultScenario, ApplicationScenario]
+      .filter((scenario) => scenario.toolNames.includes(tool.definition.function.name))
+      .map((scenario) => scenario.id);
+  }
   return registry;
 }
 
@@ -1461,6 +1463,10 @@ export function CreateToolsModule(ports: AgentDefaultPorts): ToolsModule {
       const rawName = call.function.name;
       const toolName = NormalizeToolName(rawName);
       const toolMeta = GetToolMeta(toolName);
+      // 后台工作只读简历与档案；旧快照或伪造调用也不能进入写入和提案确认流程。
+      if (context.unattended && context.scenarioId === 'application' && ['CreateResume', 'UpdateResume', 'UpdateProfile'].includes(toolName)) {
+        return CreateToolResult(call.id, { ok: false, code: 'TOOL_NOT_ALLOWED', message: 'Unattended Work runs cannot create or edit resumes or profiles.' });
+      }
       if (!toolMeta || !toolMeta.allowedScenarios?.includes(context.scenarioId ?? 'default')) {
         return CreateToolResult(call.id, { ok: false, code: 'TOOL_NOT_ALLOWED', message: 'This tool is not available in the current scenario.' });
       }

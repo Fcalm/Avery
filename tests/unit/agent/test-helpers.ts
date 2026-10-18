@@ -32,6 +32,7 @@ export function CreateToolContext(overrides: Partial<ToolContext> = {}): ToolCon
     requestId: 'request-1',
     runId: 'run-1',
     confirmationMode: 'fully_trusted',
+    scenarioId: 'application',
     resumeEditing: false,
     projectRoot: null,
     attachments: [],

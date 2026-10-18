@@ -79,6 +79,87 @@ function Send(host: AgentHost, requestId: string, content: string) {
 }
 
 describe('AgentHost 浏览器失败与用户接管', () => {
+  it('聊天发送给模型的工具均只读，工作包含档案写入且不影响确认策略', async () => {
+    const provider = CreateProvider(() => ({ content: '完成', toolCalls: [] }));
+    const { host } = await CreateHost(provider, { Close: vi.fn(async () => undefined), ResetPageReferences: vi.fn() } as never);
+    try {
+      await host.Send({ requestId: 'chat-policy', sessionId: 'chat-policy', scenarioId: 'default', confirmationMode: 'fully_trusted', content: '分析资料' });
+      const chat = (host as any).runSnapshots.get('chat-policy');
+      expect(chat.scenario.name).toBe('聊天');
+      expect(chat.tools.every((tool: any) => tool.sideEffect === 'none')).toBe(true);
+      expect(chat.instructions.compiled).toContain('Chat cannot change saved resumes');
+      await Send(host, 'work-policy', '规划求职任务');
+      const work = (host as any).runSnapshots.get('work-policy');
+      expect(work.scenario.name).toBe('工作');
+      expect(work.tools.map((tool: any) => tool.definition.function.name)).toContain('UpdateProfile');
+    } finally { await host.Close(); }
+  });
+
+  it.each(['memory', 'database'])('旧场景 %s 快照必须显式重载，重载后同场景继续', async (source) => {
+    const provider = CreateProvider(() => ({ content: '完成', toolCalls: [] }));
+    const { host, business } = await CreateHost(provider, { Close: vi.fn(async () => undefined) } as never);
+    const input = { sessionId: 'legacy-policy', scenarioId: 'default', content: '继续分析' };
+    try {
+      await host.Send({ ...input, requestId: 'policy-first' });
+      const snapshots = (host as any).sessionSnapshots.get(input.sessionId);
+      delete snapshots.tool.scenarioPolicyVersion;
+      if (source === 'database') {
+        (host as any).sessionSnapshots.delete(input.sessionId);
+        Object.assign(business, { GetConversationSnapshots: vi.fn(async () => ({ sessionSnapshotJson: JSON.stringify(snapshots.session), toolSnapshotJson: JSON.stringify(snapshots) })) });
+      }
+      const callCount = provider.getCallCount();
+      await expect(host.Send({ ...input, requestId: 'policy-stale' })).rejects.toMatchObject({ code: 'SCENARIO_RELOAD_REQUIRED' });
+      expect(provider.getCallCount()).toBe(callCount);
+      await expect(host.ReloadSession(input.sessionId)).resolves.toMatchObject({ reloaded: true });
+      await host.Send({ ...input, requestId: 'policy-reloaded' });
+      expect(provider.getCallCount()).toBe(callCount + 1);
+    } finally { await host.Close(); }
+  });
+
+  it('工作模式读取简历后可生成局部编辑提案，确认保存一次后同会话继续', async () => {
+    let resume = { id: 'resume-work', name: '产品经理', content: '# 核心能力\n- 原型生产：旧表述\n- 沟通协调\n# 教育经历\n南昌大学', revision: 10, updatedAt: '', targetRoles: [], summary: '' };
+    const content = resume.content.replace('原型生产：旧表述', '原型生产：熟练使用 Figma 绘制产品原型');
+    const provider = CreateProvider((index) => {
+      if (index === 0) return ToolCall(index, 'ReadResume', { resumeId: resume.id });
+      if (index === 1) return ToolCall(index, 'UpdateResume', { resumeId: resume.id, content, reason: '仅修改第一条核心能力' });
+      return { content: '简历第一条已保存，其余内容保持原样。', toolCalls: [] };
+    });
+    const browser = { Close: vi.fn(async () => undefined), ResetPageReferences: vi.fn() };
+    const { host, business, events } = await CreateHost(provider, browser as never);
+    const save = vi.fn(async (next: typeof resume) => { resume = { ...next, revision: 11 }; return { id: resume.id, revision: 11 }; });
+    Object.assign(business, { LoadViewModel: async () => ({ resumes: [resume] }), UpsertResume: save });
+    try {
+      await host.Send({ requestId: 'work-local-edit', sessionId: 'failure-session', scenarioId: 'application', confirmationMode: 'always_confirm', content: '只改核心能力第一条，直接帮我修改' });
+      const confirmation = events.find((event) => event.type === 'resume_confirmation');
+      expect(confirmation).toMatchObject({ resumeId: resume.id, content });
+      expect(save).not.toHaveBeenCalled();
+      expect(provider.getCallCount()).toBe(2);
+      expect(await host.ConfirmResumeEdit(confirmation.confirmationId, true)).toMatchObject({ applied: true });
+      expect(save).toHaveBeenCalledTimes(1);
+      expect(resume.content).toBe(content);
+      await host.Send({ requestId: 'work-local-continue', sessionId: 'failure-session', scenarioId: 'application', confirmationMode: 'always_confirm', content: '我已确认保存，继续' });
+      expect(events).toContainEqual(expect.objectContaining({ type: 'completed', requestId: 'work-local-continue' }));
+      expect(save).toHaveBeenCalledTimes(1);
+    } finally { await host.Close(); }
+  });
+
+  it('后台投递的运行快照不暴露简历写工具，前台工作快照保留写能力', async () => {
+    const provider = CreateProvider(() => ({ content: '完成读取任务', toolCalls: [] }));
+    const browser = { Close: vi.fn(async () => undefined), SetUnattended: vi.fn(), CloseTask: vi.fn(async () => undefined), ResetPageReferences: vi.fn() };
+    const { host } = await CreateHost(provider, browser as never);
+    try {
+      await Send(host, 'foreground-tools', '普通工作会话');
+      await host.SendScheduled({ requestId: 'background-tools', sessionId: 'cron-work', scenarioId: 'application', content: '只读取已授权岗位' });
+      const foreground = (host as any).runSnapshots.get('foreground-tools');
+      const background = (host as any).runSnapshots.get('background-tools');
+      expect(foreground.scenario.toolNames).toEqual(expect.arrayContaining(['CreateResume', 'UpdateResume']));
+      expect(background.scenario.toolNames).not.toContain('CreateResume');
+      expect(background.scenario.toolNames).not.toContain('UpdateResume');
+      expect(background.scenario.toolNames).not.toContain('UpdateProfile');
+      expect(background.tools.map((tool: any) => tool.definition.function.name)).not.toContain('UpdateResume');
+    } finally { await host.Close(); }
+  });
+
   it('Agent运行中可调用共享BOSS采集并读取已入库岗位，不重入页面独占锁或要求简历', async () => {
     const provider = CreateProvider((index) => index === 0 ? ToolCall(0, 'CollectJobs', { channel: 'boss_zhipin', keyword: '产品', city: '广州', targetCount: 1 })
       : index === 1 ? ToolCall(1, 'ReadJobs', { channel: 'boss_zhipin' }) : { content: '岗位已入库', toolCalls: [] });

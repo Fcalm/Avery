@@ -27,10 +27,10 @@ import { ConversationTrace } from '../../assistant/components/ConversationTrace'
 import type { ChatMessage, PageId } from '../../../types/domain';
 import { ResolveConfirmationContinuation } from '../confirmationContinuation';
 
-// 场景文案与图标一比一取自原型；default/application 仍是后端真实场景 id，浏览器投递能力不变。
+// 保持旧场景 ID 以兼容会话与定时任务；能力边界与后端白名单一致。
 const ScenarioOptions: Array<{ id: 'default' | 'application'; label: string; icon: IconName; description: string }> = [
-  { id: 'default', label: '聊天', icon: 'assistant', description: '日常问答和协作，像和同事对话一样。' },
-  { id: 'application', label: '工作', icon: 'briefcase', description: '围绕简历、职位和面试展开，输出更结构化。' },
+  { id: 'default', label: '聊天', icon: 'assistant', description: '日常问答、资料分析和草稿建议，只读资料，不保存改动或操作浏览器。' },
+  { id: 'application', label: '工作', icon: 'briefcase', description: '编辑简历和档案、管理岗位与定时任务，并使用浏览器完成求职任务。' },
 ];
 const FallbackDeepSeekModels = ['deepseek-v4-flash', 'deepseek-v4-pro', 'deepseek-v4-flash-vision-exp'];
 const FallbackMimoModels = ['mimo-v2.6-flash', 'mimo-v2.6-pro', 'mimo-v2.6-pro-ultraspeed'];
@@ -38,11 +38,11 @@ const FallbackReasoningEfforts: ReasoningEffort[] = ['low', 'medium', 'high', 'x
 const ReasoningEffortLabels: Record<ReasoningEffort, string> = {
   low: '低', medium: '中', high: '高', xhigh: '超高', max: '最高',
 };
-// 权限等级文案与图标一比一取自原型；三个后端确认模式按自主程度递增映射到只读/可编辑/自动执行。
+// 确认档位不授予工具权限；读取与写入能力由当前场景决定。
 const ConfirmationOptions: Array<{ id: ConfirmationMode; label: string; description: string; note: string; icon: IconName }> = [
-  { id: 'always_confirm', label: '只读', description: '只能读取你附加的文件，不会改动任何内容。', note: '只读：Avery 不会修改你的文件', icon: 'shield-check' },
-  { id: 'allow_low_risk', label: '可编辑', description: '可以新建和改写简历，动笔前会先给你看改动。', note: '可编辑：Avery 可以新建和修改文档', icon: 'pencil-simple' },
-  { id: 'fully_trusted', label: '自动执行', description: '可以联网检索招聘平台并直接执行，不再逐步确认。', note: '自动执行：Avery 会联网检索并直接执行操作', icon: 'robot' },
+  { id: 'always_confirm', label: '始终确认', description: '当前场景内的业务写入和外部动作先征求确认，读取无需确认。', note: '始终确认：业务写入和外部动作执行前请你确认', icon: 'shield-check' },
+  { id: 'allow_low_risk', label: '低风险自动', description: '低风险操作自动执行，其他业务写入和外部动作仍按工具策略确认。', note: '低风险自动：其他操作仍按工具策略确认', icon: 'pencil-simple' },
+  { id: 'fully_trusted', label: '完全信任', description: '自动执行当前场景内已授权的操作；工具强制确认、文件授权和站点限制仍有效。', note: '完全信任：不扩大场景能力，强制确认仍有效', icon: 'robot' },
 ];
 /** 思考强度菜单的档位说明；强度越高推理越深，耗时与 token 消耗随之增加。 */
 const ReasoningEffortDescriptions: Record<ReasoningEffort, string> = {
@@ -992,7 +992,7 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
         {pendingQuestions ? <QuestionComposer questions={pendingQuestions.questions} answers={questionAnswers} otherAnswers={otherAnswers} questionIndex={pendingQuestionIndex} onAnswer={(questionId, answer) => setQuestionAnswers((current) => ({ ...current, [questionId]: answer }))} onOtherAnswer={(questionId, answer) => setOtherAnswers((current) => ({ ...current, [questionId]: answer }))} onPrevious={() => setPendingQuestionIndex((current) => Math.max(0, current - 1))} onCancel={CancelPendingQuestions} onContinue={ContinuePendingQuestions} /> : pendingEdit ? <ConfirmationComposer title="确认 Agent 修改简历" description={pendingEdit.reason} preview={pendingEdit.content} confirmLabel="确认并保存" onCancel={() => void HandlePendingEdit(false)} onConfirm={() => void HandlePendingEdit(true)} /> : pendingCronTask ? <ConfirmationComposer title="确认创建无人值守定时任务" description={`${pendingCronTask.summary}\n任务消息：${pendingCronTask.message}`} preview={JSON.stringify(pendingCronTask.schedule, null, 2)} confirmLabel="确认整个周期" onCancel={() => void HandlePendingCronTask(false)} onConfirm={() => void HandlePendingCronTask(true)} /> : pendingBrowserAction ? <ConfirmationComposer title="确认浏览器外部动作" description={`${pendingBrowserAction.summary ?? pendingBrowserAction.toolName}${pendingBrowserAction.url ? `\n目标网站：${pendingBrowserAction.url}` : ''}\n风险级别：${pendingBrowserAction.risk === 'high' ? '高风险' : pendingBrowserAction.risk === 'medium' ? '中风险' : '低风险'}`} confirmLabel="确认执行" onCancel={() => void HandlePendingBrowserAction(false)} onConfirm={() => void HandlePendingBrowserAction(true)} /> : <div className="composer-col">
           {attachments.length > 0 && <div className="ctx">{attachments.map((attachment) => <span className="ctx-item" key={attachment.id} aria-busy={attachment.status === 'uploading'}>{AttachmentUploadStatus(attachment)}<span className="ctx-name">{attachment.name}</span><button className="ctx-x" type="button" aria-label={`移除 ${attachment.name}`} onClick={() => RemoveAttachment(attachment.id)}><Icon name="close" size={11} /></button></span>)}</div>}
           <div ref={composerRef} className="composer">
-            <textarea ref={composerTextareaRef} rows={1} value={composer} placeholder={scenarioId === 'application' ? '写下岗位关键词或粘贴招聘网址，如：搜索上海的前端开发岗位…' : '让 Avery 帮你定制简历、寻找职位或准备面试'} onChange={(event) => setComposer(event.target.value)} onKeyDown={HandleKeyDown} />
+            <textarea ref={composerTextareaRef} rows={1} value={composer} placeholder={scenarioId === 'application' ? '让 Avery 编辑简历、采集岗位或完成浏览器任务…' : '聊聊你的问题，或让 Avery 分析资料、提供建议…'} onChange={(event) => setComposer(event.target.value)} onKeyDown={HandleKeyDown} />
             <div className="cmp-bar">
               <div className="cmp-tools">
                 <input ref={inputRef} className="visually-hidden" type="file" multiple accept=".pdf,.doc,.docx,.txt,image/png,image/jpeg,image/gif,image/webp" onChange={HandleFiles} />
@@ -1100,7 +1100,7 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
     {resumePanelOpen && <DocSidePanel resumes={resumes} currentResumeId={currentResumeId} editing={editing} resumeText={resumeText} canUndo={history.length > 0} panelWidth={panelWidth} contentRef={resumeSideRef} onSelectResume={HandleSelectResume} onEditChange={HandleEditChange} onStartEditing={() => void HandleStartEditing()} onCancelEditing={HandleCancelEditing} onSaveResume={() => void HandleSaveResume()} onUndo={UndoResumeEdit} onPanelWidthChange={setPanelWidth} />}
     <Modal
       open={showFullyTrustedWarning}
-      title="开启自动执行模式"
+      title="开启完全信任模式"
       onClose={() => setShowFullyTrustedWarning(false)}
       footer={<>
         <DialogButton onClick={() => setShowFullyTrustedWarning(false)}>取消</DialogButton>

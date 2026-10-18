@@ -5,9 +5,12 @@ metadata:
   avery:
     scenarios:
       - default
+      - application
 ---
 
 # Resume tailoring
+
+In Chat (default), provide analysis and drafts only. Saving a resume requires a Work (application) conversation and its enabled write tools.
 
 用于根据目标岗位优化用户简历。先读取当前简历、档案和目标岗位要求，再确定需要调整的条目。
 

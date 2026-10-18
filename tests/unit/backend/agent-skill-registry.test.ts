@@ -61,14 +61,16 @@ describe('AgentSkillRegistry', () => {
     expect(() => registry.Load(snapshot, 'default', { skillId: 'resume-tailoring', resource: '../secret.md' })).toThrow(/invalid/i);
   });
 
-  it('投递场景不披露默认场景 Skill', async () => {
+  it('工作披露求职执行与简历 Skill，聊天仍不能加载浏览器 Skill', async () => {
     const snapshot = await registry.BuildSnapshot('session-2', 1, 'application');
 
-    expect(snapshot.skills.map((skill) => skill.manifest.id)).toEqual(['boss-deliver-workflow', 'company-career-form', 'job-application', 'job-discovery']);
+    expect(snapshot.skills.map((skill) => skill.manifest.id)).toEqual(['boss-deliver-workflow', 'company-career-form', 'job-application', 'job-discovery', 'resume-tailoring']);
     expect(registry.CreateIndexMessage(snapshot).content).toContain('boss-deliver-workflow');
     expect(registry.Load(snapshot, 'application', { skillId: 'boss-deliver-workflow' }).message.content).toContain('# Boss直聘 Delivery Workflow');
     expect(registry.CreateIndexMessage(snapshot).content).toContain('BrowserFillForm and BrowserValidateForm');
     expect(registry.Load(snapshot, 'application', { skillId: 'company-career-form' }).message.content).toContain('BrowserFillForm → continue until done → BrowserValidateForm');
-    expect(() => registry.Load(snapshot, 'application', { skillId: 'resume-tailoring' })).toThrow(/not available/i);
+    expect(registry.Load(snapshot, 'application', { skillId: 'resume-tailoring' }).message.content).toContain('# Resume tailoring');
+    const chat = await registry.BuildSnapshot('chat-session', 1, 'default');
+    expect(() => registry.Load(chat, 'default', { skillId: 'boss-deliver-workflow' })).toThrow(/not available/i);
   });
 });
