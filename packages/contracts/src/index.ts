@@ -1,4 +1,5 @@
 /** Avery 跨进程契约包：错误码、信封、DTO 与 Bridge 类型的唯一来源。 */
+export type { ConversationActivity, ConversationPart, ConversationPresentation, ConversationResource, ConversationRunStatus, ConversationToolStatus } from '@avery/agent-sdk';
 export { ErrorCode } from './error-codes';
 export type { ErrorCodeValue } from './error-codes';
 export { ErrorInfoSchema, RequestEnvelopeSchema, ResultEnvelopeSchema, WriteCommandEnvelopeSchema, CreateResultSuccess, CreateResultFailure } from './envelope';
@@ -17,7 +18,7 @@ export {
   JobUpsertSchema, ProfileItemSchema, ProfileItemsSchema, ResumeUpsertSchema, SettingsSubmitSchema,
 } from './write-schemas';
 export type {
-  ApplicationDto, AttachmentDto, ChatMessageDto, ChatMessageInput, ConversationDto, JobDto,
+  ApplicationDto, AttachmentDto, ChatMessageDto, ChatMessageInput, ConversationDto, ConversationResourceView, JobDto,
   ProfileItemDto, ResumeDto, ResumeRevisionDocumentDto, ResumeRevisionDto, SettingsDto, WorkspaceStatusDto, WorkspaceViewModel,
 } from './dto';
 export {
@@ -42,3 +43,5 @@ export type {
   EvalEvent, EvalExpectedResult, EvalDatasetVersion, EvalProject, EvalProjectConfig, EvalProjectInput, EvalPromptCandidate, EvalPromptPreview,
   EvalRequirementResult, EvalRunnerType, EvalRun, EvalRunDetail, EvalRunStatus, EvalRunSummary, EvalTraceNode, EvalTraceNodeType, EvalUserSimulatorStrategy,
 } from './evaluation';
+export { AgentInteractionResponseSchema } from './agent-interaction';
+export type { AgentInteractionResponse } from './agent-interaction';

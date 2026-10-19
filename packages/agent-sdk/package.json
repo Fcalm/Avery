@@ -5,6 +5,13 @@
   "description": "Avery Agent 模块化 SDK：六槽接口、窄 Port、Manifest 与 Tool 契约的唯一来源；纯类型零运行时依赖",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./src/index.ts",
+      "require": "./dist/index.js"
+    }
+  },
   "scripts": {
     "build": "node ../../node_modules/typescript/bin/tsc -p tsconfig.json"
   }

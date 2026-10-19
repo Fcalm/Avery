@@ -66,7 +66,7 @@ export class PromptEvalRunner {
     };
     let finalResponse = '';
     let pendingResumeConfirmation: string | null = null;
-    let pendingQuestions: unknown = null;
+    let pendingQuestions: { interactionId: string; questions: Array<{ id: string }> } | null = null;
     const host = new AgentHost({
       userDataPath,
       workspacePath: projectPath,
@@ -75,7 +75,7 @@ export class PromptEvalRunner {
         events.push({ type: String(event.type ?? 'agent_event'), createdAt: Date.now(), payload: event });
         if (event.type === 'completed' && typeof event.content === 'string') finalResponse = event.content;
         if (event.type === 'resume_confirmation' && typeof event.confirmationId === 'string') pendingResumeConfirmation = event.confirmationId;
-        if (event.type === 'question_requested') pendingQuestions = event.questions ?? true;
+        if (event.type === 'question_requested' && typeof event.confirmationId === 'string' && Array.isArray(event.questions)) pendingQuestions = { interactionId: event.confirmationId, questions: event.questions as Array<{ id: string }> };
       },
       business,
       observability: observable,
@@ -98,9 +98,9 @@ export class PromptEvalRunner {
       let content = input.testCase.input.userMessage;
       for (let segment = 0; segment < Math.min(30, input.maxModelTurns); segment += 1) {
         if (input.signal.aborted) throw Object.assign(new Error('Evaluation case was cancelled.'), { code: 'CANCELLED' });
-        const requestId = `eval-request-${input.caseRunId}-${segment}`;
+        const requestId = `eval-request-${input.caseRunId}-0`;
         currentRequestId = requestId;
-        await host.Send({
+        if (segment === 0) await host.Send({
           requestId,
           sessionId: `eval-session-${input.caseRunId}`,
           content,
@@ -114,15 +114,18 @@ export class PromptEvalRunner {
         if (input.signal.aborted) throw Object.assign(new Error('Evaluation case was cancelled.'), { code: 'CANCELLED' });
         if (finalResponse) break;
         if (pendingResumeConfirmation) {
-          await host.ConfirmResumeEdit(pendingResumeConfirmation, input.userSimulator !== 'scripted' || segment > 0);
-          if (input.signal.aborted) throw Object.assign(new Error('Evaluation case was cancelled.'), { code: 'CANCELLED' });
+          const interactionId = pendingResumeConfirmation;
           pendingResumeConfirmation = null;
-          content = '我确认这次测评中的简历草稿，请继续完成任务。';
+          currentRequestId = requestId;
+          await host.RespondToInteraction({ kind: 'approval', sessionId: `eval-session-${input.caseRunId}`, requestId, interactionId, approved: input.userSimulator !== 'scripted' || segment > 0 });
+          if (input.signal.aborted) throw Object.assign(new Error('Evaluation case was cancelled.'), { code: 'CANCELLED' });
           continue;
         }
         if (pendingQuestions) {
+          const question = pendingQuestions as { interactionId: string; questions: Array<{ id: string }> };
           pendingQuestions = null;
-          content = '请基于已有测试资料继续；无法确认的内容请明确标记【待确认】。';
+          currentRequestId = requestId;
+          await host.RespondToInteraction({ kind: 'answer', sessionId: `eval-session-${input.caseRunId}`, requestId, interactionId: question.interactionId, answers: Object.fromEntries(question.questions.map((item) => [item.id, '请基于已有测试资料继续；无法确认的内容请明确标记【待确认】。'])) });
           continue;
         }
         break;

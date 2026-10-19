@@ -75,6 +75,7 @@ export const platformClient = {
     }),
   },
   agent: {
+    RespondToInteraction: (response: import('@avery/contracts').AgentInteractionResponse) => CallBridge(() => RequireAgent().RespondToInteraction(response)),
     Configure: (config: Parameters<DesktopAgentBridge['Configure']>[0]) => CallBridge(() => RequireAgent().Configure(config)),
     TestConnection: (config: Parameters<DesktopAgentBridge['TestConnection']>[0]) => CallBridge(() => RequireAgent().TestConnection(config)),
     GetBalance: () => CallBridge(() => RequireAgent().GetBalance()),
@@ -101,6 +102,7 @@ export const platformClient = {
     ReloadSession: (sessionId: string) => CallBridge(() => RequireAgent().ReloadSession(sessionId)),
     SelectProjectDirectory: () => CallBridge(() => RequireAgent().SelectProjectDirectory()),
     GetSessionAssistantState: (sessionId: string) => CallBridge(() => RequireAgent().GetSessionAssistantState(sessionId)),
+    ReadConversationResource: (sessionId: string, resource: import('@avery/contracts').ConversationResource) => CallBridge(() => RequireAgent().ReadConversationResource(sessionId, resource)),
     GetSessionScenes: () => CallBridge(() => RequireAgent().GetSessionScenes()),
     BindProjectEnvironment: (sessionId: string, projectId: string) => CallBridge(() => RequireAgent().BindProjectEnvironment(sessionId, projectId)),
     GetModuleConfiguration: () => CallBridge(() => RequireAgent().GetModuleConfiguration()),

@@ -79,6 +79,109 @@ function Send(host: AgentHost, requestId: string, content: string) {
 }
 
 describe('AgentHost 浏览器失败与用户接管', () => {
+  it('卡片出现即提交也会等待 Host 检查点，不依赖旧 IPC 回执', async () => {
+    const provider = CreateProvider((index) => index === 0 ? ToolCall(index, 'AskUserQuestion', { questions: [{ id: 'q', question: '选择', options: ['是'] }] }) : { content: '继续完成', toolCalls: [] });
+    const { host } = await CreateHost(provider, { ResetPageReferences: vi.fn(), Close: vi.fn(async () => undefined) } as never);
+    let response: Promise<unknown> | undefined;
+    const emit = (host as any).Emit;
+    (host as any).Emit = (event: any) => {
+      emit(event);
+      if (event.type === 'question_requested') response = host.RespondToInteraction({ kind: 'answer', sessionId: 'failure-session', requestId: 'early-answer', interactionId: event.confirmationId, answers: { q: '是' } });
+    };
+    try {
+      await Send(host, 'early-answer', '询问我');
+      await expect(response).resolves.toMatchObject({ accepted: true });
+      expect(provider.getCallCount()).toBe(2);
+    } finally { await host.Close(); }
+  });
+
+  it('问答等待检查点重启后仍可恢复，模型收到答案而非新增用户消息', async () => {
+    const provider = CreateProvider((index) => index === 0 ? ToolCall(index, 'AskUserQuestion', { questions: [{ id: 'q', question: '选择', options: ['是'] }] }) : { content: '继续完成', toolCalls: [] });
+    const browser = { ResetPageReferences: vi.fn(), Close: vi.fn(async () => undefined) };
+    const first = await CreateHost(provider, browser as never);
+    await Send(first.host, 'restart-answer', '询问我');
+    const interactionId = first.events.find((event) => event.type === 'question_requested').confirmationId;
+    await first.host.Close();
+    const events: any[] = [];
+    const host = new AgentHost({ userDataPath: join(first.root, 'user-data'), workspacePath: first.root, Emit: (event) => events.push(event), browserRuntime: browser as never, business: first.business, observability: first.observability,
+      credentialPort: { Load: vi.fn(async () => null), Save: vi.fn() }, createDefaultModules: (ports) => ({ ...CreateDefaultModules(ports), modelProvider: provider }) });
+    try {
+      expect((await host.GetSessionAssistantState('failure-session')).pendingEvents).toContainEqual(expect.objectContaining({ confirmationId: interactionId }));
+      await host.RespondToInteraction({ kind: 'answer', sessionId: 'failure-session', requestId: 'restart-answer', interactionId, answers: { q: '是' } });
+      expect(events).toContainEqual(expect.objectContaining({ type: 'completed', requestId: 'restart-answer' }));
+      expect((host as any).histories.get('failure-session').filter((message: any) => message.role === 'user' && message.metadata?.source !== 'runtime')).toHaveLength(1);
+    } finally { await host.Close(); }
+  });
+  it.each([true, false])('浏览器审批 %s 后由后端续轮，重复提交不重复执行且无合成用户消息', async (approved) => {
+    const provider = CreateProvider((index) => index === 0 ? ToolCall(index, 'BrowserClick', { ref: '@e1', pageRevision: 1 }) : { content: '已继续', toolCalls: [] });
+    const browser = { Prepare: vi.fn(async ({ toolName, arguments: args }: any) => Proposal(toolName, args)), Execute: vi.fn(async () => ({ status: 'succeeded', data: { clicked: true } })), GetStatus: vi.fn(), ResetPageReferences: vi.fn(), Close: vi.fn(async () => undefined) };
+    const { host, events, observability } = await CreateHost(provider, browser as never);
+    try {
+      await host.Send({ requestId: 'approval-run', sessionId: 'failure-session', scenarioId: 'application', confirmationMode: 'always_confirm', content: '点击按钮' });
+      const interactionId = events.find((event) => event.type === 'browser_confirmation').confirmationId;
+      const response = { kind: 'approval' as const, requestId: 'approval-run', sessionId: 'failure-session', interactionId, approved };
+      await Promise.all([host.RespondToInteraction(response), host.RespondToInteraction(response)]);
+      await expect(host.RespondToInteraction(response)).resolves.toMatchObject({ replayed: true });
+      expect(browser.Execute).toHaveBeenCalledTimes(approved ? 1 : 0);
+      expect(provider.getCallCount()).toBe(2);
+      expect(observability.StartTrace).toHaveBeenCalledTimes(1);
+      const history = (host as any).histories.get('failure-session');
+      expect(history.filter((message: any) => message.role === 'user' && message.metadata?.source !== 'runtime')).toHaveLength(1);
+      const results = history.filter((message: any) => message.role === 'tool');
+      expect(results).toHaveLength(1);
+      expect(JSON.parse(results[0].content)).toMatchObject(approved ? { ok: true, data: { clicked: true }, receipt: expect.any(Object) } : { ok: false, code: 'USER_REJECTED' });
+      expect(events.filter((event) => event.type === 'completed').map((event) => event.requestId)).toEqual(['approval-run']);
+      await expect(host.RespondToInteraction({ ...response, approved: !approved })).rejects.toMatchObject({ code: 'REVISION_CONFLICT' });
+    } finally { await host.Close(); }
+  });
+
+  it('问答校验会话、类型和完整性，普通 Send 不能绕过待决交互', async () => {
+    const provider = CreateProvider((index) => index === 0 ? ToolCall(index, 'AskUserQuestion', { questions: [{ id: 'a', question: '选择', options: ['甲', '乙'] }] }) : { content: '完成', toolCalls: [] });
+    const { host, events } = await CreateHost(provider, { ResetPageReferences: vi.fn(), Close: vi.fn(async () => undefined) } as never);
+    try {
+      await Send(host, 'answer-validation', '需要选择时问我');
+      const interactionId = events.find((event) => event.type === 'question_requested').confirmationId;
+      const response = { kind: 'answer' as const, sessionId: 'failure-session', requestId: 'answer-validation', interactionId, answers: { a: '甲' } };
+      await expect(host.RespondToInteraction({ ...response, sessionId: 'other' })).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
+      await expect(host.RespondToInteraction({ ...response, answers: {} })).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
+      await expect(host.RespondToInteraction({ ...response, answers: { a: '甲', extra: '乙' } })).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
+      await expect(host.RespondToInteraction({ ...response, kind: 'approval', answers: undefined, approved: true })).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
+      await expect(Send(host, 'bypass-answer', '我同意')).rejects.toMatchObject({ code: 'AGENT_BUSY' });
+      expect(provider.getCallCount()).toBe(1);
+      await host.RespondToInteraction(response);
+      expect(provider.getCallCount()).toBe(2);
+      expect((host as any).histories.get('failure-session').filter((message: any) => message.role === 'user' && message.metadata?.source !== 'runtime')).toHaveLength(1);
+    } finally { await host.Close(); }
+  });
+
+  it('取消等待任务补全协议并禁止迟到确认复活', async () => {
+    const provider = CreateProvider((index) => ToolCall(index, 'AskUserQuestion', { questions: [{ id: 'a', question: '选择', options: ['甲'] }] }));
+    const { host, events } = await CreateHost(provider, { ResetPageReferences: vi.fn(), Close: vi.fn(async () => undefined) } as never);
+    try {
+      await Send(host, 'cancel-wait', '等待选择');
+      const interactionId = events.find((event) => event.type === 'question_requested').confirmationId;
+      await expect(host.Cancel('cancel-wait')).resolves.toEqual({ cancelled: true });
+      await expect(host.RespondToInteraction({ kind: 'answer', requestId: 'cancel-wait', sessionId: 'failure-session', interactionId, answers: { a: '甲' } })).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
+      const history = (host as any).histories.get('failure-session');
+      expect(JSON.parse(history.at(-1).content)).toMatchObject({ code: 'CANCELLED' });
+      expect(provider.getCallCount()).toBe(1);
+      expect((await host.GetSessionAssistantState('failure-session')).pendingEvents).toEqual([]);
+    } finally { await host.Close(); }
+  });
+
+  it('CronTask 创建确认完成后自动继续，模型收到真实任务 ID', async () => {
+    const provider = CreateProvider((index) => index === 0 ? ToolCall(index, 'CreateCronTask', { title: '读资料', message: '读资料', scenarioId: 'default', schedule: { type: 'once', executeAt: '2030-01-01T09:00:00+08:00', timeZone: 'Asia/Shanghai' } }) : { content: '任务已创建', toolCalls: [] });
+    const { host, events, business } = await CreateHost(provider, { ResetPageReferences: vi.fn(), Close: vi.fn(async () => undefined) } as never);
+    try {
+      await Send(host, 'cron-interaction', '创建任务');
+      const interactionId = events.find((event) => event.type === 'cron_task_confirmation').confirmationId;
+      await host.RespondToInteraction({ kind: 'approval', requestId: 'cron-interaction', sessionId: 'failure-session', interactionId, approved: true });
+      expect(business.CreateCronTask).toHaveBeenCalledOnce();
+      const history = (host as any).histories.get('failure-session');
+      expect(JSON.parse(history.find((message: any) => message.tool_call_id === 'failure-0').content)).toMatchObject({ ok: true, task: { id: 'cron-created' } });
+      expect(events).toContainEqual(expect.objectContaining({ type: 'completed', requestId: 'cron-interaction' }));
+    } finally { await host.Close(); }
+  });
   it('聊天发送给模型的工具均只读，工作包含档案写入且不影响确认策略', async () => {
     const provider = CreateProvider(() => ({ content: '完成', toolCalls: [] }));
     const { host } = await CreateHost(provider, { Close: vi.fn(async () => undefined), ResetPageReferences: vi.fn() } as never);
@@ -131,14 +234,14 @@ describe('AgentHost 浏览器失败与用户接管', () => {
     try {
       await host.Send({ requestId: 'work-local-edit', sessionId: 'failure-session', scenarioId: 'application', confirmationMode: 'always_confirm', content: '只改核心能力第一条，直接帮我修改' });
       const confirmation = events.find((event) => event.type === 'resume_confirmation');
-      expect(confirmation).toMatchObject({ resumeId: resume.id, content });
+      expect(confirmation).toMatchObject({ sessionId: 'failure-session', resumeId: resume.id, content });
       expect(save).not.toHaveBeenCalled();
       expect(provider.getCallCount()).toBe(2);
-      expect(await host.ConfirmResumeEdit(confirmation.confirmationId, true)).toMatchObject({ applied: true });
+      expect((await host.GetSessionAssistantState('other-session')).pendingEvents).toEqual([]);
+      expect(await host.RespondToInteraction({ kind: 'approval', sessionId: 'failure-session', requestId: 'work-local-edit', interactionId: confirmation.confirmationId, approved: true })).toMatchObject({ accepted: true });
       expect(save).toHaveBeenCalledTimes(1);
       expect(resume.content).toBe(content);
-      await host.Send({ requestId: 'work-local-continue', sessionId: 'failure-session', scenarioId: 'application', confirmationMode: 'always_confirm', content: '我已确认保存，继续' });
-      expect(events).toContainEqual(expect.objectContaining({ type: 'completed', requestId: 'work-local-continue' }));
+      expect(events).toContainEqual(expect.objectContaining({ type: 'completed', requestId: 'work-local-edit' }));
       expect(save).toHaveBeenCalledTimes(1);
     } finally { await host.Close(); }
   });
@@ -157,6 +260,21 @@ describe('AgentHost 浏览器失败与用户接管', () => {
       expect(background.scenario.toolNames).not.toContain('UpdateResume');
       expect(background.scenario.toolNames).not.toContain('UpdateProfile');
       expect(background.tools.map((tool: any) => tool.definition.function.name)).not.toContain('UpdateResume');
+    } finally { await host.Close(); }
+  });
+
+  it('后台定时会话同样保存有序过程，且在 SendScheduled 返回前发布终态', async () => {
+    const provider = CreateProvider(() => ({ content: '后台任务最终结果', toolCalls: [] }));
+    const browser = { Close: vi.fn(async () => undefined), SetUnattended: vi.fn(), CloseTask: vi.fn(async () => undefined) };
+    const { host, business, events } = await CreateHost(provider, browser as never);
+    const snapshots: any[] = [];
+    const save = vi.fn(async (owner: string, presentation: unknown) => { expect(owner).toBe('cron-session'); snapshots.push(presentation); return { saved: true }; });
+    Object.assign(business, { SaveConversationPresentation: save });
+    try {
+      const result = await host.SendScheduled({ requestId: 'cron-request1', sessionId: 'cron-session', scenarioId: 'default', content: '执行后台任务' });
+      expect(result.content).toBe('后台任务最终结果');
+      expect(snapshots.at(-1)).toMatchObject({ requestId: 'cron-request1', status: 'completed', parts: expect.arrayContaining([expect.objectContaining({ type: 'text', text: '后台任务最终结果' })]) });
+      expect(events.filter((event) => event.type === 'conversation_updated').at(-1)).toMatchObject({ sessionId: 'cron-session', presentation: { status: 'completed' } });
     } finally { await host.Close(); }
   });
 
@@ -430,7 +548,7 @@ describe('AgentHost 浏览器失败与用户接管', () => {
     const { host, events } = await CreateHost(provider, browser as any);
     const pending = host.Send({ requestId: 'late-completion-cancel', sessionId: 'failure-session', scenarioId: 'application', confirmationMode: 'fully_trusted', content: '开始一次会取消的操作' });
     await started;
-    expect(host.Cancel('late-completion-cancel')).toEqual({ cancelled: true });
+    expect(await host.Cancel('late-completion-cancel')).toEqual({ cancelled: true });
     releaseCompletion();
     await expect(pending).resolves.toMatchObject({ accepted: true, cancelled: true });
 
@@ -556,12 +674,10 @@ describe('AgentHost 浏览器失败与用户接管', () => {
     await expect(host.ConfirmBrowserAction(confirmationA, true, { sessionId: 'session-a' })).rejects.toMatchObject({ code: 'BROWSER_CONFIRMATION_SESSION_MISMATCH' });
     expect(browser.Execute).not.toHaveBeenCalled();
     expect(browserTaskId).toBe('task-2');
-    await expect(host.ConfirmBrowserAction(confirmationB, true, { sessionId: 'session-b' })).resolves.toMatchObject({ status: 'succeeded' });
+    await expect(host.RespondToInteraction({ kind: 'approval', sessionId: 'session-b', requestId: 'session-b-confirm', interactionId: confirmationB, approved: true })).resolves.toMatchObject({ accepted: true });
     expect(browser.Execute).toHaveBeenCalledOnce();
 
-    // Renderer uses the same visible continuation path as AskUserQuestion after confirmation succeeds.
-    await host.Send({ requestId: 'session-b-continuation', sessionId: 'session-b', scenarioId: 'application', confirmationMode: 'always_confirm', content: '我已确认上述浏览器操作，操作已执行成功。请重新读取当前页面状态并继续任务。' });
-    expect(events).toContainEqual(expect.objectContaining({ type: 'completed', requestId: 'session-b-continuation', content: expect.stringContaining('已根据确认继续处理') }));
+    expect(events).toContainEqual(expect.objectContaining({ type: 'completed', requestId: 'session-b-confirm', content: expect.stringContaining('已根据确认继续处理') }));
     expect(closedTasks).toEqual(['task-1', 'task-2']);
     await host.Close();
   });
@@ -751,7 +867,7 @@ describe('AgentHost 浏览器失败与用户接管', () => {
     await host.Close();
   });
 
-  it('AskUserQuestion 等待态之后释放 Host 运行资源，答案可以进入同一会话的新 Run', async () => {
+  it('AskUserQuestion 等待态释放资源，结构化答案恢复同一 Run 且不添加 user 消息', async () => {
     const provider = CreateProvider((index) => index === 0
       ? ToolCall(index, 'AskUserQuestion', { questions: [{ id: 'choice', question: '请选择方案', options: ['方案 A', '方案 B'] }] })
       : { content: '已收到方案 A，继续执行。', toolCalls: [] });
@@ -767,8 +883,12 @@ describe('AgentHost 浏览器失败与用户接管', () => {
     expect(releasedIndex).toBeGreaterThan(waitingIndex);
     expect((host as any).browserRunId).toBeNull();
 
-    await Send(host, 'question-2', '【请选择方案】方案 A');
-    expect(events).toContainEqual(expect.objectContaining({ type: 'completed', requestId: 'question-2', content: expect.stringContaining('继续执行') }));
+    const question = events.find((event) => event.type === 'question_requested');
+    await host.RespondToInteraction({ kind: 'answer', sessionId: 'failure-session', requestId: 'question-1', interactionId: question.confirmationId, answers: { choice: '方案 A' } });
+    expect(events).toContainEqual(expect.objectContaining({ type: 'completed', requestId: 'question-1', content: expect.stringContaining('继续执行') }));
+    const history = (host as any).histories.get('failure-session');
+    expect(history.filter((message: any) => message.role === 'user' && message.metadata?.source !== 'runtime')).toHaveLength(1);
+    expect(history.find((message: any) => message.tool_call_id === 'failure-0')?.content).toContain('方案 A');
     expect((host as any).pendingQuestions.has('failure-session')).toBe(false);
     await host.Close();
   });

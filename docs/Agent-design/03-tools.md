@@ -382,6 +382,8 @@ inProgress → completed | cancelled
 
 `AskUserQuestion` 是结构化等待入口。工具返回统一 wait disposition，Loop 持久化问题后进入 `waiting_user_input`，而不是继续请求模型或保持悬空 Promise。
 
+用户答案经 `RespondToInteraction` 按问题 ID 提交，完整校验后作为原工具调用的最终结果追加，后端恢复原 Run。确认卡也走该入口，审批决定与实际工具执行结果分开记录，不模拟用户发送确认消息。
+
 ## 6. 与当前工具的迁移关系
 
 | 当前名称 | MVP 处理 |

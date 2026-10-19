@@ -1,7 +1,22 @@
 import type { AgentStreamEvent } from './events';
 import type { AgentModules } from './modules';
 import type { RegisteredAgentTool, ToolContext } from './tools';
-import type { AgentMessage, CompiledInstructions, ConfirmationMode, ProviderUsageFact, ReasoningEffort, RunDisposition, ScenarioSnapshot } from './types';
+import type { AgentMessage, CompiledInstructions, ConfirmationMode, ProviderUsageFact, ReasoningEffort, RunDisposition, ScenarioSnapshot, ToolCallFragment, ToolExecutionResult } from './types';
+
+/** 等待交互时的持久检查点；待决工具尚未产生最终消息，恢复时只追加真实结果。 */
+export interface KernelCheckpoint {
+  turn: number;
+  toolCallCount: number;
+  apiRequestCount: number;
+  reminderRevision: number;
+  lastReminderConfirmationMode: ConfirmationMode;
+  assistantContent: string;
+  reasoningContent: string;
+  pendingCall: ToolCallFragment;
+  pendingResult: ToolExecutionResult;
+  remainingResults: AgentMessage[];
+  followups: AgentMessage[];
+}
 
 /** Kernel 单轮运行输入：全部业务态（历史、任务、交互）经参数与上下文注入，Kernel 自身不持持久化。 */
 export interface KernelRunInput {
@@ -20,6 +35,12 @@ export interface KernelRunInput {
   userContent: string;
   /** 可选的多模态用户消息；缺省时 Kernel 仍按 userContent 构造纯文本消息。 */
   userMessage?: AgentMessage;
+  /** 恢复原 Run，不追加 user 消息；result 必须来自宿主已校验的交互与执行回执。 */
+  resume?: { checkpoint: KernelCheckpoint; result: AgentMessage };
+  /** 发出等待事件之前保存检查点；失败时不得向用户宣告可恢复。 */
+  onCheckpoint?: (checkpoint: KernelCheckpoint) => void;
+  /** 真实工具结果进入历史后清除待决检查点，与历史一同持久化。 */
+  onResumed?: () => void;
   /** 首次索引或显式 Skill 正文等位于真实 user 消息周围的合成 user 消息。 */
   messagesBeforeUser?: AgentMessage[];
   messagesAfterUser?: AgentMessage[];

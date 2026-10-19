@@ -6,8 +6,10 @@ import { RunAgentLoop } from '@avery/agent-core';
 import { CreateRunSnapshot, HostSdkVersion, ResolveModules } from '@avery/agent-module-host';
 import { ApplicationScenario, BuildApplicationCompiledInstructions, BuildDefaultCompiledInstructions, CreateDefaultModules, DefaultScenario, ScenarioPolicyVersion } from '@avery/agent-modules-defaults';
 import { IsRuntimeContextMessage } from '@avery/agent-sdk';
-import type { AgentMessage, AgentModules, BossContactPort, BrowserAutomationPort, BrowserEngine, CompiledInstructions, ConfirmationMode, JobLibraryPort, ProviderUsageFact, ReasoningEffort, ResumeSnapshot, ScenarioSnapshot, SkillSnapshot } from '@avery/agent-sdk';
+import type { AgentMessage, AgentModules, AgentStreamEvent, BossContactPort, BrowserAutomationPort, BrowserEngine, CompiledInstructions, ConfirmationMode, JobLibraryPort, KernelCheckpoint, ProviderUsageFact, ReasoningEffort, ResumeSnapshot, ScenarioSnapshot, SkillSnapshot } from '@avery/agent-sdk';
 import { AgentFileReader } from './agent-file-reader';
+import { ConversationRecorder } from './conversation-recorder';
+import { ReadConversationResource } from './conversation-resource-reader';
 import { AgentResumePort } from './agent-resume-port';
 import { ResumeLockStore } from './resume-lock-store';
 import { CreateVisionUserMessage, HydrateVisionMessage, SupportsVisionInput } from './vision-input';
@@ -18,7 +20,18 @@ import { CollectBossJobsToLibrary } from './job-collection-service';
 import { CreateAgentJobLibrary } from './agent-job-library';
 import type { JobLibraryCollectionService } from './job-library-collection-service';
 import { BossContactService } from './boss-contact-service';
-import { BrowserTaskGrantSchema, CreateCronTaskSchema, type BrowserTaskGrant, type BrowserTaskGrantPurpose } from '@avery/contracts';
+import { AgentInteractionResponseSchema, BrowserTaskGrantSchema, CreateCronTaskSchema, type AgentInteractionResponse, type AgentSendRequest, type BrowserTaskGrant, type BrowserTaskGrantPurpose } from '@avery/contracts';
+
+/** 一个逻辑 Run 的等待点；状态、决定和结果与历史共用原子状态文件，不包含模型凭据。 */
+interface PausedAgentRun {
+  input: AgentSendRequest;
+  checkpoint: KernelCheckpoint;
+  interactionId: string;
+  kind: 'approval' | 'answer';
+  status: 'waiting' | 'executing' | 'ready' | 'resuming';
+  result?: AgentMessage;
+  event?: AgentStreamEvent;
+}
 
 /** 用户编辑锁的稳定 ownerId；前端经 bridge 加解锁都以此为准。 */
 const UserLockOwnerId = 'user-main';
@@ -198,6 +211,8 @@ export class AgentHost {
   private statePath: string;
   private moduleConfigPath: string;
   private Emit: (event: unknown) => void;
+  private EmitPresentation: (event: unknown) => void;
+  private requestSessions = new Map<string, string>();
   private business: any;
   private workspacePath: string;
   private renderResumeFile?: AgentHostOptions['renderResumeFile'];
@@ -213,6 +228,13 @@ export class AgentHost {
   private pendingEdits = new Map<string, unknown>();
   private pendingBrowserActions = new Map<string, any>();
   private pendingCronTasks = new Map<string, any>();
+  private pausedRuns = new Map<string, PausedAgentRun>();
+  private interactionDecisions = new Map<string, AgentInteractionResponse>();
+  /** 旧执行释放与重复确认使用独立屏障；不依赖 Renderer 保存的 IPC Promise。 */
+  private runReleases = new Map<string, Promise<unknown>>();
+  private executingSessions = new Set<string>();
+  private interactionFlights = new Map<string, Promise<{ accepted: boolean; requestId: string; replayed?: boolean }>>();
+  private structuredInteractionRequests = new Set<string>();
   private browserRunId: string | null = null;
   private browserSessionId: string | null = null;
   private currentSessionId: string | null = null;
@@ -255,12 +277,20 @@ export class AgentHost {
   private skillRegistry: AgentSkillRegistry;
   private onCronScheduleChanged: () => Promise<void> | void;
   private scheduledRequestIds = new Set<string>();
+  private conversationRecorders = new Map<string, ConversationRecorder>();
   private scheduledOutput = new Map<string, { content: string; thinkingContent: string; terminal?: string; needsAttention: boolean }>();
 
   constructor(options: AgentHostOptions) {
+    this.EmitPresentation = options.Emit;
     this.statePath = path.join(options.userDataPath, 'agent-state.json');
     this.moduleConfigPath = path.join(options.userDataPath, 'agent-modules.json');
     this.Emit = (event: any) => {
+      if (event?.requestId && !event.sessionId) event = { ...event, sessionId: this.requestSessions.get(event.requestId) };
+      const recorder = typeof event?.requestId === 'string' ? this.conversationRecorders.get(event.requestId) : undefined;
+      if (recorder) {
+        event = { ...event, sessionId: event.sessionId ?? recorder.sessionId };
+        recorder.Accept(event);
+      }
       const output = typeof event?.requestId === 'string' ? this.scheduledOutput.get(event.requestId) : undefined;
       if (output) {
         if (event.type === 'content_delta' && typeof event.delta === 'string') output.content += event.delta;
@@ -277,10 +307,7 @@ export class AgentHost {
     this.credentialPort = options.credentialPort;
     this.resolveProjectEnvironment = options.resolveProjectEnvironment ?? (() => null);
     this.onCronScheduleChanged = options.onCronScheduleChanged ?? (() => undefined);
-    this.fileReader = new AgentFileReader((uri: string) => this.business?.ResolveAttachmentMarkdownUri?.(uri) ?? Promise.resolve(null), {
-      ocrRuntimeRoot: path.join(options.userDataPath, 'ocr-runtime'),
-      ocrCacheRoot: options.workspacePath ? path.join(options.workspacePath, 'derived', 'ocr') : null,
-    });
+    this.fileReader = new AgentFileReader((uri: string) => this.business?.ResolveAttachmentMarkdownUri?.(uri) ?? Promise.resolve(null));
     this.resumePort = new AgentResumePort({ lockStore: options.resumeLockStore ?? new ResumeLockStore(), business: this.business });
     this.resumeReadPort = this.resumePort;
     this.resumeWritePort = this.resumePort;
@@ -340,7 +367,6 @@ export class AgentHost {
   SetWorkspacePath(workspacePath: string): void {
     this.workspacePath = workspacePath;
     this.generatedAssets.clear();
-    this.fileReader.SetOcrCacheRoot(workspacePath ? path.join(workspacePath, 'derived', 'ocr') : null);
   }
 
   /** 组合根注入同一个采集实例；Agent采集沿用当前运行的浏览器及Cron授权，不走页面独占启动流程。 */
@@ -356,7 +382,6 @@ export class AgentHost {
     this.generatedAssets.clear();
     this.browserSessionId = null;
     this.browserRunId = null;
-    await this.fileReader.Close();
   }
 
   /** 仅从已绑定的当前简历生成文件；资源 ID 在当前会话授权，物理路径只留在 Host。 */
@@ -387,6 +412,9 @@ export class AgentHost {
   DeleteSessionResources(sessionId: string): void {
     for (const [fileId, asset] of this.generatedAssets) if (asset.sessionId === sessionId) this.generatedAssets.delete(fileId);
     const requestIds = new Set<string>();
+    for (const [requestId, owner] of this.requestSessions) {
+      if (owner === sessionId) requestIds.add(requestId);
+    }
     for (const [requestId, snapshot] of this.runSnapshots) {
       if (snapshot?.sessionId === sessionId) requestIds.add(requestId);
     }
@@ -415,7 +443,14 @@ export class AgentHost {
     for (const [confirmationId, pending] of this.pendingCronTasks) {
       if (requestIds.has((pending as any)?.requestId)) this.pendingCronTasks.delete(confirmationId);
     }
-    for (const requestId of requestIds) this.runSnapshots.delete(requestId);
+    for (const requestId of requestIds) {
+      this.pausedRuns.delete(requestId);
+      this.runSnapshots.delete(requestId);
+      this.requestSessions.delete(requestId);
+      this.conversationRecorders.get(requestId)?.Dispose();
+      this.conversationRecorders.delete(requestId);
+    }
+    for (const [id, response] of this.interactionDecisions) if (response.sessionId === sessionId) this.interactionDecisions.delete(id);
     this.SaveState();
   }
 
@@ -575,6 +610,19 @@ export class AgentHost {
         .filter((entry: unknown) => Array.isArray(entry) && typeof entry[0] === 'string' && entry[1] && typeof entry[1] === 'object'));
       this.pendingCronTasks = new Map((Array.isArray(state.pendingCronTasks) ? state.pendingCronTasks : [])
         .filter((entry: unknown) => Array.isArray(entry) && typeof entry[0] === 'string' && entry[1] && typeof entry[1] === 'object'));
+      this.pendingEdits = new Map(Array.isArray(state.pendingEdits) ? state.pendingEdits : []);
+      this.pendingQuestions = new Map(Array.isArray(state.pendingQuestions) ? state.pendingQuestions : []);
+      this.pausedRuns = new Map(Array.isArray(state.pausedRuns) ? state.pausedRuns : []);
+      this.interactionDecisions = new Map(Array.isArray(state.interactionDecisions) ? state.interactionDecisions : []);
+      // 进程中断时执行结果不可猜测，也不能重放有副作用的原操作。
+      for (const run of this.pausedRuns.values()) {
+        if (run.status === 'executing') {
+          run.result = { role: 'tool', tool_call_id: run.checkpoint.pendingCall.id, content: JSON.stringify({ ok: false, code: 'STATUS_UNKNOWN', message: 'The application stopped while handling this interaction. Verify the target state; do not repeat the action automatically.' }) };
+          run.status = 'ready';
+        } else if (run.status === 'resuming') run.status = 'ready';
+      }
+      this.requestSessions = new Map((Array.isArray(state.requestSessions) ? state.requestSessions : [])
+        .filter((entry: unknown) => Array.isArray(entry) && typeof entry[0] === 'string' && typeof entry[1] === 'string'));
       this.runSnapshots = new Map((Array.isArray(state.runSnapshots) ? state.runSnapshots : [])
         .filter((entry: unknown) => Array.isArray(entry) && typeof entry[0] === 'string' && entry[1] && typeof entry[1] === 'object'));
       this.loadedSkills = new Map((Array.isArray(state.loadedSkills) ? state.loadedSkills : [])
@@ -601,6 +649,11 @@ export class AgentHost {
       toolLedger: [...this.toolLedger.entries()],
       pendingBrowserActions: [...this.pendingBrowserActions.entries()],
       pendingCronTasks: [...this.pendingCronTasks.entries()],
+      pendingEdits: [...this.pendingEdits.entries()],
+      pendingQuestions: [...this.pendingQuestions.entries()],
+      pausedRuns: [...this.pausedRuns.entries()],
+      interactionDecisions: [...this.interactionDecisions.entries()],
+      requestSessions: [...this.requestSessions.entries()],
       runSnapshots: [...this.runSnapshots.entries()],
       loadedSkills: [...this.loadedSkills.entries()].map(([sessionId, skills]) => [sessionId, [...skills.entries()]]),
       loadedSkillResources: [...this.loadedSkillResources.entries()].map(([sessionId, resources]) => [sessionId, [...resources]]),
@@ -652,12 +705,132 @@ export class AgentHost {
     };
   }
 
-  /** 中止指定在途请求。 */
-  Cancel(requestId: string): any {
+  /** 取消在途或等待中的逻辑 Run；取消不是批准，迟到的决定不得再启动任务。 */
+  async Cancel(requestId: string): Promise<any> {
     const controller = this.controllers.get(requestId);
-    if (!controller) return { cancelled: false };
-    controller.abort();
-    return { cancelled: true };
+    controller?.abort();
+    const paused = this.pausedRuns.get(requestId);
+    if (paused) {
+      this.pausedRuns.delete(requestId);
+      this.DiscardPendingInteraction(paused);
+      const result: AgentMessage = { role: 'tool', tool_call_id: paused.checkpoint.pendingCall.id, content: JSON.stringify({ ok: false, code: paused.status === 'executing' ? 'STATUS_UNKNOWN' : 'CANCELLED', message: 'The user cancelled this run. Do not resume or repeat its pending action.' }) };
+      this.histories.set(paused.input.sessionId, [...(this.histories.get(paused.input.sessionId) ?? []), result, ...paused.checkpoint.remainingResults]);
+      this.SaveState();
+      this.Emit({ type: 'cancelled', requestId, sessionId: paused.input.sessionId });
+      await this.conversationRecorders.get(requestId)?.Flush();
+      if (this.browserSessionId === paused.input.sessionId && !controller) await this.CloseBrowserTask();
+    }
+    return { cancelled: Boolean(controller || paused) };
+  }
+
+  /** 丢弃已消费或取消的交互提案；不删除审计账本，也不把未执行操作记作成功。 */
+  private DiscardPendingInteraction(run: PausedAgentRun): void {
+    this.pendingEdits.delete(run.interactionId);
+    this.pendingCronTasks.delete(run.interactionId);
+    this.pendingBrowserActions.delete(run.interactionId);
+    this.pendingQuestions.delete(run.input.sessionId);
+  }
+
+  /** 统一审批与问答入口；决定只绑定原等待点，重试不能再次执行原操作。 */
+  async RespondToInteraction(value: unknown): Promise<{ accepted: boolean; requestId: string; replayed?: boolean }> {
+    const parsed = AgentInteractionResponseSchema.safeParse(value);
+    if (!parsed.success) throw Object.assign(new Error('交互响应格式无效。'), { code: 'VALIDATION_ERROR' });
+    const response = parsed.data;
+    // 卡片事件可能先于 Kernel 检查点；等待宿主释放，不能把用户的早确认静默丢弃。
+    await this.runReleases.get(response.requestId);
+    const previous = this.interactionDecisions.get(response.interactionId);
+    const signature = (decision: AgentInteractionResponse) => JSON.stringify({ ...decision, ...(decision.kind === 'answer' ? { answers: Object.fromEntries(Object.entries(decision.answers).sort(([a], [b]) => a.localeCompare(b))) } : {}) });
+    if (previous && signature(previous) !== signature(response)) throw Object.assign(new Error('该交互已经提交了不同的决定。'), { code: 'REVISION_CONFLICT' });
+    const running = this.interactionFlights.get(response.interactionId);
+    if (running) return running;
+    const run = this.pausedRuns.get(response.requestId);
+    if (!run || run.interactionId !== response.interactionId) {
+      if (previous) return { accepted: true, requestId: response.requestId, replayed: true };
+      throw Object.assign(new Error('该交互已失效或任务已取消，请刷新会话状态。'), { code: 'VALIDATION_ERROR' });
+    }
+    if (run.input.sessionId !== response.sessionId || this.requestSessions.get(response.requestId) !== response.sessionId) throw Object.assign(new Error('交互不属于当前会话。'), { code: 'VALIDATION_ERROR' });
+    if (response.kind !== 'cancel' && response.kind !== run.kind) throw Object.assign(new Error('交互响应类型不匹配。'), { code: 'VALIDATION_ERROR' });
+    if (response.kind === 'answer') {
+      const questions = this.pendingQuestions.get(response.sessionId) as Array<{ id: string }> | undefined;
+      if (!previous && (!Array.isArray(questions) || questions.length !== Object.keys(response.answers).length || questions.some((question) => !response.answers[question.id]?.trim()))) throw Object.assign(new Error('请回答全部问题，且不要提交额外的问题 ID。'), { code: 'VALIDATION_ERROR' });
+    }
+    this.interactionDecisions.set(response.interactionId, response);
+    this.SaveState();
+    const promise = this.ResumeInteraction(run, response).finally(() => this.interactionFlights.delete(response.interactionId));
+    this.interactionFlights.set(response.interactionId, promise);
+    return promise;
+  }
+
+  /** 后端等待旧执行释放，执行被冻结的动作，再用真实工具结果恢复同一个逻辑 Run。 */
+  private async ResumeInteraction(run: PausedAgentRun, response: AgentInteractionResponse): Promise<{ accepted: boolean; requestId: string }> {
+    const { requestId, sessionId } = response;
+    await this.runReleases.get(requestId);
+    if (this.pausedRuns.get(requestId) !== run) throw Object.assign(new Error('任务已取消或会话已删除。'), { code: 'CANCELLED' });
+    if (response.kind === 'cancel') {
+      await this.Cancel(requestId);
+      return { accepted: true, requestId };
+    }
+    if (this.browserRunId || [...this.runtimeControls.values()].some((control) => control.sessionId === sessionId)) throw Object.assign(new Error('已有任务正在执行，请稍后重试此决定。'), { code: 'AGENT_BUSY' });
+    const recorder = await this.RestoreConversationRecorder(requestId, sessionId);
+    this.Emit({ type: 'run_resumed', requestId, sessionId, confirmationId: response.interactionId });
+    if (!run.result) {
+      run.status = 'executing';
+      this.SaveState();
+      const controller = new AbortController();
+      this.controllers.set(requestId, controller);
+      let payload: Record<string, unknown>;
+      try {
+        if (response.kind === 'answer') {
+          const questions = this.pendingQuestions.get(sessionId);
+          const draft = JSON.parse(run.checkpoint.pendingResult.content) as { draftId?: string; uncertainItems?: unknown };
+          payload = draft.draftId
+            ? { ok: false, code: 'DRAFT_REVIEWED', draftId: draft.draftId, uncertainItems: draft.uncertainItems, questions, answers: response.answers, saved: false, message: 'The user reviewed these uncertain facts. No resume was saved. Apply the answers, remove confirmed markers, and use the resume write tool if appropriate.' }
+            : { ok: true, questions, answers: response.answers };
+        } else if (this.pendingEdits.has(run.interactionId)) {
+          const proposal = this.pendingEdits.get(run.interactionId) as { resumeId?: string; idempotencyKey?: string };
+          this.structuredInteractionRequests.add(requestId);
+          const result = await this.ConfirmResumeEdit(run.interactionId, response.approved);
+          const receipt = proposal.idempotencyKey ? (await this.CreateToolLedgerPort().FindByIdempotencyKey(proposal.idempotencyKey))?.receipt : undefined;
+          payload = { ok: result.applied === true, resumeId: proposal.resumeId, ...(receipt ? { receipt } : {}), ...(response.approved ? {} : { code: 'USER_REJECTED' }), ...result };
+        } else if (this.pendingCronTasks.has(run.interactionId)) {
+          this.structuredInteractionRequests.add(requestId);
+          const result = await this.ConfirmCronTask(run.interactionId, response.approved);
+          payload = { ok: result.created === true, ...(response.approved ? {} : { code: 'USER_REJECTED' }), ...result };
+        } else if (this.pendingBrowserActions.has(run.interactionId)) {
+          this.structuredInteractionRequests.add(requestId);
+          const result = await this.ConfirmBrowserAction(run.interactionId, response.approved, { sessionId, signal: controller.signal });
+          payload = { ok: result.status === 'succeeded', ...result, ...(result.status === 'status_unknown' ? { code: 'STATUS_UNKNOWN', message: 'Verify the target state. Do not automatically repeat this action.' } : result.status === 'rejected' ? { code: 'USER_REJECTED' } : {}) };
+        } else {
+          payload = { ok: false, code: 'STATUS_UNKNOWN', message: 'The proposal is unavailable. Verify the actual state; do not repeat the action automatically.' };
+        }
+      } catch (error) {
+        payload = { ok: false, code: typeof error === 'object' && error && 'code' in error ? String(error.code) : 'INTERACTION_FAILED', message: error instanceof Error ? error.message : 'Interaction failed.' };
+      } finally {
+        this.structuredInteractionRequests.delete(requestId);
+        if (this.controllers.get(requestId) === controller) this.controllers.delete(requestId);
+      }
+      // 删除会话或取消可能发生在外部动作 await 中，不能让迟到回执复活任务。
+      if (this.pausedRuns.get(requestId) !== run) {
+        if (!this.browserRunId && this.browserSessionId === sessionId) await this.CloseBrowserTask();
+        return { accepted: true, requestId };
+      }
+      run.result = { role: 'tool', tool_call_id: run.checkpoint.pendingCall.id, content: JSON.stringify(payload) };
+      run.status = 'ready';
+      this.DiscardPendingInteraction(run);
+      this.SaveState();
+      this.modules.observability.AppendTraceEvent(requestId, 'interaction_resolved', { interactionId: run.interactionId, toolCallId: run.checkpoint.pendingCall.id, kind: response.kind, approved: response.kind === 'approval' ? response.approved : undefined, ok: payload.ok, code: payload.code });
+      await recorder?.ResolveInteraction(response.kind === 'answer' || response.approved, payload.ok === true ? 'succeeded' : payload.code === 'USER_REJECTED' ? 'skipped' : 'failed', response.kind === 'answer' ? '已收到用户回答' : undefined, true);
+    }
+    this.DiscardPendingInteraction(run);
+    run.status = 'resuming';
+    this.SaveState();
+    try { await this.StartRun(run.input, run); }
+    catch (error) {
+      if (this.pausedRuns.get(requestId) === run) { run.status = 'ready'; this.SaveState(); }
+      this.Emit({ type: 'error', requestId, sessionId, message: error instanceof Error ? error.message : '恢复任务失败，请重试。' });
+      throw error;
+    }
+    return { accepted: true, requestId };
   }
 
   /** 更新当前 Run 的确认权限；不扩展场景白名单、资源授权或工具能力。 */
@@ -685,13 +858,26 @@ export class AgentHost {
 
   /** 应用或丢弃待确认的简历补丁：接受时经简历写端口落库并释放 Agent 锁。 */
   async ConfirmResumeEdit(confirmationId: string, accepted: boolean): Promise<any> {
-    const pending = this.pendingEdits.get(confirmationId) as { kind?: string; sessionId?: string; resumeId?: string } | undefined;
-    const result = await this.modules.interaction.ConfirmResumeEdit(confirmationId, accepted, {
-      pendingEdits: this.pendingEdits,
-      ports: { resumeWrite: this.resumeWritePort },
-      ledger: this.CreateToolLedgerPort(),
-      emit: (event: unknown) => this.Emit(event),
-    });
+    const pending = this.pendingEdits.get(confirmationId) as { kind?: string; sessionId?: string; resumeId?: string; ownerId?: string } | undefined;
+    const requestId = pending?.ownerId?.replace(/^agent-/, '');
+    if (requestId && pending?.sessionId) await this.RestoreConversationRecorder(requestId, pending.sessionId);
+    let result: { applied: boolean };
+    try {
+      result = await this.modules.interaction.ConfirmResumeEdit(confirmationId, accepted, {
+        requestId,
+        runId: requestId,
+        pendingEdits: this.pendingEdits,
+        ports: { resumeWrite: this.resumeWritePort },
+        ledger: this.CreateToolLedgerPort(),
+        emit: (event: object) => this.Emit({ ...event, requestId, sessionId: pending?.sessionId }),
+      });
+    } catch (error) {
+      // 一次性提案无论执行是否成功均已消费；失败也必须结束原消息的等待态。
+      if (requestId && !this.pendingEdits.has(confirmationId)) await this.SettleConversationInteraction(requestId, pending?.sessionId, accepted, 'failed', '简历确认未能完成，请核对当前简历后继续。');
+      throw error;
+    } finally {
+      this.SaveState();
+    }
     if (result.applied && pending?.kind === 'edit' && pending.sessionId && pending.resumeId) {
       const current = await this.resumeReadPort.ReadCurrent(pending.resumeId);
       if (current) {
@@ -699,6 +885,8 @@ export class AgentHost {
         this.SaveState();
       }
     }
+    this.SaveState();
+    if (requestId) await this.SettleConversationInteraction(requestId, pending?.sessionId, result.applied === true);
     return result;
   }
 
@@ -722,7 +910,11 @@ export class AgentHost {
     if (!pending) throw Object.assign(new Error('CronTask confirmation is unavailable or expired.'), { code: 'VALIDATION_ERROR' });
     this.pendingCronTasks.delete(normalizedId);
     this.SaveState();
-    if (!accepted) return { created: false };
+    if (!accepted) {
+      await this.SettleConversationInteraction(pending.requestId, this.requestSessions.get(pending.requestId), false);
+      return { created: false };
+    }
+    try {
     if (!Number.isFinite(pending.createdAt) || Date.now() - pending.createdAt > SessionSnapshotTtlMs) {
       throw Object.assign(new Error('CronTask confirmation expired. Create the schedule again.'), { code: 'VALIDATION_ERROR' });
     }
@@ -741,7 +933,12 @@ export class AgentHost {
       throw Object.assign(new Error('CronTask could not register the operating-system wake and was cancelled.'), { code: 'INTERNAL_ERROR', cause: error });
     }
     this.Emit({ type: 'cron_task_changed', requestId: pending.requestId, cronTask: task });
+    await this.SettleConversationInteraction(pending.requestId, this.requestSessions.get(pending.requestId), true);
     return { created: true, task };
+    } catch (error) {
+      await this.SettleConversationInteraction(pending.requestId, this.requestSessions.get(pending.requestId), accepted, 'failed', '定时任务确认未能完成，请核对任务列表后继续。');
+      throw error;
+    }
   }
 
   /** 执行被冻结的浏览器提案；确认后仍重新校验页面 revision 和目标引用，拒绝模型重建动作。 */
@@ -750,8 +947,9 @@ export class AgentHost {
     if (this.browserRunId) throw Object.assign(new Error('Another browser Agent run is already active.'), { code: 'AGENT_BUSY' });
     const confirmationRunId = `confirmation:${normalizedId}`;
     this.browserRunId = confirmationRunId;
-    try {
+    let resolved: { requestId: string; sessionId: string; accepted: boolean; outcome: 'succeeded' | 'failed' | 'skipped'; summary?: string } | undefined;
     const pending = this.pendingBrowserActions.get(normalizedId) as any;
+    try {
     if (!pending) throw Object.assign(new Error('Browser confirmation is unavailable or expired.'), { code: 'VALIDATION_ERROR' });
     const pendingTaskId = typeof pending.browserTaskId === 'string' && pending.browserTaskId.length > 0 ? pending.browserTaskId : null;
     const pendingTaskIdentityValid = pending.browserTaskId === null
@@ -874,6 +1072,7 @@ export class AgentHost {
       if (pending.proposal?.toolName === 'ContactBossJobs') await this.bossContactPort?.Cancel(pending.proposal);
       const result = { confirmationId: normalizedId, status: 'rejected', summary: pending.proposal?.summary };
       this.Emit({ type: 'browser_action_completed', requestId: pending.requestId, confirmationId: normalizedId, browserAction: result });
+      resolved = { requestId: pending.requestId, sessionId: pending.sessionId, accepted, outcome: result.status === 'succeeded' ? 'succeeded' : result.status === 'rejected' ? 'skipped' : 'failed', summary: result.status === 'status_unknown' ? '执行结果未知，请核对目标网站，禁止重复操作' : result.summary };
       return result;
     }
     if (execution.signal?.aborted) throw Object.assign(new Error('Browser action was cancelled before execution.'), { code: 'CANCELLED' });
@@ -883,11 +1082,13 @@ export class AgentHost {
     if (previous?.status === 'succeeded' && previous.receipt) {
       const replayed = { confirmationId: normalizedId, status: 'succeeded', replayed: true, receipt: previous.receipt, summary: pending.proposal?.summary };
       this.Emit({ type: 'browser_action_completed', requestId: pending.requestId, confirmationId: normalizedId, browserAction: replayed });
+      resolved = { requestId: pending.requestId, sessionId: pending.sessionId, accepted, outcome: replayed.status === 'succeeded' ? 'succeeded' : replayed.status === 'rejected' ? 'skipped' : 'failed', summary: replayed.status === 'status_unknown' ? '执行结果未知，请核对目标网站，禁止重复操作' : replayed.summary };
       return replayed;
     }
     if (previous?.status === 'status_unknown') {
       const unknown = { confirmationId: normalizedId, status: 'status_unknown', summary: pending.proposal?.summary, message: '该动作此前结果未知，请先在目标网站核对，不能自动重试。' };
       this.Emit({ type: 'browser_action_completed', requestId: pending.requestId, confirmationId: normalizedId, browserAction: unknown });
+      resolved = { requestId: pending.requestId, sessionId: pending.sessionId, accepted, outcome: unknown.status === 'succeeded' ? 'succeeded' : unknown.status === 'rejected' ? 'skipped' : 'failed', summary: unknown.status === 'status_unknown' ? '执行结果未知，请核对目标网站，禁止重复操作' : unknown.summary };
       return unknown;
     }
 
@@ -913,7 +1114,8 @@ export class AgentHost {
         await ledger.Finish(ledgerId, 'status_unknown', { errorCode: 'BROWSER_STATUS_UNKNOWN', finishedAt: Date.now() });
         const unknown = { confirmationId: normalizedId, status: 'status_unknown', data: outcome.data, summary: pending.proposal.summary };
         this.Emit({ type: 'browser_action_completed', requestId: pending.requestId, confirmationId: normalizedId, browserAction: unknown });
-        return unknown;
+        resolved = { requestId: pending.requestId, sessionId: pending.sessionId, accepted, outcome: unknown.status === 'succeeded' ? 'succeeded' : unknown.status === 'rejected' ? 'skipped' : 'failed', summary: unknown.status === 'status_unknown' ? '执行结果未知，请核对目标网站，禁止重复操作' : unknown.summary };
+      return unknown;
       }
       const receipt = {
         receiptId: `receipt-${randomUUID()}`,
@@ -924,6 +1126,7 @@ export class AgentHost {
       await ledger.Finish(ledgerId, 'succeeded', { receipt, finishedAt: Date.now() });
       const succeeded = { confirmationId: normalizedId, status: 'succeeded', data: outcome.data, receipt, summary: pending.proposal.summary };
       this.Emit({ type: 'browser_action_completed', requestId: pending.requestId, confirmationId: normalizedId, browserAction: succeeded });
+      resolved = { requestId: pending.requestId, sessionId: pending.sessionId, accepted, outcome: succeeded.status === 'succeeded' ? 'succeeded' : succeeded.status === 'rejected' ? 'skipped' : 'failed', summary: succeeded.status === 'status_unknown' ? '执行结果未知，请核对目标网站，禁止重复操作' : succeeded.summary };
       return succeeded;
     } catch (error) {
       const code = error && typeof error === 'object' && 'code' in error ? String((error as { code: unknown }).code) : 'BROWSER_COMMAND_FAILED';
@@ -931,10 +1134,18 @@ export class AgentHost {
       await ledger.Finish(ledgerId, statusUnknown ? 'status_unknown' : 'failed', { errorCode: code, finishedAt: Date.now() });
       const failed = { confirmationId: normalizedId, status: statusUnknown ? 'status_unknown' : 'failed', code, summary: pending.proposal.summary, message: error instanceof Error ? error.message : 'Browser action failed.' };
       this.Emit({ type: 'browser_action_completed', requestId: pending.requestId, confirmationId: normalizedId, browserAction: failed });
+      resolved = { requestId: pending.requestId, sessionId: pending.sessionId, accepted, outcome: failed.status === 'succeeded' ? 'succeeded' : failed.status === 'rejected' ? 'skipped' : 'failed', summary: failed.status === 'status_unknown' ? '执行结果未知，请核对目标网站，禁止重复操作' : failed.summary };
       return failed;
     }
+    } catch (error) {
+      // 校验拒绝也可能消费旧提案，不能让原消息永久显示等待确认。
+      if (pending && !resolved && !this.pendingBrowserActions.has(normalizedId)) {
+        await this.SettleConversationInteraction(pending.requestId, pending.sessionId, accepted, 'failed', '浏览器确认已失效，请重新读取页面后继续。');
+      }
+      throw error;
     } finally {
       if (this.browserRunId === confirmationRunId) this.browserRunId = null;
+      if (resolved) await this.SettleConversationInteraction(resolved.requestId, resolved.sessionId, resolved.accepted, resolved.outcome, resolved.summary);
     }
   }
 
@@ -1167,6 +1378,75 @@ export class AgentHost {
     this.SaveState();
   }
 
+  /** 经业务消息中的引用授权读取产物，资源路径不进入 IPC。 */
+  async ReadConversationResource(sessionId: string, resource: import('@avery/contracts').ConversationResource): Promise<import('@avery/contracts').ConversationResourceView> {
+    return ReadConversationResource(sessionId, resource, {
+      workspacePath: this.workspacePath,
+      presentations: (id) => this.business.GetConversationPresentations(id),
+      workspace: () => this.business.LoadViewModel(), profiles: () => this.business.GetProfiles(),
+      revisions: (id) => this.business.GetResumeRevisions(id), revision: (id, version) => this.business.GetResumeRevision(id, version),
+    });
+  }
+
+  /** 待交互数据仅返回该会话，内部授权提案与浏览器绑定不传到页面。 */
+  private GetPendingConversationEvents(sessionId: string): AgentStreamEvent[] {
+    const events: AgentStreamEvent[] = [];
+    for (const [id, value] of this.pendingEdits) {
+      if (!value || typeof value !== 'object' || !id.startsWith('resume-confirmation-')) continue;
+      const pending = value as { sessionId?: string; ownerId?: string; content?: string; reason?: string; resumeId?: string; name?: string };
+      if (pending.sessionId === sessionId && typeof pending.content === 'string') events.push({
+        type: 'resume_confirmation', sessionId, requestId: pending.ownerId?.replace(/^agent-/, ''), confirmationId: id,
+        content: pending.content, reason: pending.reason, resumeId: pending.resumeId, resumeName: pending.name,
+      });
+    }
+    for (const [id, pending] of this.pendingCronTasks) {
+      if (this.requestSessions.get(pending.requestId) === sessionId) events.push({ type: 'cron_task_confirmation', sessionId, requestId: pending.requestId,
+        confirmationId: id, cronTask: { title: pending.input?.title, message: pending.input?.message, schedule: pending.input?.schedule, summary: pending.summary, scenarioId: pending.input?.scenarioId } });
+    }
+    for (const [id, pending] of this.pendingBrowserActions) {
+      if (pending.sessionId === sessionId) events.push({ type: 'browser_confirmation', sessionId, requestId: pending.requestId, browserAction: {
+        confirmationId: id, toolName: pending.proposal?.toolName, summary: pending.proposal?.summary, url: pending.proposal?.url, risk: pending.proposal?.risk,
+      } });
+    }
+    const questions = this.pendingQuestions.get(sessionId);
+    const requestId = [...this.requestSessions].reverse().find((entry) => entry[1] === sessionId)?.[0];
+    if (Array.isArray(questions) && requestId) events.push({ type: 'question_requested', requestId, sessionId, confirmationId: this.pausedRuns.get(requestId)?.interactionId, questions });
+    for (const run of this.pausedRuns.values()) {
+      if (run.input.sessionId === sessionId && run.event && !events.some((event) => (event.confirmationId ?? event.browserAction?.confirmationId) === run.interactionId)) events.push(run.event);
+    }
+    return events;
+  }
+
+  /** 交互结果归入产生它的 Run；只标记已核实的结果，不把未知执行状态当作成功。 */
+  private async SettleConversationInteraction(requestId: string, sessionId: string | undefined, accepted: boolean, outcome?: 'succeeded' | 'failed' | 'skipped', summary?: string): Promise<void> {
+    if (!sessionId) return;
+    // 新协议由统一恢复入口在真实回执落盘后结算，旧底层确认方法不得提前终结整个 Run。
+    if (this.pausedRuns.has(requestId) && this.structuredInteractionRequests.has(requestId)) return;
+    const recorder = await this.RestoreConversationRecorder(requestId, sessionId);
+    if (!recorder) return;
+    await recorder.ResolveInteraction(accepted, outcome, summary);
+    this.conversationRecorders.delete(requestId);
+    const legacyRun = this.pausedRuns.get(requestId);
+    if (legacyRun) {
+      this.pausedRuns.delete(requestId);
+      this.DiscardPendingInteraction(legacyRun);
+      this.SaveState();
+    }
+  }
+
+  /** 只恢复当前业务消息的投影，确认在重启后仍更新原始消息。 */
+  private async RestoreConversationRecorder(requestId: string, sessionId: string): Promise<ConversationRecorder | undefined> {
+    const existing = this.conversationRecorders.get(requestId);
+    if (existing) return existing;
+    if (typeof this.business?.GetConversationPresentations !== 'function') return undefined;
+    const presentations: import('@avery/agent-sdk').ConversationPresentation[] = await this.business.GetConversationPresentations(sessionId);
+    const initial = presentations.find((item) => item.requestId === requestId);
+    if (!initial) return undefined;
+    const recorder = new ConversationRecorder(requestId, sessionId, (id, value) => this.business.SaveConversationPresentation(id, value), (event) => this.EmitPresentation(event), initial);
+    this.conversationRecorders.set(requestId, recorder);
+    return recorder;
+  }
+
   /** 返回会话专属 usage、项目标签及已校验的模型与确认权限；默认值绝不回退到其它会话。 */
   async GetSessionAssistantState(sessionId: string): Promise<any> {
     const normalizedSessionId = RequireString(sessionId, 'sessionId', 200);
@@ -1175,6 +1455,9 @@ export class AgentHost {
     const storedUsage = this.sessionUsage.get(normalizedSessionId) ?? null;
     const project = this.projectEnvironments.get(normalizedSessionId) ?? null;
     return {
+      tasks: [...(this.tasks.get(normalizedSessionId)?.values() ?? [])],
+      pendingEvents: this.GetPendingConversationEvents(normalizedSessionId),
+      activeRequestId: [...this.runtimeControls].find(([, control]) => control.sessionId === normalizedSessionId)?.[0],
       usage: {
         inputTokens: storedUsage?.inputTokens ?? 0,
         contextLimit: storedUsage?.contextLimit || contextLimit,
@@ -1533,6 +1816,27 @@ export class AgentHost {
 
   /** 在显式状态机内执行一次受限的流式对话回合：编排完成后委托 Kernel 运行循环。 */
   async Send(input: any): Promise<any> {
+    const sessionId = RequireString(input?.sessionId, 'sessionId', 200);
+    if ([...this.pausedRuns.values()].some((run) => run.input.sessionId === sessionId)) throw Object.assign(new Error('请先回答、确认或取消当前待处理交互。'), { code: 'AGENT_BUSY' });
+    return this.StartRun(input);
+  }
+
+  /** 执行片段有独立释放屏障，但恢复继续使用原 requestId、历史与预算。 */
+  private StartRun(input: any, resume?: PausedAgentRun): Promise<any> {
+    const requestId = RequireString(input?.requestId, 'requestId', 200);
+    const sessionId = RequireString(input?.sessionId, 'sessionId', 200);
+    if (this.runReleases.has(requestId) || this.executingSessions.has(sessionId)) return Promise.reject(Object.assign(new Error('The session is already running.'), { code: 'AGENT_BUSY' }));
+    if (this.requestSessions.has(requestId) && !resume) return Promise.reject(Object.assign(new Error('Run ID cannot be reused.'), { code: 'VALIDATION_ERROR' }));
+    this.executingSessions.add(sessionId);
+    const promise = this.ExecuteRun(input, resume).finally(() => {
+      if (this.runReleases.get(requestId) === promise) this.runReleases.delete(requestId);
+      this.executingSessions.delete(sessionId);
+    });
+    this.runReleases.set(requestId, promise);
+    return promise;
+  }
+
+  private async ExecuteRun(input: any, resume?: PausedAgentRun): Promise<any> {
     this.EnsureModulesReady();
     const requestId = RequireString(input?.requestId, 'requestId', 200);
     const sessionId = RequireString(input?.sessionId, 'sessionId', 200);
@@ -1618,7 +1922,7 @@ export class AgentHost {
       : '';
     const projectId = typeof input?.projectId === 'string' ? input.projectId.slice(0, 200) : '';
     // 快照可能因 TTL 刷新并追加 Skill reset；必须先完成刷新，再读取本次请求历史。
-    const snapshots = await this.LoadOrCreateSnapshots(sessionId, scenarioId);
+    const snapshots = resume && this.sessionSnapshots.has(sessionId) ? this.sessionSnapshots.get(sessionId) : await this.LoadOrCreateSnapshots(sessionId, scenarioId);
     // 不悄悄替换用户冻结的前缀；旧场景快照必须显式重载后才能继续执行。
     if (snapshots.tool.scenarioPolicyVersion !== ScenarioPolicyVersion) {
       throw Object.assign(new Error('场景权限已更新为“聊天 / 工作”。请发送 /reload 重载当前会话，或新建会话后继续。'), { code: 'SCENARIO_RELOAD_REQUIRED' });
@@ -1687,7 +1991,11 @@ export class AgentHost {
       : { role: 'user' as const, content: userContent };
     const controller = new AbortController();
     this.modules.observability.RecordLog('INFO', 'conversation.send', `session=${sessionId}`);
-    this.modules.observability.StartTrace(requestId, sessionId, model);
+    if (!resume) this.modules.observability.StartTrace(requestId, sessionId, model);
+    if (!resume && this.pendingQuestions.has(sessionId)) {
+      const previousRequestId = [...this.requestSessions].reverse().find((entry) => entry[1] === sessionId)?.[0];
+      if (previousRequestId) await this.SettleConversationInteraction(previousRequestId, sessionId, true, 'succeeded', '已收到用户回答');
+    }
     this.pendingQuestions.delete(sessionId);
     const activeTools = this.HydrateToolSnapshot(snapshots.tool, scenarioId)
       .filter((tool: any) => runScenario.toolNames.includes(tool.definition.function.name));
@@ -1722,7 +2030,7 @@ export class AgentHost {
       },
     });
     // 函数型调度元数据不进入状态文件；可序列化副本保留完整授权清单、Prompt、数据范围与 Provider 选择供审计/恢复。
-    this.runSnapshots.set(requestId, JSON.parse(JSON.stringify(runSnapshot)));
+    if (!resume) this.runSnapshots.set(requestId, JSON.parse(JSON.stringify(runSnapshot)));
     while (this.runSnapshots.size > 100) {
       const oldestRunId = this.runSnapshots.keys().next().value as string | undefined;
       if (oldestRunId === undefined) break;
@@ -1864,12 +2172,32 @@ export class AgentHost {
     const runtimeControl = { sessionId, confirmationMode, toolContext };
     this.runtimeControls.set(requestId, runtimeControl);
     this.controllers.set(requestId, controller);
+    this.requestSessions.set(requestId, sessionId);
+    // Renderer 与 Cron Runner 都先创建 reply 占位；后台任务同样保留有序过程和产物。
+    const recorder = resume ? await this.RestoreConversationRecorder(requestId, sessionId) : typeof this.business?.SaveConversationPresentation === 'function'
+      ? new ConversationRecorder(requestId, sessionId,
+        (id, presentation) => this.business.SaveConversationPresentation(id, presentation),
+        (event) => this.EmitPresentation(event))
+      : undefined;
+    if (recorder) this.conversationRecorders.set(requestId, recorder);
     try {
       let modelRequestCompleted = false;
       const result = await RunAgentLoop({
         requestId, sessionId, provider: runSnapshot.provider.provider, model: runSnapshot.provider.model, reasoningEffort,
         systemContext: contextContent, requestHistory, userContent, userMessage,
-        messagesBeforeUser, messagesAfterUser,
+        messagesBeforeUser: resume ? [] : messagesBeforeUser, messagesAfterUser: resume ? [] : messagesAfterUser,
+        ...(resume?.result ? { resume: { checkpoint: resume.checkpoint, result: resume.result } } : {}),
+        onResumed: () => this.pausedRuns.delete(requestId),
+        onCheckpoint: (checkpoint) => {
+          const pending = JSON.parse(checkpoint.pendingResult.content) as { confirmationId?: string };
+          const interactionId = pending.confirmationId ?? checkpoint.pendingCall.id;
+          const event = this.GetPendingConversationEvents(sessionId).find((event) => (event.confirmationId ?? event.browserAction?.confirmationId) === interactionId || (event.type === 'question_requested' && event.requestId === requestId));
+          this.pausedRuns.set(requestId, {
+            input: { requestId, sessionId, content: userContent, provider, model, reasoningEffort, confirmationMode: runtimeControl.confirmationMode, attachments, scenarioId, ...(projectId ? { projectId } : {}) },
+            checkpoint, interactionId, kind: checkpoint.pendingResult.disposition === 'wait_user_input' ? 'answer' : 'approval', status: 'waiting',
+            ...(event ? { event: { ...event, confirmationId: interactionId } } : {}),
+          });
+        },
         histories: this.histories,
         // 每个已提交消息都建立状态落盘屏障；取消只中止未提交的后续结果，不能抹掉已接受输入。
         persistHistory: () => this.SaveState(),
@@ -1914,6 +2242,7 @@ export class AgentHost {
         });
       }
       this.SaveState();
+      await recorder?.Flush();
       return { accepted: true, ...(result.outcome === 'cancelled' ? { cancelled: true } : {}) };
     } catch (error) {
       RestoreSkillState();
@@ -1942,7 +2271,12 @@ export class AgentHost {
         }
       }
       // waiting_* 只表示 Kernel 停止调度；必须在 Host 锁与运行资源清理后再允许 Renderer 发起续轮。
-      this.Emit({ type: 'run_released', requestId, sessionId, ...(cleanupOutcomes.length ? { cleanupOutcomes } : {}) });
+      try { await this.conversationRecorders.get(requestId)?.Flush(); }
+      finally {
+        this.Emit({ type: 'run_released', requestId, sessionId, ...(cleanupOutcomes.length ? { cleanupOutcomes } : {}) });
+        const recorded = this.conversationRecorders.get(requestId);
+        if (recorded && recorded.Status !== 'waiting' && recorded.Status !== 'paused') this.conversationRecorders.delete(requestId);
+      }
     }
   }
 

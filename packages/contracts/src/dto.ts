@@ -1,9 +1,17 @@
 import type { ApplicationStatus, Channel, JobSeekingType, ProfileCategory } from './enums';
+import type { ConversationPresentation, ConversationResource } from '@avery/agent-sdk';
+
+/** 产物预览只返回授权正文或受限文件字节，不向渲染进程暴露磁盘路径。 */
+export type ConversationResourceView =
+  | { resource: ConversationResource; format: 'resume'; document: ResumeDto; versions: ResumeRevisionDto[] }
+  | { resource: ConversationResource; format: 'markdown'; content: string }
+  | { resource: ConversationResource; format: 'file'; mimeType: 'application/pdf' | 'image/png'; base64: string };
 
 /** 跨进程实体 DTO：形状与当前 preload / Repository 返回保持一致，作为前端 ViewModel 的稳定数据契约。 */
 
 /** 会话消息的跨进程形状；createdAt 为服务端落库的 UTC epoch 毫秒，前端仅用于展示格式化。 */
 export interface ChatMessageDto {
+  presentation?: ConversationPresentation;
   id: string;
   role: 'user' | 'assistant' | 'system';
   content: string;

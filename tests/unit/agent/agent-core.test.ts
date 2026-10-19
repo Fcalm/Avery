@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { AgentMessage, ModelDelta, ToolCallFragment } from '../../../packages/agent-sdk/src/index';
+import type { AgentMessage, KernelCheckpoint, ModelDelta, ToolCallFragment } from '../../../packages/agent-sdk/src/index';
 import { RunAgentLoop } from '../../../packages/agent-core/src/kernel';
 import { CreateKernelHarness, CreateRegisteredTool } from './test-helpers';
 
@@ -8,6 +8,55 @@ function ToolCall(id: string, name: string): ToolCallFragment {
 }
 
 describe('agent-core RunAgentLoop', () => {
+  it('检查点不提交临时等待结果；恢复追加唯一真实结果及跳过结果，保持预算与请求序号', async () => {
+    let checkpoint: KernelCheckpoint | undefined;
+    const ask = CreateRegisteredTool('AskUserQuestion', { isConcurrencySafe: false });
+    const read = CreateRegisteredTool('ReadProfile');
+    const execute = vi.fn(async (call: ToolCallFragment, context: any) => {
+      context.pendingQuestions.set(context.sessionId, [{ id: 'q' }]);
+      return { role: 'tool' as const, tool_call_id: call.id, content: '{"awaitingUser":true}', disposition: 'wait_user_input' as const };
+    });
+    const harness = CreateKernelHarness({ tools: [ask, read], executeTool: execute, completions: [
+      { content: '请回答', toolCalls: [ToolCall('ask', 'AskUserQuestion'), ToolCall('later', 'ReadProfile')] },
+      { content: '继续完成', toolCalls: [] },
+    ] });
+    harness.input.onCheckpoint = (value) => { checkpoint = value; };
+    await RunAgentLoop(harness.input);
+    const before = harness.input.histories.get('session-1')!;
+    expect(before.some((message) => message.role === 'tool')).toBe(false);
+    expect(checkpoint).toMatchObject({ turn: 1, toolCallCount: 2, apiRequestCount: 1 });
+    const finalResult: AgentMessage = { role: 'tool', tool_call_id: 'ask', content: '{"ok":true,"answers":{"q":"yes"}}' };
+    harness.input.requestHistory = before;
+    harness.input.resume = { checkpoint: checkpoint!, result: finalResult };
+    const resumed = await RunAgentLoop(harness.input);
+    expect(resumed.outcome).toBe('completed');
+    expect(resumed.transcript.slice(0, before.length)).toEqual(before);
+    expect(resumed.transcript.filter((message) => message.role === 'user' && message.metadata?.source !== 'runtime')).toHaveLength(1);
+    expect(resumed.transcript.filter((message) => message.role === 'tool').map((message) => message.tool_call_id)).toEqual(['ask', 'later']);
+    expect(resumed.transcript.find((message) => message.tool_call_id === 'ask')).toEqual(finalResult);
+    expect(execute).toHaveBeenCalledOnce();
+    expect(harness.trace.append.mock.calls.filter((call) => call[1] === 'loop_turn').map((call) => call[2].turn)).toEqual([1, 2]);
+    expect(harness.trace.append.mock.calls.filter((call) => call[1] === 'provider_request').map((call) => call[2].apiRequestIndex)).toEqual([1, 2]);
+  });
+
+  it('连续恢复不重置模型轮数，最后一轮的新工具调用仍被拦截', async () => {
+    let checkpoint: KernelCheckpoint | undefined;
+    const write = CreateRegisteredTool('Write', { sideEffect: 'local_write', isConcurrencySafe: false });
+    const harness = CreateKernelHarness({ tools: [write], executeTool: async (call) => ({ role: 'tool', tool_call_id: call.id, content: '{"code":"CONFIRMATION_REQUIRED"}', disposition: 'wait_confirmation' }), completions: [
+      { content: '', toolCalls: [ToolCall('w1', 'Write')] }, { content: '', toolCalls: [ToolCall('w2', 'Write')] }, { content: '', toolCalls: [ToolCall('w3', 'Write')] },
+    ] });
+    harness.input.scenario.budgets = { maxModelTurns: 3 };
+    harness.input.onCheckpoint = (value) => { checkpoint = value; };
+    await RunAgentLoop(harness.input);
+    for (let index = 0; index < 2; index += 1) {
+      harness.input.requestHistory = harness.input.histories.get('session-1')!;
+      harness.input.resume = { checkpoint: checkpoint!, result: { role: 'tool', tool_call_id: checkpoint!.pendingCall.id, content: '{"ok":true}' } };
+      const result = await RunAgentLoop(harness.input);
+      if (index === 1) expect(result.outcome).toBe('circuit_open');
+    }
+    expect(harness.modules.tools.ExecuteToolCall).toHaveBeenCalledTimes(2);
+    expect(harness.trace.append.mock.calls.filter((call) => call[1] === 'loop_turn').map((call) => call[2].turn)).toEqual([1, 2, 3]);
+  });
   it('只产生 completed 终态，并把缺失 Provider usage 原样报告为 unavailable', async () => {
     const harness = CreateKernelHarness({ completions: [{ content: '完成', toolCalls: [] }] });
 
@@ -16,7 +65,7 @@ describe('agent-core RunAgentLoop', () => {
     expect(result.outcome).toBe('completed');
     expect(result.disposition).toBe('completed');
     expect(harness.usages).toEqual([{ source: 'unavailable', promptTokens: 0, completionTokens: 0, totalTokens: 0, cachedInputTokens: 0 }]);
-    expect(harness.events.map((event) => event.type)).toEqual(['content_delta', 'completed']);
+    expect(harness.events.map((event) => event.type)).toEqual(['conversation_activity', 'content_delta', 'completed']);
     expect(harness.events).not.toContainEqual(expect.objectContaining({ type: 'cancelled' }));
     expect(harness.trace.finish).toHaveBeenCalledOnce();
     expect(harness.trace.finish).toHaveBeenCalledWith('request-1', 'completed', expect.any(String));
@@ -147,7 +196,7 @@ describe('agent-core RunAgentLoop', () => {
 
     expect(performance.now() - startedAt).toBeLessThan(1_000);
     expect(result.outcome).toBe('cancelled');
-    expect(harness.events.map((event) => event.type)).toEqual(['cancelled']);
+    expect(harness.events.map((event) => event.type)).toEqual(['conversation_activity', 'cancelled']);
     expect(harness.trace.finish).toHaveBeenCalledWith('request-1', 'cancelled', expect.any(String));
   });
 
@@ -219,7 +268,7 @@ describe('agent-core RunAgentLoop', () => {
     expect(harness.input.histories.get('session-1')).toEqual(expect.arrayContaining([expect.objectContaining({ role: 'user', content: 'test request' })]));
     expect(harness.input.histories.get('session-1')?.some((message) => message.role === 'assistant' || message.role === 'tool')).toBe(false);
     expect(harness.input.persistHistory).toHaveBeenCalled();
-    expect(harness.events.map((event) => event.type)).toEqual(['cancelled']);
+    expect(harness.events.map((event) => event.type)).toEqual(['conversation_activity', 'cancelled']);
     expect(harness.trace.finish).toHaveBeenCalledOnce();
     expect(harness.trace.finish).toHaveBeenCalledWith('request-1', 'cancelled', 'Cancelled by user.');
   });

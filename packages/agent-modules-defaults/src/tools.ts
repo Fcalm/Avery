@@ -690,9 +690,9 @@ export function CreateToolsModule(ports: AgentDefaultPorts): ToolsModule {
     const question = `以下推测性补全已标记为【待确认】，尚未写入正式简历：\n${itemText}\n请明确回复“全部确认”，或说明要删除/修改的条目。`;
     const questions = [{ id: draftId, question, options: ['全部确认', '我要修改', '其他'] }];
     context.pendingQuestions.set(context.sessionId, questions);
-    context.emit({ type: 'question_requested', requestId: context.requestId, sessionId: context.sessionId, questions });
+    context.emit({ type: 'question_requested', requestId: context.requestId, sessionId: context.sessionId, confirmationId: draftId, questions });
     return CreateToolResult(callId, {
-      ok: false, code: 'CONFIRMATION_REQUIRED', awaitingUser: true, draftId,
+      ok: false, code: 'CONFIRMATION_REQUIRED', awaitingUser: true, draftId, confirmationId: draftId,
       message: 'The draft contains 【待确认】 items and has not been written. Wait for explicit text confirmation or modification.',
       uncertainItems: items,
     }, { disposition: 'wait_user_input' });
@@ -771,7 +771,7 @@ export function CreateToolsModule(ports: AgentDefaultPorts): ToolsModule {
       const confirmationId = `resume-confirmation-${randomUUID()}`;
       context.pendingEdits.set(confirmationId, pending);
       context.emit({ type: 'resume_confirmation', requestId: context.requestId, confirmationId, resumeId, resumeName: name, content, reason });
-      return CreateToolResult(callId, { ok: false, code: 'CONFIRMATION_REQUIRED', message: 'A user confirmation card has been shown. Do not repeat this creation. Wait for a new user message after confirmation or rejection.', confirmationId, proposalHash }, { disposition: 'wait_confirmation' });
+      return CreateToolResult(callId, { ok: false, code: 'CONFIRMATION_REQUIRED', message: 'A user confirmation card has been shown. Do not repeat this creation. The run will resume from the structured interaction response after confirmation or rejection.', confirmationId, proposalHash }, { disposition: 'wait_confirmation' });
     }
     const ownerId = `agent-${context.requestId}`;
     const ledgerEntry = await StartLedger(context, 'CreateResume', canonical, idempotencyKey);
@@ -823,7 +823,7 @@ export function CreateToolsModule(ports: AgentDefaultPorts): ToolsModule {
       const confirmationId = `resume-confirmation-${randomUUID()}`;
       context.pendingEdits.set(confirmationId, pending);
       context.emit({ type: 'resume_confirmation', requestId: context.requestId, confirmationId, resumeId: args.resumeId, content, reason });
-      return CreateToolResult(callId, { ok: false, code: 'CONFIRMATION_REQUIRED', message: 'A user confirmation card has been shown. Do not repeat this edit. Wait for a new user message after confirmation or rejection.', confirmationId, proposalHash }, { disposition: 'wait_confirmation' });
+      return CreateToolResult(callId, { ok: false, code: 'CONFIRMATION_REQUIRED', message: 'A user confirmation card has been shown. Do not repeat this edit. The run will resume from the structured interaction response after confirmation or rejection.', confirmationId, proposalHash }, { disposition: 'wait_confirmation' });
     }
     const ownerId = `agent-${context.requestId}`;
     const ledgerEntry = await StartLedger(context, 'UpdateResume', canonical, idempotencyKey);
@@ -888,8 +888,9 @@ export function CreateToolsModule(ports: AgentDefaultPorts): ToolsModule {
       return { id, question, options: [...options, '其他'] };
     });
     context.pendingQuestions.set(context.sessionId, questions);
-    context.emit({ type: 'question_requested', requestId: context.requestId, sessionId: context.sessionId, questions });
-    return CreateToolResult(callId, { ok: true, awaitingUser: true, message: 'The questions are shown to the user. Stop this turn and wait for the next user message.' }, { disposition: 'wait_user_input' });
+    const interactionId = `question-${randomUUID()}`;
+    context.emit({ type: 'question_requested', requestId: context.requestId, sessionId: context.sessionId, confirmationId: interactionId, questions });
+    return CreateToolResult(callId, { ok: true, awaitingUser: true, confirmationId: interactionId, message: 'The questions are shown. Execution will resume with the user answers as this tool call result.' }, { disposition: 'wait_user_input' });
   }
 
   /** 创建当前 Run 的 Todo；初始状态为 pending，单次 1–10 条，Run 上限 20 条；写操作计入业务幂等账本。 */

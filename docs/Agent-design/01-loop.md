@@ -211,7 +211,7 @@ interface PendingQuestionInteraction {
 规则：
 
 1. 问题卡先持久化，后发送 UI 事件，防止 UI 看见卡片但后端无法恢复。
-2. 回答必须携带 `interactionId` 和 `expectedStateRevision`。
+2. 回答使用 `RespondToInteraction`，携带 `sessionId`、`requestId`、`interactionId`、`kind: answer` 和按问题 ID 组织的 `answers`。审批使用 `kind: approval` 和 `approved`，取消使用 `kind: cancel`。
 3. 自由文本只能作为问题回答；确认写操作必须使用明确的确认命令，不能把“好”“继续”猜成授权。
 4. 回答不完整时保持等待态，返回缺失字段，不把未答项交给模型猜测。
 5. 新普通消息如果没有关联 pending interaction，默认不暗中取消等待；UI 应提示用户选择“回答当前问题”或“开始新任务并取消当前 Run”。
@@ -246,9 +246,11 @@ interface PendingConfirmation {
 5. 用户接受时核对 `proposalHash`，重新读取资源并获取锁。
 6. revision 一致才使用业务幂等键提交；不一致则进入 `paused`，展示新旧差异。
 7. 成功后写 Tool Receipt；拒绝或过期后提案失效，不能复用。
-8. 复用 `AskUserQuestion` 的恢复路径，把用户决定和实际执行结果整理为普通文本，以 `user` 角色保存并启动延续 Run；不使用额外标签或隐藏消息格式。确认卡可能早于旧 Run 的等待终态显示，前端必须暂存这条延续消息，并在旧 Run 释放后立即发送，不能因 active 检查静默丢弃或等到 CronTask 执行。
+8. 审批与 `AskUserQuestion` 统一使用后端结构化恢复入口，不拼接普通 `user` 消息。后端等待旧执行释放，核对会话、Run 与交互身份后，记录唯一决定；重复提交返回已有处理结果，不重复执行。
 
-接受确认后不再让模型重新生成工具参数。Harness 直接把冻结提案交给 Tool Scheduler；执行结束后再以普通 `user` 消息向模型说明确认决定和执行结果。该消息与 `AskUserQuestion` 的答案一样进入会话历史和新 Trace，使模型能够继续任务，同时保证用户看到的 diff 与真正执行的参数完全一致。
+接受确认后不再让模型重新生成工具参数。Harness 执行冻结提案，保存成功、失败、拒绝或结果未知的真实回执，以原 `tool_call_id` 追加唯一最终 `tool` 消息，再自动恢复同一逻辑 Run。问答同样通过原工具结果返回答案。等待事件不作为最终工具结果写入模型消息；同批后续工具保持 `SKIPPED_AFTER_WAIT`。历史消息与 Trace 均只追加，不修改已记录内容。
+
+检查点保存已用模型轮数、工具调用数、API 序号、提醒版本和原工具调用。恢复不重置预算，不新建聊天消息或 Trace。前端按 `run_resumed` 更新原回复和确认卡；旧执行的迟到 IPC 回执不能清空恢复后的运行状态。执行中的应用中断按结果未知处理，不自动重放外部副作用；已保存结果可以继续恢复。登录或验证码等人工接管提示没有结构化问题时仍允许用户真实发送“继续任务”。
 
 这比“等待期间一直持锁”更安全，也更适合桌面应用重启恢复。
 

@@ -1,6 +1,7 @@
 import { IsRuntimeContextMessage } from '@avery/agent-sdk';
 import type { AgentMessage, KernelRunInput, KernelRunResult, ModelUsage, ProviderRequestSnapshot, ProviderUsageFact, RunDisposition, ToolCallFragment, ToolDisposition, ToolExecutionResult } from '@avery/agent-sdk';
 import { CreateRuntimeReminderMessage, ShouldInjectRuntimeReminder } from './runtime-reminder';
+import { GetToolResources } from './conversation-resources';
 
 /** 从 Trace 正文中移除常见密钥、Authorization 凭据和绝对路径；纯函数，供内核事件脱敏。 */
 export function ScrubTraceContent(value: unknown): string {
@@ -282,12 +283,15 @@ async function CompressIfNeeded(input: KernelRunInput, history: AgentMessage[], 
 }
 
 /** 按 tool_call 顺序执行工具批次；只读并行、写/交互屏障，等待后跳过未执行节点。 */
-async function RunToolBatch(input: KernelRunInput, calls: ToolCallFragment[]): Promise<{ results: AgentMessage[]; disposition: RunDisposition }> {
+async function RunToolBatch(input: KernelRunInput, calls: ToolCallFragment[], stepId: string): Promise<{ results: AgentMessage[]; disposition: RunDisposition }> {
   ThrowIfRunCancelled(input.signal);
   const skillLoadIndex = calls.findIndex((call) => call.function.name === 'LoadSkill');
   if (skillLoadIndex >= 0 && calls.length > 1) {
     const selected = calls[skillLoadIndex];
-    const single = await RunToolBatch(input, [selected]);
+    const single = await RunToolBatch(input, [selected], stepId);
+    for (const call of calls.filter((_, index) => index !== skillLoadIndex)) input.emit({ type: 'conversation_activity', requestId: input.requestId, activity: {
+      kind: 'tool', stepId, toolCallId: call.id, name: call.function.name, toolStatus: 'skipped', summary: '技能加载后需要重新规划，本次未执行',
+    } });
     return {
       results: calls.map((call, index) => index === skillLoadIndex ? single.results[0] : CreateSkippedAfterSkillLoadResult(call)),
       disposition: single.disposition,
@@ -333,6 +337,7 @@ async function RunToolBatch(input: KernelRunInput, calls: ToolCallFragment[]): P
     const phaseResults = await Promise.all(phase.map(async (call) => {
       ThrowIfRunCancelled(input.signal);
       const argumentsText = ScrubToolArguments(call.function.name, call.function.arguments);
+      input.emit({ type: 'conversation_activity', requestId: input.requestId, activity: { kind: 'tool', stepId, toolCallId: call.id, name: call.function.name, toolStatus: 'running', summary: '正在执行' } });
       input.modules.observability.AppendTraceEvent(input.requestId, 'tool_call', { name: call.function.name, arguments: argumentsText }, EstimateTraceTokens(argumentsText));
       const registered = input.toolArray.some((tool) => tool.definition.function.name === call.function.name);
       const allowedByScenario = input.scenario?.toolNames.includes(call.function.name) ?? false;
@@ -345,7 +350,22 @@ async function RunToolBatch(input: KernelRunInput, calls: ToolCallFragment[]): P
         resultState = { ok: parsed.ok === true, code: String(parsed.code ?? ''), message: ScrubTraceContent(String(parsed.message ?? '').slice(0, 200)) };
       } catch { /* 工具结果无法解析时保留默认失败标记。 */ }
       input.modules.observability.AppendTraceEvent(input.requestId, 'tool_result', { name: call.function.name, ...resultState }, EstimateTraceTokens(resultState.message));
-      return { call, result };
+      const disposition = ParseToolDisposition(result);
+      input.emit({ type: 'conversation_activity', requestId: input.requestId, activity: {
+        kind: 'tool', stepId, toolCallId: call.id, name: call.function.name,
+        toolStatus: disposition === 'wait_confirmation' || disposition === 'wait_user_input' ? 'waiting' : disposition === 'pause' ? 'paused' : resultState.ok ? 'succeeded' : 'failed',
+        summary: resultState.message || (resultState.ok ? '执行完成' : resultState.code || '执行失败'),
+      } });
+      let parsed: { [key: string]: unknown } = {};
+      let args: { [key: string]: unknown } = {};
+      try { parsed = JSON.parse(result.content); args = JSON.parse(call.function.arguments || '{}'); } catch { /* 非结构化回执不建立资源引用。 */ }
+      const resources = GetToolResources(call.function.name, parsed, args);
+      for (const resource of resources) {
+        input.emit({ type: 'conversation_activity', requestId: input.requestId, activity: { kind: 'resource', stepId, toolCallId: call.id, resource } });
+      }
+      // 将经过回执验证的引用交给下一轮模型，回答可使用内链；正文里自行编造的引用仍不可点击。
+      const resultWithResources = resources.length ? { ...result, content: JSON.stringify({ ...parsed, conversationResources: resources.map((resource) => ({ ...resource, href: 'avery://' + resource.kind + '/' + encodeURIComponent(resource.id) + (resource.revision ? '?revision=' + resource.revision : '') })) }) } : result;
+      return { call, result: resultWithResources };
     }));
     ThrowIfRunCancelled(input.signal);
     for (const { call, result } of phaseResults) {
@@ -363,6 +383,7 @@ async function RunToolBatch(input: KernelRunInput, calls: ToolCallFragment[]): P
       for (const call of calls.slice(executedCount)) {
         const index = calls.findIndex((item) => item.id === call.id);
         if (index >= 0) results[index] = CreateSkippedResult(call);
+        input.emit({ type: 'conversation_activity', requestId: input.requestId, activity: { kind: 'tool', stepId, toolCallId: call.id, name: call.function.name, toolStatus: 'skipped', summary: '等待用户操作，后续工具未执行' } });
       }
     }
   }
@@ -380,13 +401,14 @@ export async function RunAgentLoop(input: KernelRunInput): Promise<KernelRunResu
   let requestHistory: AgentMessage[];
   let transcript: AgentMessage[] = [];
   let inputTokens = 0;
-  let assistantContent = '';
-  let reasoningContent = '';
-  let turn = 0;
-  let reminderRevision = 0;
-  let lastReminderConfirmationMode = input.runtimeReminder.confirmationMode;
-  let toolCallCount = 0;
-  let apiRequestCount = 0;
+  const checkpoint = input.resume?.checkpoint;
+  let assistantContent = checkpoint?.assistantContent ?? '';
+  let reasoningContent = checkpoint?.reasoningContent ?? '';
+  let turn = checkpoint?.turn ?? 0;
+  let reminderRevision = checkpoint?.reminderRevision ?? 0;
+  let lastReminderConfirmationMode = checkpoint?.lastReminderConfirmationMode ?? input.runtimeReminder.confirmationMode;
+  let toolCallCount = checkpoint?.toolCallCount ?? 0;
+  let apiRequestCount = checkpoint?.apiRequestCount ?? 0;
   const NextApiRequestIndex = () => { apiRequestCount += 1; return apiRequestCount; };
   const maxTurns = input.scenario?.budgets?.maxModelTurns ?? input.maxTurns;
   // 场景只有显式配置时才限制工具总数；投递场景依赖较多原子浏览器动作，不另设浏览器动作预算。
@@ -395,14 +417,22 @@ export async function RunAgentLoop(input: KernelRunInput): Promise<KernelRunResu
 
   try {
     // 压缩熔断错误进入 catch，统一 FinishTrace/emit error（旧实现压缩在 try 外，抛错会跳过 Trace 收尾导致 running 幽灵 Trace）。
-    requestHistory = await CompressIfNeeded(input, input.requestHistory, () => { compressionCount += 1; }, NextApiRequestIndex);
+    // 先补全原 tool call 的唯一最终结果，才能压缩或调用 Provider；绝不修改既有消息。
+    if (input.resume) {
+      const resumedMessages = [input.resume.result, ...input.resume.checkpoint.remainingResults, ...input.resume.checkpoint.followups];
+      transcript = [{ role: 'system', content: input.systemContext }, ...input.requestHistory, ...resumedMessages];
+      resumedMessages.forEach((message) => RecordAppendedMessage(input, apiRequestCount + 1, message.role === 'tool' ? 'tool' : 'runtime', message));
+      input.onResumed?.();
+      CommitHistory(input, transcript);
+    }
+    requestHistory = await CompressIfNeeded(input, input.resume ? HistorySnapshot(transcript) : input.requestHistory, () => { compressionCount += 1; }, NextApiRequestIndex);
     const beforeUser = CommitInitialSyntheticMessages(input, input.messagesBeforeUser ?? []);
     const afterUser = CommitInitialSyntheticMessages(input, input.messagesAfterUser ?? []);
     transcript = [
       { role: 'system', content: input.systemContext },
       ...requestHistory,
       ...beforeUser,
-      input.userMessage ?? { role: 'user', content: input.userContent },
+      ...(input.resume ? [] : [input.userMessage ?? { role: 'user' as const, content: input.userContent }]),
       ...afterUser,
     ];
     const firstCompletionRequestIndex = apiRequestCount + 1;
@@ -411,7 +441,7 @@ export async function RunAgentLoop(input: KernelRunInput): Promise<KernelRunResu
       RecordAppendedMessage(input, firstCompletionRequestIndex, 'system', transcript[0]);
     }
     beforeUser.forEach((message) => RecordAppendedMessage(input, firstCompletionRequestIndex, 'runtime', message));
-    RecordAppendedMessage(input, firstCompletionRequestIndex, 'user', input.userMessage ?? { role: 'user', content: input.userContent });
+    if (!input.resume) RecordAppendedMessage(input, firstCompletionRequestIndex, 'user', input.userMessage ?? { role: 'user', content: input.userContent });
     afterUser.forEach((message) => RecordAppendedMessage(input, firstCompletionRequestIndex, 'runtime', message));
     // 用户输入一旦进入模型可见 transcript，即使本轮随后取消也必须能在下一轮恢复。
     CommitHistory(input, transcript);
@@ -453,10 +483,16 @@ export async function RunAgentLoop(input: KernelRunInput): Promise<KernelRunResu
         lastReminderConfirmationMode = currentConfirmationMode;
       }
       turn += 1;
+      const stepId = requestId + ':step:' + turn;
+      emit({ type: 'conversation_activity', requestId, activity: { kind: 'step', stepId } });
+      let currentPartKind = '';
+      let partIndex = 0;
+      const PartId = (kind: string) => { if (currentPartKind !== kind) { currentPartKind = kind; partIndex += 1; } return stepId + ':part:' + partIndex; };
       modules.observability.AppendTraceEvent(requestId, 'loop_turn', { turn });
       let apiRequestIndex = 0;
       // Provider 可能在 Promise settle 或取消后仍回调；仅当前流处于 active 时接收增量，避免终态后污染 UI。
       let acceptsProviderDelta = true;
+      let streamedText = '', streamedReasoning = '';
       const completion = await modules.modelProvider.StreamCompletion({
         requestId,
         provider: input.provider,
@@ -472,11 +508,16 @@ export async function RunAgentLoop(input: KernelRunInput): Promise<KernelRunResu
         },
         onDelta: (delta) => {
           if (!acceptsProviderDelta || signal.aborted) return;
-          if (delta.reasoning) { reasoningContent += delta.reasoning; emit({ type: 'thinking_delta', requestId, delta: delta.reasoning }); }
-          if (delta.content) { assistantContent += delta.content; emit({ type: 'content_delta', requestId, delta: delta.content }); }
+          if (delta.reasoning) { streamedReasoning += delta.reasoning; reasoningContent += delta.reasoning; emit({ type: 'thinking_delta', requestId, delta: delta.reasoning, activity: { kind: 'reasoning', stepId, partId: PartId('reasoning'), delta: delta.reasoning } }); }
+          if (delta.content) { streamedText += delta.content; assistantContent += delta.content; emit({ type: 'content_delta', requestId, delta: delta.content, activity: { kind: 'text', stepId, partId: PartId('text'), delta: delta.content } }); }
         },
       }).finally(() => { acceptsProviderDelta = false; });
       ThrowIfRunCancelled(signal);
+      // 部分 Provider 只返回完整正文，或最后一段未走流回调；只补齐已收到前缀的尾部，避免重复。
+      const remainingReasoning = (completion.reasoningContent ?? '').startsWith(streamedReasoning) ? (completion.reasoningContent ?? '').slice(streamedReasoning.length) : '';
+      const remainingText = completion.content.startsWith(streamedText) ? completion.content.slice(streamedText.length) : '';
+      if (remainingReasoning) { reasoningContent += remainingReasoning; emit({ type: 'thinking_delta', requestId, delta: remainingReasoning, activity: { kind: 'reasoning', stepId, partId: PartId('reasoning'), delta: remainingReasoning } }); }
+      if (remainingText) { assistantContent += remainingText; emit({ type: 'content_delta', requestId, delta: remainingText, activity: { kind: 'text', stepId, partId: PartId('text'), delta: remainingText } }); }
       input.onModelUsage?.(CreateProviderUsageFact(completion.usage));
       const assistantMessage: AgentMessage = {
         role: 'assistant',
@@ -505,15 +546,24 @@ export async function RunAgentLoop(input: KernelRunInput): Promise<KernelRunResu
         emit({ type: 'error', requestId, message: '本轮工具调用达到上限，已暂停；可继续提问或缩小目标' });
         return { outcome: 'circuit_open', disposition: 'paused', reason: 'tool_call_limit', transcript: HistorySnapshot(transcript), inputTokens, compressionCount };
       }
-      const { results, disposition } = await RunToolBatch(input, completion.toolCalls);
+      const { results, disposition } = await RunToolBatch(input, completion.toolCalls, stepId);
       const toolResults = results as ToolExecutionResult[];
       const toolFollowups = CommitToolFollowups(input, toolResults);
       const protocolResults = toolResults.map(({ followupMessages: _followupMessages, ...result }) => result);
-      transcript = [...transcript, ...protocolResults, ...toolFollowups];
+      const waitingIndex = input.onCheckpoint && (disposition === 'waiting_confirmation' || disposition === 'waiting_user_input')
+        ? toolResults.findIndex((result) => ParseToolDisposition(result) === 'wait_confirmation'
+          || (ParseToolDisposition(result) === 'wait_user_input' && input.toolContext.pendingQuestions.has(input.sessionId))) : -1;
+      const committedResults = waitingIndex >= 0 ? protocolResults.slice(0, waitingIndex) : protocolResults;
+      transcript = [...transcript, ...committedResults, ...(waitingIndex >= 0 ? [] : toolFollowups)];
       if (apiRequestIndex) {
-        protocolResults.forEach((message) => RecordAppendedMessage(input, apiRequestIndex, 'tool', message));
-        toolFollowups.forEach((message) => RecordAppendedMessage(input, apiRequestIndex, 'runtime', message));
+        committedResults.forEach((message) => RecordAppendedMessage(input, apiRequestIndex, 'tool', message));
+        if (waitingIndex < 0) toolFollowups.forEach((message) => RecordAppendedMessage(input, apiRequestIndex, 'runtime', message));
       }
+      if (waitingIndex >= 0) input.onCheckpoint!({
+        turn, toolCallCount, apiRequestCount, reminderRevision, lastReminderConfirmationMode, assistantContent, reasoningContent,
+        pendingCall: completion.toolCalls[waitingIndex], pendingResult: toolResults[waitingIndex],
+        remainingResults: protocolResults.slice(waitingIndex + 1), followups: toolFollowups,
+      });
       CommitHistory(input, transcript);
       if (disposition !== 'continue') {
         const waitOutcome = disposition === 'waiting_user_input' ? 'waiting_user_input' : disposition === 'waiting_confirmation' ? 'waiting_confirmation' : 'paused';

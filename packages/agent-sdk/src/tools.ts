@@ -264,22 +264,12 @@ export interface FileReadPort {
     truncated: boolean;
     warnings?: string[];
     pages?: number;
-    needsOcr?: boolean;
-    ocr?: {
-      engine: string;
-      version: string;
-      languages: string[];
-      confidence: number;
-      lowConfidence: boolean;
-      cacheHit: boolean;
-      source: { page: number; regions: Array<Record<string, unknown>> };
-    };
   }>;
   ReadTextFile(filePath: string): { content: string; truncated: boolean };
   /** 枚举项目内常规文件：path 为可读取的绝对路径，name 为相对项目的 POSIX 路径（供展示与匹配）。 */
   ListProjectFiles(projectPath: string, limit?: number): Array<{ path: string; name: string }>;
   ResolveProjectPath(projectRoot: string | null, requestedPath: string): string;
-  /** 将 attachment:// 虚拟 URI 解析为宿主私有 Markdown 快照路径；图片可保留原文件进入视觉/OCR 路径。 */
+  /** 将 attachment:// 虚拟 URI 解析为宿主私有 Markdown 快照路径；图片保留原文件供模型视觉输入使用。 */
   ResolveAttachmentUri(uri: string): Promise<string | null>;
   CreateGlobMatcher(pattern: string): RegExp;
 }

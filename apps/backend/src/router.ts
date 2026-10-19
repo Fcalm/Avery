@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import {
+  AgentInteractionResponseSchema,
   ApplicationUpsertSchema,
   ChatMessagesSchema,
   ConversationCreateSchema,
@@ -54,6 +55,7 @@ export const MethodRoutes: Record<string, MethodRoute> = {
   'agent:get-models': { service: 'agent', method: 'GetModels' },
   'agent:get-provider-catalog': { service: 'agent', method: 'GetProviderCatalog' },
   'agent:send': { service: 'agent', method: 'Send' },
+  'agent:respond-interaction': { service: 'agent', method: 'RespondToInteraction' },
   'agent:cancel': { service: 'agent', method: 'Cancel' },
   'agent:update-confirmation-mode': { service: 'agent', method: 'UpdateConfirmationMode' },
   'agent:update-reasoning-effort': { service: 'agent', method: 'UpdateReasoningEffort' },
@@ -72,6 +74,7 @@ export const MethodRoutes: Record<string, MethodRoute> = {
   'agent:set-trace-retention': { service: 'developer', method: 'SetTraceRetention' },
   'agent:reload-session': { service: 'agent', method: 'ReloadSession' },
   'agent:get-session-assistant-state': { service: 'agent', method: 'GetSessionAssistantState' },
+  'agent:read-conversation-resource': { service: 'agent', method: 'ReadConversationResource' },
   'agent:get-session-scenes': { service: 'agent', method: 'GetSessionScenes' },
   'agent:bind-project-environment': { service: 'agent', method: 'BindProjectEnvironment' },
   'agent:clear-observability': { service: 'developer', method: 'ClearObservability' },
@@ -166,6 +169,7 @@ const EvalDatasetVersionHash = z.string().regex(/^[a-f0-9]{64}$/);
 
 /** 写通道负载的整数组形状校验表（阶段 6 A2 收口）：键为通道，值为对该通道 args 的整体 tuple 校验。 */
 const WriteArgsSchemas: Record<string, z.ZodTuple> = {
+  'agent:respond-interaction': z.tuple([AgentInteractionResponseSchema]),
   'agent:confirm-cron-task': z.tuple([EntityId, z.boolean()]),
   // 浏览器确认必须把 Renderer 当前会话显式带回主进程；Host 会再与
   // pending action 的 session/task/run binding 做一次严格比较。

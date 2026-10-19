@@ -26,6 +26,9 @@ export class AgentRunService {
   /** 提交一轮受限的流式对话回合。 */
   Send(request: any): any { return this.agent.Send(request); }
 
+  /** 提交结构化决定，恢复调度完全由 Host 执行。 */
+  RespondToInteraction(response: import('@avery/contracts').AgentInteractionResponse): any { return this.agent.RespondToInteraction(response); }
+
   /** 中止指定在途请求。 */
   Cancel(requestId: string): any { return this.agent.Cancel(requestId); }
 
@@ -66,6 +69,9 @@ export class AgentRunService {
   ReloadSession(sessionId: string): any { return this.agent.ReloadSession(sessionId); }
 
   GetSessionAssistantState(sessionId: string): any { return this.agent.GetSessionAssistantState(sessionId); }
+
+  /** 会话产物读取由 Host 校验引用归属与物理路径。 */
+  ReadConversationResource(sessionId: string, resource: import('@avery/contracts').ConversationResource): Promise<import('@avery/contracts').ConversationResourceView> { return this.agent.ReadConversationResource(sessionId, resource); }
 
   /** 批量返回会话场景映射（只读），与 GetSessionAssistantState 同源。 */
   GetSessionScenes(): any { return this.agent.GetSessionScenes(); }

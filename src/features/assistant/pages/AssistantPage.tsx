@@ -1,7 +1,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type CSSProperties, type KeyboardEvent } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useLayoutEffect } from 'react';
-import type { AgentObservability, AgentStreamEvent, BrowserActionState, ConfirmationMode, ReasoningEffort } from '@avery/contracts';
+import type { AgentObservability, AgentStreamEvent, BrowserActionState, ConfirmationMode, ConversationResource, ReasoningEffort } from '@avery/contracts';
 import { useUiStore } from '../../../app/UiStore';
 import { WORKSPACE_QUERY_KEY, type WorkspaceData } from '../../../features/workspace/api/workspaceData';
 import { LoadWorkspaceData } from '../../../features/workspace/api/useWorkspaceData';
@@ -15,7 +15,7 @@ import { useSettings } from '../../../features/settings/api/settingsQueries';
 import { ApplyModelCatalogToProviders, LoadModelCatalog, SubscribeModelCatalog } from '../../../features/settings/api/modelCatalog';
 import { DocSidePanel } from '../components/DocSidePanel';
 import {
-  AcquireResumeEditLock, BindProjectEnvironment, CancelAgentRequest, ConfirmBrowserAction, ConfirmCronTask, ConfirmResumeEdit, GetAgentObservability, GetAgentTraceEvents, GetProviderCatalog, GetSessionAssistantState, ImportAttachmentFile,
+  AcquireResumeEditLock, BindProjectEnvironment, CancelAgentRequest, RespondToAgentInteraction, GetAgentObservability, GetAgentTraceEvents, GetProviderCatalog, GetSessionAssistantState, ImportAttachmentFile,
   ReleaseResumeEditLock, ReloadAgentSession, SelectAgentProjectDirectory, SendAgentRequest, SubscribeAgentStream, UpdateAgentConfirmationMode, UpdateAgentReasoningEffort,
 } from '../../../features/assistant/api/agentQueries';
 import { Button, DialogButton, Modal, Select } from '../../../shared/components/UI';
@@ -25,7 +25,8 @@ import { ASSISTANT_MAIN_MIN_WIDTH } from '../../../shared/layoutConstants';
 import { CalculateTokenSharePercent, CreateSessionTokenUsage, CreateSessionUsagePresentation } from '../usagePresentation';
 import { ConversationTrace } from '../../assistant/components/ConversationTrace';
 import type { ChatMessage, PageId } from '../../../types/domain';
-import { ResolveConfirmationContinuation } from '../confirmationContinuation';
+import { useSessionValue } from '../useSessionValue';
+import { ConversationMessage } from '../components/ConversationMessage';
 
 // 保持旧场景 ID 以兼容会话与定时任务；能力边界与后端白名单一致。
 const ScenarioOptions: Array<{ id: 'default' | 'application'; label: string; icon: IconName; description: string }> = [
@@ -160,7 +161,7 @@ function WriteConversationComposerStates(states: Record<string, StoredConversati
 }
 
 function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
-  const { activeConversationId, setActiveConversationId, currentResumeId, setCurrentResumeId, resumePanelOpen, assistantView, ShowNotice, composerSeed, setComposerSeed } = useUiStore();
+  const { activeConversationId, setActiveConversationId, currentResumeId, setCurrentResumeId, resumePanelOpen, setResumePanelOpen, assistantView, ShowNotice, composerSeed, setComposerSeed } = useUiStore();
   const conversations = useConversations();
   const resumes = useResumes();
   const settings = useSettings();
@@ -193,14 +194,18 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
   const [resumeText, setResumeText] = useState(resumes.find((item) => item.id === currentResumeId)?.content ?? '');
   const [savedText, setSavedText] = useState(resumeText);
   const [history, setHistory] = useState<string[]>([]);
+  const [resourcePreview, setResourcePreview] = useState<{ sessionId: string; resource: ConversationResource } | null>(null);
+  const [runsBySession, setRunsBySession] = useState<Record<string, string | undefined>>({});
+  const taskVersions = useRef<Record<string, number>>({});
+  const interactionBusy = useRef(new Set<string>());
   const [tasksBySession, setTasksBySession] = useState<Record<string, AgentTaskState>>({});
-  const [pendingEdit, setPendingEdit] = useState<{ requestId: string; confirmationId: string; name?: string; content: string; reason: string } | null>(null);
-  const [pendingBrowserAction, setPendingBrowserAction] = useState<(BrowserActionState & { requestId: string }) | null>(null);
-  const [pendingCronTask, setPendingCronTask] = useState<{ requestId: string; confirmationId: string; title: string; message: string; scenarioId: 'default' | 'application'; schedule: unknown; summary: string } | null>(null);
-  const [pendingQuestions, setPendingQuestions] = useState<{ requestId: string; questions: Array<{ id: string; question: string; options: string[] }> } | null>(null);
-  const [questionAnswers, setQuestionAnswers] = useState<Record<string, string>>({});
-  const [otherAnswers, setOtherAnswers] = useState<Record<string, string>>({});
-  const [pendingQuestionIndex, setPendingQuestionIndex] = useState(0);
+  const [pendingEdit, setPendingEdit, setPendingEditForSession, pendingEditVersions] = useSessionValue<{ requestId: string; confirmationId: string; name?: string; content: string; reason: string } | null>(activeConversationId, null);
+  const [pendingBrowserAction, setPendingBrowserAction, setPendingBrowserActionForSession, pendingBrowserActionVersions] = useSessionValue<(BrowserActionState & { requestId: string }) | null>(activeConversationId, null);
+  const [pendingCronTask, setPendingCronTask, setPendingCronTaskForSession, pendingCronTaskVersions] = useSessionValue<{ requestId: string; confirmationId: string; title: string; message: string; scenarioId: 'default' | 'application'; schedule: unknown; summary: string } | null>(activeConversationId, null);
+  const [pendingQuestions, setPendingQuestions, setPendingQuestionsForSession, pendingQuestionsVersions] = useSessionValue<{ requestId: string; interactionId: string; questions: Array<{ id: string; question: string; options: string[] }> } | null>(activeConversationId, null);
+  const [questionAnswers, setQuestionAnswers, setQuestionAnswersForSession, questionAnswersVersions] = useSessionValue<Record<string, string>>(activeConversationId, {});
+  const [otherAnswers, setOtherAnswers, setOtherAnswersForSession, otherAnswersVersions] = useSessionValue<Record<string, string>>(activeConversationId, {});
+  const [pendingQuestionIndex, setPendingQuestionIndex, setPendingQuestionIndexForSession, pendingQuestionIndexVersions] = useSessionValue(activeConversationId, 0);
   const [usage, setUsage] = useState(EmptyUsage);
   const [observability, setObservability] = useState<AgentObservability | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -209,8 +214,10 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
   const messageListRef = useRef<HTMLDivElement>(null);
   const enteredConversationRef = useRef<string | null>(null);
   const resumeSideRef = useRef<HTMLElement>(null);
-  const activeRequestRef = useRef<string | null>(null);
-  const activePlaceholderRef = useRef<{ conversationId: string; requestId: string; content: string; thinkingContent: string } | null>(null);
+  const activeRequestsRef = useRef(new Map<string, string>());
+  const activePlaceholdersRef = useRef(new Map<string, { conversationId: string; requestId: string; content: string; thinkingContent: string }>());
+  const sendInFlightRef = useRef(new Set<string>());
+  const runVersions = useRef<Record<string, number>>({});
   const resumesRef = useRef(resumes);
   // 用户编辑锁：记录持有锁的简历，保存/取消/卸载时释放。
   const editLockRef = useRef<string | null>(null);
@@ -219,6 +226,8 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
   const removeMessageRef = useRef(removeMessage);
   const patchConversationsRef = useRef(patchConversations);
   const activeConversationRef = useRef(activeConversationId);
+  const conversationsRef = useRef(conversations);
+  const nextDraftScenarioRef = useRef<'default' | 'application' | null>(null);
   const sessionLoadVersionRef = useRef(0);
   const workspaceRefreshVersionRef = useRef(0);
   const [scrollToBottomRequest, setScrollToBottomRequest] = useState(0);
@@ -227,6 +236,7 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
   removeMessageRef.current = removeMessage;
   patchConversationsRef.current = patchConversations;
   activeConversationRef.current = activeConversationId;
+  conversationsRef.current = conversations;
 
   /**
    * 后台事件可能和确认后的消息追加并发。直接 invalidate 整个 workspace 会让迟到旧快照
@@ -244,8 +254,18 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
     }
   }, [queryClient]);
 
+  const SetSessionRun = useCallback((sessionId: string, requestId: string | undefined, completedRequestId?: string) => {
+    const current = activeRequestsRef.current.get(sessionId);
+    if (completedRequestId && current && current !== completedRequestId) return;
+    runVersions.current[sessionId] = (runVersions.current[sessionId] ?? 0) + 1;
+    if (requestId) activeRequestsRef.current.set(sessionId, requestId);
+    else activeRequestsRef.current.delete(sessionId);
+    setRunsBySession((runs) => ({ ...runs, [sessionId]: requestId }));
+  }, []);
+
   /** Todo 归属产生它的那次会话：Agent 的 task_* 事件带 sessionId，按会话写入，切换会话不再串台。 */
   const UpdateSessionTasks = useCallback((sessionId: string, update: (state: AgentTaskState) => AgentTaskState) => {
+    taskVersions.current[sessionId] = (taskVersions.current[sessionId] ?? 0) + 1;
     setTasksBySession((current) => ({ ...current, [sessionId]: update(current[sessionId] ?? EmptyAgentTaskState) }));
   }, []);
 
@@ -258,6 +278,7 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
   }, [activeConversationId, assistantView, RefreshConversationTrace]);
 
   const conversation = useMemo(() => conversations.find((item) => item.id === activeConversationId), [conversations, activeConversationId]);
+  const conversationResources = useMemo(() => conversation?.messages.flatMap((message) => message.presentation?.parts.flatMap((part) => part.type === 'resource' ? [part.resource] : []) ?? []) ?? [], [conversation]);
   const resume = resumes.find((item) => item.id === currentResumeId);
   const usagePresentation = CreateSessionUsagePresentation({
     inputTokens: usage.tokens,
@@ -421,12 +442,32 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
     };
   }, [showModel, showPermission, showReasoningEffort, showScenario]);
 
+  /** 所有交互按事件归属写入；订阅回调不读取当前选中的会话作为默认归属。 */
+  const ApplyPendingEvent = useCallback((event: AgentStreamEvent) => {
+    const owner = event.sessionId;
+    if (!owner || !event.requestId) return;
+    if (event.type === 'resume_confirmation' && event.confirmationId && typeof event.content === 'string') {
+      setPendingEditForSession(owner, { requestId: event.requestId, confirmationId: event.confirmationId, name: event.resumeName, content: event.content, reason: event.reason ?? '更新简历内容' });
+    } else if (event.type === 'browser_confirmation' && event.browserAction?.confirmationId) {
+      setPendingBrowserActionForSession(owner, { ...event.browserAction, requestId: event.requestId });
+    } else if (event.type === 'cron_task_confirmation' && event.confirmationId && event.cronTask) {
+      setPendingCronTaskForSession(owner, { requestId: event.requestId, confirmationId: event.confirmationId, title: event.cronTask.title ?? '定时任务', message: event.cronTask.message ?? '', scenarioId: event.cronTask.scenarioId ?? 'default', schedule: event.cronTask.schedule, summary: event.cronTask.summary ?? '任务将定时执行。' });
+    } else if (event.type === 'question_requested' && event.questions) {
+      setPendingQuestionsForSession(owner, { requestId: event.requestId, interactionId: event.confirmationId ?? '', questions: event.questions });
+      setQuestionAnswersForSession(owner, Object.fromEntries(event.questions.map((question) => [question.id, question.options[0] ?? '其他'])));
+      setOtherAnswersForSession(owner, {}); setPendingQuestionIndexForSession(owner, 0);
+    }
+  }, [setPendingEditForSession, setPendingBrowserActionForSession, setPendingCronTaskForSession, setPendingQuestionsForSession, setQuestionAnswersForSession, setOtherAnswersForSession, setPendingQuestionIndexForSession]);
+
   /** 读取会话专属状态。切换时先清空旧会话数据，迟到响应不得覆盖当前会话。 */
   const RefreshSessionAssistantState = useCallback(async (sessionId: string | null) => {
     const version = ++sessionLoadVersionRef.current;
     if (!sessionId) { setUsage(EmptyUsage); setProjectEnvironment(null); return; }
     setUsage(EmptyUsage);
     setProjectEnvironment(null);
+    const taskVersion = taskVersions.current[sessionId] ?? 0;
+    const runVersion = runVersions.current[sessionId] ?? 0;
+    const interactionVersions = [pendingEditVersions, pendingBrowserActionVersions, pendingCronTaskVersions, pendingQuestionsVersions].map((ref) => ref.current[sessionId] ?? 0);
     try {
       const next = await GetSessionAssistantState(sessionId);
       if (version !== sessionLoadVersionRef.current || activeConversationRef.current !== sessionId) return;
@@ -444,8 +485,15 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
         reportedRequestCount: next.usage.reportedRequestCount,
         unreportedRequestCount: next.usage.unreportedRequestCount,
       });
+      if ((taskVersions.current[sessionId] ?? 0) === taskVersion && next.tasks) UpdateSessionTasks(sessionId, () => ({ todos: next.tasks!, active: next.tasks!.length > 0 }));
+      if ((runVersions.current[sessionId] ?? 0) === runVersion) SetSessionRun(sessionId, next.activeRequestId);
+      for (const event of next.pendingEvents ?? []) {
+        const index = ['resume_confirmation', 'browser_confirmation', 'cron_task_confirmation', 'question_requested'].indexOf(event.type);
+        if (index >= 0 && interactionVersions[index] === 0 && ([pendingEditVersions, pendingBrowserActionVersions, pendingCronTaskVersions, pendingQuestionsVersions][index].current[sessionId] ?? 0) === 0) ApplyPendingEvent(event);
+      }
       setProjectEnvironment(next.project);
-      setScenarioId(next.scenarioId);
+      // 新会话可能尚未运行过 Agent，后端内存中还没有场景快照；使用已落库的会话场景。
+      setScenarioId(conversationsRef.current.find((item) => item.id === sessionId)?.scenarioId ?? next.scenarioId);
       // 本地选择可能比后端上一次发送快照更新；仅在本地缓存缺失时使用后端恢复值。
       // 这样页面重进不覆盖尚未发送的新选择，清理缓存后仍可由后端恢复。
       const localComposerState = ReadConversationComposerStates()[sessionId];
@@ -462,7 +510,7 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
         ShowNotice('会话状态恢复失败，当前 usage 未知');
       }
     }
-  }, [PersistConversationComposerState, ShowNotice, settings.provider]);
+  }, [PersistConversationComposerState, ShowNotice, settings.provider, UpdateSessionTasks, SetSessionRun, ApplyPendingEvent, pendingEditVersions, pendingBrowserActionVersions, pendingCronTaskVersions, pendingQuestionsVersions]);
 
   useEffect(() => { void RefreshSessionAssistantState(activeConversationId); }, [activeConversationId, RefreshSessionAssistantState]);
 
@@ -472,7 +520,8 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
     setComposer('');
     setAttachments([]);
     setProjectEnvironment(null);
-    setScenarioId('default');
+    setScenarioId(nextDraftScenarioRef.current ?? 'default');
+    nextDraftScenarioRef.current = null;
     setPendingEdit(null);
     setPendingBrowserAction(null);
     setPendingCronTask(null);
@@ -527,142 +576,91 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
   // 卸载时释放仍持有的用户编辑锁，避免锁在租约期内阻塞 Agent 编辑。
   useEffect(() => () => { if (editLockRef.current) void ReleaseResumeEditLock(editLockRef.current); }, []);
   useEffect(() => SubscribeAgentStream((event: AgentStreamEvent) => {
-    const updatedContent = event.content;
-    if (event.type === 'run_released' && event.requestId) {
-      const uncertainCleanup = event.cleanupOutcomes?.find((outcome) => outcome.status === 'status_unknown');
-      const failedCleanup = event.cleanupOutcomes?.find((outcome) => outcome.status === 'failed');
-      if (uncertainCleanup) ShowNotice(`浏览器任务页面清理状态未知${uncertainCleanup.unknownTabs === null ? '' : `（${uncertainCleanup.unknownTabs} 个标签页未能确认关闭）`}；后续任务会使用新的隔离页面。`);
-      else if (failedCleanup) ShowNotice('浏览器任务页面清理失败；后续任务会使用新的隔离页面。');
-      if (activeRequestRef.current === event.requestId) {
-        const placeholder = activePlaceholderRef.current;
-        if (placeholder?.requestId === event.requestId) {
-          completeMessageRef.current.mutate({ conversationId: placeholder.conversationId, messageId: `reply-${placeholder.requestId}`, content: placeholder.content, thinkingContent: placeholder.thinkingContent });
-          activePlaceholderRef.current = null;
-        }
-        activeRequestRef.current = null;
+    if (event.type === 'conversation_save_error') { ShowNotice(event.message ?? '会话过程保存失败'); return; }
+    const owner = event.sessionId ?? (event.requestId ? activePlaceholdersRef.current.get(event.requestId)?.conversationId : undefined);
+    if (event.type === 'run_resumed' && owner && event.requestId) {
+      const requestId = event.requestId;
+      const existing = conversationsRef.current.find((item) => item.id === owner)?.messages.find((message) => message.id === 'reply-' + requestId);
+      activePlaceholdersRef.current.set(requestId, { conversationId: owner, requestId, content: existing?.content ?? '', thinkingContent: existing?.thinkingContent ?? '' });
+      SetSessionRun(owner, requestId);
+      setPendingEditForSession(owner, (current) => current?.confirmationId === event.confirmationId ? null : current);
+      setPendingCronTaskForSession(owner, (current) => current?.confirmationId === event.confirmationId ? null : current);
+      setPendingBrowserActionForSession(owner, (current) => current?.confirmationId === event.confirmationId ? null : current);
+      setPendingQuestionsForSession(owner, (current) => current?.interactionId === event.confirmationId ? null : current);
+      return;
+    }
+    if (event.type === 'conversation_updated' && owner && event.presentation && event.requestId === event.presentation.requestId) {
+      const snapshot = event.presentation;
+      patchConversationsRef.current((current) => current.map((item) => item.id !== owner ? item : {
+        ...item, messages: item.messages.map((message) => message.id !== 'reply-' + snapshot.requestId || (message.presentation?.sequence ?? -1) >= snapshot.sequence ? message : { ...message, presentation: snapshot }),
+      }));
+      if (snapshot.status === 'running') SetSessionRun(owner, snapshot.requestId);
+      else SetSessionRun(owner, undefined, snapshot.requestId);
+      return;
+    }
+    if (owner && ['resume_confirmation', 'browser_confirmation', 'cron_task_confirmation', 'question_requested'].includes(event.type)) { ApplyPendingEvent({ ...event, sessionId: owner }); return; }
+    if ((event.type === 'resume_updated' || event.type === 'resume_created') && event.resumeId && typeof event.content === 'string') {
+      void RefreshWorkspacePreservingMessages();
+      if (owner === activeConversationRef.current && !editLockRef.current) {
+        if (event.type === 'resume_created') setCurrentResumeId(event.resumeId);
+        if (event.type === 'resume_created' || event.resumeId === currentResumeId) { setResumeText(event.content); setSavedText(event.content); setHistory([]); }
       }
+      ShowNotice(event.type === 'resume_created' ? 'Agent 已创建并保存简历' : 'Agent 已保存简历修改');
       return;
     }
-    if (event.type === 'resume_updated' && event.resumeId && typeof updatedContent === 'string') {
-      // 后端已落库：保护会话消息地刷新工作空间，并从事件内容同步当前编辑区。
-      void RefreshWorkspacePreservingMessages();
-      // 用户正持锁编辑该简历（租约可能已过期）：跳过本地覆盖，避免 Agent 内容覆盖用户未保存编辑。
-      if (event.resumeId === currentResumeId && editLockRef.current !== event.resumeId) { setResumeText(updatedContent); setSavedText(updatedContent); setHistory([]); }
-      ShowNotice('Agent 已保存简历修改');
-      return;
-    }
-    if (event.type === 'resume_created' && event.resumeId && event.resumeName && typeof updatedContent === 'string') {
-      void RefreshWorkspacePreservingMessages();
-      setCurrentResumeId(event.resumeId);
-      setResumeText(updatedContent);
-      setSavedText(updatedContent);
-      setHistory([]);
-      ShowNotice('Agent 已创建并保存简历');
-      return;
-    }
-    if (event.type === 'resume_confirmation' && event.requestId && event.confirmationId && typeof updatedContent === 'string') {
-      setPendingEdit({ requestId: event.requestId, confirmationId: event.confirmationId, name: event.resumeName, content: updatedContent, reason: event.reason ?? '更新简历内容' });
-      return;
-    }
-    if (event.type === 'browser_confirmation' && event.requestId && event.browserAction?.confirmationId) {
-      setPendingBrowserAction({ ...event.browserAction, requestId: event.requestId });
-      return;
-    }
-    if (event.type === 'cron_task_confirmation' && event.requestId && event.confirmationId && event.cronTask) {
-      setPendingCronTask({
-        requestId: event.requestId, confirmationId: event.confirmationId, title: event.cronTask.title ?? '定时任务', message: event.cronTask.message ?? '',
-        scenarioId: event.cronTask.scenarioId ?? 'default', schedule: event.cronTask.schedule, summary: event.cronTask.summary ?? '该任务将以无人值守模式定时执行。',
-      });
-      return;
-    }
-    // cron_task_changed 只更新 Agent 内部的计划列表，不属于 WorkspaceViewModel；无需刷新会话。
-    // cron_run_completed 会新增定时任务会话，使用消息保护式刷新把它并入侧栏。
     if (event.type === 'cron_task_changed') return;
     if (event.type === 'cron_run_completed') { void RefreshWorkspacePreservingMessages(); return; }
     if (event.type === 'browser_action_completed' && event.browserAction) {
-      setPendingBrowserAction(null);
+      if (owner) setPendingBrowserActionForSession(owner, (current) => current?.requestId === event.requestId ? null : current);
       if (event.browserAction.status === 'status_unknown') ShowNotice('浏览器动作结果未知，请先在目标网站核对，不要重复执行');
-      else if (event.browserAction.status === 'succeeded') ShowNotice('浏览器动作已执行，Agent 将自动继续');
       return;
     }
-    if (event.type === 'browser_user_action') {
-      ShowNotice(event.browserAction?.summary ?? '请在可见浏览器中完成登录或验证，然后发送“继续任务”');
-      return;
-    }
-    // task_* 事件带产生它的 sessionId（即会话 id）：只写入该会话，其他会话不受影响。
-    if ((event.type === 'task_created' || event.type === 'task_updated') && event.task && event.sessionId) {
+    if (event.type === 'browser_user_action') { ShowNotice(event.browserAction?.summary ?? '请在浏览器中完成登录或验证，然后发送“继续任务”'); return; }
+    if ((event.type === 'task_created' || event.type === 'task_updated') && event.task && owner) {
       const task = event.task;
-      UpdateSessionTasks(event.sessionId, (state) => {
-        const index = state.todos.findIndex((item) => item.id === task.id);
-        return { todos: index < 0 ? [...state.todos, task] : state.todos.map((item, itemIndex) => itemIndex === index ? task : item), active: true };
-      });
+      UpdateSessionTasks(owner, (state) => ({ todos: state.todos.some((item) => item.id === task.id) ? state.todos.map((item) => item.id === task.id ? task : item) : [...state.todos, task], active: true }));
       return;
     }
-    if (event.type === 'task_deleted' && event.task && event.sessionId) {
-      const deletedTaskId = event.task.id;
-      UpdateSessionTasks(event.sessionId, (state) => ({ ...state, todos: state.todos.filter((item) => item.id !== deletedTaskId) }));
+    if (event.type === 'task_deleted' && event.task && owner) {
+      UpdateSessionTasks(owner, (state) => ({ ...state, todos: state.todos.filter((item) => item.id !== event.task!.id) })); return;
+    }
+    if (!event.requestId) return;
+    const placeholder = activePlaceholdersRef.current.get(event.requestId);
+    if (event.type === 'content_delta' || event.type === 'thinking_delta') {
+      if (!placeholder) return;
+      const delta = event.delta ?? '';
+      const content = event.type === 'content_delta' ? placeholder.content + delta : placeholder.content;
+      const thinkingContent = event.type === 'thinking_delta' ? placeholder.thinkingContent + delta : placeholder.thinkingContent;
+      activePlaceholdersRef.current.set(event.requestId, { ...placeholder, content, thinkingContent });
+      patchConversationsRef.current((current) => current.map((item) => item.id !== placeholder.conversationId ? item : { ...item, messages: item.messages.map((message) => message.id === 'reply-' + event.requestId ? { ...message, content, thinkingContent } : message) }));
       return;
     }
-    if (event.type === 'question_requested' && event.requestId && event.questions) { setPendingQuestions({ requestId: event.requestId, questions: event.questions }); setQuestionAnswers(Object.fromEntries(event.questions.map((question) => [question.id, question.options[0] ?? '其他']))); setOtherAnswers({}); setPendingQuestionIndex(0); return; }
-    if (event.type === 'waiting_user_input' || event.type === 'waiting_confirmation' || event.type === 'paused') {
-      const waitingRequestId = activeRequestRef.current;
-      if (!waitingRequestId || event.requestId !== waitingRequestId) return;
-      const placeholder = activePlaceholderRef.current;
-      const waitingSessionId = placeholder?.conversationId ?? null;
-      if (placeholder) completeMessageRef.current.mutate({ conversationId: placeholder.conversationId, messageId: `reply-${placeholder.requestId}`, content: placeholder.content, thinkingContent: placeholder.thinkingContent });
-      activePlaceholderRef.current = null;
-      activeRequestRef.current = null;
-      if (event.type === 'paused') ShowNotice('Agent 运行已暂停');
-      if (waitingSessionId) void RefreshSessionAssistantState(waitingSessionId);
-      return;
+    if (!['completed', 'cancelled', 'error', 'waiting_user_input', 'waiting_confirmation', 'paused', 'run_released'].includes(event.type)) return;
+    if (placeholder) {
+      completeMessageRef.current.mutate({ conversationId: placeholder.conversationId, messageId: 'reply-' + event.requestId, content: placeholder.content, thinkingContent: placeholder.thinkingContent });
+      activePlaceholdersRef.current.delete(event.requestId);
     }
-    const requestId = activeRequestRef.current;
-    if (!requestId || event.requestId !== requestId) return;
-    const completedSessionId = activePlaceholderRef.current?.conversationId ?? null;
-    if (event.type === 'thinking_delta' || event.type === 'content_delta') {
-      const placeholder = activePlaceholderRef.current;
-      if (placeholder) {
-        const delta = event.delta ?? '';
-        activePlaceholderRef.current = {
-          ...placeholder,
-          content: event.type === 'content_delta' ? `${placeholder.content}${delta}` : placeholder.content,
-          thinkingContent: event.type === 'thinking_delta' ? `${placeholder.thinkingContent}${delta}` : placeholder.thinkingContent,
-        };
-      }
-      patchConversationsRef.current((current) => current.map((item) => ({
-        ...item,
-        messages: item.messages.map((message) => message.id !== `reply-${event.requestId}` ? message : {
-          ...message,
-          content: event.type === 'content_delta' ? `${message.content}${event.delta ?? ''}` : message.content,
-          thinkingContent: event.type === 'thinking_delta' ? `${message.thinkingContent ?? ''}${event.delta ?? ''}` : message.thinkingContent,
-        }),
-      })));
-      return;
+    if (owner) {
+      SetSessionRun(owner, undefined, event.requestId);
+      if (owner === activeConversationRef.current) { setScrollToBottomRequest((current) => current + 1); void RefreshSessionAssistantState(owner); }
     }
-    if (event.type === 'completed') {
-      const placeholder = activePlaceholderRef.current;
-      if (placeholder) completeMessageRef.current.mutate({ conversationId: placeholder.conversationId, messageId: `reply-${placeholder.requestId}`, content: placeholder.content, thinkingContent: placeholder.thinkingContent });
-      if (completedSessionId === activeConversationRef.current) setScrollToBottomRequest((current) => current + 1);
-      activePlaceholderRef.current = null;
+    if (event.type === 'error') ShowNotice(event.message ?? 'Agent 请求失败');
+    if (event.type === 'cancelled') ShowNotice('已停止生成');
+    if (event.type === 'cancelled' && owner) {
+      setPendingQuestionsForSession(owner, (current) => current?.requestId === event.requestId ? null : current);
+      setPendingEditForSession(owner, (current) => current?.requestId === event.requestId ? null : current);
+      setPendingBrowserActionForSession(owner, (current) => current?.requestId === event.requestId ? null : current);
+      setPendingCronTaskForSession(owner, (current) => current?.requestId === event.requestId ? null : current);
     }
-    if (event.type === 'cancelled') {
-      const placeholder = activePlaceholderRef.current;
-      if (placeholder) completeMessageRef.current.mutate({ conversationId: placeholder.conversationId, messageId: `reply-${placeholder.requestId}`, content: placeholder.content, thinkingContent: placeholder.thinkingContent });
-      activePlaceholderRef.current = null;
-      ShowNotice('已停止生成');
+    if (event.type === 'paused') ShowNotice('Agent 运行已暂停');
+    if (event.type === 'run_released') {
+      if (event.cleanupOutcomes?.some((outcome) => outcome.status === 'status_unknown')) ShowNotice('浏览器任务页面清理状态未知；后续任务会使用新的隔离页面。');
+      else if (event.cleanupOutcomes?.some((outcome) => outcome.status === 'failed')) ShowNotice('浏览器任务页面清理失败；后续任务会使用新的隔离页面。');
     }
-    if (event.type === 'error') {
-      const placeholder = activePlaceholderRef.current;
-      if (placeholder) removeMessageRef.current.mutate({ conversationId: placeholder.conversationId, messageId: `reply-${placeholder.requestId}` });
-      activePlaceholderRef.current = null;
-      ShowNotice(event.message ?? 'Agent 请求失败');
-    }
-    activeRequestRef.current = null;
-    if (completedSessionId) void RefreshSessionAssistantState(completedSessionId);
-  }), [ShowNotice, currentResumeId, RefreshSessionAssistantState, RefreshWorkspacePreservingMessages]);
+  }), [ShowNotice, currentResumeId, SetSessionRun, UpdateSessionTasks, RefreshSessionAssistantState, RefreshWorkspacePreservingMessages, ApplyPendingEvent, setPendingBrowserActionForSession, setCurrentResumeId]);
 
-  async function HandleSend(contentOverride?: string, continuationOfRequestId?: string) {
-    const text = (contentOverride ?? composer).trim();
+  async function HandleSend() {
+    const text = composer.trim();
     if (text === '/reload' || text === '/reload-session') {
       if (!activeConversationId) { ShowNotice('请先发送一条消息建立会话，再重载会话上下文'); return; }
       const result = await ReloadAgentSession(activeConversationId);
@@ -670,16 +668,17 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
       else ShowNotice(result.reason === 'busy' ? 'Agent 正在处理，请等待本轮结束后再试' : '会话上下文重载失败');
       return;
     }
-    const continuation = ResolveConfirmationContinuation(activeRequestRef.current, continuationOfRequestId);
-    if (!continuation.allowed) return;
+    if (activeConversationId && activeRequestsRef.current.has(activeConversationId)) { ShowNotice('已有任务正在执行，请等待本轮结束或回到原会话停止任务。'); return; }
     if (attachments.some((attachment) => attachment.status === 'uploading')) {
       ShowNotice('附件仍在上传，请完成后再发送。');
       return;
     }
     const readyAttachments = attachments.filter((attachment): attachment is Extract<ComposerAttachment, { status: 'ready' }> => attachment.status === 'ready');
     if (!text && readyAttachments.length === 0) return;
-    // 交互答案属于已进入等待终态的旧 Run；只清理同一 request 的 Renderer 残留，不影响其他在途请求。
-    if (continuation.releaseActiveRequest) activeRequestRef.current = null;
+    const sendKey = activeConversationId ?? '__draft__';
+    if (sendInFlightRef.current.has(sendKey)) return;
+    sendInFlightRef.current.add(sendKey);
+    try {
     let targetId = activeConversationId;
     if (!targetId) {
       try {
@@ -712,8 +711,16 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
     }
     // 新会话在首条请求前写入当前选择，后续切回该会话不再丢失模型和确认权限。
     PersistConversationComposerState(targetId, { confirmationMode: permission, provider, model, reasoningEffort });
-    setActiveConversationId(targetId);
-    activeRequestRef.current = requestId;
+    // 先在发送来源页消费已提交的草稿，再切换到新建会话，避免等待 React 更新后的会话 ID。
+    // 追加消息期间新输入的文字及新附件不属于本次提交，必须保留。
+    if (activeConversationRef.current === activeConversationId) {
+      setComposer((current) => current === composer ? '' : current);
+      const submittedAttachments = new Set(readyAttachments.map((attachment) => attachment.id));
+      setAttachments((current) => current.filter((attachment) => !submittedAttachments.has(attachment.id)));
+    }
+    if (activeConversationRef.current === activeConversationId) setActiveConversationId(targetId);
+    SetSessionRun(targetId, requestId);
+    const startedRunVersion = runVersions.current[targetId];
     try {
       let boundProject = projectEnvironment;
       if (projectEnvironment?.projectId) {
@@ -721,33 +728,46 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
         boundProject = project ?? projectEnvironment;
         if (activeConversationRef.current === targetId) setProjectEnvironment(boundProject);
       }
-      activePlaceholderRef.current = { conversationId: targetId, requestId, content: '', thinkingContent: '' };
-      setComposer(''); setAttachments([]); UpdateSessionTasks(targetId, () => EmptyAgentTaskState);
+      activePlaceholdersRef.current.set(requestId, { conversationId: targetId, requestId, content: '', thinkingContent: '' });
       await SendAgentRequest({ requestId, sessionId: targetId, content: message.content, provider, model, reasoningEffort, confirmationMode: permission, attachments: readyAttachments.map(({ name, path }) => ({ name, path })), projectId: boundProject?.projectId ?? undefined, scenarioId });
     } catch (error) {
-      removeMessage.mutate({ conversationId: targetId, messageId: `reply-${requestId}` });
-      activePlaceholderRef.current = null;
-      activeRequestRef.current = null;
-      UpdateSessionTasks(targetId, (state) => ({ ...state, active: false }));
+      // 保留用户输入和已落盘的过程；启动失败也不能删除已经执行过工具的记录。
+      await RefreshWorkspacePreservingMessages();
+      if (runVersions.current[targetId] === startedRunVersion) {
+        activePlaceholdersRef.current.delete(requestId);
+        SetSessionRun(targetId, undefined, requestId);
+        UpdateSessionTasks(targetId, (state) => ({ ...state, active: false }));
+      }
       ShowNotice(error instanceof Error ? error.message : '无法发起 Agent 请求');
     } finally {
-      if (activeRequestRef.current === requestId) activeRequestRef.current = null;
+      // 旧 Send 的迟到 IPC 回执不能清理已恢复的同 requestId Run。
+      if (runVersions.current[targetId] === startedRunVersion) {
+        SetSessionRun(targetId, undefined, requestId);
+        activePlaceholdersRef.current.delete(requestId);
+      }
     }
+    } finally { sendInFlightRef.current.delete(sendKey); }
   }
 
-  /** 确认和问答结果立即复用标准发送链路，先写入真实 user 消息，不再经过不可见的内存队列。 */
-  function ContinueWithUserMessage(requestId: string, content: string) {
-    void HandleSend(content, requestId);
-  }
+  const visibleRequestId = activeConversationId ? runsBySession[activeConversationId] : undefined;
+  function HandleStop() { if (visibleRequestId) void CancelAgentRequest(visibleRequestId); }
 
-  function HandleStop() { if (activeRequestRef.current) void CancelAgentRequest(activeRequestRef.current); }
+  function OpenConversationResource(resource: ConversationResource) {
+    if (!activeConversationId) return;
+    if (editing) { ShowNotice('请先保存或取消当前简历编辑，再查看产物。'); return; }
+    if (resource.kind === 'resume') HandleSelectResume(resource.id);
+    setResourcePreview({ sessionId: activeConversationId, resource });
+    setResumePanelOpen(true);
+  }
+  useEffect(() => { setResourcePreview(null); }, [activeConversationId]);
+  useEffect(() => { if (!resumePanelOpen) setResourcePreview(null); }, [resumePanelOpen]);
 
   /** 权限切换同时更新在途 Run；完全信任由警告弹窗的显式确认入口调用。 */
   async function ApplyConfirmationMode(next: ConfirmationMode) {
     setPermission(next);
     setShowPermission(false);
     PersistConversationComposerState(activeConversationId, { confirmationMode: next });
-    const requestId = activeRequestRef.current;
+    const requestId = visibleRequestId;
     if (!requestId) return;
     try {
       await UpdateAgentConfirmationMode(requestId, next);
@@ -844,7 +864,7 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
   /** 用户发起手动编辑前获取后端互斥锁；Agent 占用或本轮仍在处理时拒绝进入编辑。 */
   async function HandleStartEditing() {
     if (!resume) return;
-    if (activeRequestRef.current) { ShowNotice('Agent 正在处理当前简历，请等待本轮结束后再编辑'); return; }
+    if (activeConversationId && activeRequestsRef.current.has(activeConversationId)) { ShowNotice('Agent 正在处理当前简历，请等待本轮结束后再编辑'); return; }
     const lock = await AcquireResumeEditLock(resume.id);
     if (!lock.acquired) { ShowNotice(lock.reason ?? '简历正被占用，暂时无法编辑'); return; }
     editLockRef.current = resume.id;
@@ -885,7 +905,8 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
   }
   function HandleScenarioChange(nextScenarioId: 'default' | 'application') {
     if (nextScenarioId === scenarioId) { setShowScenario(false); return; }
-    if (activeRequestRef.current) { ShowNotice('Agent 正在执行任务，请停止或等待本轮结束后再切换场景'); return; }
+    if (activeConversationId && activeRequestsRef.current.has(activeConversationId)) { ShowNotice('Agent 正在执行任务，请停止或等待本轮结束后再切换场景'); return; }
+    nextDraftScenarioRef.current = activeConversationId ? nextScenarioId : null;
     setActiveConversationId(null);
     setShowScenario(false);
     setScenarioId(nextScenarioId);
@@ -895,78 +916,64 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
     ShowNotice(`已切换到${ScenarioOptions.find((item) => item.id === nextScenarioId)?.label}的新对话`);
   }
 
-  async function HandlePendingEdit(accepted: boolean) {
-    if (!pendingEdit) return;
+  /** 确认失败可能已消费提案；只清理原会话中同一个确认，不影响切换后的会话或新提案。 */
+  async function ReconcileFailedConfirmation(kind: 'resume_confirmation' | 'cron_task_confirmation' | 'browser_confirmation', confirmationId: string) {
+    if (!activeConversationId) return;
     try {
-      const result = await ConfirmResumeEdit(pendingEdit.confirmationId, accepted);
-      const requestId = pendingEdit.requestId;
-      ShowNotice(result.applied ? '已确认并保存 Agent 修改' : '已拒绝 Agent 修改');
-      setPendingEdit(null);
-      ContinueWithUserMessage(requestId, result.applied
-        ? '我已确认并保存上述简历修改，请继续任务。'
-        : '我拒绝了上述简历修改，请根据我的决定调整方案并继续任务。');
-    } catch (error) { ShowNotice(error instanceof Error ? error.message : '无法处理简历确认'); }
-  }
-
-  async function HandlePendingCronTask(accepted: boolean) {
-    if (!pendingCronTask) return;
-    try {
-      const result = await ConfirmCronTask(pendingCronTask.confirmationId, accepted);
-      const requestId = pendingCronTask.requestId;
-      ShowNotice(result.created ? '定时任务已保存并注册后台唤醒' : '已取消创建定时任务');
-      setPendingCronTask(null);
-      ContinueWithUserMessage(requestId, result.created
-        ? '我已确认创建上述定时任务，任务已经保存，请继续。'
-        : '我拒绝创建上述定时任务，请根据我的决定调整方案并继续。');
-    } catch (error) { ShowNotice(error instanceof Error ? error.message : '无法处理定时任务确认'); }
-  }
-
-  async function HandlePendingBrowserAction(accepted: boolean) {
-    const confirmationId = pendingBrowserAction?.confirmationId;
-    if (!confirmationId) return;
-    const requestId = pendingBrowserAction.requestId;
-    const sessionId = activeConversationId;
-    if (!sessionId) {
-      ShowNotice('当前没有可用会话，无法继续浏览器确认；请先打开或发送消息建立会话。');
-      return;
+      const state = await GetSessionAssistantState(activeConversationId);
+      const stillPending = state.pendingEvents?.some((event) => event.type === kind
+        && (kind === 'browser_confirmation' ? event.browserAction?.confirmationId : event.confirmationId) === confirmationId);
+      if (stillPending) return;
+      if (kind === 'resume_confirmation') setPendingEdit((current) => current?.confirmationId === confirmationId ? null : current);
+      if (kind === 'cron_task_confirmation') setPendingCronTask((current) => current?.confirmationId === confirmationId ? null : current);
+      if (kind === 'browser_confirmation') setPendingBrowserAction((current) => current?.confirmationId === confirmationId ? null : current);
+    } catch (error) {
+      ShowNotice(error instanceof Error ? `无法核对确认状态：${error.message}` : '无法核对确认状态，请切回原会话检查。');
     }
+  }
+
+  /** 只提交结构化决定；状态、结果持久化与续轮由后端负责，切换会话不改变响应归属。 */
+  async function SubmitInteraction(response: import('@avery/contracts').AgentInteractionResponse) {
+    if (interactionBusy.current.has(response.interactionId)) return;
+    interactionBusy.current.add(response.interactionId);
     try {
-      const result = await ConfirmBrowserAction(confirmationId, accepted, sessionId);
-      setPendingBrowserAction(null);
-      if (result.status === 'succeeded') {
-        ShowNotice('浏览器动作已执行，Agent 将自动继续');
-        const batchResult = pendingBrowserAction.toolName === 'ContactBossJobs' && result.data
-          ? `\nBOSS 联系批次已执行完毕。请按以下逐项结果判断，不要把批次结束等同于全部联系成功：${JSON.stringify(result.data)}`
-          : '';
-        ContinueWithUserMessage(requestId, `我已确认上述浏览器操作，操作已执行成功。${batchResult || '请重新读取当前页面状态并继续任务。'}`);
-      } else if (result.status === 'status_unknown') {
-        ShowNotice('动作结果未知，Agent 将重新核对页面');
-        ContinueWithUserMessage(requestId, '我已确认上述浏览器操作，但执行结果未知。请重新读取当前页面状态，不要重复执行该操作。');
-      } else if (result.status === 'failed') {
-        ShowNotice('浏览器动作执行失败，Agent 将根据结果继续');
-        ContinueWithUserMessage(requestId, `我已确认上述浏览器操作，但执行失败${result.message ? `：${result.message}` : ''}。请根据结果调整方案并继续任务。`);
-      } else {
-        ShowNotice('已拒绝浏览器动作，Agent 将自动继续');
-        ContinueWithUserMessage(requestId, '我拒绝执行上述浏览器操作，请根据我的决定调整方案并继续任务。');
-      }
-    } catch (error) { ShowNotice(error instanceof Error ? error.message : '无法处理浏览器确认'); }
+      await RespondToAgentInteraction(response);
+    } catch (error) {
+      ShowNotice(error instanceof Error ? error.message : '交互处理失败，请重试');
+      try {
+        const state = await GetSessionAssistantState(response.sessionId);
+        for (const event of state.pendingEvents ?? []) ApplyPendingEvent(event);
+      } catch { /* 保留原卡片和错误提示，不能因状态读取失败丢失重试入口。 */ }
+    } finally { interactionBusy.current.delete(response.interactionId); }
+  }
+
+  async function HandlePendingEdit(approved: boolean) {
+    if (!pendingEdit || !activeConversationId) return;
+    await SubmitInteraction({ kind: 'approval', sessionId: activeConversationId, requestId: pendingEdit.requestId, interactionId: pendingEdit.confirmationId, approved });
+  }
+
+  async function HandlePendingCronTask(approved: boolean) {
+    if (!pendingCronTask || !activeConversationId) return;
+    await SubmitInteraction({ kind: 'approval', sessionId: activeConversationId, requestId: pendingCronTask.requestId, interactionId: pendingCronTask.confirmationId, approved });
+  }
+
+  async function HandlePendingBrowserAction(approved: boolean) {
+    if (!pendingBrowserAction?.confirmationId || !activeConversationId) return;
+    await SubmitInteraction({ kind: 'approval', sessionId: activeConversationId, requestId: pendingBrowserAction.requestId, interactionId: pendingBrowserAction.confirmationId, approved });
   }
 
   function SubmitQuestionAnswers() {
-    if (!pendingQuestions) return;
-    const incomplete = pendingQuestions.questions.some((question) => questionAnswers[question.id] === '其他' && !otherAnswers[question.id]?.trim());
-    if (incomplete) { ShowNotice('请选择或填写每一道问题的答案'); return; }
-    const answer = pendingQuestions.questions.map((question) => `【${question.question}】${questionAnswers[question.id] === '其他' ? otherAnswers[question.id].trim() : questionAnswers[question.id]}`).join('\n');
-    const requestId = pendingQuestions.requestId;
-    setPendingQuestions(null);
-    ContinueWithUserMessage(requestId, answer);
+    if (!pendingQuestions || !activeConversationId) return;
+    const answers = Object.fromEntries(pendingQuestions.questions.map((question) => [question.id,
+      questionAnswers[question.id] === '其他' ? otherAnswers[question.id]?.trim() : questionAnswers[question.id]]));
+    if (Object.values(answers).some((answer) => !answer)) { ShowNotice('请选择或填写每一道问题的答案'); return; }
+    void SubmitInteraction({ kind: 'answer', sessionId: activeConversationId, requestId: pendingQuestions.requestId, interactionId: pendingQuestions.interactionId, answers });
   }
 
   function CancelPendingQuestions() {
-    setPendingQuestions(null);
-    setQuestionAnswers({});
-    setOtherAnswers({});
-    setPendingQuestionIndex(0);
+    if (!pendingQuestions || !activeConversationId) return;
+    const pending = pendingQuestions;
+    void SubmitInteraction({ kind: 'cancel', sessionId: activeConversationId, requestId: pending.requestId, interactionId: pending.interactionId });
   }
 
   function ContinuePendingQuestions() {
@@ -986,7 +993,7 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
   const cacheSharePercent = sessionTokenUsage ? CalculateTokenSharePercent(sessionTokenUsage.cachedInputTokens, sessionTokenUsage.totalTokens) : null;
   return <div className={`assistant-layout ${isComposerCompact ? 'is-composer-compact' : ''}`} style={{ '--assistant-main-min-width': `${ASSISTANT_MAIN_MIN_WIDTH}px` } as CSSProperties}>
     {assistantView === 'trace' ? <section className="assistant-main assistant-trace" aria-label="当前对话轨迹"><ConversationTrace traces={(observability?.traces ?? []).filter((trace) => trace.sessionId === activeConversationId)} sessionTokenUsage={sessionTokenUsage} title={conversation?.title ?? '新对话'} onSelectTrace={GetAgentTraceEvents} /></section> : <section className={`assistant-main ${isNewThread ? 'is-new-thread' : ''}`}>
-      {conversation?.messages.length ? <div key={conversation.id} ref={messageListRef} className="message-list"><div className="message-thread">{conversation.messages.map((message) => <article key={message.id} className={`chat-message ${message.role}`}>{message.role === 'assistant' && <div className="msg-name">Avery</div>}{message.role === 'assistant' && settings.thinkingEnabled && message.thinkingContent && <details className="thinking-block"><summary>思考内容</summary><div className="thinking-content"><MarkdownText content={message.thinkingContent} /></div></details>}<MarkdownText content={message.content} /></article>)}</div></div> : <EmptyAssistant name={settings.nickname} />}
+      {conversation?.messages.length ? <div key={conversation.id} ref={messageListRef} className="message-list"><div className="message-thread">{conversation.messages.map((message) => <article key={message.id} className={`chat-message ${message.role}`}>{message.role === 'assistant' && <div className="msg-name">Avery</div>}{message.role === 'assistant' ? <ConversationMessage message={message} authorizedResources={conversationResources} onOpenResource={OpenConversationResource} /> : <MarkdownText content={message.content} />}</article>)}</div></div> : <EmptyAssistant name={settings.nickname} />}
       <div className="composer-dock">
         {shouldShowTodo && <div className="task-dock"><div className="task-summary"><span className={`task-status-icon ${GetTodoPresentation(activeTodo?.status ?? 'pending').className}`} aria-hidden="true">{GetTodoPresentation(activeTodo?.status ?? 'pending').symbol}</span><span className="task-summary-copy">{activeTodo?.title ?? '正在处理任务'}</span><span className={`task-summary-status ${GetTodoPresentation(activeTodo?.status ?? 'pending').className}`}>{GetTodoPresentation(activeTodo?.status ?? 'pending').label}</span></div><div className="task-card" aria-label="Todo 列表"><div className="task-card-heading">Todo · {agentTodos.length} 项</div><div className="task-list">{agentTodos.map((todo) => { const presentation = GetTodoPresentation(todo.status); return <div key={todo.id} className={`task-list-item ${presentation.className}`}><span className="task-status-icon" aria-hidden="true">{presentation.symbol}</span><span className="task-list-title">{todo.title}</span><span className="task-list-status">{presentation.label}</span></div>; })}</div></div></div>}
         {pendingQuestions ? <QuestionComposer questions={pendingQuestions.questions} answers={questionAnswers} otherAnswers={otherAnswers} questionIndex={pendingQuestionIndex} onAnswer={(questionId, answer) => setQuestionAnswers((current) => ({ ...current, [questionId]: answer }))} onOtherAnswer={(questionId, answer) => setOtherAnswers((current) => ({ ...current, [questionId]: answer }))} onPrevious={() => setPendingQuestionIndex((current) => Math.max(0, current - 1))} onCancel={CancelPendingQuestions} onContinue={ContinuePendingQuestions} /> : pendingEdit ? <ConfirmationComposer title="确认 Agent 修改简历" description={pendingEdit.reason} preview={pendingEdit.content} confirmLabel="确认并保存" onCancel={() => void HandlePendingEdit(false)} onConfirm={() => void HandlePendingEdit(true)} /> : pendingCronTask ? <ConfirmationComposer title="确认创建无人值守定时任务" description={`${pendingCronTask.summary}\n任务消息：${pendingCronTask.message}`} preview={JSON.stringify(pendingCronTask.schedule, null, 2)} confirmLabel="确认整个周期" onCancel={() => void HandlePendingCronTask(false)} onConfirm={() => void HandlePendingCronTask(true)} /> : pendingBrowserAction ? <ConfirmationComposer title="确认浏览器外部动作" description={`${pendingBrowserAction.summary ?? pendingBrowserAction.toolName}${pendingBrowserAction.url ? `\n目标网站：${pendingBrowserAction.url}` : ''}\n风险级别：${pendingBrowserAction.risk === 'high' ? '高风险' : pendingBrowserAction.risk === 'medium' ? '中风险' : '低风险'}`} confirmLabel="确认执行" onCancel={() => void HandlePendingBrowserAction(false)} onConfirm={() => void HandlePendingBrowserAction(true)} /> : <div className="composer-col">
@@ -1060,7 +1067,7 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
                     <div className="cp-note">{usagePresentation.title}</div>
                   </div>
                 </div>
-                {activeRequestRef.current ? <button className="send" type="button" onClick={HandleStop} aria-label="停止生成"><Icon name="stop" size={16} /></button> : <button className="send" type="button" disabled={(!composer.trim() && attachments.length === 0) || attachments.some((attachment) => attachment.status === 'uploading')} onClick={() => void HandleSend()} aria-label="发送消息"><Icon name="send" size={16} /></button>}
+                {visibleRequestId ? <button className="send" type="button" onClick={HandleStop} aria-label="停止生成"><Icon name="stop" size={16} /></button> : <button className="send" type="button" disabled={(!composer.trim() && attachments.length === 0) || attachments.some((attachment) => attachment.status === 'uploading')} onClick={() => void HandleSend()} aria-label="发送消息"><Icon name="send" size={16} /></button>}
               </div>
             </div>
           </div>
@@ -1073,7 +1080,7 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
               {projectEnvironment && <button className="nv-x" type="button" aria-label="移除项目空间" title="移除项目空间" onClick={() => setProjectEnvironment(null)}><Icon name="close" size={13} /></button>}
             </div>
             <div className="menu-wrap">
-              <button className="nv-btn scenario-button" type="button" aria-label={`场景：${CurrentScenario.label}`} aria-haspopup="true" aria-expanded={showScenario} disabled={Boolean(activeRequestRef.current)} onClick={() => setShowScenario((value) => !value)}>
+              <button className="nv-btn scenario-button" type="button" aria-label={`场景：${CurrentScenario.label}`} aria-haspopup="true" aria-expanded={showScenario} disabled={Boolean(visibleRequestId)} onClick={() => setShowScenario((value) => !value)}>
                 <Icon name={CurrentScenario.icon} size={15} />
                 <span>{CurrentScenario.label}</span>
                 <Icon name="chevron-up" className="chev" size={9} />
@@ -1097,7 +1104,7 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
         </div>}
       </div>
     </section>}
-    {resumePanelOpen && <DocSidePanel resumes={resumes} currentResumeId={currentResumeId} editing={editing} resumeText={resumeText} canUndo={history.length > 0} panelWidth={panelWidth} contentRef={resumeSideRef} onSelectResume={HandleSelectResume} onEditChange={HandleEditChange} onStartEditing={() => void HandleStartEditing()} onCancelEditing={HandleCancelEditing} onSaveResume={() => void HandleSaveResume()} onUndo={UndoResumeEdit} onPanelWidthChange={setPanelWidth} />}
+    {resumePanelOpen && <DocSidePanel resourceSelection={resourcePreview} onClearResourceSelection={() => setResourcePreview(null)} onClose={() => { setResourcePreview(null); setResumePanelOpen(false); }} resumes={resumes} currentResumeId={currentResumeId} editing={editing} resumeText={resumeText} canUndo={history.length > 0} panelWidth={panelWidth} contentRef={resumeSideRef} onSelectResume={HandleSelectResume} onEditChange={HandleEditChange} onStartEditing={() => void HandleStartEditing()} onCancelEditing={HandleCancelEditing} onSaveResume={() => void HandleSaveResume()} onUndo={UndoResumeEdit} onPanelWidthChange={setPanelWidth} />}
     <Modal
       open={showFullyTrustedWarning}
       title="开启完全信任模式"

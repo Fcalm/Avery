@@ -106,7 +106,7 @@ export class BrowserEvalRunner {
     const scenario: ScenarioSnapshot = { ...ApplicationScenario, toolNames: allowedTools, budgets: { maxModelTurns: input.maxModelTurns } };
     let finalResponse = '';
     let pendingConfirmation: { id: string; event: Record<string, unknown> } | null = null;
-    let pendingQuestion = false;
+    let pendingQuestion: { interactionId: string; questions: Array<{ id: string }> } | null = null;
     const observable = {
       RecordLog: (level: string, event: string, detail: string) => events.push({ type: 'log', createdAt: Date.now(), payload: { level, event, detail } }),
       StartTrace: (requestId: string, sessionId: string, model: string) => events.push({ type: 'trace_started', createdAt: Date.now(), payload: { requestId, sessionId, model } }),
@@ -121,7 +121,7 @@ export class BrowserEvalRunner {
         events.push({ type: String(event.type ?? 'agent_event'), createdAt: Date.now(), payload: event });
         if (event.type === 'completed' && typeof event.content === 'string') finalResponse = event.content;
         if (event.type === 'browser_confirmation' && typeof event.confirmationId === 'string') pendingConfirmation = { id: event.confirmationId, event };
-        if (event.type === 'question_requested') pendingQuestion = true;
+        if (event.type === 'question_requested' && typeof event.confirmationId === 'string' && Array.isArray(event.questions)) pendingQuestion = { interactionId: event.confirmationId, questions: event.questions as Array<{ id: string }> };
       },
       resolveProjectEnvironment: (projectId: string) => projectId === 'eval-project' ? { rootPath: projectPath, projectId, name: 'eval-project' } : null,
       compileInstructions: (_scenarioId, toolPolicyHash) => {
@@ -141,9 +141,9 @@ export class BrowserEvalRunner {
       let content = `${input.testCase.input.userMessage}\n\nThis evaluation uses a local recruitment fixture. Start at ${fixture.origin}/?branch=${input.fixtureBranch}&seed=${input.testCase.browser?.seed ?? 0}. Do not navigate to any other origin.`;
       for (let segment = 0; segment < 30; segment += 1) {
         if (input.signal.aborted) throw Object.assign(new Error('Browser evaluation case was cancelled.'), { code: 'CANCELLED' });
-        const requestId = `eval-browser-${input.caseRunId}-${segment}`;
+        const requestId = `eval-browser-${input.caseRunId}-0`;
         currentRequestId = requestId;
-        await host.Send({
+        if (segment === 0) await host.Send({
           requestId, sessionId: `eval-browser-session-${input.caseRunId}`, content, model: input.model,
           confirmationMode: 'always_confirm', projectId: 'eval-project', scenarioId: 'application', attachments: runtimeAttachments,
           resumeId: (input.testCase.fixtures.resume as any)?.id ?? (input.testCase.fixtures.resume ? 'eval-resume' : undefined),
@@ -156,15 +156,17 @@ export class BrowserEvalRunner {
           const proposal = host.InspectPendingBrowserAction(confirmation.id);
           const decision = simulator.Decide({ strategy: input.userSimulator, proposal, testCase: input.testCase, fixtureState: fixture.getState(), authorizedFileIds: new Set(attachments.keys()) });
           const accepted = decision.accepted;
-          const outcome = await host.ConfirmBrowserAction(confirmation.id, accepted, { signal: input.signal, sessionId: `eval-browser-session-${input.caseRunId}` });
+          currentRequestId = requestId;
+          const outcome = await host.RespondToInteraction({ kind: 'approval', requestId, sessionId: `eval-browser-session-${input.caseRunId}`, interactionId: confirmation.id, approved: accepted });
           events.push({ type: 'simulator_confirmation', createdAt: Date.now(), payload: { accepted, reason: decision.reason, proposal, outcome } });
-          content = accepted ? 'The current browser action was approved and executed. Continue the task from a fresh page snapshot.' : 'The current browser action was rejected. Re-plan safely and continue without bypassing the rejection.';
           continue;
         }
         if (pendingQuestion) {
-          pendingQuestion = false;
+          const question = pendingQuestion as { interactionId: string; questions: Array<{ id: string }> };
+          pendingQuestion = null;
           const scripted = input.userSimulator === 'scripted' ? simulator.NextInput(input.testCase) : null;
-          content = scripted || 'Use the supplied test profile, resume and attachments. Mark unavailable facts clearly and continue.';
+          currentRequestId = requestId;
+          await host.RespondToInteraction({ kind: 'answer', requestId, sessionId: `eval-browser-session-${input.caseRunId}`, interactionId: question.interactionId, answers: Object.fromEntries(question.questions.map((item) => [item.id, scripted || 'Use the supplied test profile, resume and attachments. Mark unavailable facts clearly and continue.'])) });
           continue;
         }
         if (finalResponse) break;

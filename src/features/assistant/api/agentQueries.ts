@@ -41,6 +41,11 @@ export async function SendAgentRequest(request: AgentSendRequest) {
   return Unwrap(await platformClient.agent.Send(request));
 }
 
+/** 审批和答案绑定原 Run，不调用普通消息发送接口。 */
+export async function RespondToAgentInteraction(response: import('@avery/contracts').AgentInteractionResponse) {
+  return Unwrap(await platformClient.agent.RespondToInteraction(response));
+}
+
 /** 取消当前 Agent 请求。 */
 export async function CancelAgentRequest(requestId: string) {
   const result = await platformClient.agent.Cancel(requestId);
@@ -173,4 +178,9 @@ export async function ImportAttachmentFile(file: File) {
 /** 订阅单一的主进程流式事件通道。 */
 export function SubscribeAgentStream(listener: (event: AgentStreamEvent) => void) {
   return platformClient.agent.OnStream(listener);
+}
+
+/** 读取本会话授权的产物，错误保持可见，不回退到其它版本。 */
+export async function ReadConversationResource(sessionId: string, resource: import("@avery/contracts").ConversationResource) {
+  return Unwrap(await platformClient.agent.ReadConversationResource(sessionId, resource));
 }

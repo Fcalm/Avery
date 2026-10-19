@@ -70,7 +70,10 @@ export interface CronBrowserAccessStatus {
 
 /** Agent 流式事件：preload 单通道 `agent:stream` 的全部事件类型。 */
 export interface AgentStreamEvent {
-  type: 'thinking_delta' | 'content_delta' | 'completed' | 'cancelled' | 'error' | 'run_released' | 'resume_updated' | 'resume_created' | 'resume_confirmation' | 'cron_task_confirmation' | 'cron_task_changed' | 'cron_run_completed' | 'task_created' | 'task_updated' | 'task_deleted' | 'question_requested' | 'waiting_user_input' | 'waiting_confirmation' | 'paused' | 'browser_confirmation' | 'browser_action_completed' | 'browser_user_action';
+  /** 面向用户的过程事件与宿主确认后的完整投影，不含原始工具参数。 */
+  activity?: import('@avery/agent-sdk').ConversationActivity;
+  presentation?: import('@avery/agent-sdk').ConversationPresentation;
+  type: 'conversation_save_error' | 'conversation_activity' | 'conversation_updated' | 'thinking_delta' | 'content_delta' | 'completed' | 'cancelled' | 'error' | 'run_released' | 'run_resumed' | 'resume_updated' | 'resume_created' | 'resume_confirmation' | 'cron_task_confirmation' | 'cron_task_changed' | 'cron_run_completed' | 'task_created' | 'task_updated' | 'task_deleted' | 'question_requested' | 'waiting_user_input' | 'waiting_confirmation' | 'paused' | 'browser_confirmation' | 'browser_action_completed' | 'browser_user_action';
   requestId?: string;
   sessionId?: string;
   delta?: string;
@@ -113,6 +116,10 @@ export interface AgentObservability {
 
 /** 单会话的助手运行状态；用于恢复输入栏 usage、模型与确认权限，不含真实路径或凭据。 */
 export interface AgentSessionAssistantState {
+  /** 同一会话的 Todo 与待处理交互；重进页面时恢复，不读取其它会话。 */
+  tasks?: Array<{ id: string; title: string; description: string; status: string }>;
+  pendingEvents?: AgentStreamEvent[];
+  activeRequestId?: string;
   usage: {
     inputTokens: number;
     contextLimit: number;
@@ -166,6 +173,8 @@ export interface DesktopAgentBridge {
   /** 返回所有已配置 Provider 及其可选模型，不暴露 API Key。 */
   GetProviderCatalog: () => Promise<{ providers: Array<{ provider: 'DeepSeek' | 'Z.AI' | 'MIMO' | '自定义'; configured: boolean; model: string; models: string[]; baseUrl: string; contextLimit: number; contextLimitMode: 'default' | 'custom'; compressionThreshold: number; thinkingEnabled: boolean }> }>;
   Send: (request: AgentSendRequest) => Promise<{ accepted: boolean }>;
+  /** 结构化审批/答案提交；宿主负责原 Run 的结果落盘和恢复，不产生合成用户消息。 */
+  RespondToInteraction: (response: import('./agent-interaction').AgentInteractionResponse) => Promise<{ accepted: boolean; requestId: string; replayed?: boolean }>;
   Cancel: (requestId: string) => Promise<{ cancelled: boolean }>;
   UpdateConfirmationMode: (requestId: string, confirmationMode: ConfirmationMode) => Promise<{ updated: boolean; confirmationMode?: ConfirmationMode; reason?: string }>;
   UpdateReasoningEffort: (sessionId: string, reasoningEffort: ReasoningEffort) => Promise<{ updated: boolean; reasoningEffort: ReasoningEffort }>;
@@ -198,6 +207,8 @@ export interface DesktopAgentBridge {
   SelectProjectDirectory: () => Promise<{ projectId: string; name: string } | null>;
   /** 按会话读取 usage、项目环境、模型与确认权限；绝不暴露项目绝对路径或凭据。 */
   GetSessionAssistantState: (sessionId: string) => Promise<AgentSessionAssistantState>;
+  /** 只预览当前会话已落库的资源；禁止把任意路径作为输入。 */
+  ReadConversationResource: (sessionId: string, resource: import('@avery/agent-sdk').ConversationResource) => Promise<import('./dto').ConversationResourceView>;
   /** 批量读取会话场景映射；未记录场景的会话不在返回值中，渲染层按默认场景处理。 */
   GetSessionScenes: () => Promise<Record<string, 'default' | 'application'>>;
   /** 将已由原生选择器授权的项目环境立即绑定到会话。 */
@@ -245,7 +256,7 @@ export interface WorkspaceBridge {
   SaveProfiles: (items: ProfileItemDto[], force?: boolean, options?: WriteCommandOptions) => Promise<{ count: number; hash: string }>;
   ReloadProfiles: () => Promise<{ items: ProfileItemDto[]; hash: string | null }>;
   ImportAttachment: (file: File, mimeType: string, options?: WriteCommandOptions) => Promise<AttachmentDto>;
-  CleanupAttachments: (options?: WriteCommandOptions) => Promise<{ scanned: number; logicallyDeleted: number; filesDeleted: number; cacheFilesDeleted: number; failed: number; pending: number }>;
+  CleanupAttachments: (options?: WriteCommandOptions) => Promise<{ scanned: number; logicallyDeleted: number; filesDeleted: number; snapshotFilesDeleted: number; failed: number; pending: number }>;
   GetRecoveryStatus: () => Promise<{ recovering: boolean; blocked: boolean; recovered: number; failed: number; blockedCount?: number }>;
   RecoverOperations: (options?: WriteCommandOptions) => Promise<{ recovered: number; failed: number; blocked: number; writable: boolean }>;
   GetDatabaseRecoveryStatus: () => Promise<{ mode: 'healthy' | 'recovery'; readOnly: boolean; reason: string | null; backups: Array<{ id: string; valid: boolean; schemaVersion: number | null; createdAt: number }>; canRestore: boolean }>;
@@ -268,7 +279,7 @@ export const BridgeNamespaces = {
     'ConfirmBrowserAction', 'GetBrowserRuntimeStatus', 'GetCronBrowserAccess', 'RevokeCronBrowserAccess',
     'AcquireResumeEditLock', 'ReleaseResumeEditLock', 'GetStatus',
     'GetObservability', 'GetTraceEvents', 'DeleteTraces', 'SetTraceRetention', 'ClearObservability',
-    'ReloadSession', 'SelectProjectDirectory', 'GetSessionAssistantState', 'BindProjectEnvironment', 'GetSessionScenes',
+    'ReloadSession', 'SelectProjectDirectory', 'GetSessionAssistantState', 'ReadConversationResource', 'BindProjectEnvironment', 'GetSessionScenes',
     'GetModuleConfiguration', 'SelectModuleDirectory', 'ResetModules', 'OnStream',
   ] as const,
   workspace: [

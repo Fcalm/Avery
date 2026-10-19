@@ -16,6 +16,7 @@
     "build": "node ../../node_modules/typescript/bin/tsc -p tsconfig.json"
   },
   "dependencies": {
+    "@avery/agent-sdk": "0.1.0",
     "zod": "^4.1.12"
   }
 }
