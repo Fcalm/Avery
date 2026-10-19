@@ -7,25 +7,26 @@
 .conversation-process>summary:hover,.conversation-reason>summary:hover{color:var(--text)}
 .conversation-process>summary>.ph:first-child{color:var(--accent)}
 .conversation-process>summary small{font-size:10px;font-weight:400;color:var(--text-3)}
-.conversation-process-body{padding-top:12px}
-.conversation-process-body>.markdown-text{margin-bottom:16px}
+/* 过程间距由容器统一控制，避免思考、工具和正文各自的外边距叠加。 */
+.conversation-process-body{display:grid;grid-template-columns:minmax(0,1fr);gap:8px;padding-top:12px}
+.conversation-process-body>.markdown-text{margin:0}
 .conversation-chevron{flex:none;transition:transform .2s ease}
 details[open]>summary>.conversation-chevron{transform:rotate(90deg)}
-.conversation-reason{margin:0 0 14px}
-.conversation-reason>summary{font-size:12px;color:var(--text-3);min-height:30px}
+.conversation-reason,.conversation-tool{margin:0}
+.conversation-reason>summary,.conversation-tool>summary{min-height:32px;padding:3px 6px 3px 0}
+.conversation-reason>summary{font-size:12px;color:var(--text-3)}
 .conversation-reason-body{padding:8px 0 5px 25px;border-left:1px solid var(--border);margin-left:7px;color:var(--text-2)}
 .conversation-reason-body .markdown-text{font-size:12px}
-.conversation-tool{margin:0 0 3px 8px;padding-left:13px;border-left:1px solid var(--border)}
-.conversation-tool>summary{padding:3px 6px 3px 0;font-size:12px;min-height:31px;color:var(--text-2)}
+.conversation-tool>summary{font-size:12px;color:var(--text-2)}
 .conversation-tool>summary:hover{color:var(--text)}
 .conversation-tool>summary>span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.conversation-tool-status{flex:none}
+.conversation-tool-icon,.conversation-tool-status{flex:none}
 .conversation-tool>summary small{margin-left:auto;flex:none;color:var(--text-3);font-size:11px;font-weight:400}
 .conversation-tool.is-succeeded>summary>.conversation-tool-status{color:var(--accent)}
 .conversation-tool.is-running>summary>.conversation-tool-status{animation:conversation-spin 1.2s linear infinite}
 .conversation-tool.is-failed>summary>.conversation-tool-status,.conversation-run-error{color:var(--danger,#b34537)}
 .conversation-tool.is-waiting>summary>.conversation-tool-status{color:var(--accent)}
-.conversation-tool-body{margin:5px 0 11px;padding:11px 13px;border:1px solid var(--border);border-radius:10px;background:var(--surface);font-size:12px;color:var(--text-2)}
+.conversation-tool-body{margin:5px 0 0 25px;padding:11px 13px;border:1px solid var(--border);border-radius:10px;background:var(--surface);font-size:12px;color:var(--text-2)}
 .conversation-tool-name{font-family:monospace;font-size:11px;color:var(--text-3)}
 .conversation-tool-body p{margin:7px 0;line-height:1.8;white-space:pre-wrap}
 .conversation-tool-body>small{font-size:11px;color:var(--text-3)}
@@ -66,5 +67,5 @@ details[open]>summary>.conversation-chevron{transform:rotate(90deg)}
 }
 .conversation-response summary:focus-visible,.conversation-resource:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
 @keyframes conversation-spin{to{transform:rotate(360deg)}}
-@media(max-width:640px){.conversation-process>summary{flex-wrap:wrap;gap:6px}.conversation-tool>summary{gap:6px}.conversation-tool>summary small{font-size:10px}.conversation-work-caption{font-size:10px}}
+@media(max-width:640px){.conversation-process>summary{flex-wrap:wrap;gap:6px}.conversation-tool>summary small{font-size:10px}.conversation-work-caption{font-size:10px}}
 @media(prefers-reduced-motion:reduce){.conversation-response *,.conversation-response *::before,.conversation-response *::after{animation:none!important;transition:none!important}}

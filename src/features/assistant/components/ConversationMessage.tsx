@@ -50,7 +50,7 @@ export function ConversationMessage({ message, onOpenResource, authorizedResourc
     </details>;
     const icon: IconName = part.status === 'running' ? 'loading' : part.status === 'succeeded' ? 'check' : part.status === 'waiting' ? 'shield-check' : part.status === 'failed' ? 'warning' : 'clock';
     return <details key={part.id} className={'conversation-tool is-' + part.status}>
-      <summary><span>{ToolNames[part.name] ?? part.name}</span><Icon name={icon} className="conversation-tool-status" size={15} /><small>{StatusLabels[part.status]}</small><Icon name="chevron-right" className="conversation-chevron" size={12} /></summary>
+      <summary><Icon name="wrench" className="conversation-tool-icon" size={17} /><span>{ToolNames[part.name] ?? part.name}</span><Icon name={icon} className="conversation-tool-status" size={15} /><small>{StatusLabels[part.status]}</small><Icon name="chevron-right" className="conversation-chevron" size={12} /></summary>
       <div className="conversation-tool-body"><span className="conversation-tool-name">{part.name}</span><p>{part.summary || StatusLabels[part.status]}</p>
         {part.completedAt && <small>{((part.completedAt - part.startedAt) / 1000).toFixed(1)} 秒</small>}
         {parts.flatMap((item) => item.type === 'resource' && item.stepId === part.stepId && item.toolCallId === part.toolCallId ? [item.resource] : []).map((resource) => <a key={ResourceHref(resource)} href={ResourceHref(resource)} onClick={(event) => { event.preventDefault(); onOpenResource(resource); }}>{resource.title}<Icon name="arrow-right" size={12} /></a>)}
