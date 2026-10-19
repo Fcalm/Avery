@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { CreateConversationPresentation } from '../../../packages/agent-sdk/src/conversation';
 import type { WorkspaceData } from '../../../src/features/workspace/api/workspaceData';
 import {
   AppendConversationMessages, CompleteConversationMessage, MergeAppendOnlyMessages, MergeWorkspaceSnapshot,
@@ -13,6 +14,15 @@ function workspace(messages: WorkspaceData['conversations'][number]['messages'])
 }
 
 describe('append-only 会话缓存合并', () => {
+  it('迟到工作区快照不能把新投影回滚为旧序号，服务端更新终态也能覆盖本地长文本', () => {
+    const message = { id: 'reply', role: 'assistant' as const, content: '本地长文本', presentation: { ...CreateConversationPresentation('req1'), sequence: 2 } };
+    const baseline = workspace([{ ...message, presentation: { ...message.presentation, sequence: 1 } }]);
+    const local = workspace([message]);
+    const stale = workspace([{ ...message, content: '', presentation: { ...message.presentation, sequence: 1 } }]);
+    expect(MergeWorkspaceSnapshot(baseline, local, stale).conversations[0].messages[0].presentation?.sequence).toBe(2);
+    const completed = workspace([{ ...message, content: '结果', presentation: { ...message.presentation, sequence: 3, status: 'completed' } }]);
+    expect(MergeWorkspaceSnapshot(baseline, local, completed).conversations[0].messages[0]).toMatchObject({ content: '结果', presentation: { sequence: 3, status: 'completed' } });
+  });
   it('迟到的旧工作区快照不能删除确认后的 user 和 assistant 消息', () => {
     const local = workspace([
       { id: 'initial', role: 'user', content: '创建定时任务', createdAt: 1 },

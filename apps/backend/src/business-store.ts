@@ -261,6 +261,9 @@ export class BusinessStore {
   /** 向会话追加消息，按消息 ID 幂等写入。 */
   AppendConversationMessages(conversationId: string, messages: any[]): any { return this.conversationService.AppendMessages(conversationId, messages); }
   /** 写入流式占位消息的最终正文。 */
+  SaveConversationPresentation(conversationId: string, presentation: import('@avery/agent-sdk').ConversationPresentation): { saved: boolean } { return this.conversationService.SavePresentation(conversationId, presentation); }
+  GetConversationPresentations(conversationId: string): import('@avery/agent-sdk').ConversationPresentation[] { return this.conversations.GetPresentations(conversationId); }
+  /** 写入流式占位消息的最终正文。 */
   CompleteConversationMessage(conversationId: string, messageId: string, content: string, thinkingContent?: string): any { return this.conversationService.CompleteMessage(conversationId, messageId, content, thinkingContent); }
   /** 移除未完成请求的临时占位消息。 */
   RemoveConversationMessage(conversationId: string, messageId: string): any { return this.conversationService.RemoveMessage(conversationId, messageId); }

@@ -1,4 +1,11 @@
-import { Fragment, type ReactNode } from 'react';
+import { createContext, Fragment, useContext, type ReactNode } from 'react';
+import { MatchConversationResourceHref, type ConversationResource } from '@avery/agent-sdk';
+
+interface ResourceContext {
+  resources?: readonly ConversationResource[];
+  onOpenResource?: (resource: ConversationResource) => void;
+}
+const MarkdownResources = createContext<ResourceContext>({});
 
 type MarkdownTableAlignment = 'left' | 'center' | 'right';
 
@@ -13,6 +20,7 @@ function SafeHref(value: string) {
 }
 
 function InlineText({ value }: { value: string }) {
+  const { resources = [], onOpenResource } = useContext(MarkdownResources);
   const tokens = value.split(/(`[^`]+`|\*\*[^*]+\*\*|~~[^~]+~~|\*[^*]+\*|\[[^\]]+\]\([^\s)]+\))/g);
   return <>{tokens.map((token, index) => {
     if (!token) return null;
@@ -22,6 +30,8 @@ function InlineText({ value }: { value: string }) {
     if (token.startsWith('*') && token.endsWith('*')) return <em key={index}>{token.slice(1, -1)}</em>;
     const link = token.match(/^\[([^\]]+)\]\(([^\s)]+)\)$/);
     if (link) {
+      const resource = MatchConversationResourceHref(link[2], resources);
+      if (resource && onOpenResource) return <a key={index} className="conversation-inline-resource" href={link[2]} onClick={(event) => { event.preventDefault(); onOpenResource(resource); }}>{link[1]}</a>;
       const href = SafeHref(link[2]);
       return href ? <a key={index} href={href} target="_blank" rel="noreferrer">{link[1]}</a> : <Fragment key={index}>{link[1]}</Fragment>;
     }
@@ -76,7 +86,7 @@ function ParseMarkdownTable(lines: string[], startIndex: number): { headers: str
   return { headers, alignments: divider.map((cell) => GetTableAlignment(cell) ?? 'left'), rows, endIndex: index };
 }
 
-function MarkdownText({ content, className = '' }: { content: string; className?: string }) {
+function MarkdownText({ content, className = '', resources, onOpenResource }: { content: string; className?: string } & ResourceContext) {
   const lines = content.replace(/\r\n?/g, '\n').split('\n');
   const nodes: ReactNode[] = [];
   let index = 0;
@@ -135,7 +145,7 @@ function MarkdownText({ content, className = '' }: { content: string; className?
     nodes.push(<p key={nodes.length}>{paragraph.map((item, itemIndex) => <Fragment key={itemIndex}><InlineText value={item} />{itemIndex < paragraph.length - 1 && <br />}</Fragment>)}</p>);
   }
 
-  return <div className={`markdown-text ${className}`}>{nodes}</div>;
+  return <MarkdownResources.Provider value={{ resources, onOpenResource }}><div className={`markdown-text ${className}`}>{nodes}</div></MarkdownResources.Provider>;
 }
 
 export { MarkdownText };

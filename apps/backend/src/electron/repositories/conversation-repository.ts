@@ -1,4 +1,11 @@
 import { GetNow, CreateId, WriteAudit, AssertRevision } from './helpers';
+import { ApplyConversationActivity, IsConversationPresentation, type ConversationPresentation } from '@avery/agent-sdk';
+
+function ReadPresentation(json: unknown): ConversationPresentation | undefined {
+  if (typeof json !== 'string') return undefined;
+  try { const value: unknown = JSON.parse(json); return IsConversationPresentation(value) ? value : undefined; }
+  catch { return undefined; }
+}
 
 /** 会话及其消息的独立事实源；消息按应用层生成 ID 幂等 upsert，删除会话时级联清理消息。 */
 export class ConversationRepository {
@@ -8,6 +15,13 @@ export class ConversationRepository {
   constructor({ db, attachmentLifecycle }: { db: any; attachmentLifecycle: any }) {
     this.db = db;
     this.attachmentLifecycle = attachmentLifecycle;
+    // 只有数据库实例启动时恢复旧 running 状态；普通读取绝不改变正在运行的会话。
+    const interrupted = this.db.prepare("SELECT id, presentation_json FROM conversation_messages WHERE presentation_json IS NOT NULL AND json_valid(presentation_json) AND json_extract(presentation_json, '$.status') = 'running'").all();
+    const recover = this.db.prepare('UPDATE conversation_messages SET presentation_json = ? WHERE id = ?');
+    for (const row of interrupted) {
+      const presentation = ReadPresentation(row.presentation_json);
+      if (presentation) recover.run(JSON.stringify(ApplyConversationActivity(presentation, { kind: 'status', status: 'interrupted', error: '上次运行因应用退出而中断，可继续发送消息。' }, presentation.sequence + 1, GetNow())), row.id);
+    }
   }
 
   /** 读取全部会话与其消息，供页面启动时组装会话侧 ViewModel；时间为 UTC epoch 毫秒，revision 供外部冲突校验。
@@ -24,11 +38,12 @@ export class ConversationRepository {
       scenarioId: conversation.scenario_id === 'application' ? 'application' : 'default',
       projectId: conversation.environment_id ?? null,
       projectName: conversation.environment_name ?? null,
-      messages: this.db.prepare('SELECT id, role, content, reasoning_content, created_at FROM conversation_messages WHERE conversation_id = ? ORDER BY created_at').all(conversation.id).map((message: any) => ({
+      messages: this.db.prepare('SELECT id, role, content, reasoning_content, presentation_json, created_at FROM conversation_messages WHERE conversation_id = ? ORDER BY created_at, rowid').all(conversation.id).map((message: any) => ({
         id: message.id,
         role: message.role,
         content: message.content,
         thinkingContent: message.reasoning_content ?? undefined,
+        presentation: ReadPresentation(message.presentation_json),
         createdAt: message.created_at,
         attachments: this.db.prepare(`SELECT a.original_name AS name, 'attachment://' || a.id || '/' || a.original_name AS path
           FROM attachment_links l JOIN attachments a ON a.id = l.attachment_id
@@ -115,6 +130,30 @@ export class ConversationRepository {
     if (!result.changes) throw new Error('Conversation was not found.');
     WriteAudit(this.db, 'user', 'set-archived', 'conversation', id, { archived });
     return { id, archived, revision: nextRevision };
+  }
+
+  /** 向会话追加消息；按消息 ID upsert，重复投递不会产生重复记录。 */
+  /** 仅由宿主调用；Renderer 不能提交或改写已执行工具的事实。 */
+  SavePresentation(conversationId: string, presentation: ConversationPresentation): { saved: boolean } {
+    if (!IsConversationPresentation(presentation)) throw new Error('Conversation presentation is invalid.');
+    const id = 'reply-' + presentation.requestId;
+    const existing = this.db.prepare('SELECT presentation_json FROM conversation_messages WHERE id = ? AND conversation_id = ?').get(id, conversationId);
+    if (!existing) return { saved: false };
+    const previous = ReadPresentation(existing.presentation_json);
+    if (previous && previous.sequence >= presentation.sequence) return { saved: false };
+    const content = presentation.parts.flatMap((part) => part.type === 'text' ? [part.text] : []).join('\n\n');
+    const reasoning = presentation.parts.flatMap((part) => part.type === 'reasoning' ? [part.text] : []).join('\n\n');
+    this.db.prepare('UPDATE conversation_messages SET presentation_json = ?, content = ?, reasoning_content = ?, updated_at = ? WHERE id = ? AND conversation_id = ?')
+      .run(JSON.stringify(presentation), content, reasoning, GetNow(), id, conversationId);
+    return { saved: true };
+  }
+
+  /** 宿主按会话恢复可见过程，用于确认回执和资源归属校验。 */
+  GetPresentations(conversationId: string): ConversationPresentation[] {
+    return this.db.prepare('SELECT presentation_json FROM conversation_messages WHERE conversation_id = ? AND presentation_json IS NOT NULL ORDER BY created_at, rowid')
+      .all(conversationId).flatMap((row: { presentation_json: string }) => {
+        const value = ReadPresentation(row.presentation_json); return value ? [value] : [];
+      });
   }
 
   /** 向会话追加消息；按消息 ID upsert，重复投递不会产生重复记录。 */

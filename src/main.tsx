@@ -8,6 +8,7 @@ import './styles/tokens.css';
 import './styles/phosphor.css';
 import './styles/global.css';
 import './styles/shell.css';
+import './styles/conversation.css';
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

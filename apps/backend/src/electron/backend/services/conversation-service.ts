@@ -42,6 +42,11 @@ export class ConversationService {
   }
 
   /** 写入流式占位消息的最终正文。 */
+  SavePresentation(conversationId: string, presentation: import('@avery/agent-sdk').ConversationPresentation): { saved: boolean } {
+    return this.repository.SavePresentation(conversationId, presentation);
+  }
+
+  /** 写入流式占位消息的最终正文。 */
   CompleteMessage(conversationId: string, messageId: string, content: string, thinkingContent?: string): any {
     return this.repository.CompleteMessage(conversationId, messageId, content, thinkingContent);
   }

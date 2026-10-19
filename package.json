@@ -14,7 +14,7 @@
   "scripts": {
     "dev": "node node_modules/vite/bin/vite.js --host 127.0.0.1",
     "start": "node node_modules/electron/cli.js .",
-    "build:packages": "npm run build --workspace @avery/contracts && npm run build --workspace @avery/agent-sdk && npm run build --workspace @avery/agent-core && npm run build --workspace @avery/agent-module-host && npm run build --workspace @avery/agent-modules-defaults && npm run build --workspace @avery/backend && npm run build --workspace @avery/desktop",
+    "build:packages": "npm run build --workspace @avery/agent-sdk && npm run build --workspace @avery/contracts && npm run build --workspace @avery/agent-core && npm run build --workspace @avery/agent-module-host && npm run build --workspace @avery/agent-modules-defaults && npm run build --workspace @avery/backend && npm run build --workspace @avery/desktop",
     "build:renderer": "node node_modules/vite/bin/vite.js build",
     "build": "npm run build:packages && npm run build:renderer",
     "test": "npm run test:vitest && npm run test --workspaces --if-present",

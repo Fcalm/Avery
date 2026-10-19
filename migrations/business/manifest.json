@@ -14,6 +14,7 @@
     { "version": 12, "name": "v12-conversation-scene-environment", "file": "v12-conversation-scene-environment.sql", "kind": "sql", "checksumSeed": "avery-conversation-scene-environment-v1" },
     { "version": 13, "name": "v13-job-deadline", "file": "v13-job-deadline.sql", "kind": "sql", "checksumSeed": "avery-job-deadline-v1" },
     { "version": 14, "name": "v14-cron-browser-task-grant", "file": "v14-cron-browser-task-grant.sql", "kind": "sql", "checksumSeed": "avery-cron-browser-task-grant-v1" },
-    { "version": 15, "name": "v15-job-collection-identity", "file": "v15-job-collection-identity.sql", "kind": "sql", "checksumSeed": "avery-job-collection-identity-v1" }
+    { "version": 15, "name": "v15-job-collection-identity", "file": "v15-job-collection-identity.sql", "kind": "sql", "checksumSeed": "avery-job-collection-identity-v1" },
+    { "version": 16, "name": "v16-conversation-presentation", "file": "v16-conversation-presentation.sql", "kind": "sql", "checksumSeed": "avery-conversation-presentation-v1" }
   ]
 }

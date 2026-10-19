@@ -15,6 +15,10 @@ export function MergeAppendOnlyMessages(local: ChatMessageDto[], remote: ChatMes
     const existing = merged.get(message.id);
     if (!existing) { merged.set(message.id, message); return; }
     if (!preferRicher) { merged.set(message.id, message); return; }
+    if (existing.presentation || message.presentation) {
+      merged.set(message.id, (message.presentation?.sequence ?? -1) > (existing.presentation?.sequence ?? -1) ? message : existing);
+      return;
+    }
     const existingSize = existing.content.length + (existing.thinkingContent?.length ?? 0);
     const candidateSize = message.content.length + (message.thinkingContent?.length ?? 0);
     merged.set(message.id, candidateSize > existingSize ? message : existing);
@@ -33,6 +37,7 @@ function IsSameMessage(left: ChatMessageDto, right: ChatMessageDto): boolean {
   return left.role === right.role
     && left.content === right.content
     && left.thinkingContent === right.thinkingContent
+    && JSON.stringify(left.presentation) === JSON.stringify(right.presentation)
     && left.createdAt === right.createdAt
     && JSON.stringify(left.attachments ?? []) === JSON.stringify(right.attachments ?? []);
 }
@@ -56,7 +61,11 @@ export function MergeConversationSnapshot(
   }
   for (const localMessage of local.messages) {
     const previous = baselineMessages.get(localMessage.id);
-    if (!previous || !IsSameMessage(previous, localMessage)) merged.set(localMessage.id, localMessage);
+    if (!previous || !IsSameMessage(previous, localMessage)) {
+      const remoteMessage = merged.get(localMessage.id);
+      if ((remoteMessage?.presentation?.sequence ?? -1) > (localMessage.presentation?.sequence ?? -1)) continue;
+      merged.set(localMessage.id, localMessage);
+    }
   }
   const order = new Map(local.messages.map((message, index) => [message.id, index]));
   return {
