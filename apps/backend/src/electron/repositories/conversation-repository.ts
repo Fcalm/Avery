@@ -38,13 +38,14 @@ export class ConversationRepository {
       scenarioId: conversation.scenario_id === 'application' ? 'application' : 'default',
       projectId: conversation.environment_id ?? null,
       projectName: conversation.environment_name ?? null,
-      messages: this.db.prepare('SELECT id, role, content, reasoning_content, presentation_json, created_at FROM conversation_messages WHERE conversation_id = ? ORDER BY created_at, rowid').all(conversation.id).map((message: any) => ({
+      messages: this.db.prepare('SELECT id, role, content, reasoning_content, presentation_json, created_at, updated_at FROM conversation_messages WHERE conversation_id = ? ORDER BY created_at, rowid').all(conversation.id).map((message: any) => ({
         id: message.id,
         role: message.role,
         content: message.content,
         thinkingContent: message.reasoning_content ?? undefined,
         presentation: ReadPresentation(message.presentation_json),
         createdAt: message.created_at,
+        updatedAt: message.updated_at,
         attachments: this.db.prepare(`SELECT a.original_name AS name, 'attachment://' || a.id || '/' || a.original_name AS path
           FROM attachment_links l JOIN attachments a ON a.id = l.attachment_id
           WHERE l.owner_type = 'message' AND l.owner_id = ? AND a.deleted_at IS NULL ORDER BY l.created_at, a.id`).all(message.id),

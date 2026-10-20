@@ -17,6 +17,8 @@ export interface ChatMessageDto {
   content: string;
   thinkingContent?: string;
   createdAt?: number;
+  /** 消息最后落盘时间，仅在旧会话缺少整轮计时时用于估算结束时间。 */
+  updatedAt?: number;
   attachments?: Array<{ name: string; path: string }>;
 }
 

@@ -21,6 +21,9 @@ export interface ConversationPresentation {
   sequence: number;
   status: ConversationRunStatus;
   parts: ConversationPart[];
+  /** 整轮过程的宿主时间，包含等待用户操作的时间；旧快照允许缺省。 */
+  startedAt?: number;
+  completedAt?: number;
   error?: string;
 }
 export interface ConversationActivity {
@@ -85,7 +88,13 @@ export function ApplyConversationActivity(
       ? { ...part, status: status === 'waiting' ? 'waiting' : status === 'cancelled' ? 'cancelled' : status === 'completed' ? 'skipped' : status === 'paused' ? 'paused' : 'failed', completedAt: now }
       : part);
   }
-  return { ...current, sequence, parts, status, ...(activity.error ? { error: activity.error } : {}) };
+  // 等待和暂停仍属于同一轮；终态冻结用时，恢复执行时清除上一段终态时间。
+  const terminal = status === 'completed' || status === 'cancelled' || status === 'failed' || status === 'interrupted';
+  return {
+    ...current, sequence, parts, status, startedAt: current.startedAt ?? now,
+    completedAt: terminal ? current.completedAt ?? now : undefined,
+    ...(activity.error ? { error: activity.error } : {}),
+  };
 }
 
 /** 最终正文只取最后一次工具调用之后的文本；中间解说保留在过程里。 */
@@ -101,6 +110,8 @@ export function IsConversationPresentation(value: unknown): value is Conversatio
   const candidate = value as ConversationPresentation;
   return candidate.version === 1 && typeof candidate.requestId === 'string'
     && (candidate.error === undefined || typeof candidate.error === 'string')
+    && (candidate.startedAt === undefined || Number.isFinite(candidate.startedAt) && candidate.startedAt >= 0)
+    && (candidate.completedAt === undefined || Number.isFinite(candidate.completedAt) && candidate.completedAt >= (candidate.startedAt ?? 0))
     && Number.isSafeInteger(candidate.sequence) && candidate.sequence >= 0
     && ['running', 'completed', 'waiting', 'paused', 'cancelled', 'failed', 'interrupted'].includes(candidate.status)
     && Array.isArray(candidate.parts) && candidate.parts.every((part) => {

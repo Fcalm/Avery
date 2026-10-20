@@ -1431,15 +1431,16 @@ select:focus, select:focus-visible,
 }
 
 /* Agent 的补充问题和外部确认直接占用输入区，确认前不暴露普通消息入口。 */
-.confirmation-composer {
+.composer.confirmation-composer {
   display: grid;
   height: auto !important;
-  min-height: 228px;
-  grid-template-rows: auto minmax(0, 1fr) auto;
-  gap: var(--space-4);
+  min-height: 0;
+  grid-auto-rows: auto;
+  align-content: start;
+  gap: var(--space-3);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-overlay);
-  padding: var(--space-4);
+  padding: var(--space-3);
   background: var(--color-surface-card);
   box-shadow: var(--shadow-raised) !important;
 }
@@ -1449,23 +1450,25 @@ select:focus, select:focus-visible,
 .confirmation-composer > footer { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); }
 .confirmation-composer > footer > span { color: var(--color-text-secondary); font-size: var(--text-meta); }
 .confirmation-composer > footer > div { display: flex; flex: 0 0 auto; gap: var(--space-2); }
-.question-composer { min-height: 270px; grid-template-rows: auto minmax(0, 1fr) auto; }
 .question-choice-list { display: grid; align-content: start; gap: var(--space-2); }
-.question-choice-list > button { display: flex; min-height: 28px; align-items: center; gap: var(--space-2); border: 0; border-radius: var(--radius-control); padding: 0 var(--space-2); color: var(--color-text-secondary); background: transparent; font-size: var(--text-body); text-align: left; }
-.question-choice-list > button:hover,
-.question-choice-list > button:focus-visible,
-.question-choice-list > button.selected { outline: none; color: var(--color-text-primary); background: var(--color-control-light); }
-.question-choice-list > button > span { display: grid; width: 22px; height: 22px; flex: 0 0 22px; place-items: center; border: 1px solid var(--color-border); border-radius: var(--radius-control); background: var(--color-surface-card); }
-.question-choice-list > button.selected > span { border-color: var(--color-tag-text); color: var(--color-tag-text); background: var(--color-tag-surface); }
-.question-choice-list > button.selected > span::after { content: '✓'; font-size: 13px; line-height: 1; }
-.question-composer > input { min-height: 40px; border: 1px solid var(--color-border); padding: 0 var(--space-3); background: var(--color-surface-card); }
+.question-choice-row { display: flex; align-items: center; gap: var(--space-2); min-width: 0; }
+.question-choice-row > button { display: flex; flex: 1; min-width: 0; min-height: 30px; align-items: center; gap: var(--space-2); border: 0; border-radius: var(--radius-control); padding: 3px var(--space-2); color: var(--color-text-secondary); background: transparent; font-size: var(--text-body); text-align: left; }
+.question-choice-row > button:hover,
+.question-choice-row > button.selected { color: var(--color-text-primary); background: var(--color-control-light); }
+.question-choice-row > button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.question-choice-mark { width: 14px; height: 14px; flex: 0 0 14px; border: 1px solid var(--text-3); border-radius: var(--r-pill); background: transparent; }
+.question-choice-row > button.selected > .question-choice-mark { border-color: var(--accent); background: var(--accent); }
+.question-choice-label { min-width: 0; overflow-wrap: anywhere; }
+/* 未选中时整行可点；只有选中后才收紧按钮，为同行的自定义输入框让出空间。 */
+.question-choice-row.is-other > button.selected { flex: 0 0 auto; }
+.question-choice-row > input { flex: 1; width: 0; min-width: 0; height: 30px; min-height: 30px; border: 1px solid var(--color-border); border-radius: var(--radius-control); padding: 0 var(--space-2); background: var(--color-surface-card); font-size: var(--text-body); }
+.question-choice-row > input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
 .confirmation-stepper { display: flex; align-items: center; gap: var(--space-1); color: var(--color-text-secondary); font-size: var(--text-ui); }
 .confirmation-stepper button { display: grid; width: 28px; height: 28px; place-items: center; border: 0; border-radius: var(--radius-control); padding: 0; color: var(--color-text-secondary); background: transparent; }
 .confirmation-stepper button:hover:not(:disabled) { color: var(--color-text-primary); background: var(--color-control-light); }
 .confirmation-stepper button:disabled { opacity: .35; }
 
 @media (max-width: 619px){
-  .confirmation-composer { min-height: 248px; padding: var(--space-3); }
   .confirmation-composer > footer { align-items: stretch; flex-direction: column; }
   .confirmation-composer > footer > div { justify-content: flex-end; }
 }

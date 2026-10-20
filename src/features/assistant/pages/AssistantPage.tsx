@@ -1154,8 +1154,10 @@ function QuestionComposer({ questions, answers, otherAnswers, questionIndex, onA
   const isFinalQuestion = questionIndex === questions.length - 1;
   return <section className="composer confirmation-composer question-composer" aria-label="请先回答 Agent 的问题" aria-live="assertive">
     <header><h2>{question.question}</h2></header>
-    <div className="question-choice-list" role="radiogroup" aria-label={question.question}>{question.options.map((option) => <button key={option} type="button" role="radio" aria-checked={selectedAnswer === option} className={selectedAnswer === option ? 'selected' : ''} onClick={() => onAnswer(question.id, option)}><span aria-hidden="true" />{option}</button>)}</div>
-    {needsOtherText && <input autoFocus placeholder="请输入其他答案" value={otherAnswers[question.id] ?? ''} onChange={(event) => onOtherAnswer(question.id, event.target.value)} />}
+    <div key={question.id} className="question-choice-list" role="radiogroup" aria-label={question.question}>{question.options.map((option) => <div key={option} className={`question-choice-row${option === '其他' ? ' is-other' : ''}`}>
+      <button type="button" role="radio" aria-checked={selectedAnswer === option} className={selectedAnswer === option ? 'selected' : ''} onClick={() => onAnswer(question.id, option)}><span className="question-choice-mark" aria-hidden="true" /><span className="question-choice-label">{option}</span></button>
+      {option === '其他' && needsOtherText && <input autoFocus aria-label="其他答案" placeholder="请输入其他答案" value={otherAnswers[question.id] ?? ''} onChange={(event) => onOtherAnswer(question.id, event.target.value)} />}
+    </div>)}</div>
     <footer><div className="confirmation-stepper"><button type="button" disabled={questionIndex === 0} aria-label="上一题" onClick={onPrevious}><Icon name="chevron-up" size={15} /></button><span>{questionIndex + 1}/{questions.length}</span><button type="button" disabled={isFinalQuestion} aria-label="下一题" onClick={onContinue}><Icon name="chevron-down" size={15} /></button></div><div><Button onClick={onCancel}>取消</Button><Button variant="primary" disabled={!canContinue} onClick={onContinue}>{isFinalQuestion ? '确认' : '继续'}</Button></div></footer>
   </section>;
 }
