@@ -29,7 +29,7 @@
     GetRecoveryStatus: { recovering: false, blocked: scenario === 'recovery', recovered: 0, failed: scenario === 'recovery' ? 1 : 0, blockedCount: scenario === 'recovery' ? 1 : 0 },
     GetDatabaseRecoveryStatus: recovery,
     GetResumeRevisions: [{ id: 'revision-2', revision: 2, source: 'user', isPinned: false, isProtected: true, createdAt: now }],
-    CleanupAttachments: { scanned: 1, logicallyDeleted: 0, filesDeleted: 0, cacheFilesDeleted: 0, failed: 0 },
+    CleanupAttachments: { scanned: 1, logicallyDeleted: 0, filesDeleted: 0, snapshotFilesDeleted: 0, failed: 0 },
     RecoverOperations: { writable: true, recovered: 1 },
     RestoreLatestBackup: { restored: true, backupId: 'daily-visual-valid', sceneId: 'scene-visual' },
     RestoreBackup: { restored: true, backupId: 'daily-visual-valid', sceneId: 'scene-visual' },

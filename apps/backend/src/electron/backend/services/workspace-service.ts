@@ -9,7 +9,7 @@ import { MarkItDownAttachmentConverter, type AttachmentMarkdownConverter } from 
 
 /** 原子创建工作空间内需要的目录，避免附件和备份服务各自处理目录初始化。 */
 export function EnsureWorkspaceDirectories(workspacePath: string): void {
-  for (const directory of ['attachments', 'exports', 'backups', path.join('derived', 'ocr'), path.join('derived', 'markdown')]) {
+  for (const directory of ['attachments', 'exports', 'backups', path.join('derived', 'markdown')]) {
     mkdirSync(path.join(workspacePath, directory), { recursive: true });
   }
 }
@@ -221,7 +221,7 @@ export class WorkspaceService {
   }
 
   /**
-   * Agent 文本工具只读取 MarkItDown 快照；图片保留原文件交给视觉/OCR 路径。
+   * Agent 文本工具只读取 MarkItDown 快照；图片保留原文件交给模型视觉输入。
    * 旧工作空间缺少快照时在首次读取时补建，后续 Run 复用同一内容寻址快照。
    */
   async ResolveAttachmentMarkdownUri(uri: string): Promise<any> {

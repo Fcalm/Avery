@@ -1,5 +1,5 @@
 import { createRequire } from 'node:module';
-import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -55,6 +55,13 @@ afterEach(() => {
 });
 
 describe('MarkItDown attachment snapshots', () => {
+  it('新工作空间仅创建附件与文本快照目录，不再创建本地图片识字缓存', () => {
+    const workspace = CreateTemporaryDirectory('avery-workspace-directories-');
+    EnsureWorkspaceDirectories(workspace);
+    expect(readdirSync(join(workspace, 'derived'))).toEqual(['markdown']);
+    expect(existsSync(join(workspace, 'attachments'))).toBe(true);
+  });
+
   it('通过无 shell 子进程调用转换器，并传递原始扩展名与 MIME 提示', async () => {
     const directory = CreateTemporaryDirectory('avery-markitdown-cli-');
     const source = join(directory, 'content-addressed-source');

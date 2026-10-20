@@ -6,7 +6,4 @@
 declare module 'better-sqlite3';
 declare module 'pdf-parse';
 declare module 'mammoth';
-declare module 'tesseract.js';
-declare module '@tesseract.js-data/eng';
-declare module '@tesseract.js-data/chi_sim';
 declare module '@napi-rs/canvas';

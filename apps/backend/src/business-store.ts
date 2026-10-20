@@ -401,7 +401,7 @@ export class BusinessStore {
   CopyWorkspaceTo(destinationPath: string): any { return this.workspaceService.CopyWorkspaceTo(destinationPath); }
   /** 复制用户主动选择的附件至工作空间内容寻址目录，并禁止向模型暴露源文件路径。 */
   ImportAttachment(sourcePath: string, mimeType = 'application/octet-stream'): Promise<any> { return this.workspaceService.ImportAttachment(sourcePath, mimeType); }
-  /** 扫描并清理已连续 7 天无引用的工作空间附件副本与 OCR 派生缓存；失败项保留墓碑供下次重试。 */
+  /** 扫描并清理已连续 30 天无引用的附件副本与 Markdown 快照；失败项保留墓碑供下次重试。 */
   CleanupAttachments(options?: any): any { return this.attachmentLifecycle.Cleanup(options); }
   /** 返回启动 Saga 恢复状态；blocked 时 Main 仅开放只读命令。 */
   GetWorkspaceRecoveryStatus(): any { return this.workspaceOperations.GetStatus(); }

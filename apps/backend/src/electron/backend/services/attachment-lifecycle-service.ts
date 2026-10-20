@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, readdirSync, realpathSync, unlinkSync } from 'node:fs';
+import { existsSync, lstatSync, realpathSync, unlinkSync } from 'node:fs';
 import * as path from 'node:path';
 import { GetNow, WriteAudit } from '../../repositories/helpers';
 
@@ -26,7 +26,7 @@ export function ExtractAttachmentIds(value: unknown): string[] {
   return [...ids];
 }
 
-/** attachment_links 是唯一引用事实源；最后引用移除后开始 30 天宽限，清理只触碰工作空间副本与派生缓存。 */
+/** attachment_links 是唯一引用事实源；最后引用移除后开始 30 天宽限，清理只触碰工作空间附件与文本快照。 */
 export class AttachmentLifecycleService {
   private db: any;
   private workspacePath: string;
@@ -109,7 +109,7 @@ export class AttachmentLifecycleService {
       WHERE NOT EXISTS (SELECT 1 FROM attachment_links WHERE attachment_id = attachments.id)
         AND ((deleted_at IS NULL AND orphaned_at IS NOT NULL AND orphaned_at <= ?) OR deleted_at IS NOT NULL)
       ORDER BY COALESCE(deleted_at, orphaned_at), id LIMIT ?`).all(cutoff, safeLimit);
-    const result = { scanned: candidates.length, logicallyDeleted: 0, filesDeleted: 0, cacheFilesDeleted: 0, snapshotFilesDeleted: 0, failed: 0, pending: 0 };
+    const result = { scanned: candidates.length, logicallyDeleted: 0, filesDeleted: 0, snapshotFilesDeleted: 0, failed: 0, pending: 0 };
     for (const item of candidates) {
       try {
         if (item.deleted_at == null) {
@@ -123,15 +123,6 @@ export class AttachmentLifecycleService {
         if (this.RemoveRegularFile(this.SafeWorkspaceFile('attachments', item.sha256))) result.filesDeleted += 1;
         const markdownRoot = path.join(this.workspacePath, 'derived', 'markdown');
         if (existsSync(markdownRoot) && this.RemoveRegularFile(this.SafeWorkspaceFile(path.join('derived', 'markdown'), `${item.sha256}.md`))) result.snapshotFilesDeleted += 1;
-        const cacheRoot = path.join(this.workspacePath, 'derived', 'ocr');
-        if (existsSync(cacheRoot)) {
-          const rootStat = lstatSync(cacheRoot);
-          if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) throw new Error('OCR cache root is unsafe.');
-          for (const entry of readdirSync(cacheRoot)) {
-            if (!entry.startsWith(`${item.sha256}-`)) continue;
-            if (this.RemoveRegularFile(this.SafeWorkspaceFile(path.join('derived', 'ocr'), entry))) result.cacheFilesDeleted += 1;
-          }
-        }
         this.db.prepare('UPDATE attachments SET cleanup_error = NULL WHERE id = ?').run(item.id);
       } catch (error) {
         result.failed += 1;
