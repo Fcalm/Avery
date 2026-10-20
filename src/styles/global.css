@@ -384,10 +384,8 @@ input[aria-invalid='true'] { background: var(--danger-faint); box-shadow: none; 
 
 /* 开屏等待：单行 SVG 品牌标识用由左至右的渐变蒙版渐显。 */
 .app-splash { overflow: hidden; background: transparent; }
-.app-splash-content { display: grid; width: min(278px, 100%); justify-items: center; padding: var(--space-6); }
-.app-splash-brand { display: block; width: 100%; height: auto; filter: drop-shadow(0 12px 20px rgb(33 91 48 / 18%)); }
-.app-splash-brand text { fill: var(--color-text-primary); font-family: var(--font-brand); font-size: 43px; font-weight: 400; }
-@media (prefers-reduced-motion: reduce){ .app-splash-brand { filter: none; } }
+.app-splash-content { display: grid; width: min(360px, 100%); justify-items: center; padding: var(--space-6); }
+.app-splash-brand { display: block; width: 100%; height: auto; }
 
 @media (max-width: 619px){
   .app-screen { padding: var(--space-4); }

@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { AppShell } from './AppShell';
 import { UiStoreProvider, useUiStore } from './UiStore';
 import { useWorkspaceData } from '../features/workspace/api/useWorkspaceData';
@@ -17,6 +17,7 @@ import { DeveloperConsoleProvider } from '../features/developer/components/Devel
 import { Button, DialogButton, EmptyState, Modal } from '../shared/components/UI';
 import { BackendRecoveryGate, IsBackendRecoveryError } from './BackendRecoveryGate';
 import { Icon } from '../shared/components/Icon';
+import { StartupScreen } from './StartupScreen';
 import type { PageId } from '../types/domain';
 
 /** 「启动时打开-恢复上次的对话」用的本机记录：只存会话 id，随工作空间之外的本机偏好保存。 */
@@ -63,11 +64,6 @@ function App() {
   return <UiStoreProvider><AppContent /><AppNotice /></UiStoreProvider>;
 }
 
-/** 应用启动阶段的加载占位，替代白屏。 */
-function LoadingScreen() {
-  return <div className="app-screen app-splash" role="status" aria-live="polite"><div className="app-splash-content"><svg className="app-splash-brand" viewBox="0 0 278 64" role="img" aria-label="Avery"><defs><linearGradient id="avery-splash-reveal-gradient" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stopColor="white" /><stop offset="0.76" stopColor="white" /><stop offset="1" stopColor="white" stopOpacity="0" /></linearGradient><mask id="avery-splash-reveal-mask" maskUnits="userSpaceOnUse" maskContentUnits="userSpaceOnUse"><rect x="-360" y="0" width="360" height="64" fill="url(#avery-splash-reveal-gradient)"><animate attributeName="x" from="-360" to="0" dur="1.2s" fill="freeze" /></rect></mask></defs><g mask="url(#avery-splash-reveal-mask)"><image href="./assets/avery-guiding-elf-icon-v2.png" x="0" y="0" width="64" height="64" preserveAspectRatio="xMidYMid meet" /><text x="78" y="46">Avery</text></g></svg></div></div>;
-}
-
 /** 应用启动加载失败的错误页，提供重试入口。 */
 function ErrorScreen({ onRetry }: { onRetry: () => void }) {
   return <div className="app-screen"><EmptyState className="app-state app-state-error" role="alert" ariaLive="assertive" icon={<Icon name="error" size={24} />} title="本地数据加载失败" description="无法读取工作空间数据。请确认磁盘可访问后重新加载。" action={<Button variant="primary" onClick={onRetry}>重新加载</Button>} /></div>;
@@ -75,6 +71,8 @@ function ErrorScreen({ onRetry }: { onRetry: () => void }) {
 
 function AppContent() {
   const workspace = useWorkspaceData();
+  const [startupAnimationComplete, setStartupAnimationComplete] = useState(false);
+  const HandleStartupAnimationComplete = useCallback(() => setStartupAnimationComplete(true), []);
   const { settings, setSettings } = useSettingsStore();
   const { profileConflict, setProfileConflict, ShowNotice, activeConversationId, setActiveConversationId } = useUiStore();
   const profiles = useProfiles();
@@ -139,9 +137,12 @@ function AppContent() {
     }
   }
 
+  // 动画与数据并行准备；只有两者都完成才进入应用，查询更新不会重播开屏。
+  if (!startupAnimationComplete || workspace.isLoading || (!workspace.data && !workspace.isError)) {
+    return <StartupScreen animationComplete={startupAnimationComplete} onAnimationComplete={HandleStartupAnimationComplete} />;
+  }
   if (workspace.isError && IsBackendRecoveryError(workspace.error)) return <BackendRecoveryGate onRetry={() => void workspace.refetch()} />;
   if (workspace.isError) return <ErrorScreen onRetry={() => void workspace.refetch()} />;
-  if (workspace.isLoading || !workspace.data) return <LoadingScreen />;
   if (!settings.onboardingCompleted) return <OnboardingPage onComplete={() => setSettings((current) => ({ ...current, onboardingCompleted: true }))} />;
   return <>
     {/* 开发者页的侧栏与主区共享评测配置状态；Provider 常驻挂载，仅在开发者页激活时拉取数据 */}
