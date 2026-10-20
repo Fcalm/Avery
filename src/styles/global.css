@@ -676,7 +676,7 @@ input, textarea, select {
   color: var(--ink);
   background: var(--color-surface-card);
 }
-input:focus, textarea:focus, select:focus { background: var(--color-surface-card); box-shadow: var(--focus-ring); }
+input:focus, textarea:focus, select:focus { background: var(--color-surface-card); box-shadow: none; }
 .button { border: 1px solid transparent; border-radius: var(--radius-control); padding: 7px var(--space-4); }
 .button-primary { color: var(--card); background: var(--color-control-dark); box-shadow: none; }
 .button-primary:hover:not(:disabled) { background: #282828; box-shadow: var(--shadow-surface); }
@@ -858,7 +858,7 @@ input:focus, textarea:focus, select:focus { background: var(--color-surface-card
 .custom-select-trigger > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .custom-select-trigger[aria-expanded="true"],
 .custom-select-trigger:hover { background: var(--color-control-light); }
-.custom-select-trigger:focus-visible { outline: none; border-color: var(--ink); box-shadow: var(--focus-ring); }
+.custom-select-trigger:focus-visible { outline: none; box-shadow: none; }
 .custom-select-trigger:disabled { cursor: not-allowed; opacity: .55; }
 .custom-select-menu {
   position: absolute;
@@ -902,7 +902,7 @@ input:focus, textarea:focus, select:focus { background: var(--color-surface-card
 }
 /* 与 .menu 菜单同一套交互：悬停浅灰底；选中项不改底色，只在行尾亮出主色对勾。 */
 .custom-select-option:hover,
-.custom-select-option:focus-visible { outline: none; background: var(--surface-2); }
+.custom-select-option:focus-visible { outline: none; background: var(--surface-2); box-shadow: none; }
 .custom-select-option.is-selected { outline: none; }
 .custom-select-option .mt { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
 .custom-select-option .tick { margin-left: auto; flex: none; color: var(--accent); opacity: 0; transition: opacity .18s var(--ease); }
@@ -915,13 +915,13 @@ input:focus, textarea:focus, select:focus { background: var(--color-surface-card
   background: var(--color-control-light);
 }
 
-/* 输入类控件聚焦时保持常规描边，不额外绘制灰色焦点环。 */
+/* 输入和下拉控件聚焦时不额外绘制描边，页面内的边框颜色沿用各自常态。 */
 input:focus, input:focus-visible,
 textarea:focus, textarea:focus-visible,
 select:focus, select:focus-visible,
-.custom-select-trigger:focus-visible {
+.custom-select-trigger:focus-visible,
+button[aria-haspopup]:focus-visible {
   outline: none;
-  border-color: var(--color-border);
   box-shadow: none;
 }
 
@@ -1462,7 +1462,7 @@ select:focus, select:focus-visible,
 /* 未选中时整行可点；只有选中后才收紧按钮，为同行的自定义输入框让出空间。 */
 .question-choice-row.is-other > button.selected { flex: 0 0 auto; }
 .question-choice-row > input { flex: 1; width: 0; min-width: 0; height: 30px; min-height: 30px; border: 1px solid var(--color-border); border-radius: var(--radius-control); padding: 0 var(--space-2); background: var(--color-surface-card); font-size: var(--text-body); }
-.question-choice-row > input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
+.question-choice-row > input:focus { outline: none; box-shadow: none; }
 .confirmation-stepper { display: flex; align-items: center; gap: var(--space-1); color: var(--color-text-secondary); font-size: var(--text-ui); }
 .confirmation-stepper button { display: grid; width: 28px; height: 28px; place-items: center; border: 0; border-radius: var(--radius-control); padding: 0; color: var(--color-text-secondary); background: transparent; }
 .confirmation-stepper button:hover:not(:disabled) { color: var(--color-text-primary); background: var(--color-control-light); }
@@ -1981,7 +1981,7 @@ select:focus, select:focus-visible,
   width: 100%; box-sizing: border-box; min-height: 120px; border: 1px solid var(--border-2); border-radius: var(--r-control);
   padding: 10px; background: var(--panel); color: var(--text); font-family: var(--font-mono); font-size: 12px; line-height: 1.7; resize: vertical;
 }
-.ev-drawer .dw-field :is(input, textarea):focus { outline: 0; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.ev-drawer .dw-field :is(input, textarea):focus { outline: 0; box-shadow: none; }
 .ev-drawer .dw-field small { display: block; margin-top: 5px; color: var(--text-3); font-size: 11px; }
 .ev-drawer-row { display: flex; align-items: center; gap: 8px; margin-top: 14px; }
 .ev-drawer-row > .lab { margin: 0; color: var(--text-2); font-size: 12px; font-weight: 600; }

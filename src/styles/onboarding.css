@@ -43,7 +43,7 @@
 .tour-form .form-field > span, .tour-select-field > span, .tour-field-title { font-size: 12px; font-weight: 600; color: var(--text-2); }
 .tour-form input:not([type="checkbox"]) { width: 100%; height: 42px; padding: 10px 12px; background: var(--bg); border: 1px solid var(--border-2); border-radius: var(--r-control); box-shadow: none; color: var(--text); font: inherit; font-size: 13px; }
 .tour-form input::placeholder { color: var(--text-3); }
-.tour-form input:focus { border-color: var(--accent); outline: 2px solid var(--accent-soft); }
+.tour-form input:focus { outline: none; box-shadow: none; }
 .tour-form small { color: var(--text-3); font-size: 11px; line-height: 1.7; }
 .tour-details { border-top: 1px solid var(--border); padding-top: 16px; font-size: 12px; }
 .tour-details > summary { color: var(--text-2); cursor: pointer; font-weight: 500; }

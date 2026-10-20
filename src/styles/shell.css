@@ -472,7 +472,7 @@ button { background: none; border: 0; }
   box-shadow: var(--shadow);
   transition: border-color .2s var(--ease), box-shadow .25s var(--ease), background-color .3s var(--ease);
 }
-.composer:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.composer:focus-within { box-shadow: var(--shadow); }
 .composer textarea {
   display: block; width: 100%; min-height: 24px; max-height: 150px; resize: none;
   border: 0; outline: 0; background: none; box-shadow: none;
@@ -1104,7 +1104,7 @@ button { background: none; border: 0; }
   transition: border-color .18s var(--ease), box-shadow .18s var(--ease);
 }
 .job-view .cond .field .custom-select-trigger { justify-content: space-between; gap: 8px; }
-.job-view .cond .field :is(input, .custom-select-trigger):focus { outline: 0; border-color: var(--accent); box-shadow: var(--focus-ring); }
+.job-view .cond .field :is(input, .custom-select-trigger):focus { outline: 0; box-shadow: none; }
 .job-view .cond .field input::placeholder { color: var(--text-3); }
 .job-view .cond .custom-select { width: 100%; }
 .job-view .cond-go { justify-self: end; height: 32px; white-space: nowrap; }
@@ -1117,7 +1117,6 @@ button { background: none; border: 0; }
 .jlib { display: grid; grid-template-columns: minmax(300px, 1fr) minmax(340px, 1.15fr); gap: 14px; margin-top: 14px; align-items: start; }
 .jlib .panel { padding: 14px; }
 .jsearch { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 4px 6px 4px 11px; border: 1px solid var(--border-2); border-radius: var(--r-control); background: var(--panel); transition: border-color .2s var(--ease); }
-.jsearch:focus-within { border-color: var(--accent); }
 .jsearch > i.ph { flex: none; font-size: 15px; color: var(--text-3); }
 .jsearch input { flex: 1; min-width: 0; height: 32px; border: 0; outline: 0; background: none; font-size: 13px; }
 .jsearch input::placeholder { color: var(--text-3); }
@@ -1291,7 +1290,7 @@ button { background: none; border: 0; }
   transition: border-color .18s var(--ease), box-shadow .18s var(--ease);
 }
 .md-body input:not([type='checkbox']):not([type='radio'])::placeholder { color: var(--text-3); }
-.md-body input:not([type='checkbox']):not([type='radio']):focus { outline: 0; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.md-body input:not([type='checkbox']):not([type='radio']):focus { outline: 0; box-shadow: none; }
 /* 破坏性主操作：原型里唯一填充的红色，深色主题沿用同一填充色 */
 .btn-danger {
   display: inline-flex; align-items: center; gap: 7px; height: 32px; padding: 0 13px; cursor: pointer;
@@ -1391,9 +1390,8 @@ button { background: none; border: 0; }
 .model-set-scope .set-inp::placeholder { color: var(--text-3); }
 /* 只读字段（接口格式、官方 Base URL）不参与编辑，用底色与文字层级区分 */
 .model-set-scope .set-inp[readonly] { background: var(--surface); color: var(--text-2); }
-.model-set-scope .set-inp:focus { outline: 0; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.model-set-scope .set-inp:focus { outline: 0; box-shadow: none; }
 .model-set-scope .set-inp.bad { border-color: var(--danger); }
-.model-set-scope .set-inp.bad:focus { box-shadow: 0 0 0 3px var(--danger-hover); }
 .model-set-scope .field-error { color: var(--danger); font-size: 12px; }
 /* API Key：输入框内右侧的显示/隐藏按钮 */
 .model-set-scope .inp-wrap { position: relative; display: flex; min-width: 0; align-items: center; }
@@ -1413,7 +1411,8 @@ button { background: none; border: 0; }
   transition: background-color .16s var(--ease), border-color .18s var(--ease);
 }
 .model-set-scope .sel-btn:hover:not(:disabled) { background: var(--surface-2); }
-.model-set-scope .sel-btn[aria-expanded="true"] { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.model-set-scope .sel-btn:focus-visible,
+.model-set-scope .sel-btn[aria-expanded="true"] { outline: none; box-shadow: none; }
 /* 推荐供应商固定使用 Chat Completions：选择器保留但不可操作 */
 .model-set-scope .sel-btn:disabled { background: var(--surface); color: var(--text-2); cursor: default; }
 .model-set-scope .sel-btn .v { flex: 1; min-width: 0; overflow: hidden; text-align: left; text-overflow: ellipsis; white-space: nowrap; }
@@ -1596,7 +1595,7 @@ body.settings-has-configured-api-key .model-set-scope .set-field:has(input[type=
   border: 1px solid var(--border); border-radius: var(--r-control); background: var(--raised);
   color: var(--text); font-family: var(--font-data); font-size: 13px;
 }
-.set-root .gn-num:focus { outline: 0; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.set-root .gn-num:focus { outline: 0; box-shadow: none; }
 .set-root .gn-num-wrap { display: inline-flex; align-items: stretch; }
 .set-root .gn-num-wrap .gn-num { border-radius: var(--r-control) 0 0 var(--r-control); }
 .set-root .gn-num-suffix {
@@ -1619,7 +1618,7 @@ body.settings-has-configured-api-key .model-set-scope .set-field:has(input[type=
   transition: border-color .18s var(--ease), box-shadow .18s var(--ease);
 }
 .gn-card .set-inp::placeholder { color: var(--text-3); }
-.gn-card .set-inp:focus { outline: 0; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.gn-card .set-inp:focus { outline: 0; box-shadow: none; }
 
 .pf-avs { display: flex; align-items: center; gap: 8px; }
 .pf-file { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
