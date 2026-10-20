@@ -7,6 +7,7 @@ import { useSettingsStore } from '../features/settings/api/settingsQueries';
 import type { Conversation, PageId } from '../types/domain';
 import { DialogButton, Modal } from '../shared/components/UI';
 import { Icon } from '../shared/components/Icon';
+import { BrandAssets, BrandBaselines } from '../shared/brand';
 import { GetAgentBalance, IsDesktopAgentAvailable } from '../features/assistant/api/agentQueries';
 import { ASSISTANT_MAIN_MIN_WIDTH } from '../shared/layoutConstants';
 import { ListEvalRuns } from '../features/developer/api/evaluationQueries';
@@ -55,8 +56,8 @@ function SaveLocalMap(key: string, value: Record<string, string>): void {
 /** 待归档会话：确认弹窗标题里需要会话名。 */
 type ArchiveTarget = { id: string; title: string };
 
-/** 顶栏品牌标记：产品引导精灵图标；构建以 file:// 打开，资源路径按文档基址解析成绝对 URL。 */
-const BrandMark = <img src={new URL('./assets/avery-guiding-elf-icon-v2.png', document.baseURI).href} alt="" />;
+/** 顶栏使用透明应用图标，路径与开屏、引导页共用品牌资源配置。 */
+const BrandMark = <img src={BrandAssets.icon} alt="" />;
 
 function FormatBalance(currency: string, total: string) {
   const number = Number(total);
@@ -436,9 +437,9 @@ function AppShell({ page, onNavigate, onRestartOnboarding, settingsTab, onReques
     <header className="topbar">
       <div className="tb-group">
         <button className="icon-btn" type="button" aria-label={collapsed ? '展开侧栏' : '收起侧栏'} aria-pressed={!collapsed} title={collapsed ? '展开侧栏' : '收起侧栏'} onClick={() => SetCollapsed((value) => !value)}><Icon name="sidebar-expand" size={17} /></button>
-        <div className="brand">
+        <div className="brand" style={{ '--brand-icon-baseline-offset': BrandBaselines.wordmarkCapital - BrandBaselines.icon } as CSSProperties}>
           <span className="brand-mark" aria-hidden="true">{BrandMark}</span>
-          <span className="brand-name">Avery</span>
+          <img className="brand-name" src={BrandAssets.wordmark} alt="Avery" />
         </div>
         <span className="tb-div" aria-hidden="true" />
         <div className="crumb">

@@ -6,6 +6,7 @@ import { CreateBackendHost } from '@avery/backend/dist/host';
 import { CreateDesktopAdapters } from './adapters';
 import { RegisterGateway, RegisterGeneralControls, RegisterWindowControls } from './gateway';
 import { MigrateLegacyUserData } from './brand-migration';
+import { CreateTrayImage } from './tray-image';
 
 const smokeStartedAt = Date.now();
 let mainWindow: BrowserWindow | undefined;
@@ -110,9 +111,9 @@ function configureSecurityPolicies(): void {
   });
 }
 
-/** 托盘与系统通知共用的应用图标：开发态取仓库 dist，打包态取安装目录内资源；找不到返回空串。 */
+/** 窗口、任务栏、托盘与通知共用应用图标；开发态取 dist，打包态取安装目录内资源。 */
 function resolveAppIconPath(): string {
-  const fileName = join('dist', 'assets', 'avery-guiding-elf-icon-v2.png');
+  const fileName = join('dist', 'assets', 'avery-icon.png');
   const candidates = app.isPackaged
     ? [join(process.resourcesPath, 'app.asar', fileName), join(process.resourcesPath, fileName)]
     : [join(__dirname, '..', '..', '..', fileName)];
@@ -156,7 +157,7 @@ function EnsureTray(iconPath: string): boolean {
   }
   let createdTray: Tray | undefined;
   try {
-    createdTray = new Tray(image);
+    createdTray = new Tray(CreateTrayImage(image));
     createdTray.setToolTip('Avery');
     createdTray.setContextMenu(Menu.buildFromTemplate([
       { label: '显示主窗口', click: () => ShowMainWindowFromTray() },
