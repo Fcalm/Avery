@@ -123,6 +123,7 @@ button { background: none; border: 0; }
 
 /* ------------------------------------------------------------------- 侧栏 */
 .sidebar {
+  --sb-content-hide-delay: 0s;
   width: var(--sidebar-width);
   flex: none;
   display: flex;
@@ -149,8 +150,11 @@ button { background: none; border: 0; }
   display: flex; align-items: center; gap: 9px; width: 100%; height: 38px; padding: 0 11px; flex: none;
   background: var(--accent); color: var(--accent-on); border-radius: var(--r-control);
   font-size: 13.5px; font-weight: 600;
-  transition: background-color .18s var(--ease), transform .12s var(--ease), box-shadow .18s var(--ease);
+  overflow: hidden;
+  transition: padding .38s var(--ease), gap .38s var(--ease), background-color .18s var(--ease), transform .12s var(--ease), box-shadow .18s var(--ease);
 }
+.sb-new-chat > i { flex: none; }
+.sb-new-chat > span { min-width: 0; overflow: hidden; white-space: nowrap; }
 .sb-new-chat:hover { background: var(--accent-hover); }
 .sb-new-chat:active { transform: scale(.98); }
 .sb-new-chat .kbd { margin-left: auto; font-family: var(--font-data); font-size: 10.5px; opacity: .7; font-weight: 500; }
@@ -175,8 +179,8 @@ button { background: none; border: 0; }
 .nav-item {
   position: relative; display: flex; align-items: center; gap: 11px; height: 34px; padding: 0 10px;
   width: 100%; border-radius: 9px; color: var(--text-2); font-size: 13.5px; font-weight: 500;
-  text-align: left; z-index: 1;
-  transition: color .2s var(--ease), background-color .18s var(--ease);
+  text-align: left; z-index: 1; flex-shrink: 0; overflow: hidden;
+  transition: padding .38s var(--ease), gap .38s var(--ease), color .2s var(--ease), background-color .18s var(--ease);
 }
 .nav-item i { flex: none; transition: color .2s var(--ease), transform .3s var(--ease); }
 .nav-item span { white-space: nowrap; transition: opacity .2s var(--ease); min-width: 0; overflow: hidden; text-overflow: ellipsis; }
@@ -188,9 +192,19 @@ button { background: none; border: 0; }
   background: var(--panel); border: 1px solid var(--border); border-radius: var(--r-pill); padding: 0 6px; line-height: 16px;
 }
 
+/* 常驻搜索独立于历史分区，复用入口行的尺寸和图标位置；侧栏收起时保留可展开的搜索图标。 */
+.sb-history-search { flex: none; margin-top: 1px; background: var(--surface-2); }
+.sb-history-search-icon { display: grid; flex: none; width: 17px; height: 100%; place-items: center; padding: 0; color: inherit; }
+.sb-history-search input {
+  flex: 1; width: 0; min-width: 0; height: 100%; min-height: 0; border: 0; border-radius: 0; padding: 0;
+  color: var(--text); background: transparent; font: inherit;
+}
+.sb-history-search input:focus { outline: none; background: transparent; box-shadow: none; }
+.sb-history-search input::placeholder { color: var(--text-2); }
+
 .sb-sec { margin-top: 18px; }
 .sb-sec-h {
-  display: flex; align-items: center; justify-content: space-between;
+  display: flex; align-items: center; justify-content: space-between; gap: 6px;
   padding: 0 10px 7px; font-size: 11px; font-weight: 600; letter-spacing: .07em;
   text-transform: uppercase; color: var(--text-3);
 }
@@ -212,15 +226,25 @@ button { background: none; border: 0; }
   color: var(--text-3); transition: color .2s var(--ease);
 }
 .sb-search-btn:hover { color: var(--text); }
-.ti-empty { padding: 9px 10px; font-size: 12px; color: var(--text-3); line-height: 1.5; }
+.ti-empty { padding: 9px 10px; font-size: 12px; color: var(--text-3); line-height: 1.5; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 /* 分组列表的小标题（开发者页"评测记录"按运行状态分组，原型 ti-group 同款） */
-.ti-group { padding: 12px 10px 5px; color: var(--text-3); font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; }
+.ti-group { padding: 12px 10px 5px; color: var(--text-3); font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; white-space: nowrap; }
 .ti-group:first-child { padding-top: 4px; }
-/* 项目空间板块与「最近」同级：分区标题沿用 sb-sec-h，标题里放文件夹与项目名（保留原名大小写），
-   右侧「更多」按钮与「最近」的搜索按钮占同一位置。 */
+/* 项目空间板块与「最近」同级，标题保留原名大小写，右侧提供独立的「更多」入口。 */
 .sb-sec-title { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .sb-sec-title > i { flex: none; }
 .sb-sec-title > span { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; letter-spacing: .02em; text-transform: none; }
+.sb-sec-toggle {
+  display: flex; flex: 1; min-width: 0; min-height: 24px; align-items: center; gap: 6px;
+  border: 0; border-radius: var(--r-control); padding: 2px 0; color: inherit; background: transparent;
+  font: inherit; letter-spacing: inherit; text-align: left;
+}
+.sb-sec-toggle:hover, .sb-sec-toggle:focus-visible { outline: none; color: var(--text); background: var(--surface-2); box-shadow: none; }
+.sb-sec-toggle > .sb-sec-title { flex: 1; }
+.sb-sec-chevron { flex: none; transition: transform .18s var(--ease); }
+.sb-sec-toggle[aria-expanded="true"] > .sb-sec-chevron { transform: rotate(90deg); }
+.sb-sec .ti-list[hidden] { display: none; }
+@media (prefers-reduced-motion: reduce) { .sb-sec-chevron { transition: none; } }
 .sb-sec-more {
   flex: none; width: 20px; height: 20px; display: grid; place-items: center; border-radius: 6px;
   color: var(--text-3); opacity: 0;
@@ -273,11 +297,12 @@ button { background: none; border: 0; }
 .ti-rename:focus { outline: 0; box-shadow: none; }
 
 .sb-foot { flex: none; padding-top: 10px; margin-top: 6px; border-top: 1px solid var(--border); }
-.uc-row { display: flex; align-items: center; gap: 3px; }
+.uc-row { display: flex; align-items: center; gap: 3px; height: 44px; transition: gap .38s var(--ease); }
 .user-card {
-  display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; padding: 7px 8px;
+  display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; height: 44px; padding: 7px 8px;
   border-radius: var(--r-control);
-  transition: background-color .18s var(--ease);
+  overflow: hidden;
+  transition: padding .38s var(--ease), gap .38s var(--ease), background-color .18s var(--ease);
 }
 .user-card:hover, .user-card[aria-expanded="true"] { background: var(--surface-2); }
 .user-card .uc-body { min-width: 0; flex: 1; }
@@ -354,17 +379,41 @@ button { background: none; border: 0; }
 /* 开关行不画 focus-within 描边：鼠标点击后不留绿色描边，键盘可见性交给全局 :focus-visible。 */
 
 /* ------------------------------------------------------------- 折叠态侧栏 */
-.app-shell.is-collapsed .sb-inner { padding-left: 8px; padding-right: 8px; }
-.app-shell.is-collapsed .nav-item span,
-.app-shell.is-collapsed .nav-item .count,
-.app-shell.is-collapsed .sb-new-chat span,
-.app-shell.is-collapsed .sb-new-chat .kbd,
+/* 内容保留在原来的行内，只压缩水平方向；固定行高与底栏高度，避免收起时发生纵向跳动。
+   visibility 延后到淡出完成，既保留过渡，也让收起后的隐藏控件退出键盘导航。 */
+.app-shell.is-collapsed .sidebar { --sb-content-hide-delay: .24s; }
+.sidebar .nav-item > span,
+.sidebar .sb-new-chat > span,
+.sidebar .sb-history-search input,
+.sidebar .sb-sec,
+.sidebar .user-card .uc-body {
+  transition: opacity .24s var(--ease), visibility 0s var(--sb-content-hide-delay);
+}
+.sidebar .user-card .chev {
+  max-width: 12px;
+  transition: max-width .38s var(--ease), opacity .24s var(--ease), visibility 0s var(--sb-content-hide-delay), transform .25s var(--ease);
+}
+.sidebar .uc-row > .icon-btn {
+  /* 收起至零宽时不能保留浏览器默认按钮内边距，否则仍会挤占账户按钮并裁切头像。 */
+  min-width: 0; padding: 0;
+  overflow: hidden;
+  transition: width .38s var(--ease), opacity .24s var(--ease), visibility 0s var(--sb-content-hide-delay), background-color .18s var(--ease), color .18s var(--ease);
+}
+.app-shell.is-collapsed .nav-item > span,
+.app-shell.is-collapsed .sb-new-chat > span,
+.app-shell.is-collapsed .sb-history-search input,
 .app-shell.is-collapsed .sb-sec,
 .app-shell.is-collapsed .user-card .uc-body,
 .app-shell.is-collapsed .user-card .chev,
-.app-shell.is-collapsed .uc-row > .icon-btn { display: none; }
-.app-shell.is-collapsed .nav-item, .app-shell.is-collapsed .sb-new-chat { justify-content: center; padding: 0; }
-.app-shell.is-collapsed .user-card { justify-content: center; padding: 0; flex: none; }
+.app-shell.is-collapsed .uc-row > .icon-btn {
+  opacity: 0; visibility: hidden; pointer-events: none;
+}
+.app-shell.is-collapsed .nav-item { gap: 0; padding-left: 13px; padding-right: 13px; }
+.app-shell.is-collapsed .sb-new-chat { gap: 0; padding-left: 14px; padding-right: 14px; }
+.app-shell.is-collapsed .uc-row { gap: 0; }
+.app-shell.is-collapsed .user-card { gap: 0; padding-left: 6.5px; padding-right: 6.5px; }
+.app-shell.is-collapsed .user-card .chev { max-width: 0; }
+.app-shell.is-collapsed .uc-row > .icon-btn { width: 0; }
 
 /* ---------------------------------------------------------------- 设置主区 */
 /* 分类导航已上移到全局侧栏，旧两列网格退化为单列内容流 */
@@ -372,6 +421,7 @@ button { background: none; border: 0; }
 
 /* ------------------------------------------------------------------- 降级 */
 @media (prefers-reduced-motion: reduce) {
+  .app-shell .sidebar { --sb-content-hide-delay: 0s; }
   .topbar, .sidebar, .nav-ind, .menu, .menu-item, .thread-item, .ti-more, .sb-new-chat, .icon-btn, .crumb-btn, .win-btn, .tb-txt-btn {
     animation-duration: .001ms !important;
     animation-iteration-count: 1 !important;

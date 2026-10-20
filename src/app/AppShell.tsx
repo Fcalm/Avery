@@ -39,6 +39,7 @@ type ProjectGroup = { projectId: string; name: string; items: Conversation[] };
 /** 分组展示偏好只存本机：别名是侧栏显示名，移除分组只是把板块从侧栏收起，都不改会话的项目绑定。 */
 const GroupAliasesKey = 'avery-project-group-aliases';
 const RemovedGroupsKey = 'avery-project-group-removed';
+const CollapsedHistorySectionsKey = 'avery-history-sections-collapsed';
 
 function LoadLocalMap(key: string): Record<string, string> {
   try {
@@ -84,7 +85,6 @@ function AppShell({ page, onNavigate, onRestartOnboarding, settingsTab, onReques
   const [renamingConversationId, SetRenamingConversationId] = useState<string | null>(null);
   const [renameTitle, SetRenameTitle] = useState('');
   const [archiveTarget, SetArchiveTarget] = useState<ArchiveTarget | null>(null);
-  const [searchOpen, SetSearchOpen] = useState(false);
   const [searchQuery, SetSearchQuery] = useState('');
   const [balance, setBalance] = useState<Array<{ currency: string; totalBalance: string }> | null>(null);
   const [refreshingBalance, setRefreshingBalance] = useState(false);
@@ -106,6 +106,10 @@ function AppShell({ page, onNavigate, onRestartOnboarding, settingsTab, onReques
   // 项目空间分组的本机展示偏好：别名与已移除分组。
   const [groupAliases, SetGroupAliases] = useState<Record<string, string>>(() => LoadLocalMap(GroupAliasesKey));
   const [removedGroups, SetRemovedGroups] = useState<Record<string, string>>(() => LoadLocalMap(RemovedGroupsKey));
+  // 用稳定项目标识记住折叠状态，重命名或分组重排不会影响偏好；搜索期间的折叠单独暂存。
+  const [collapsedHistorySections, SetCollapsedHistorySections] = useState<Record<string, string>>(() => LoadLocalMap(CollapsedHistorySectionsKey));
+  const [searchCollapsedSections, SetSearchCollapsedSections] = useState<Record<string, string>>({});
+  useEffect(() => { SaveLocalMap(CollapsedHistorySectionsKey, collapsedHistorySections); }, [collapsedHistorySections]);
   const [groupMenu, SetGroupMenu] = useState<GroupMenuPosition | null>(null);
   const [renameGroupTarget, SetRenameGroupTarget] = useState<{ projectId: string; name: string } | null>(null);
   const [renameGroupValue, SetRenameGroupValue] = useState('');
@@ -148,6 +152,7 @@ function AppShell({ page, onNavigate, onRestartOnboarding, settingsTab, onReques
   // "最近"与会话切换菜单只展示未归档会话；置顶会话排最前，组内保持最近使用顺序（排序稳定）。
   const liveConversations = conversations.filter((item) => !(item.archived ?? false)).slice().sort((a, b) => Number(b.pinned ?? false) - Number(a.pinned ?? false));
   const searchKeyword = searchQuery.trim().toLowerCase();
+  const historySectionState = searchKeyword ? searchCollapsedSections : collapsedHistorySections;
   const visibleConversations = searchKeyword ? liveConversations.filter((item) => item.title.toLowerCase().includes(searchKeyword)) : liveConversations;
   // 项目空间分组：按创建时定格的 projectId 聚合，组序跟随组内最近使用时间，组内保持「最近」的置顶优先顺序；
   // 被用户移除的分组（本机偏好）不再成组，其会话回到未分组区。
@@ -408,12 +413,19 @@ function AppShell({ page, onNavigate, onRestartOnboarding, settingsTab, onReques
   function RenderUserAvatar() {
     return <span className="avatar" data-av={settings.avatarStyle ?? 'default'} aria-hidden="true">{settings.avatarImage ? <img src={settings.avatarImage} alt="" /> : settings.nickname.slice(0, 1) || 'A'}</span>;
   }
-  function ToggleSearch() {
-    SetSearchOpen((open) => {
-      if (!open) window.setTimeout(() => searchInputRef.current?.focus(), 120);
-      else SetSearchQuery('');
-      return !open;
+  function ToggleHistorySection(sectionId: string) {
+    const SetSections = searchKeyword ? SetSearchCollapsedSections : SetCollapsedHistorySections;
+    SetSections((current) => {
+      const next = { ...current };
+      if (next[sectionId]) delete next[sectionId];
+      else next[sectionId] = 'collapsed';
+      return next;
     });
+  }
+  function ChangeHistorySearch(value: string) {
+    SetSearchQuery(value);
+    // 新的关键词默认显示所有匹配结果，清空后仍沿用搜索前的持久化折叠偏好。
+    SetSearchCollapsedSections({});
   }
 
   /** 会话行（阅读态/行内重命名态）：分组内与未分组区共用；图标随置顶与场景切换。 */
@@ -563,28 +575,34 @@ function AppShell({ page, onNavigate, onRestartOnboarding, settingsTab, onReques
             </button>)}
           </nav>
 
+          <div className="nav-item sb-history-search" role="search" aria-label="搜索对话">
+            <button className="sb-history-search-icon" type="button" aria-label="搜索对话" title="搜索对话" onClick={() => { SetCollapsed(false); requestAnimationFrame(() => searchInputRef.current?.focus()); }}><Icon name="search" size={17} /></button>
+            <input ref={searchInputRef} type="search" value={searchQuery} tabIndex={collapsed ? -1 : 0} aria-hidden={collapsed} placeholder="搜索对话" aria-label="搜索对话" autoComplete="off" onChange={(event) => ChangeHistorySearch(event.target.value)} onKeyDown={(event) => { if (event.key === 'Escape') ChangeHistorySearch(''); }} />
+          </div>
+
           <div className="sb-scroll">
-            {/* 「最近」与项目空间板块同级：各占一个分区、各有分区标题；项目空间标题右侧放「更多」按钮，
-                与「最近」标题右侧的搜索按钮占同一位置。未绑定项目的会话留在「最近」。 */}
+            {/* 「最近」与项目空间板块同级，均可独立折叠；未绑定项目的会话留在「最近」。 */}
             <div className="sb-sec" aria-label="历史会话">
               <div className="sb-sec-h">
-                <span>最近</span>
-                <div className={`sb-search ${searchOpen ? 'open' : ''}`}>
-                  <input ref={searchInputRef} type="search" value={searchQuery} placeholder="搜索对话" aria-label="搜索近期对话" autoComplete="off" tabIndex={searchOpen ? 0 : -1} onChange={(event) => SetSearchQuery(event.target.value)} onKeyDown={(event) => { if (event.key === 'Escape') { SetSearchOpen(false); SetSearchQuery(''); } }} />
-                  <button className="sb-search-btn" type="button" aria-expanded={searchOpen} aria-label="搜索近期对话" title="搜索近期对话" onClick={ToggleSearch}><Icon name="search" size={13} /></button>
-                </div>
+                <button className="sb-sec-toggle" type="button" aria-expanded={!historySectionState.recent} aria-controls="history-recent" aria-label={`${historySectionState.recent ? '展开' : '折叠'}最近会话`} title={`${historySectionState.recent ? '展开' : '折叠'}最近会话`} onClick={() => ToggleHistorySection('recent')}>
+                  <Icon name="chevron-right" size={12} className="sb-sec-chevron" />
+                  <span className="sb-sec-title"><span>最近</span></span>
+                </button>
               </div>
-              <div className="ti-list">
+              <div className="ti-list" id="history-recent" hidden={Boolean(historySectionState.recent)}>
                 {ungroupedConversations.map((item) => RenderConversationRow(item))}
                 {!ungroupedConversations.length && <div className="ti-empty">{searchKeyword ? '没有匹配的对话' : visibleConversations.length ? '所有对话都在项目空间里' : '还没有会话'}</div>}
               </div>
             </div>
             {conversationGroups.map((group) => <div className="sb-sec" key={group.projectId} aria-label={`项目空间 ${group.name}`}>
               <div className="sb-sec-h">
-                <span className="sb-sec-title" title={group.name}><Icon name="folder-simple" size={12} /><span>{group.name}</span></span>
+                <button className="sb-sec-toggle" type="button" aria-expanded={!historySectionState[`project:${group.projectId}`]} aria-controls={`history-project-${encodeURIComponent(group.projectId)}`} aria-label={`${historySectionState[`project:${group.projectId}`] ? '展开' : '折叠'}项目 ${group.name}`} title={group.name} onClick={() => ToggleHistorySection(`project:${group.projectId}`)}>
+                  <Icon name="chevron-right" size={12} className="sb-sec-chevron" />
+                  <span className="sb-sec-title"><Icon name="folder-simple" size={12} /><span>{group.name}</span></span>
+                </button>
                 <button className="sb-sec-more" type="button" data-menu-trigger="group" aria-haspopup="menu" aria-expanded={groupMenu?.projectId === group.projectId} aria-label={`管理项目空间 ${group.name}`} title="更多" onClick={(event) => OpenGroupMenu(group.projectId, group.name, group.items.length, event.currentTarget)}><Icon name="more" size={13} /></button>
               </div>
-              <div className="ti-list">{group.items.map((item) => RenderConversationRow(item))}</div>
+              <div className="ti-list" id={`history-project-${encodeURIComponent(group.projectId)}`} hidden={Boolean(historySectionState[`project:${group.projectId}`])}>{group.items.map((item) => RenderConversationRow(item))}</div>
             </div>)}
           </div>
 
