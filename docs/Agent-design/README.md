@@ -36,8 +36,6 @@
 
 - [PRD](../PRD.md)
 - [ARCHITECTURE](../ARCHITECTURE.md)
-- [项目重建计划](../PROJECT-RECONSTRUCTION-PLAN.md)
-- [A-02 产品裁决](../rebuild/A-02-PM-DECISION-2026-08-20.md)
 - [Agent ADR 索引](../architecture/decisions/README.md)
 
 ## 2. 核心结论
@@ -120,28 +118,9 @@ Infrastructure → Backend-owned narrow ports
 | `observability` | Harness 的审计与验证证据 |
 | `prompts.ts` | System Prompt |
 
-建议保留六槽兼容接口完成重建，但目标实现逐步把跨槽策略上移到 Harness，避免 Provider 或 Tool Module 自行决定全局行为。
+六槽接口负责模块装配，跨槽策略统一由 Harness 管理，避免 Provider 或 Tool Module 自行决定全局行为。
 
-## 6. A-03 实现差距关闭记录
-
-A-01 已为五包建立测试基线。统一等待、确认时重加锁、只读并发与写屏障、畸形 SSE 失败、完整 TurnGroup 和模块级 Ledger/Prompt 接口已经有绿色回归；A-03 不应无依据重写这些实现。
-
-A-01 曾记录 6 条 `it.fails` 失败证据，并由只读集成审计发现 2 条宿主接线缺口。A-03 已逐项关闭下表 8 项差距；当前 Agent 测试不再保留预期失败用例：
-
-| 当前缺口 | 风险 | A-03 目标 |
-| --- | --- | --- |
-| 0.2.0 生产场景/工具清单仍含网络草案，且执行入口未再次核对冻结白名单 | 发布范围越界；模型还可直接请求已注册但未授权的工具 | 0.2.0 只注册 12 个本地工具；`SearchJobs`/`ReadUrl` 标为禁用草案；Harness 按冻结快照拒绝未授权工具 |
-| Run 取消完成后 Provider 迟到增量仍可能发出 | 已停止请求污染 UI、Trace 或其他会话 | 以 execution/run token 丢弃迟到事件，取消后 1 秒内保持唯一可见终态 |
-| Prompt、工具白名单和数据范围未作为同一原子 Run 快照被宿主实际消费 | 重载或重启后产生混合版本请求 | 一次冻结并持久化 Scenario/Prompt/Tool/DataScope/Provider，Loop 只读取该快照 |
-| 工具自身超时未中止底层操作 | 返回 timeout 后仍产生幽灵副作用 | 为单工具派生 AbortSignal/deadline；写入超时进入对账 |
-| 默认 Observability 写入日志前未统一脱敏 | Key、Authorization 或绝对路径进入日志 | 在观测入口集中脱敏，并保留回归 fixture |
-| “无需确认”模式尚未阻止含 `【待确认】` 的草稿直接写入 | 未确认推测内容进入正式简历 | Harness 强制保存待确认草稿并进入等待，文本确认后才能写入 |
-| Tool Ledger 接口已存在，但生产 Host 尚未保证持久化端口和 Run 上下文全链路注入 | 重启后业务幂等退化为内存缓存 | 宿主强制注入持久化 Ledger；缺失时拒绝写工具而非降级执行 |
-| Provider 已接受编译指令，但生产 Host 尚未把 Prompt Manifest 与工具策略哈希一起传入 | Provider 仍可能回退到内部 Prompt | Run 创建期编译并冻结 Prompt，Provider 不再拥有业务 Prompt 回退路径 |
-
-**关闭证据（2026-08-20）**：0.2.0 活动工具已收窄为 12 个本地工具；Core 与工具模块双层校验冻结白名单；Provider/Tool 迟到事件被丢弃；Host 消费原子 Run 快照并注入持久化 Tool Ledger；单工具超时派生取消信号且写超时进入 `status_unknown`；Provider 强制接收编译 Prompt；Observability 入口统一脱敏；含 `【待确认】` 的草稿强制进入文本等待。根测试为 Vitest 45/45、Backend 8/8，全量构建通过。
-
-## 7. 跨文档不变量
+## 6. 跨文档不变量
 
 任何实现均不得破坏以下规则：
 
@@ -157,9 +136,9 @@ A-01 曾记录 6 条 `it.fails` 失败证据，并由只读集成审计发现 2 
 10. 0.2.0 默认场景没有任何岗位网络工具；0.3.0 只允许用户明确 URL 对应的受限 `ReadUrl`；`SearchJobs` 在另行裁决前保持禁用，投递场景启用前不能创建 Run 或继承默认场景权限。
 11. 错误必须结构化、可追踪；不得通过静默忽略、无界重试或扩大容错掩盖根因。
 
-本节执行 [A-02 产品裁决](../rebuild/A-02-PM-DECISION-2026-08-20.md)。PRD 与路线图的版本措辞若尚未同步，以“0.2.0 无网络、0.3.0 仅用户 URL、未来发现未承诺、无界爬取永久禁止”为设计边界；不得据此提前实现网络能力。
+岗位网络范围的版本决策见 [ADR-AGENT-001](../architecture/decisions/ADR-AGENT-001-versioned-job-network-scope.md)；后续工具范围以对应专项方案为准。
 
-## 8. 已裁决的第一版决策
+## 7. 已裁决的第一版决策
 
 以下值已由 PM 于 2026-08-20 裁决，并分别固化到 [Agent ADR](../architecture/decisions/README.md)：
 
@@ -174,7 +153,7 @@ A-01 曾记录 6 条 `it.fails` 失败证据，并由只读集成审计发现 2 
 | 纠正重试 | 同错误指纹最多 1 次；Provider 瞬时错误仅输出前有界退避 | [ADR-AGENT-004](../architecture/decisions/ADR-AGENT-004-tool-safety-and-correction.md) |
 | Provider | 0.2.0 DeepSeek；OpenAI 为后续独立 Adapter；MiMo 仅候选 | [ADR-AGENT-005](../architecture/decisions/ADR-AGENT-005-provider-rollout.md) |
 
-## 9. 文档验收标准
+## 8. 文档验收标准
 
 - 六篇文档中的状态名、对象名、错误语义和场景清单一致。
 - 每一项安全约束都能定位到一个非 Prompt 的执行点。
@@ -183,6 +162,6 @@ A-01 曾记录 6 条 `it.fails` 失败证据，并由只读集成审计发现 2 
 - 每种 Provider 差异都停留在 Adapter，不要求 Loop 写供应商分支。
 - Harness 的验证用例可以转为单元、契约、集成、安全或 E2E 测试。
 
-## 10. 总结
+## 9. 总结
 
 本设计把 Agent 拆为“状态机内核 + 可信控制层 + 可替换适配器”。Loop 负责推进，System Prompt 负责表达，Tools 负责受限行动，Context 负责预算内取证，Provider 负责协议翻译，Harness 负责真正的约束、验证与纠正。六部分必须共同工作，任何一部分都不能单独保证 Agent 安全或可靠。

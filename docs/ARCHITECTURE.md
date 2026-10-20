@@ -3,13 +3,13 @@
 > 文档状态：目标架构基线
 > 更新日期：2026-08-19
 > 适用范围：Avery Windows 桌面端、Backend、Agent、自动化投递与本地数据层
-> 依据：`AGENTS.md`、`docs/PRD.md`、`RECONSTRUCTION.md`、现有源码、数据库迁移和已恢复运行时
+> 依据：`AGENTS.md`、`docs/PRD.md`、现有源码和数据库迁移
 
 ## 1. 文档目的
 
 本文回答以下问题：
 
-- 当前项目真实存在什么，哪些内容只是恢复出的编译产物。
+- 当前项目的源码、构建产物与模块边界如何组织。
 - 后续源码应按什么进程、模块和目录组织。
 - Renderer、Preload、Electron Main、Backend、DB Worker、Agent 与自动化投递之间如何通信。
 - 依赖方向、数据所有权、安全边界和验证门禁是什么。
@@ -51,24 +51,14 @@ project/
 ├─ migrations/business/              # 业务数据库不可变迁移及 manifest
 ├─ public/                           # 随 Renderer 打包的稳定静态资源
 ├─ scripts/                          # 打包、安装生命周期和视觉冒烟脚本
-└─ docs/                             # 产品、重建和架构文档
+└─ docs/                             # 产品、模块和架构文档
 ```
 
-### 3.2 当前仅作为行为基准的运行时
+### 3.2 Desktop 与 Backend 源码及构建产物
 
-```text
-project/
-├─ apps/backend/dist/                # 从运行包恢复的 Backend CommonJS
-├─ apps/desktop/dist/                # 从运行包恢复的 Electron Main/Gateway/Adapters CommonJS
-└─ electron/preload.cjs              # 当前可运行的 Preload Bridge
-```
-
-上述三个位置缺少对应的原始 TypeScript 源文件和原始构建配置。迁移完成前可以继续用于运行和对照测试，但必须遵守以下规则：
-
-- 不把 `dist` 文件描述为原始源码。
-- 不直接在 `dist` 中长期开发新功能。
-- 每恢复一个 TypeScript 模块，都要与现有运行时做输入、结果信封、副作用和失败行为对照。
-- 新构建产物覆盖旧 `dist` 前，必须保留可回退的行为基线。
+- `apps/backend/src/` 保存 Backend TypeScript 源码。
+- `apps/desktop/src/` 保存 Electron Main、Gateway、Adapters 和 Preload 源码。
+- `apps/backend/dist/`、`apps/desktop/dist/` 与 `electron/preload.cjs` 由构建生成，不作为人工编辑入口。
 
 ### 3.3 已存在的关键边界
 
@@ -83,8 +73,7 @@ project/
 
 ### 3.4 当前缺口
 
-- `apps/backend` 与 `apps/desktop` 的清单声明了 TypeScript 构建，但当前只有 `dist`，尚不能独立从源码重建。
-- Renderer 仍位于根 `src/`，与 workspace 应用目录不一致；在恢复运行时源码后再迁移，避免同时改变入口和行为。
+- Renderer 仍位于根 `src/`，与 workspace 应用目录不一致；如需迁移，单独验证入口、构建与运行行为。
 - Preload、Bridge 类型、路由表和 Renderer 平台客户端存在多处人工维护清单，后续容易发生通道漂移。
 - 当前简历 DTO 仍以 `summary + content` 为主，尚未达到 PRD 要求的结构化模块、来源和编辑命令模型。
 - 自动化投递、视觉服务和完整的场景权限模型属于目标能力，不能按现有普通业务 CRUD 或通用 Agent 工具直接扩展。
@@ -192,7 +181,7 @@ project/
 │  │  │  └─ workers/
 │  │  │     ├─ business/                            # 业务 SQLite 连接与迁移
 │  │  │     ├─ observability/                       # Trace/日志 SQLite 连接
-│  │  │     └─ document/                            # [按需] OCR/文档解析重任务
+│  │  │     └─ document/                            # [按需] 文档解析重任务
 │  │  ├─ package.json
 │  │  └─ tsconfig.json
 │  │
@@ -253,7 +242,7 @@ project/
 ### 5.1 目录落地原则
 
 - 不为了匹配目录树而一次性创建空包；只有当代码、测试和所有者明确时才新增 workspace。
-- 第一阶段保持根 `src/`、`public/`、`index.html` 和 `vite.config.ts` 可运行；待 Desktop/Backend TypeScript 重建稳定后，再原样迁移到 `apps/renderer`。
+- 保持根 `src/`、`public/`、`index.html` 和 `vite.config.ts` 可运行；迁移到 `apps/renderer` 时单独验证构建与运行入口。
 - `apps/*/dist`、`packages/*/dist`、根 `dist`、`release-*` 都是生成物，不作为模块引用源和人工编辑入口。
 - `apps/backend/src/modules/*` 按业务能力纵向组织。一个模块拥有自己的用例、规则和端口；跨模块调用通过公开服务或事件，不直接访问对方仓储内部。
 - 只有确实被多个运行时复用的纯逻辑才进入 `packages/*`，避免把所有代码过早拆成包。
@@ -392,7 +381,7 @@ Desktop Gateway、Preload 暴露对象、Backend Router 和契约测试必须引
 - 解析后执行 canonical path 与根目录包含校验，拒绝 `..`、符号链接逃逸和路径替换竞态。
 - `.gitignore`、内置敏感规则、用户排除项、扩展名、单文件和总量限制同时生效。
 - `.env`、密钥、证书、Token、数据库、日志、依赖和构建目录不可由普通场景解除排除。
-- 文档解析和 OCR 在 Worker 中执行，设定超时、内存/页数/像素限制并清理临时文件。
+- 文档解析在 Worker 中执行，设定超时、内存/页数限制并清理临时文件。
 
 ### 9.3 外部服务
 
@@ -406,7 +395,7 @@ Desktop Gateway、Preload 暴露对象、Backend Router 和契约测试必须引
 - Main 启动只创建安全策略、能力适配器、Backend Host 和首个窗口；非首屏能力延迟加载。
 - SQLite 继续使用 WAL，但连接只存在于对应 Worker；Backend 通过异步 RPC 访问。
 - Renderer 初始只加载应用壳和当前路由，大型开发者 Trace、自动化和导出 UI 按路由懒加载。
-- 附件、PDF、Word、OCR、备份校验和大规模文件枚举均进入 Worker，并提供进度和取消。
+- 附件、PDF、Word、备份校验和大规模文件枚举均进入 Worker，并提供进度和取消。
 - Backend Host 使用有界重启与退避；连续失败进入明确恢复态，禁止无限重启掩盖根因。
 - 每项性能修改记录基线设备、数据规模、命令和修改前后结果；不得只以主观感受验收。
 
@@ -436,56 +425,9 @@ Desktop Gateway、Preload 暴露对象、Backend Router 和契约测试必须引
 
 涉及安装包时额外执行目录包、NSIS、隔离安装、升级、卸载保留数据、图标与发布清单验证。
 
-## 12. 分阶段迁移计划
+## 12. 架构演进
 
-### 阶段 A：固定行为基线
-
-- 保存当前可运行目录包、关键流程输入输出和 SHA-256。
-- 为现有 Bridge、Router、数据库迁移、生命周期和恢复流程补契约/冒烟测试。
-- 生成可重复的 `package-lock.json`，验证干净环境 `npm ci`。
-
-**退出条件**：任何迁移失败都能回到当前可运行版本，并能判断行为是否变化。
-
-### 阶段 B：恢复 Desktop 与 Backend TypeScript
-
-- 先恢复 Backend `transport`、Worker Host 和组合根，再恢复 Service、Repository 和 AgentHost。
-- 将 Electron `utilityProcess` 启动器从 Backend 边界迁到 Desktop `backend-host`。
-- 恢复 Desktop Main、Gateway、Adapters 和 Preload TypeScript。
-- 每迁移一个文件就删除其 `@ts-nocheck` 来源，执行类型、契约与行为对照测试。
-
-**退出条件**：`apps/backend/dist`、`apps/desktop/dist` 和 Preload 均由仓库内 TypeScript 构建生成。
-
-### 阶段 C：统一契约与 Renderer 位置
-
-- 拆分 Contracts 子域并引入运行时 Schema 和唯一 Bridge 注册表。
-- Gateway、Router、Preload 和 platformClient 改为消费统一注册表。
-- 在行为不变的前提下将根 Renderer 迁到 `apps/renderer`，同步调整 Vite 与 Electron Builder 输入。
-
-**退出条件**：根构建包含三个源码应用；不存在人工维护的重复 channel 清单。
-
-### 阶段 D：实现产品目标数据模型
-
-- 先完成结构化简历 Schema、编辑命令、来源引用、版本与冲突模型，再迁移现有 `content` 数据。
-- 补齐档案证据、场景权限快照、真实 Usage 和项目授权策略。
-- 每次数据迁移包含备份、前向迁移、失败恢复和旧数据 fixture。
-
-**退出条件**：PRD 的结构化简历、事实来源、确认模式和会话恢复有完整自动化验收。
-
-### 阶段 E：隔离自动化与视觉服务
-
-- 先实现 `automation-core` 状态机、任务幂等和审计，再接入独立页面执行器和少量平台适配器。
-- 视觉服务使用独立 Provider Adapter、凭据和授权流程，不与文本模型隐式共用。
-- 辅助投递通过专项安全测试后，才评估开放受限的全自动提交。
-
-**退出条件**：暂停、接管、全局停止、未知状态、重复提交和敏感问题门禁全部通过。
-
-### 阶段 F：清理恢复兼容层
-
-- 删除不再被构建引用的恢复产物和兼容适配器前，先归档基线并确认发布包来自源码。
-- 收紧 package files，仅打包运行必需产物、迁移和资源。
-- 完成架构依赖检查、发布验收和 ADR 收口。
-
-**退出条件**：干净环境可安装、构建、测试、打包和安装运行，且源码目录是唯一实现来源。
+后续架构调整按独立功能或重构任务推进，保持既有契约，并执行第 11 节的验证要求。
 
 ## 13. 架构决策记录清单
 
@@ -518,4 +460,4 @@ Desktop Gateway、Preload 暴露对象、Backend Router 和契约测试必须引
 
 ## 15. 总结
 
-Avery 的目标不是把所有能力堆进 Electron 主进程，而是建立可验证的最小权限链路：Renderer 发起意图，Preload 暴露固定能力，Main 执行桌面安全边界，Backend 编排业务与权限，Worker 持有数据库和重任务，Agent 与自动化只能通过受控端口执行。当前最优先工作不是扩展新功能，而是先把已恢复的 Desktop、Backend 和 Preload 运行时重建为可重复构建的 TypeScript 源码；此后再迁移 Renderer、结构化简历和自动化投递，才能在保留现有可运行基线的同时实现 PRD 的安全、数据一致性与可维护性目标。
+Avery 通过分离 Renderer、Preload、Main、Backend、Worker 与 Agent 的职责，保持业务事实源一致，并为浏览器操作提供可验证的权限、取消和审计边界。源码、契约和构建配置由仓库维护，构建产物不作为人工编辑入口。

@@ -64,7 +64,7 @@
 4. 键盘验证：导航 Enter/Space、Modal/Drawer Tab 焦点循环、Escape 关闭与焦点回归。
 5. `prefers-reduced-motion`、加载/错误/恢复/空态可读且不依赖颜色作为唯一信息。
 
-已完成的双分辨率六主页面证据见 `docs/rebuild/F-04-FRONTEND-REGRESSION-2026-08-20.md`。真实前台键盘焦点、Modal/Drawer 焦点循环与拖拽仍需在交互式 Electron E2E 中持续执行，不能用后台截图替代。
+真实前台键盘焦点、Modal/Drawer 焦点循环与拖拽需在交互式 Electron 中持续验证，不能用后台截图替代。
 
 ## 6. 维护规则
 
