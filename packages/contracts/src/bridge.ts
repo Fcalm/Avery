@@ -275,7 +275,7 @@ export interface WorkspaceBridge {
 /** Bridge 方法清单：preload 暴露的方法名唯一来源，供一致性冒烟校验与契约生成使用。 */
 export const BridgeNamespaces = {
   agent: [
-    'Configure', 'TestConnection', 'GetBalance', 'GetModels', 'GetProviderCatalog', 'Send', 'Cancel', 'UpdateConfirmationMode', 'UpdateReasoningEffort', 'ConfirmResumeEdit', 'ConfirmCronTask',
+    'Configure', 'TestConnection', 'GetBalance', 'GetModels', 'GetProviderCatalog', 'Send', 'Cancel', 'RespondToInteraction', 'UpdateConfirmationMode', 'UpdateReasoningEffort', 'ConfirmResumeEdit', 'ConfirmCronTask',
     'ConfirmBrowserAction', 'GetBrowserRuntimeStatus', 'GetCronBrowserAccess', 'RevokeCronBrowserAccess',
     'AcquireResumeEditLock', 'ReleaseResumeEditLock', 'GetStatus',
     'GetObservability', 'GetTraceEvents', 'DeleteTraces', 'SetTraceRetention', 'ClearObservability',

@@ -144,6 +144,8 @@ electron_1.contextBridge.exposeInMainWorld('averyWindow', {
         return () => electron_1.ipcRenderer.removeListener('window:maximized-change', handler);
     },
     GetWorkspaceDirectory: () => invoke('app:get-workspace-directory'),
+    /** 固定服务商链接；主进程校验来源，不开放任意外部导航。 */
+    OpenDeepSeekApiKeys: () => invoke('app:open-deepseek-api-keys'),
     /** 只写入纯文本；来源与长度由主进程校验，不向页面暴露 Electron clipboard。 */
     WriteClipboardText: (text) => invoke('app:write-clipboard-text', text),
     OpenWorkspaceDirectory: () => invoke('app:open-workspace-directory'),
