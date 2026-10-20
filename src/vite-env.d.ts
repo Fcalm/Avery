@@ -4,8 +4,8 @@ import type { DesktopAgentBridge, DesktopEvaluationBridge, WorkspaceBridge, Resu
 
 /** 无边框窗口控制与常规设置的系统能力；由 preload 注入，浏览器开发环境不存在。 */
 interface DesktopWindowBridge {
-  /** Windows 返回原生客户区物理像素，其余平台返回 CSS 尺寸。 */
-  GetFrameSize: () => Promise<{ width: number; height: number; unit: 'physical' | 'css' }>;
+  /** Windows 返回原生客户区物理像素，其余平台返回 CSS 尺寸；cornerRadius 始终使用 CSS 像素。 */
+  GetFrameSize: () => Promise<{ width: number; height: number; unit: 'physical' | 'css'; cornerRadius?: number }>;
   OnFrameSizeChange: (listener: (size: { width: number; height: number; unit: 'physical' | 'css' }) => void) => () => void;
   Minimize: () => Promise<boolean>;
   ToggleMaximize: () => Promise<boolean>;

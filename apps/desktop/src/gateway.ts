@@ -1,4 +1,5 @@
 import { app, clipboard, ipcMain, Notification, shell } from 'electron';
+import { release } from 'node:os';
 import type { BrowserWindow, IpcMain, IpcMainInvokeEvent } from 'electron';
 import { FunctionRouteChannels, MethodRoutes, WriteCommandChannels } from '@avery/backend/dist/router';
 import { WriteCommandEnvelopeSchema } from '@avery/contracts';
@@ -169,24 +170,28 @@ export function RegisterGeneralControls({ webContentsGetter, workspacePath, ipcM
 }
 
 /** 无边框窗口控制也必须经过相同来源验证，绝不把 BrowserWindow 暴露给 Renderer。 */
-export function RegisterWindowControls({ webContentsGetter, ipcMainApi = ipcMain, maximize, frameSize }: { webContentsGetter: () => BrowserWindow | undefined; ipcMainApi?: IpcMainPort; maximize?: { Toggle: () => boolean; IsMaximized: () => boolean }; frameSize?: () => { width: number; height: number; unit: 'physical' } | undefined }): void {
+export function RegisterWindowControls({ webContentsGetter, ipcMainApi = ipcMain, frameSize }: { webContentsGetter: () => BrowserWindow | undefined; ipcMainApi?: IpcMainPort; frameSize?: () => { width: number; height: number; unit: 'physical' } | undefined }): void {
   // 只返回当前主窗口的尺寸；不接收窗口标识或几何参数，避免 Renderer 扩大系统能力范围。
   ipcMainApi.handle('window:get-frame-size', (event, ...args: unknown[]) => {
     if (args.length || !ValidateSender(event, webContentsGetter)) throw new Error('Invalid window frame request');
     const window = webContentsGetter();
     if (!window || window.isDestroyed()) throw new Error('Window unavailable');
+    const zoom = window.webContents.getZoomFactor();
+    // Windows 11 原生窗口圆角为 8 DIP，最大化、全屏和贴靠时不使用圆角。
+    // 单独返回 CSS 半径，避免页面缩放改变描边弧度；旧版 Windows 与其他平台保持原样。
+    const supportsRoundedCorners = process.platform === 'win32' && Number(release().split('.')[2]) >= 22000;
+    const cornerRadius = supportsRoundedCorners && !window.isMaximized() && !window.isFullScreen() && !window.isSnapped() ? 8 / zoom : 0;
     const physicalSize = frameSize?.();
-    if (physicalSize) return physicalSize;
+    if (physicalSize) return { ...physicalSize, cornerRadius };
     // 原生窗口边界使用 DIP，页面布局使用 CSS 像素；必须扣除页面缩放而非复用 Renderer 已取整的视口。
     const bounds = window.getContentBounds();
-    const zoom = window.webContents.getZoomFactor();
-    return { width: bounds.width / zoom, height: bounds.height / zoom, unit: 'css' };
+    return { width: bounds.width / zoom, height: bounds.height / zoom, unit: 'css', cornerRadius };
   });
   const actions: Record<(typeof WindowControlChannels)[number], (window: BrowserWindow) => boolean> = {
     'window:minimize': (window) => { window.minimize(); return true; },
-    // 宿主提供受控的最大化实现（透明 acrylic 窗口的原生最大化不可靠）；未提供时回退原生行为
-    'window:toggle-maximize': (window) => { if (maximize) return maximize.Toggle(); if (window.isMaximized()) window.unmaximize(); else window.maximize(); return window.isMaximized(); },
-    'window:is-maximized': (window) => maximize ? maximize.IsMaximized() : window.isMaximized(),
+    // 系统负责当前显示器、还原位置与窗口动画；切换后的最终状态由原生事件通知 Renderer。
+    'window:toggle-maximize': (window) => { if (window.isMaximized()) window.unmaximize(); else window.maximize(); return window.isMaximized(); },
+    'window:is-maximized': (window) => window.isMaximized(),
     'window:close': (window) => { window.close(); return true; },
   };
   for (const channel of WindowControlChannels) {

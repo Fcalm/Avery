@@ -1,4 +1,4 @@
-import { app, BrowserWindow, Menu, nativeImage, screen, session, Tray, type Rectangle } from 'electron';
+import { app, BrowserWindow, Menu, nativeImage, screen, session, Tray } from 'electron';
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { join, resolve } from 'node:path';
@@ -20,14 +20,6 @@ const consoleErrors: string[] = [];
 let tray: Tray | undefined;
 let forceCloseAfterTrayDecision = false;
 let quitting = false;
-/**
- * 最大化状态由主进程单一维护：透明 acrylic 无边框窗口在 Windows 上原生 maximize() 不可靠
- *（可能完全不生效、isMaximized() 恒为 false），因此最大化/还原按主屏工作区边界实现，
- * 渲染进程只消费这里下发的结果，避免按钮显示与窗口几何不一致。
- */
-let windowMaximized = false;
-let windowRestoreBounds: Rectangle | undefined;
-
 /** 还原（普通）尺寸：默认 1440×960，工作区更小时留出边距，保证还原后窗口确实变小。 */
 function ResolveWindowRestoreSize() {
   const workArea = screen.getPrimaryDisplay().workAreaSize;
@@ -38,30 +30,6 @@ function NotifyWindowMaximized(maximized: boolean): void {
   const window = mainWindow;
   if (!window || window.isDestroyed() || window.webContents.isDestroyed()) return;
   window.webContents.send('window:maximized-change', maximized);
-}
-
-/** 切换最大化：进入时记住当前几何并铺满工作区，退出时还原；返回切换后的状态供 IPC 回传渲染进程。 */
-function ToggleWindowMaximized(): boolean {
-  const window = mainWindow;
-  if (!window || window.isDestroyed()) return false;
-  if (windowMaximized) {
-    window.setBounds(windowRestoreBounds ?? { ...window.getBounds(), ...ResolveWindowRestoreSize() });
-    windowRestoreBounds = undefined;
-    windowMaximized = false;
-  } else {
-    windowRestoreBounds = window.getBounds();
-    window.setBounds(screen.getPrimaryDisplay().workArea);
-    windowMaximized = true;
-  }
-  NotifyWindowMaximized(windowMaximized);
-  return windowMaximized;
-}
-
-function IsWindowMaximized(): boolean {
-  const window = mainWindow;
-  if (!window || window.isDestroyed()) return false;
-  // 系统侧原生最大化（任务栏、快捷键）同样计入，避免两种来源打架
-  return windowMaximized || window.isMaximized();
 }
 
 /** 只从各平台的标准安装位置发现真实浏览器，不执行注册表或 Shell 查询。 */
@@ -189,8 +157,6 @@ function DestroyTray(): void {
 /** 创建唯一主窗口，明确维持 Renderer 与 Node/Electron 能力隔离。 */
 function createWindow(): BrowserWindow {
   if (mainWindow && !mainWindow.isDestroyed()) return mainWindow;
-  // Acrylic 负责模糊桌面；关闭 Windows 原生圆角，避免 DWM 把标题栏关闭按钮的悬停背景裁成弧形。
-  const useWindowsTransparency = process.platform === 'win32';
   const appIconPath = resolveAppIconPath();
   const appIcon = appIconPath ? nativeImage.createFromPath(appIconPath) : undefined;
   const validAppIcon = appIcon && !appIcon.isEmpty() ? appIcon : undefined;
@@ -200,8 +166,11 @@ function createWindow(): BrowserWindow {
     // 无边框窗口也显式加入任务栏，并给 Windows 任务栏提供应用图标。
     skipTaskbar: false,
     ...(validAppIcon ? { icon: validAppIcon } : {}),
-    backgroundColor: useWindowsTransparency ? '#00000000' : '#F6F1E6',
-    ...(useWindowsTransparency ? { transparent: true, backgroundMaterial: 'acrylic' as const, roundedCorners: false } : {}),
+    // 透明窗口会被 Electron 强制移除 WS_THICKFRAME/WS_CAPTION，导致系统动画和最大化受限。
+    // 使用不透明宿主承载页面；保留原生框架能力，让 Windows 管理动画、工作区和还原位置。
+    transparent: false,
+    backgroundColor: '#ffffff',
+    ...(process.platform === 'win32' ? { thickFrame: true, roundedCorners: true } : {}),
     webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true, preload: join(__dirname, '..', '..', '..', 'electron', 'preload.cjs') },
   });
   mainWindow = window;
@@ -221,15 +190,13 @@ function createWindow(): BrowserWindow {
       if (!window.webContents.isDestroyed()) window.webContents.send('window:frame-size-change', nativeClientSize);
     });
   }
-  windowMaximized = false;
-  windowRestoreBounds = undefined;
   window.setMenuBarVisibility(false);
-  window.on('maximize', () => { windowMaximized = true; NotifyWindowMaximized(true); });
-  window.on('unmaximize', () => { windowMaximized = false; NotifyWindowMaximized(false); });
-  window.on('restore', () => NotifyWindowMaximized(IsWindowMaximized()));
-  // 首次启动即最大化：透明无边框窗口不能依赖原生最大化，这里同样按工作区边界执行。
-  // 冒烟校验需要固定视口，跳过。
-  if (process.env.AVERY_DESKTOP_SMOKE !== '1') ToggleWindowMaximized();
+  // 按钮、标题栏双击和系统快捷键共用原生状态，避免维护第二份状态与实际窗口脱节。
+  window.on('maximize', () => NotifyWindowMaximized(true));
+  window.on('unmaximize', () => NotifyWindowMaximized(false));
+  window.on('restore', () => NotifyWindowMaximized(window.isMaximized()));
+  // 首次启动仍默认最大化；工作区选择与还原尺寸由系统维护。冒烟校验保留固定视口。
+  if (process.env.AVERY_DESKTOP_SMOKE !== '1') window.maximize();
   if (app.isPackaged || process.env.AVERY_DESKTOP_SMOKE === '1') void window.loadFile(join(__dirname, '..', '..', '..', 'dist', 'index.html'));
   else void window.loadURL(process.env.VITE_DEV_SERVER_URL || 'http://127.0.0.1:5173');
   window.webContents.once('did-finish-load', () => { rendererLoaded = true; });
@@ -475,7 +442,7 @@ async function runInstalledVisualScenario(outputDirectory: string): Promise<Reco
       desktopCapabilities: adapters,
     });
     RegisterGateway({ backendHost, webContentsGetter: () => mainWindow, notificationIconPath: resolveAppIconPath() || undefined });
-    RegisterWindowControls({ webContentsGetter: () => mainWindow, frameSize: () => nativeClientSize, maximize: { Toggle: ToggleWindowMaximized, IsMaximized: IsWindowMaximized } });
+    RegisterWindowControls({ webContentsGetter: () => mainWindow, frameSize: () => nativeClientSize });
     RegisterGeneralControls({ webContentsGetter: () => mainWindow, workspacePath });
     Menu.setApplicationMenu(null);
     if (!cronRunnerLaunch) {

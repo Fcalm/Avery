@@ -34,7 +34,7 @@ function App() {
       // 桌面端使用宿主窗口边界；浏览器预览使用可见视口，并对齐物理像素。
       const scale = window.devicePixelRatio;
       const version = ++requestVersion;
-      let frame: { width: number; height: number; unit: 'physical' | 'css' } | undefined;
+      let frame: { width: number; height: number; unit: 'physical' | 'css'; cornerRadius?: number } | undefined;
       try {
         frame = await window.averyWindow?.GetFrameSize?.();
       } catch (error) {
@@ -47,18 +47,22 @@ function App() {
       if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return;
       root!.style.setProperty('--window-frame-width', `${Math.round(width * scale) / scale}px`);
       root!.style.setProperty('--window-frame-height', `${Math.round(height * scale) / scale}px`);
+      root!.style.setProperty('--window-corner-radius', `${frame?.cornerRadius ?? 0}px`);
     }
     UpdateFrameSize();
     const unsubscribe = window.averyWindow?.OnFrameSizeChange?.(() => { void UpdateFrameSize(); });
+    const unsubscribeMaximized = window.averyWindow?.OnMaximizedChange?.(() => { void UpdateFrameSize(); });
     window.addEventListener('resize', UpdateFrameSize);
     viewport?.addEventListener('resize', UpdateFrameSize);
     return () => {
       requestVersion += 1;
       unsubscribe?.();
+      unsubscribeMaximized?.();
       window.removeEventListener('resize', UpdateFrameSize);
       viewport?.removeEventListener('resize', UpdateFrameSize);
       root.style.removeProperty('--window-frame-width');
       root.style.removeProperty('--window-frame-height');
+      root.style.removeProperty('--window-corner-radius');
     };
   }, []);
   return <UiStoreProvider><AppContent /><AppNotice /></UiStoreProvider>;

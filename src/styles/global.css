@@ -532,8 +532,8 @@ html, body { background: transparent; }
   height: var(--window-frame-height, 100%);
   min-height: 0;
   overflow: hidden;
-  border: 1px solid #333333;
-  border-radius: 0;
+  border: 0;
+  border-radius: var(--window-corner-radius, 0px);
   background: var(--app-background);
   isolation: isolate;
   -webkit-backdrop-filter: blur(var(--blur-glass));
