@@ -442,6 +442,16 @@ button { background: none; border: 0; }
 }
 .composer-dock .composer-col { max-width: 792px; margin: 0 auto; }
 
+.conversation-scroll-bottom {
+  position: absolute; top: -44px; left: calc(50% - 16px); z-index: 3;
+  display: grid; width: 32px; height: 32px; place-items: center;
+  border: 1px solid var(--border); border-radius: var(--r-pill); padding: 0;
+  color: var(--text-2); background: var(--raised); box-shadow: var(--shadow);
+  transition: background-color .16s var(--ease), color .16s var(--ease);
+}
+.conversation-scroll-bottom:hover,
+.conversation-scroll-bottom:focus-visible { outline: none; color: var(--text); background: var(--surface-2); box-shadow: var(--shadow); }
+
 /* 附件药丸（.ctx） */
 .ctx { display: flex; flex-wrap: wrap; gap: 7px; margin-bottom: 9px; }
 .ctx-item {
