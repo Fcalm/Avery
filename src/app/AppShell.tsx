@@ -654,7 +654,7 @@ function AppShell({ page, onNavigate, onRestartOnboarding, settingsTab, onReques
         <span className="switch" aria-hidden="true"><span className="knob" /></span>
         <input className="menu-switch-input" type="checkbox" role="switch" aria-label="深色模式" checked={theme === 'dark'} onChange={(event) => SetTheme(event.target.checked ? 'dark' : 'light')} />
       </label>
-      <button className="menu-item plain" type="button" onClick={onRestartOnboarding}><Icon name="recovery" size={16} /><span className="mt">重新体验启动页</span></button>
+      <button className="menu-item plain" type="button" onClick={() => { SetUserMenuPosition(null); onRestartOnboarding(); }}><Icon name="recovery" size={16} /><span className="mt">重新查看使用教程</span></button>
       {settings.developerMode && <button className="menu-item plain" type="button" onClick={() => { SetUserMenuPosition(null); onNavigate('developer'); }}><Icon name="code" size={16} /><span className="mt">开发者工具</span></button>}
       <div className="menu-sep" aria-hidden="true" />
       <button className="menu-item plain um-danger" type="button" onClick={() => ShowNotice('退出功能将在 Electron 客户端接入后启用')}><Icon name="logout" size={16} /><span className="mt">退出登录</span></button>

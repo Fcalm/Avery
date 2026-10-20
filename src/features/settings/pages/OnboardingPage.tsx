@@ -1,139 +1,225 @@
 import { useEffect, useRef, useState } from 'react';
+import type { AgentConfiguration, DesktopAgentBridge } from '@avery/contracts';
 import { useUiStore } from '../../../app/UiStore';
-import { useSettingsStore } from '../../../features/settings/api/settingsQueries';
-import { useProfiles, useSaveProfiles } from '../../../features/profile/api/profileQueries';
-import { ConfigureAgent, IsDesktopAgentAvailable, TestAgentConnection } from '../../../features/assistant/api/agentQueries';
-import { Button, FormField } from '../../../shared/components/UI';
-import type { ProfileItem } from '../../../types/domain';
+import { useSettingsStore } from '../api/settingsQueries';
+import { useProfiles, useSaveProfiles } from '../../profile/api/profileQueries';
+import { ConfigureAgent, GetAgentStatus, IsDesktopAgentAvailable, TestAgentConnection } from '../../assistant/api/agentQueries';
+import { Button, FormField, Modal } from '../../../shared/components/UI';
+import { Icon, type IconName } from '../../../shared/components/Icon';
+import { platformClient, Unwrap } from '../../../shared/platform/platformClient';
+import type { OnboardingDraft } from '../../../types/domain';
+import { BuildOnboardingProfiles, MatchesSavedConfiguration, OnboardingSteps, RestoreOnboarding, SettingsWithSavedModel, ValidateModelConfiguration, type OnboardingDestination } from '../onboarding/onboardingModel';
+import { Tutorials, type TutorialImage } from '../onboarding/tutorialContent';
+import { ModelSetupForm, PreferenceFields, TourWindowBar, TutorialVisual } from '../onboarding/OnboardingParts';
+import '../../../styles/onboarding.css';
 
-const Steps = ['欢迎', '昵称', 'API 配置', '求职类型', '工作经验', '学历', '期望方向', '求职城市', '完成'];
-function UpgradeDeepSeekModel(model: string | undefined) {
-  return model === 'deepseek-chat' || model === 'deepseek-reasoner' || !model ? 'deepseek-v4-flash' : model;
-}
+type SavedStatus = Awaited<ReturnType<DesktopAgentBridge['GetStatus']>>;
+type Props = { review?: boolean; onComplete: (destination?: OnboardingDestination) => void; onClose?: () => void };
+const StepIcons: IconName[] = ['sparkle', 'cpu', 'profiles', 'assistant', 'resumes', 'jobs', 'browser', 'applications', 'check-circle'];
 
-function ResolveInitialProviderModel(provider: 'DeepSeek' | 'Z.AI' | 'MIMO' | '自定义', model: string | undefined) {
-  if (provider === 'Z.AI') return 'glm-5.3-flash';
-  if (provider === 'MIMO') return typeof model === 'string' && model.startsWith('mimo-') ? model : 'mimo-v2.6-flash';
-  return UpgradeDeepSeekModel(model);
-}
-
-function ResolveInitialProviderBaseUrl(provider: 'DeepSeek' | 'Z.AI' | 'MIMO' | '自定义', baseUrl: string | undefined) {
-  if (provider === 'Z.AI') return 'https://open.bigmodel.cn/api/paas/v4';
-  if (provider === 'MIMO') return 'https://api.xiaomimimo.com/v1';
-  if (provider === 'DeepSeek') return 'https://api.deepseek.com';
-  return baseUrl ?? '';
-}
-
-/** 首次启动的一页分步向导，完成后把非敏感偏好写入工作空间。 */
-function OnboardingPage({ onComplete }: { onComplete: () => void }) {
+/** 首次设置保存非敏感草稿；重看教程完全不修改设置、凭据与档案。 */
+export function OnboardingPage({ review = false, onComplete, onClose }: Props) {
   const { ShowNotice } = useUiStore();
-  const { settings, setSettings, saveSettingsNow } = useSettingsStore();
+  const { settings, saveSettingsNow } = useSettingsStore();
   const profiles = useProfiles();
-  const saveProfiles = useSaveProfiles({ onFailure: () => ShowNotice('求职偏好保存失败，请稍后重试。') });
-  const draft = settings.onboardingDraft;
-  const [step, setStep] = useState(draft?.step ?? 0);
-  const [nickname, setNickname] = useState(draft?.nickname ?? settings.nickname ?? '');
-  const initialProvider = draft?.provider ?? settings.provider ?? 'DeepSeek';
-  const [provider, setProvider] = useState<'DeepSeek' | 'Z.AI' | 'MIMO' | '自定义'>(initialProvider);
+  const saveProfiles = useSaveProfiles();
+  const [draft, setDraft] = useState<OnboardingDraft>(() => ({ ...RestoreOnboarding(settings), ...(review ? { step: 2 } : {}) }));
   const [apiKey, setApiKey] = useState('');
-  const [baseUrl, setBaseUrl] = useState(ResolveInitialProviderBaseUrl(initialProvider, draft?.baseUrl ?? settings.baseUrl));
-  const [model, setModel] = useState(ResolveInitialProviderModel(initialProvider, draft?.model ?? settings.model));
-  const [contextLength, setContextLength] = useState(draft?.contextLength ?? settings.contextLength ?? '256K');
-  const [contextLimitMode, setContextLimitMode] = useState<'default' | 'custom'>(draft?.contextLimitMode ?? settings.contextLimitMode ?? (provider === '自定义' ? 'custom' : 'default'));
-  const [jobType, setJobType] = useState(draft?.jobType ?? '校招');
-  const [experience, setExperience] = useState(draft?.experience ?? '在校学生');
-  const [education, setEducation] = useState(draft?.education ?? '本科');
-  const [industry, setIndustry] = useState(draft?.industry ?? '互联网');
-  const [roles, setRoles] = useState<string[]>(draft?.roles ?? ['前端开发工程师']);
-  const [city, setCity] = useState(draft?.city ?? '');
-  const [testing, setTesting] = useState(false);
-  const [completing, setCompleting] = useState(false);
-  const [connectionPassed, setConnectionPassed] = useState(Boolean(draft?.apiConfigurationSaved));
-  const [apiConfigurationSaved, setApiConfigurationSaved] = useState(Boolean(draft?.apiConfigurationSaved));
+  const [savedStatus, setSavedStatus] = useState<SavedStatus | null>(null);
+  const [statusLoading, setStatusLoading] = useState(true);
+  const [statusError, setStatusError] = useState<string | null>(null);
+  const [statusVersion, setStatusVersion] = useState(0);
+  const [operation, setOperation] = useState<'test' | 'save' | 'finish' | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
-  const previousProvider = useRef(provider);
-  const isLast = step === Steps.length - 1;
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [preview, setPreview] = useState<TutorialImage | null>(null);
+  const settingsRef = useRef(settings);
+  settingsRef.current = settings;
+  const busyRef = useRef(false);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const mountedRef = useRef(true);
+  const headingRef = useRef<HTMLHeadingElement>(null);
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const previousStepRef = useRef(draft.step);
+  const hasPreference = profiles.some((item) => item.category === 'job_intention' || item.id === 'profile-job-preference');
+  const step = draft.step;
+  const busy = operation !== null;
+  const provider = draft.provider ?? 'DeepSeek';
+  const formSaved = !apiKey && savedStatus !== null && MatchesSavedConfiguration(draft, savedStatus);
+  const hasModel = savedStatus?.configured === true;
+  const tutorial = step >= 2 && step <= 7 ? Tutorials[step - 2] : null;
+  const serializedDraft = JSON.stringify(draft);
 
   useEffect(() => {
-    if (previousProvider.current === provider) return;
-    previousProvider.current = provider;
-    setApiKey('');
-  }, [provider]);
+    mountedRef.current = true;
+    headingRef.current?.focus();
+    return () => { mountedRef.current = false; };
+  }, []);
 
-  /** 表单字段与步骤变化时暂存非敏感快照，供中断后从最近步骤恢复；快照绝不含 API Key。 */
   useEffect(() => {
-    setSettings((current) => ({ ...current, onboardingDraft: { step, nickname, provider, baseUrl, model, contextLength, contextLimitMode, jobType, experience, education, industry, roles, city, apiConfigurationSaved } }));
-  }, [step, nickname, provider, baseUrl, model, contextLength, contextLimitMode, jobType, experience, education, industry, roles, city, apiConfigurationSaved]);
-
-  function ToggleRole(role: string) { setRoles((current) => current.includes(role) ? current.filter((item) => item !== role) : current.length < 3 ? [...current, role] : current); }
-  function ValidateCurrentStep(requireSavedConfiguration = true) {
-    if (step === 1 && !nickname.trim()) { setFormError('请填写账户昵称'); return false; }
-    if (step === 2) {
-      // 已保存的凭据不回传 Renderer；恢复草稿后允许空白密钥框继续完成引导。
-      if (!apiKey.trim() && (!requireSavedConfiguration || !apiConfigurationSaved)) { setFormError('请填写 API Key'); return false; }
-      if (provider === '自定义' && (!baseUrl.trim() || !model.trim())) { setFormError('请完整填写自定义服务配置'); return false; }
-      if (contextLimitMode === 'custom' && !contextLength.trim()) { setFormError('请填写自定义上下文限制'); return false; }
-      if (requireSavedConfiguration && (!connectionPassed || !apiConfigurationSaved)) { setFormError('请先点击「测试连接」，通过并保存 API 配置后再继续'); return false; }
+    let cancelled = false;
+    setStatusLoading(true);
+    setStatusError(null);
+    if (!IsDesktopAgentAvailable()) {
+      setStatusLoading(false);
+      setStatusError('请在 Avery 桌面客户端中连接模型。');
+      return;
     }
-    if (step === 5 && !education) { setFormError('请选择学历'); return false; }
-    if (step === 6 && (!industry.trim() || roles.length === 0)) { setFormError('请填写期望行业并选择至少一个目标岗位'); return false; }
+    void GetAgentStatus().then((status) => {
+      if (!cancelled) setSavedStatus(status);
+    }).catch((error: unknown) => {
+      if (!cancelled) setStatusError(error instanceof Error ? error.message : '无法读取模型配置，请重试。');
+    }).finally(() => { if (!cancelled) setStatusLoading(false); });
+    return () => { cancelled = true; };
+  }, [statusVersion]);
+
+  /** 白名单草稿不含密钥；串行保存保证较早的草稿不会覆盖完成状态。 */
+  useEffect(() => {
+    if (review || busyRef.current) return;
+    timerRef.current = setTimeout(() => {
+      const snapshot = JSON.parse(serializedDraft) as OnboardingDraft;
+      void saveSettingsNow({ ...settingsRef.current, onboardingDraft: snapshot }).then(() => {
+        if (mountedRef.current) setSaveError(null);
+      }).catch((error: unknown) => {
+        if (mountedRef.current) setSaveError(error instanceof Error ? error.message : '引导进度保存失败，请重试。');
+      });
+    }, 400);
+    return () => { if (timerRef.current) clearTimeout(timerRef.current); };
+  }, [review, serializedDraft, saveSettingsNow]);
+
+  useEffect(() => {
+    if (previousStepRef.current === step) return;
+    previousStepRef.current = step;
+    bodyRef.current?.scrollTo({ top: 0 });
+    headingRef.current?.focus();
+    setFormError(null);
+  }, [step]);
+
+  function UpdateDraft(patch: Partial<OnboardingDraft>) {
+    setFormError(null);
+    setDraft((current) => ({ ...current, ...patch }));
+  }
+  function BeginOperation(value: 'test' | 'save' | 'finish') {
+    if (busyRef.current) return false;
+    busyRef.current = true;
+    if (timerRef.current) clearTimeout(timerRef.current);
+    setOperation(value);
     setFormError(null);
     return true;
   }
-  async function TestConnection() {
-    if (!ValidateCurrentStep(false)) return;
-    if (!IsDesktopAgentAvailable()) { ShowNotice('请在桌面客户端中测试 API 连接'); return; }
-    setTesting(true);
+  function EndOperation() { busyRef.current = false; if (mountedRef.current) setOperation(null); }
+
+  async function MoveTo(next: number) {
+    if (next < (review ? 2 : 0) || next > 8 || !BeginOperation('save')) return;
     try {
-      const thinkingEnabled = provider === 'Z.AI' || settings.thinkingEnabled;
-      await TestAgentConnection({ provider, apiKey, baseUrl, model, thinkingEnabled, contextLength, contextLimitMode, compressionThreshold: settings.compressionThreshold });
-      await ConfigureAgent({ provider, apiKey, baseUrl, model, thinkingEnabled, contextLength, contextLimitMode, compressionThreshold: settings.compressionThreshold });
-      setConnectionPassed(true);
-      setApiConfigurationSaved(true);
-      setFormError(null);
-      ShowNotice('API 连接测试成功，配置已加密保存到桌面端');
-    }
-    catch (error) { const message = error instanceof Error ? error.message : 'API 连接测试失败'; setFormError(message); }
-    finally { setTesting(false); }
+      const nextDraft = { ...draft, step: next };
+      if (!review) await saveSettingsNow({ ...settingsRef.current, onboardingDraft: nextDraft });
+      setSaveError(null);
+      setDraft(nextDraft);
+    } catch (error) { setSaveError(error instanceof Error ? error.message : '进度保存失败，请重试。'); }
+    finally { EndOperation(); }
   }
-  async function Complete() {
-    if (completing) return;
-    if (!ValidateCurrentStep()) return;
-    if (!connectionPassed || !apiConfigurationSaved) {
-      // 兼容旧版本留下的完成页草稿，直接返回可修正配置的步骤，不让用户停在无效入口。
-      setStep(2);
-      setFormError('请先点击「测试连接」，通过并保存 API 配置后再继续');
+
+  function ContinueWelcome() {
+    if (!draft.nickname?.trim()) { setFormError('请先填写昵称。'); document.getElementById('tour-nickname')?.focus(); return; }
+    if ((draft.roles?.length ?? 0) > 3) { setFormError('目标岗位最多填写 3 项，请用逗号或顿号分隔。'); return; }
+    void MoveTo(1);
+  }
+
+  async function TestConnection() {
+    if (busyRef.current) return;
+    const config: AgentConfiguration = {
+      provider, apiKey: apiKey.trim(), baseUrl: draft.baseUrl?.trim() ?? '', model: draft.model?.trim() ?? '',
+      contextLength: draft.contextLength?.trim() || '256K', contextLimitMode: draft.contextLimitMode ?? 'default',
+      thinkingEnabled: provider === 'Z.AI' || settingsRef.current.thinkingEnabled,
+      compressionThreshold: settingsRef.current.compressionThreshold,
+    };
+    const error = ValidateModelConfiguration(config);
+    if (error) { setFormError(error); return; }
+    if (!IsDesktopAgentAvailable()) { setFormError('请在 Avery 桌面客户端中测试 API 连接。'); return; }
+    if (!BeginOperation('test')) return;
+    try {
+      // 测试与保存使用同一份配置；表单禁用期间不能把旧请求的成功套到新输入上。
+      await TestAgentConnection(config);
+      await ConfigureAgent(config);
+      const status = await GetAgentStatus();
+      const nextDraft = { ...draft, baseUrl: config.baseUrl, model: config.model, contextLength: config.contextLength };
+      if (!MatchesSavedConfiguration(nextDraft, status)) throw new Error('模型配置尚未生效，请重新测试。');
+      await saveSettingsNow({ ...settingsRef.current, provider, baseUrl: config.baseUrl, model: config.model, contextLength: config.contextLength, contextLimitMode: config.contextLimitMode, thinkingEnabled: config.thinkingEnabled, onboardingDraft: nextDraft });
+      setSavedStatus(status);
+      setStatusError(null);
+      setSaveError(null);
+      setApiKey('');
+      setDraft(nextDraft);
+      ShowNotice('连接成功，配置已加密保存在本机。');
+    } catch (error) { setFormError(error instanceof Error ? error.message : '连接未成功，请检查密钥、地址和网络后重试。'); }
+    finally { EndOperation(); }
+  }
+
+  async function Complete(destination: OnboardingDestination) {
+    if (review) { onComplete(destination); return; }
+    if (!draft.nickname?.trim() || (draft.roles?.length ?? 0) > 3) {
+      await MoveTo(0);
+      setFormError('请填写昵称，并确保目标岗位不超过 3 项。');
       return;
     }
-    setCompleting(true);
+    if (!BeginOperation('finish')) return;
     try {
-      const preferenceContent = `求职类型：${jobType}\n工作经验：${experience}\n最高学历：${education}\n期望行业：${industry}\n目标岗位：${roles.join('、')}\n求职城市：${city || '不限'}`;
-      const preference: ProfileItem = { id: 'profile-job-preference', category: 'job_intention', title: '求职意向', content: preferenceContent, updatedAt: Date.now() };
-      const next = profiles.some((item) => item.id === preference.id) ? profiles.map((item) => (item.id === preference.id ? preference : item)) : [preference, ...profiles];
-      await saveProfiles.mutateAsync({ items: next });
-      const completedSettings = { ...settings, nickname: nickname.trim(), provider, apiKey: '', baseUrl, model, contextLength, contextLimitMode, thinkingEnabled: provider === 'Z.AI' || settings.thinkingEnabled, onboardingDraft: undefined, onboardingCompleted: true };
-      await saveSettingsNow(completedSettings);
-      setSettings(() => completedSettings);
-      ShowNotice('设置已完成，API 配置已加密保存到桌面端');
-      onComplete();
-    } catch (error) { ShowNotice(error instanceof Error ? error.message : '首次设置保存失败', 'error'); }
-    finally { setCompleting(false); }
+      // 完成前再次读取真实状态，不依据草稿宣称模型已经连接。
+      const status = IsDesktopAgentAvailable() ? await GetAgentStatus() : null;
+      setSavedStatus(status);
+      const nextProfiles = BuildOnboardingProfiles(profiles, draft);
+      if (nextProfiles) await saveProfiles.mutateAsync({ items: nextProfiles });
+      await saveSettingsNow({ ...SettingsWithSavedModel(settingsRef.current, status), nickname: draft.nickname?.trim() ?? '', apiKey: '', onboardingDraft: undefined, onboardingCompleted: true });
+      onComplete(destination === 'assistant' && !status?.configured ? 'profiles' : destination);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '首次设置保存失败，请重试。';
+      setFormError(`${message} 你的设置尚未完成，可以重试。`);
+    } finally { EndOperation(); }
   }
-  const title = ['欢迎来到 Avery', '怎么称呼你？', '连接你的模型服务', '这次主要寻找什么机会？', '你的工作经验处于哪个阶段？', '目前的最高学历是？', '想去哪里，做什么？', '你的求职城市是？', '准备就绪'][step];
-  const description = ['让每一次经历，都成为投向理想岗位的一封好信。', '这个昵称只会显示在本地应用中。', '可使用 DeepSeek、GLM-5.3-Flash、MiMo，或填写自定义 OpenAI 兼容服务。', '它将帮助我们在后续界面中呈现更贴近你的内容。', '工作经验会影响简历建议的侧重点。', '用于整理教育背景信息。', '目标岗位最多选择三个，后续可在档案中补充。', '这一步可跳过，后续仍可补充。', '你可以从求职助手开始，继续补齐档案与简历。'][step];
-  return <div className="onboarding-shell"><div className="onboarding-brand"><div className="brand-mark"><img src="./assets/avery-guiding-elf-icon-v2.png" alt="" /></div><b>Avery</b></div><div className="onboarding-card"><div className="onboarding-top"><span>首次设置</span><span>第 {step + 1} / {Steps.length} 步</span></div><div className="onboarding-progress"><span style={{ width: `${((step + 1) / Steps.length) * 100}%` }} /></div><div className="onboarding-content"><p className="eyebrow">{Steps[step]}</p><h1>{title}</h1><p>{description}</p>
-    {step === 0 && <div className="welcome-letter"><span>To</span><strong>{nickname || '你'}</strong><small>从整理一段真实经历开始。</small></div>}
-    {step === 1 && <FormField label="账户昵称"><input value={nickname} onChange={(event) => { setNickname(event.target.value); setFormError(null); }} placeholder="输入昵称" aria-invalid={Boolean(formError)} aria-describedby={formError ? 'onboarding-form-error' : undefined} />{formError && <small id="onboarding-form-error" className="field-error" role="alert">{formError}</small>}</FormField>}
-    {step === 2 && <div className="onboarding-form"><div className="segmented"><button className={provider === 'DeepSeek' ? 'selected' : ''} aria-pressed={provider === 'DeepSeek'} onClick={() => { setProvider('DeepSeek'); setBaseUrl('https://api.deepseek.com'); setModel('deepseek-v4-flash'); setConnectionPassed(false); setApiConfigurationSaved(false); setFormError(null); }}>DeepSeek</button><button className={provider === 'Z.AI' ? 'selected' : ''} aria-pressed={provider === 'Z.AI'} onClick={() => { setProvider('Z.AI'); setBaseUrl('https://open.bigmodel.cn/api/paas/v4'); setModel('glm-5.3-flash'); setConnectionPassed(false); setApiConfigurationSaved(false); setFormError(null); }}>GLM</button><button className={provider === 'MIMO' ? 'selected' : ''} aria-pressed={provider === 'MIMO'} onClick={() => { setProvider('MIMO'); setBaseUrl('https://api.xiaomimimo.com/v1'); setModel('mimo-v2.6-flash'); setConnectionPassed(false); setApiConfigurationSaved(false); setFormError(null); }}>MiMo</button><button className={provider === '自定义' ? 'selected' : ''} aria-pressed={provider === '自定义'} onClick={() => { setProvider('自定义'); setConnectionPassed(false); setApiConfigurationSaved(false); setFormError(null); }}>自定义</button></div><FormField label="API Key"><input type="password" value={apiKey} onChange={(event) => { setApiKey(event.target.value); setConnectionPassed(false); setApiConfigurationSaved(false); setFormError(null); }} autoComplete="off" aria-invalid={Boolean(formError)} aria-describedby={formError ? 'onboarding-form-error' : undefined} />{formError && <small id="onboarding-form-error" className="field-error" role="alert">{formError}</small>}</FormField>{provider === 'Z.AI' && <div className="setting-note"><b>glm-5.3-flash</b><p>使用智谱中国区官方 API，支持视觉与工具调用；该模型始终启用思考模式。</p></div>}{provider === 'MIMO' && <div className="setting-note"><b>mimo-v2.6-flash</b><p>使用小米 MiMo 官方 API（https://api.xiaomimimo.com/v1），支持全模态输入与工具调用；思考模式默认开启，可在设置里切换。</p></div>}{provider === '自定义' && <><FormField label="Base URL"><input value={baseUrl} onChange={(event) => { setBaseUrl(event.target.value); setConnectionPassed(false); setApiConfigurationSaved(false); setFormError(null); }} placeholder="https://api.example.com/v1" /></FormField><FormField label="模型名称"><input value={model} onChange={(event) => { setModel(event.target.value); setConnectionPassed(false); setApiConfigurationSaved(false); setFormError(null); }} /></FormField></>}<label className="switch-line"><span><b>自定义上下文限制</b><small>关闭时默认使用 256K；模型上限更小时自动使用模型上限。</small></span><input type="checkbox" checked={contextLimitMode === 'custom'} onChange={(event) => { setContextLimitMode(event.target.checked ? 'custom' : 'default'); setConnectionPassed(false); setApiConfigurationSaved(false); setFormError(null); }} /></label>{contextLimitMode === 'custom' && <FormField label="上下文限制"><input value={contextLength} onChange={(event) => { setContextLength(event.target.value); setConnectionPassed(false); setApiConfigurationSaved(false); setFormError(null); }} placeholder="例如 128K" /></FormField>}<div className="api-test-row"><span>{connectionPassed ? '● 已通过连接测试并加密保存' : '需要通过测试后才能进入应用'}</span><Button disabled={testing} onClick={() => void TestConnection()}>{testing ? '测试中…' : '测试连接'}</Button></div></div>}
-    {step === 3 && <OptionGrid value={jobType} onChange={setJobType} options={['社招', '校招', '实习']} />}
-    {step === 4 && <OptionGrid value={experience} onChange={setExperience} options={['在校学生', '刚毕业', '工作 1-3 年', '工作 3-5 年', '工作 5 年以上']} />}
-    {step === 5 && <OptionGrid value={education} onChange={setEducation} options={['高中及以下', '大专', '本科', '硕士', '博士']} />}
-    {step === 6 && <div className="onboarding-form"><FormField label="期望行业"><input value={industry} onChange={(event) => setIndustry(event.target.value)} /></FormField><span className="field-label">目标岗位（最多三项）</span><div className="chip-options">{['前端开发工程师', '数据可视化工程师', '数据产品经理', '产品实习生'].map((role) => <button key={role} className={roles.includes(role) ? 'selected' : ''} aria-pressed={roles.includes(role)} onClick={() => ToggleRole(role)}>{roles.includes(role) ? '✓ ' : ''}{role}</button>)}</div></div>}
-    {step === 7 && <div className="onboarding-form"><FormField label="求职城市（可选）"><input value={city} onChange={(event) => setCity(event.target.value)} /></FormField><div className="chip-options">{['北京', '上海', '杭州', '全国 / 不限'].map((item) => <button key={item} type="button" onClick={() => setCity(item === '全国 / 不限' ? '' : item)}>{item}</button>)}</div></div>}
-    {step === 8 && <div className="setup-summary"><div><span>昵称</span><b>{nickname}</b></div><div><span>求职方向</span><b>{industry} · {roles.join('、')}</b></div><div><span>基础信息</span><b>{jobType} · {experience} · {education} · {city || '不限'}</b></div><div><span>模型服务</span><b>{provider} · 配置将加密保存在本机</b></div></div>}
-  </div><div className="onboarding-actions"><Button variant="quiet" disabled={step === 0 || completing || testing} onClick={() => setStep((current) => current - 1)}>上一步</Button>{isLast ? <Button variant="primary" disabled={completing} onClick={() => void Complete()}>{completing ? '保存中…' : '进入 Avery'}</Button> : <Button variant="primary" disabled={testing} onClick={() => { if (ValidateCurrentStep()) setStep((current) => current + 1); }}>{step === 7 ? '跳过或下一步' : '下一步'}</Button>}</div></div></div>;
+
+  async function CopyPrompt(prompt: string) {
+    try { await Unwrap(platformClient.desktop.WriteClipboardText(prompt)); ShowNotice('示例指令已复制。'); }
+    catch (error) { ShowNotice(error instanceof Error ? error.message : '复制失败，请重试。', 'error'); }
+  }
+
+  return <div className={`setup-tour${review ? ' is-review' : ''}`}>
+    <TourWindowBar />
+    <div className="tour-layout">
+      <aside className="tour-sidebar" aria-label="引导步骤">
+        <div className="tour-sidebar-intro"><span className="tour-overline">{review ? '使用教程' : '初次见面'}</span><h2>一步步，<br />把机会准备好。</h2><p>从真实经历出发，<br />让求职的每一步都有着落。</p></div>
+        <ol>{OnboardingSteps.map((label, index) => <li key={label} className={index === step ? 'is-current' : index < step ? 'is-done' : ''}>
+          <button type="button" aria-current={index === step ? 'step' : undefined} disabled={busy || (review && index < 2) || (step < 2 && index > step)} onClick={() => void MoveTo(index)}><span className="tour-step-number">{index < step ? <Icon name="check" size={12} /> : String(index + 1).padStart(2, '0')}</span><span>{label}</span></button>
+        </li>)}</ol>
+        <div className="tour-sidebar-foot"><Icon name="shield-check" size={16} /><span>按自己的节奏开始<br />教程随时可以再次查看</span></div>
+      </aside>
+      <main className="tour-main">
+        <div className="tour-topline"><span>{step < 2 ? `基础设置 ${step + 1} / 2` : step < 8 ? `使用教程 ${step - 1} / 6` : '准备开始'}</span><span className="tour-top-actions">{review ? <Button variant="quiet" disabled={busy} onClick={onClose}>退出教程</Button> : step >= 2 && step <= 7 && <Button variant="quiet" disabled={busy} onClick={() => void MoveTo(8)}>跳过教程<Icon name="arrow-right" size={14} /></Button>}<span className="tour-page-count">{String(step + 1).padStart(2, '0')} / 09</span></span></div>
+        <div className="tour-progress" role="progressbar" aria-label="引导进度" aria-valuemin={1} aria-valuemax={9} aria-valuenow={step + 1}><span style={{ width: `${(step + 1) / 9 * 100}%` }} /></div>
+        <div className="tour-scroll" ref={bodyRef} inert={busy}>
+          <div className="tour-heading"><span className="tour-section-label"><Icon name={StepIcons[step]} size={16} />{OnboardingSteps[step]}</span><h1 ref={headingRef} tabIndex={-1}>{step === 0 ? '从你的经历，走向下一份机会' : step === 1 ? '先让 Avery 连接你的模型' : step === 8 ? '从第一段经历开始' : tutorial?.title}</h1><p>{step === 0 ? '把经历整理成档案，让 Avery 帮你准备简历、整理岗位、协助填写申请，并跟进每一次投递。' : step === 1 ? '选择模型服务，填写自己的 API Key，再测试连接。连接模型后，Avery 才能理解你的目标并协助处理任务。' : step === 8 ? '不必一次填完所有资料。先存下一段真实经历，再和 Avery 一起准备下一次申请。' : tutorial?.description}</p></div>
+
+          {step === 0 && <div className="tour-welcome-grid"><form id="tour-welcome-form" className="tour-form" onSubmit={(event) => { event.preventDefault(); ContinueWelcome(); }}>
+            <FormField label="怎么称呼你？" hint="只用于应用内显示。"><input id="tour-nickname" autoComplete="nickname" maxLength={40} value={draft.nickname ?? ''} placeholder="输入昵称" aria-invalid={Boolean(formError)} aria-describedby={formError ? 'tour-form-error' : undefined} onChange={(event) => UpdateDraft({ nickname: event.target.value })} /></FormField>
+            <details className="tour-details"><summary>补充求职偏好（可选）</summary>{hasPreference ? <p>你已保存求职意向。可以在「档案」中继续调整，已有内容会保留。</p> : <PreferenceFields draft={draft} onChange={(patch) => UpdateDraft({ ...patch, preferencesEdited: true })} />}</details>
+          </form><div className="tour-welcome-note"><h2>先认识你的工作区</h2><ul><li>整理一次经历，为不同岗位准备材料。</li><li>说清求职目标，一起完善简历。</li><li>保存岗位与投递记录，把下一步留在眼前。</li></ul><button type="button" className="tour-navigation-preview" onClick={() => setPreview({ file: '01-navigation', alt: '左侧导航中的对话、岗位、简历、投递记录和档案' })}><img src="./assets/onboarding/01-navigation.webp" alt="应用的五个主要功能入口，点击查看大图" /></button><small>示例界面 · 从左侧进入各项功能</small></div></div>}
+
+          {step === 1 && <ModelSetupForm draft={draft} apiKey={apiKey} onKeyChange={(value) => { setApiKey(value); setFormError(null); }} onChange={UpdateDraft} busy={busy} loading={statusLoading} formSaved={formSaved} testing={operation === 'test'} statusError={statusError} formError={formError} onRetryStatus={() => setStatusVersion((current) => current + 1)} onTest={() => formSaved ? void MoveTo(2) : void TestConnection()} onPreview={setPreview} />}
+
+          {tutorial && <div className="tour-lesson-grid"><div className="tour-lesson-copy"><ol className="tour-instructions">{tutorial.steps.map((item, index) => <li key={item.title}><span>{index + 1}</span><div><h2>{item.title}</h2><p>{item.text}</p></div></li>)}</ol>{tutorial.prompt && <div className="tour-prompt"><div><span>试着这样说</span><Button variant="quiet" onClick={() => void CopyPrompt(tutorial.prompt!)}><Icon name="copy" size={14} />复制示例</Button></div><p>{tutorial.prompt}</p></div>}{tutorial.detail && <details className="tour-details"><summary>{tutorial.detail.title}</summary>{tutorial.detail.paragraphs.map((text) => <p key={text}>{text}</p>)}</details>}<p className="tour-tip"><Icon name="info" size={16} /><span>{tutorial.tip}</span></p></div><TutorialVisual key={step} images={tutorial.images} onPreview={setPreview} /></div>}
+
+          {step === 8 && <div className="tour-finish-grid"><div><div className="tour-ready-icon"><Icon name="check" size={26} /></div><h2>{review ? '随时回来，再看一遍' : `${draft.nickname?.trim() || '你'}，可以开始了`}</h2><p>打开「档案」，点击「添加条目」，先记录一段教育、项目或实习经历。</p><div className="tour-finish-status"><Icon name={hasModel ? 'check-circle' : 'cpu'} size={18} /><div><strong>{statusLoading ? '正在确认模型状态…' : hasModel ? '模型配置已保存' : '模型尚未连接'}</strong><p>{hasModel ? `${savedStatus?.provider} · ${savedStatus?.model}` : '可以先整理档案、手动保存或采集岗位；使用 AI 功能前再连接模型。'}</p></div></div>{!review && <small>完成后，可在左下角账户菜单中重新查看使用教程。</small>}{statusError && <div role="alert"><p>{statusError}</p><Button disabled={busy || statusLoading} onClick={() => setStatusVersion((current) => current + 1)}>重新读取</Button></div>}</div><TutorialVisual images={[{ file: '03-profile-list', alt: '档案列表与右上角添加条目入口' }]} onPreview={setPreview} /></div>}
+          {formError && <div className="tour-error" id="tour-form-error" role="alert"><Icon name="error" size={17} /><span>{formError}</span></div>}
+          {saveError && <div className="tour-error" role="alert"><span>进度未保存：{saveError}</span><Button variant="quiet" disabled={busy} onClick={() => void MoveTo(step)}>重试保存</Button></div>}
+        </div>
+        <footer className="tour-footer"><Button variant="quiet" disabled={busy || step === (review ? 2 : 0)} onClick={() => void MoveTo(step - 1)}><Icon name="arrow-left" size={15} />上一步</Button><div className="tour-footer-right">
+          {step === 0 && <Button type="submit" form="tour-welcome-form" variant="primary" disabled={busy}>开始设置<Icon name="arrow-right" size={15} /></Button>}
+          {step === 1 && <><Button variant="quiet" disabled={busy} onClick={() => void MoveTo(2)}>稍后设置</Button><Button type="submit" form="tour-model-form" variant="primary" disabled={busy || statusLoading}>{operation === 'test' ? '正在测试并保存…' : formSaved ? '继续了解 Avery' : '测试连接并保存'}<Icon name="arrow-right" size={15} /></Button></>}
+          {tutorial && <Button variant="primary" disabled={busy} onClick={() => void MoveTo(step + 1)}>{step === 7 ? '准备开始' : `下一步：${OnboardingSteps[step + 1]}`}<Icon name="arrow-right" size={15} /></Button>}
+          {step === 8 && (review ? <><Button variant="quiet" onClick={onClose}>回到工作区</Button><Button variant="primary" onClick={() => onComplete('profiles')}>去添加第一条档案<Icon name="arrow-right" size={15} /></Button></> : <><Button variant="quiet" disabled={busy || statusLoading} onClick={() => void Complete(hasModel ? 'assistant' : 'profiles')}>{hasModel ? '进入工作区' : '先整理档案'}</Button><Button variant="primary" disabled={busy || statusLoading} onClick={() => hasModel ? void Complete('profiles') : void MoveTo(1)}>{operation === 'finish' ? '正在保存…' : hasModel ? '去添加第一条档案' : '返回连接模型'}<Icon name="arrow-right" size={15} /></Button></>)}
+        </div></footer>
+      </main>
+    </div>
+    <Modal open={preview !== null} title="查看示例界面" variant="dialog" onClose={() => setPreview(null)}>{preview && <img className="tour-zoom-image" src={`./assets/onboarding/${preview.file}.webp`} alt={preview.alt} />}</Modal>
+  </div>;
 }
-
-function OptionGrid({ value, onChange, options }: { value: string; onChange: (value: string) => void; options: string[] }) { return <div className="option-grid">{options.map((option) => <button type="button" key={option} className={value === option ? 'selected' : ''} aria-pressed={value === option} onClick={() => onChange(option)}>{value === option && <span>✓</span>}{option}</button>)}</div>; }
-
-export { OnboardingPage };

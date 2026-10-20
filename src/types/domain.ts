@@ -22,8 +22,10 @@ export type SettingsDraft = SettingsDto & {
 
 /** 首次启动向导的中断暂存；只含非敏感字段，绝不含 API Key。 */
 export interface OnboardingDraft {
+  version?: 2;
   step: number;
-  /** 凭据已经通过主进程安全存储保存；草稿本身绝不包含 API Key。 */
+  preferencesEdited?: boolean;
+  /** 兼容旧版草稿；新版从桌面端重新确认凭据状态，不信任此标记。 */
   apiConfigurationSaved?: boolean;
   nickname?: string;
   provider?: 'DeepSeek' | 'Z.AI' | 'MIMO' | '自定义';

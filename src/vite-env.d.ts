@@ -13,6 +13,7 @@ interface DesktopWindowBridge {
   Close: () => Promise<boolean>;
   OnMaximizedChange: (listener: (maximized: boolean) => void) => () => void;
   GetWorkspaceDirectory: () => Promise<string>;
+  OpenDeepSeekApiKeys: () => Promise<ResultEnvelope<boolean>>;
   WriteClipboardText: (text: string) => Promise<ResultEnvelope<boolean>>;
   OpenWorkspaceDirectory: () => Promise<boolean>;
   SetLoginItemSettings: (openAtLogin: boolean) => Promise<boolean>;

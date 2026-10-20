@@ -4,6 +4,7 @@ import { platformClient, Unwrap } from '../../../shared/platform/platformClient'
 import type { SettingsDraft } from '../../../types/domain';
 import { useWorkspaceData } from '../../workspace/api/useWorkspaceData';
 import { DefaultSettings, WORKSPACE_QUERY_KEY, type WorkspaceData } from '../../workspace/api/workspaceData';
+import { CreateSettingsWriter } from './settingsPersistence';
 
 /** 非敏感设置；来自工作空间聚合缓存，空库回退到初始值。 */
 export function useSettings() {
@@ -21,11 +22,17 @@ export function useSettingsStore() {
 // 设置持久化使用模块级单例防抖，避免多个页面实例各自触发重复写入。
 let persistTimer: number | null = null;
 let latestSettings: SettingsDraft | null = null;
+let settingsRevision = 0;
+const PersistSettings = CreateSettingsWriter(async (settings: SettingsDraft) => {
+  const { apiKey: _apiKey, workspaceName: _workspaceName, ...safeSettings } = settings;
+  await Unwrap(platformClient.workspace.SaveSettings(safeSettings));
+});
 
 /** 更新非敏感设置并节流持久化；API Key 只经 Agent IPC 加密保存，不写入工作空间。 */
 export function useSettingsActions() {
   const queryClient = useQueryClient();
   const setSettings = useCallback((updater: (current: SettingsDraft) => SettingsDraft) => {
+    settingsRevision += 1;
     queryClient.setQueryData<WorkspaceData>(WORKSPACE_QUERY_KEY, (old) => {
       if (!old) return old;
       const next = updater(old.settings);
@@ -35,22 +42,24 @@ export function useSettingsActions() {
     if (persistTimer !== null) window.clearTimeout(persistTimer);
     persistTimer = window.setTimeout(() => {
       if (!latestSettings) return;
-      const { apiKey: _apiKey, workspaceName: _workspaceName, ...safeSettings } = latestSettings;
-      void platformClient.workspace.SaveSettings(safeSettings);
+      void PersistSettings(latestSettings).catch((error: unknown) => console.error('设置保存失败', error));
       latestSettings = null;
     }, 300);
   }, [queryClient]);
   /** 供首次引导等“完成后才允许离开页面”的流程使用，避免防抖写入尚未落盘便进入下一页。 */
   const saveSettingsNow = useCallback(async (settings: SettingsDraft) => {
+    const revision = ++settingsRevision;
     if (persistTimer !== null) {
       window.clearTimeout(persistTimer);
       persistTimer = null;
     }
-    const { apiKey: _apiKey, workspaceName: _workspaceName, ...safeSettings } = settings;
     // Bridge 的业务失败以结果信封返回；确认成功后才能更新完成状态并离开引导页。
-    await Unwrap(platformClient.workspace.SaveSettings(safeSettings));
-    queryClient.setQueryData<WorkspaceData>(WORKSPACE_QUERY_KEY, (old) => old ? { ...old, settings: { ...settings, apiKey: '' } } : old);
-    latestSettings = null;
+    await PersistSettings(settings);
+    // 等待期间可能已产生新的设置操作，较旧的落盘结果不能倒灌到新缓存。
+    if (revision === settingsRevision) {
+      queryClient.setQueryData<WorkspaceData>(WORKSPACE_QUERY_KEY, (old) => old ? { ...old, settings: { ...settings, apiKey: '' } } : old);
+      latestSettings = null;
+    }
   }, [queryClient]);
   return { setSettings, saveSettingsNow };
 }

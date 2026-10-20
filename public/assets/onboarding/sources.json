@@ -1,0 +1,156 @@
+[
+  {
+    "file": "01-navigation.webp",
+    "source": "sources/01-navigation-full.png",
+    "sourceType": "Electron 桌面应用原始截图裁切",
+    "cropPixels": [
+      0,
+      72,
+      493,
+      541
+    ]
+  },
+  {
+    "file": "04-assistant.webp",
+    "source": "sources/04-assistant-full.png",
+    "sourceType": "Electron 桌面应用原始截图裁切",
+    "cropPixels": [
+      901,
+      100,
+      2144,
+      506
+    ]
+  },
+  {
+    "file": "04-composer.webp",
+    "source": "sources/04-composer-full.png",
+    "sourceType": "Electron 桌面应用原始截图裁切",
+    "cropPixels": [
+      800,
+      1284,
+      2245,
+      1447
+    ]
+  },
+  {
+    "file": "03-profile-list.webp",
+    "source": "sources/03-profile-list-full.png",
+    "sourceType": "Electron 桌面应用原始截图裁切",
+    "cropPixels": [
+      649,
+      72,
+      2396,
+      1177
+    ]
+  },
+  {
+    "file": "03-profile-form.webp",
+    "source": "sources/03-profile-form-full.png",
+    "sourceType": "Electron 桌面应用原始截图裁切",
+    "cropPixels": [
+      1655,
+      0,
+      2564,
+      1530
+    ]
+  },
+  {
+    "file": "05-resume.webp",
+    "source": "sources/05-resume-full.png",
+    "sourceType": "Electron 桌面应用原始截图裁切",
+    "cropPixels": [
+      1331,
+      0,
+      2564,
+      1530
+    ]
+  },
+  {
+    "file": "06-job.webp",
+    "source": "sources/06-job-full.png",
+    "sourceType": "Electron 桌面应用原始截图裁切",
+    "cropPixels": [
+      474,
+      72,
+      2564,
+      1530
+    ]
+  },
+  {
+    "file": "08-applications.webp",
+    "source": "sources/08-applications-full.png",
+    "sourceType": "Electron 桌面应用原始截图裁切",
+    "cropPixels": [
+      474,
+      72,
+      2564,
+      1530
+    ]
+  },
+  {
+    "file": "07-browser.webp",
+    "source": "sources/07-browser-full.png",
+    "sourceType": "Electron 桌面应用原始截图裁切",
+    "cropPixels": [
+      685,
+      72,
+      2360,
+      739
+    ]
+  },
+  {
+    "file": "02-model.webp",
+    "source": "sources/02-model-full.png",
+    "sourceType": "Electron 桌面应用原始截图裁切",
+    "cropPixels": [
+      505,
+      72,
+      2540,
+      1397
+    ]
+  },
+  {
+    "file": "07-scene.webp",
+    "source": "sources/07-scene-full.png",
+    "sourceType": "Electron 桌面应用原始截图裁切",
+    "cropPixels": [
+      1751,
+      408,
+      2242,
+      856
+    ]
+  },
+  {
+    "file": "06-collection.webp",
+    "source": "sources/06-collection-full.png",
+    "sourceType": "Electron 桌面应用原始截图裁切",
+    "cropPixels": [
+      715,
+      44,
+      1850,
+      1485
+    ]
+  },
+  {
+    "file": "05-resume-actions.webp",
+    "source": "images/05-resume.png",
+    "sourceType": "Electron 桌面应用原始截图裁切",
+    "cropPixels": [
+      0,
+      1392,
+      1233,
+      1530
+    ]
+  },
+  {
+    "file": "08-stages.webp",
+    "source": "images/08-applications.png",
+    "sourceType": "Electron 桌面应用原始截图裁切",
+    "cropPixels": [
+      0,
+      903,
+      2090,
+      1370
+    ]
+  }
+]

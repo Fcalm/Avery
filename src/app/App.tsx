@@ -80,6 +80,7 @@ function AppContent() {
   const keepProfiles = useKeepProfiles({ onFailure: ShowNotice });
   const conversations = useConversations();
   const [page, setPage] = useState<PageId>('assistant');
+  const [reviewingTutorial, setReviewingTutorial] = useState(false);
   const [settingsTab, setSettingsTab] = useState<SettingTab>('general');
   const [requestedSettingsTab, setRequestedSettingsTab] = useState<SettingTab>('general');
   const [settingsTabRequestVersion, setSettingsTabRequestVersion] = useState(0);
@@ -103,6 +104,12 @@ function AppContent() {
   function RequestSettingsTab(tab: SettingTab) {
     setRequestedSettingsTab(tab);
     setSettingsTabRequestVersion((current) => current + 1);
+  }
+
+  function CloseTutorial(destination?: PageId) {
+    if (destination) setPage(destination);
+    setReviewingTutorial(false);
+    requestAnimationFrame(() => document.querySelector<HTMLButtonElement>('.user-card')?.focus());
   }
 
   // 开发者页面不是可公开路由；设置关闭后立即退出，即使页面状态由调试工具直接改写也不能继续停留。
@@ -143,11 +150,12 @@ function AppContent() {
   }
   if (workspace.isError && IsBackendRecoveryError(workspace.error)) return <BackendRecoveryGate onRetry={() => void workspace.refetch()} />;
   if (workspace.isError) return <ErrorScreen onRetry={() => void workspace.refetch()} />;
-  if (!settings.onboardingCompleted) return <OnboardingPage onComplete={() => setSettings((current) => ({ ...current, onboardingCompleted: true }))} />;
+  if (!settings.onboardingCompleted) return <OnboardingPage onComplete={(destination) => setPage(destination ?? 'profiles')} />;
   return <>
+    <div className="tour-workspace" inert={reviewingTutorial}>
     {/* 开发者页的侧栏与主区共享评测配置状态；Provider 常驻挂载，仅在开发者页激活时拉取数据 */}
     <DeveloperConsoleProvider active={page === 'developer'}>
-      <AppShell page={page} onNavigate={setPage} onRestartOnboarding={() => setSettings((current) => ({ ...current, onboardingCompleted: false }))} settingsTab={settingsTab} onRequestSettingsTab={RequestSettingsTab}>
+      <AppShell page={page} onNavigate={setPage} onRestartOnboarding={() => setReviewingTutorial(true)} settingsTab={settingsTab} onRequestSettingsTab={RequestSettingsTab}>
         {/* 在途 Agent 依赖 Renderer 流订阅写回消息终态；导航时隐藏而非卸载，避免遗漏流事件。 */}
         <section className="assistant-page-presence" hidden={page !== 'assistant'}><AssistantPage onNavigate={setPage} /></section>
         {page === 'jobs' && <JobsPage onGoAssistant={() => setPage('assistant')} />}{page === 'applications' && <ApplicationsPage />}{page === 'resumes' && <ResumesPage onGoAssistant={() => setPage('assistant')} />}{page === 'profiles' && <ProfilesPage />}{page === 'settings' && <SettingsPage onNavigateDeveloper={() => setPage('developer')} tab={settingsTab} requestedTab={requestedSettingsTab} tabRequestVersion={settingsTabRequestVersion} onTabChange={setSettingsTab} />}{page === 'developer' && <DeveloperPage />}
@@ -164,6 +172,8 @@ function AppContent() {
     >
       本地工作空间的档案文件（profile.json）已被其他程序修改。请选择保留磁盘版本，还是覆盖为应用中的最新版本。
     </Modal>
+    </div>
+    {reviewingTutorial && <OnboardingPage review onClose={() => CloseTutorial()} onComplete={CloseTutorial} />}
   </>;
 }
 

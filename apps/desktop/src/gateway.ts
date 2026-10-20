@@ -117,9 +117,21 @@ async function NotifyRunCompleted({ backendHost, webContentsGetter, iconPath }: 
   }
 }
 
-/** 系统能力通道：文本复制、工作空间目录与开机自启；每条通道都要通过来源校验。 */
+/** 系统能力通道：文本复制、固定服务商链接、工作空间目录与开机自启；均校验请求来源。 */
 export function RegisterGeneralControls({ webContentsGetter, workspacePath, ipcMainApi = ipcMain }: { webContentsGetter: () => BrowserWindow | undefined; workspacePath: string; ipcMainApi?: IpcMainPort }): void {
   const clipboardLimiter = CreateGatewayLimiter();
+  // 只开放引导需要的固定 HTTPS 页面，不接受 Renderer 提供任意 URL 或协议。
+  ipcMainApi.handle('app:open-deepseek-api-keys', async (event, ...args: unknown[]): Promise<ResultEnvelope> => {
+    if (!ValidateSender(event, webContentsGetter)) return { ok: false, error: { code: 'PERMISSION_DENIED', message: '外部链接请求来源无效。', retryable: false } };
+    if (args.length) return { ok: false, error: { code: 'VALIDATION_ERROR', message: '此链接不接受参数。', retryable: false } };
+    if (!clipboardLimiter.Allow(`${event.sender.id}:deepseek-link`)) return { ok: false, error: { code: 'WORKSPACE_BUSY', message: '打开链接过于频繁，请稍后重试。', retryable: true } };
+    try {
+      await shell.openExternal('https://platform.deepseek.com/api_keys');
+      return { ok: true, data: true };
+    } catch {
+      return { ok: false, error: { code: 'INTERNAL_ERROR', message: '无法打开系统浏览器，请稍后重试。', retryable: true } };
+    }
+  });
   // 网页剪贴板权限默认拒绝；只向可信应用窗口开放有界的纯文本写入，不开放读取或任意格式。
   ipcMainApi.handle('app:write-clipboard-text', (event, ...args: unknown[]): ResultEnvelope => {
     if (!ValidateSender(event, webContentsGetter)) return { ok: false, error: { code: 'PERMISSION_DENIED', message: '剪贴板请求来源无效。', retryable: false } };
