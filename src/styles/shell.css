@@ -469,8 +469,6 @@ button { background: none; border: 0; }
    React 侧配合 AssistantPage 的 key={conversation.id}，切换会话/切回对话都会重放。 */
 .message-list { animation: viewIn .4s var(--ease) both; }
 
-/* Agent 回复的名字行（原型 .msg-name）：用户消息不显示 */
-.msg-name { margin-bottom: 6px; color: var(--text); font-size: 12px; font-weight: 650; letter-spacing: .01em; }
 
 /* 新建对话空态：问候语与输入框作为一组垂直居中（原型 .thread{margin-top:auto}
    + .composer-wrap{margin-bottom:auto} 的布局在 React 里的等价写法）。 */
