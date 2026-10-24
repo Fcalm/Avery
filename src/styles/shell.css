@@ -910,22 +910,29 @@ button { background: none; border: 0; }
 .profile-entry-none { margin: 0; color: var(--text-3); font-size: 12.5px; line-height: 1.7; }
 
 /* ============================== 档案详情抽屉（原型 .drawer 一比一） ============================== */
-/* 遮罩盖住整个应用窗口（含顶栏），挂载即播放淡入；模糊叠加满足“背景虚化”。 */
+/* 避开顶部栏；clip 不创建滚动容器，防止抽屉获取焦点时自动滚动并抵消滑入动画。 */
+.dw-layer {
+  position: fixed; inset: var(--titlebar-height) 0 0; z-index: 60; overflow: clip;
+}
 .dw-scrim {
-  position: fixed; inset: 0; z-index: 60;
-  background: rgba(24, 24, 27, .36); backdrop-filter: blur(2px);
+  position: absolute; inset: 0; z-index: 0;
+}
+.dw-scrim, .drawer-backdrop {
+  background: rgba(24, 24, 27, .36);
+  -webkit-backdrop-filter: blur(2px);
+  backdrop-filter: blur(2px);
   animation: dwScrimIn .3s var(--ease) both;
 }
-[data-theme="dark"] .dw-scrim { background: rgba(0, 0, 0, .56); }
+[data-theme="dark"] :is(.dw-scrim, .drawer-backdrop) { background: rgba(0, 0, 0, .56); }
 @keyframes dwScrimIn { from { opacity: 0; } to { opacity: 1; } }
 .dw-drawer {
-  position: fixed; top: 0; right: 0; bottom: 0; z-index: 61;
+  position: absolute; top: 0; right: 0; bottom: 0; z-index: 1;
   display: flex; flex-direction: column; width: min(500px, 92vw);
   background: var(--panel); border-left: 1px solid var(--border); box-shadow: var(--shadow-lg);
   animation: dwDrawerIn .38s var(--ease) both; outline: none;
 }
 @keyframes dwDrawerIn { from { transform: translateX(102%); } to { transform: none; } }
-.dw-head { flex: none; display: flex; align-items: flex-start; gap: 12px; padding: 15px 16px 14px 18px; border-bottom: 1px solid var(--border); }
+.dw-head { flex: none; display: flex; align-items: flex-start; gap: 12px; padding: 15px 16px 14px 18px; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); background: var(--surface); }
 .dw-head-main { min-width: 0; }
 .dw-title { font-size: 15px; font-weight: 640; letter-spacing: -.01em; }
 .dw-meta { display: flex; flex-wrap: wrap; gap: 3px 12px; margin-top: 4px; font-size: 12px; color: var(--text-3); }

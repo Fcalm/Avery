@@ -190,7 +190,7 @@ function ResumesPage({ onGoAssistant }: { onGoAssistant: () => void }) {
     })}
     {!sortedResumes.length && <div className="resumes-view-empty">还没有简历。点右上角「让Avery保存简历」，Avery 会在新对话里帮你把简历存进简历库。</div>}
 
-    {/* 抽屉经 portal 挂到 body：脱离玻璃背景子树，遮罩与虚化才能盖住整个应用窗口（与档案、投递抽屉一致）。 */}
+    {/* 抽屉经 portal 脱离玻璃背景子树，由共用容器将抽屉及外部点击关闭区域限制在顶部栏下方。 */}
     {drawerResume && createPortal(<div className="dw-layer" role="presentation">
       <div className="dw-scrim" onClick={RequestClose} />
       <aside className="dw-drawer is-resume" role="dialog" aria-modal="true" aria-labelledby="resume-drawer-title" tabIndex={-1} ref={drawerRef}>

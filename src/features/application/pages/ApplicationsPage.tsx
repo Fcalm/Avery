@@ -407,7 +407,7 @@ function ApplicationsPage() {
       </div>
     </div>
     {/* 抽屉经 portal 挂到 body：玻璃背景等祖先带动画/滤镜时 fixed 会退化为相对祖先定位，
-        只有脱离该子树才能像原型一样让遮罩与虚化盖住整个应用窗口。 */}
+        脱离该子树后，由共用容器将抽屉及外部点击关闭区域限制在顶部栏下方。 */}
     {drawer && createPortal(<div className="dw-layer" role="presentation">
       <div className="dw-scrim" onClick={() => SetDrawer(null)} />
       <aside className="dw-drawer" role="dialog" aria-modal="true" aria-labelledby="application-drawer-title" tabIndex={-1} ref={drawerRef}>

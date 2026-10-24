@@ -1656,6 +1656,7 @@ button[aria-haspopup]:focus-visible {
   /* 只遮挡主内容卡片；导航栏保持可见，遮罩底部贴合应用下边缘。 */
   z-index: 50;
   inset: var(--titlebar-height) 8px 0 var(--drawer-content-left);
+  overflow: clip;
 }
 .drawer-backdrop {
   inset: 0;
