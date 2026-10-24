@@ -283,6 +283,16 @@ input:focus, textarea:focus, select:focus { background: var(--titlebar-control);
 .markdown-text code { border-radius: var(--radius-mark); padding: 1px 4px; color: var(--accent-strong); background: var(--accent-soft); font-family: var(--font-mono); font-size: .86em; }
 .markdown-text pre { overflow-x: auto; margin: 0 0 var(--space-3); border-radius: var(--radius-control); padding: var(--space-3); background: var(--surface-deep-muted); }
 .markdown-text pre code { padding: 0; color: var(--ink-soft); background: transparent; font-size: var(--text-mono); }
+.markdown-code-block { min-width: 0; max-width: 100%; margin: 0 0 var(--space-3); overflow: hidden; border: 1px solid var(--border); border-radius: var(--r-control); background: var(--surface); }
+.markdown-code-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 36px; padding: 4px 10px 4px 14px; border-bottom: 1px solid var(--border); color: var(--text-3); font-family: var(--font-sans); font-size: 11px; line-height: 20px; }
+.markdown-code-language { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.markdown-code-copy { display: inline-flex; align-items: center; justify-content: center; gap: 5px; flex: none; min-width: 64px; height: 28px; padding: 0 7px; border: 0; border-radius: var(--r-control); background: transparent; color: var(--text-2); font: inherit; cursor: pointer; }
+.markdown-code-copy:hover:not(:disabled) { background: var(--surface-2); color: var(--text); }
+.markdown-code-copy:disabled { cursor: default; }
+.markdown-code-copy:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.markdown-code-error { padding: 8px 14px 0; color: var(--danger); font-size: 12px; line-height: 1.7; }
+.markdown-text .markdown-code-block pre { margin: 0; padding: 14px; border-radius: 0; background: transparent; line-height: 1.7; white-space: pre; scrollbar-width: thin; scrollbar-color: var(--border-2) transparent; }
+.markdown-text .markdown-code-block pre:focus-visible { outline: 1px solid var(--border-2); outline-offset: -1px; }
 .markdown-text a { color: var(--accent-strong); text-decoration-thickness: 1px; text-underline-offset: 2px; }
 .markdown-table-wrap { overflow-x: auto; margin: 0 0 var(--space-3); border: 1px solid var(--color-border); border-radius: var(--radius-control); }
 .markdown-text table { width: 100%; min-width: max-content; border-collapse: collapse; font-size: var(--text-meta); line-height: 20px; }

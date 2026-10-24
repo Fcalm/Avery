@@ -1,5 +1,7 @@
-import { createContext, Fragment, useContext, type ReactNode } from 'react';
+import { createContext, Fragment, useContext, useEffect, useState, type ReactNode } from 'react';
 import { MatchConversationResourceHref, type ConversationResource } from '@avery/agent-sdk';
+import { platformClient, Unwrap } from '../platform/platformClient';
+import { Icon } from './Icon';
 
 interface ResourceContext {
   resources?: readonly ConversationResource[];
@@ -8,6 +10,51 @@ interface ResourceContext {
 const MarkdownResources = createContext<ResourceContext>({});
 
 type MarkdownTableAlignment = 'left' | 'center' | 'right';
+
+/** 代码块保持原始文本，复制经桌面桥接写入剪贴板，不执行或再次解析其中的 Markdown/HTML。 */
+function MarkdownCodeBlock({ text, language }: { text: string; language: string }) {
+  const [copying, setCopying] = useState(false);
+  const [copiedText, setCopiedText] = useState<string | null>(null);
+  const [copyError, setCopyError] = useState<{ text: string; message: string } | null>(null);
+  const copied = copiedText === text;
+  useEffect(() => {
+    if (copiedText === null) return;
+    const timer = window.setTimeout(() => setCopiedText(null), 2000);
+    return () => window.clearTimeout(timer);
+  }, [copiedText]);
+
+  const Copy = async () => {
+    if (copying || copied || !text) return;
+    setCopying(true);
+    setCopyError(null);
+    try {
+      await Unwrap(platformClient.desktop.WriteClipboardText(text));
+      setCopiedText(text);
+    } catch (error) {
+      setCopyError({ text, message: error instanceof Error ? error.message : '复制失败，请重试。' });
+    } finally {
+      setCopying(false);
+    }
+  };
+
+  return <div className="markdown-code-block">
+    <div className="markdown-code-header">
+      <span className="markdown-code-language" title={language || '文本'}>{language || '文本'}</span>
+      <button type="button" className="markdown-code-copy" disabled={copying || copied || !text} onClick={() => void Copy()} aria-label={copied ? '已复制代码块内容' : '复制代码块内容'}>
+        <Icon name={copied ? 'check' : 'copy'} size={14} /><span aria-live="polite">{copied ? '已复制' : copying ? '复制中' : '复制'}</span>
+      </button>
+    </div>
+    {copyError?.text === text && <div className="markdown-code-error" role="alert">{copyError.message}</div>}
+    <pre data-language={language || undefined} tabIndex={0} role="region" aria-label="代码块内容"><code>{text}</code></pre>
+  </div>;
+}
+
+/** 标准围栏允许至多三个前导空格；结束符须同种且至少与起始围栏等长。 */
+function MatchCodeFence(line: string): { marker: string; language: string } | null {
+  const match = line.match(/^ {0,3}(`{3,}|~{3,})(.*)$/);
+  if (!match || (match[1][0] === '`' && match[2].includes('`'))) return null;
+  return { marker: match[1], language: match[2].trim() };
+}
 
 function SafeHref(value: string) {
   try {
@@ -40,7 +87,7 @@ function InlineText({ value }: { value: string }) {
 }
 
 function IsBlockStart(line: string) {
-  return /^#{1,3}\s|^[-*]\s|^\d+\.\s|^>\s|^```|^---$/.test(line);
+  return MatchCodeFence(line) !== null || /^#{1,3}\s|^[-*]\s|^\d+\.\s|^>\s|^---$/.test(line);
 }
 
 /** 分割 GFM 表格行，并保留单元格内用反斜杠转义的竖线。 */
@@ -94,13 +141,17 @@ function MarkdownText({ content, className = '', resources, onOpenResource }: { 
   while (index < lines.length) {
     const line = lines[index];
     if (!line.trim()) { index += 1; continue; }
-    if (line.startsWith('```')) {
-      const language = line.slice(3).trim();
+    const fence = MatchCodeFence(line);
+    if (fence) {
       const code: string[] = [];
       index += 1;
-      while (index < lines.length && !lines[index].startsWith('```')) code.push(lines[index++]);
+      while (index < lines.length) {
+        const closing = lines[index].match(/^ {0,3}(`{3,}|~{3,})[ \t]*$/);
+        if (closing && closing[1][0] === fence.marker[0] && closing[1].length >= fence.marker.length) break;
+        code.push(lines[index++]);
+      }
       if (index < lines.length) index += 1;
-      nodes.push(<pre key={nodes.length} data-language={language || undefined}><code>{code.join('\n')}</code></pre>);
+      nodes.push(<MarkdownCodeBlock key={nodes.length} text={code.join('\n')} language={fence.language} />);
       continue;
     }
     const table = ParseMarkdownTable(lines, index);
