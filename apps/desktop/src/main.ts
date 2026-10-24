@@ -9,6 +9,8 @@ import { MigrateLegacyUserData } from './brand-migration';
 import { CreateTrayImage } from './tray-image';
 
 const smokeStartedAt = Date.now();
+/** 测试环境必须与正式安装版分组，避免 Windows 复用已卸载版本的快捷方式和图标。 */
+const applicationId = app.isPackaged ? 'com.avery.app' : 'com.avery.dev';
 let mainWindow: BrowserWindow | undefined;
 /** WM_SIZE 客户区尺寸使用物理像素，避免经 DIP/CSS 多次取整后把描边推到窗口外。 */
 let nativeClientSize: { width: number; height: number; unit: 'physical' } | undefined;
@@ -173,6 +175,17 @@ function createWindow(): BrowserWindow {
     ...(process.platform === 'win32' ? { thickFrame: true, roundedCorners: true } : {}),
     webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true, preload: join(__dirname, '..', '..', '..', 'electron', 'preload.cjs') },
   });
+  if (process.platform === 'win32' && !app.isPackaged) {
+    // 任务栏固定入口读取的是 Shell 重启属性，窗口 PNG 图标不能修复失效的快捷方式关联。
+    // 开发环境直接提供 ICO 和带项目参数的启动命令，避免被识别为裸 Electron 或正式安装版。
+    const taskbarIconPath = join(app.getAppPath(), 'build', 'icon.ico');
+    window.setAppDetails({
+      appId: applicationId,
+      ...(existsSync(taskbarIconPath) ? { appIconPath: taskbarIconPath, appIconIndex: 0 } : {}),
+      relaunchCommand: `"${process.execPath}" "${app.getAppPath()}"`,
+      relaunchDisplayName: 'Avery（测试环境）',
+    });
+  }
   mainWindow = window;
   nativeClientSize = undefined;
   if (process.platform === 'win32') {
@@ -426,7 +439,7 @@ async function runInstalledVisualScenario(outputDirectory: string): Promise<Reco
     writeSmokeStage('electron_ready');
     configureSecurityPolicies();
     // AppUserModelId 在创建托盘和窗口之前设置，确保 Windows 将两者归属于 Avery。
-    app.setAppUserModelId('com.avery.app');
+    app.setAppUserModelId(applicationId);
     const userDataPath = app.getPath('userData');
     if (process.env.AVERY_DESKTOP_SMOKE !== '1') await MigrateLegacyUserData(userDataPath);
     const workspacePath = join(userDataPath, 'Avery Workspace');
