@@ -1,4 +1,4 @@
-/* 过程运行时展开、结束后收起；其中正文完整显示，思考和工具详情默认折叠。 */
+/* 工作动画独立显示；过程默认收起，其中正文完整显示，思考和工具详情各自折叠。 */
 .conversation-response{min-width:0;overflow-wrap:anywhere}
 .conversation-process{margin:0 0 12px}
 .conversation-process>summary,.conversation-reason>summary,.conversation-tool>summary{display:flex;align-items:center;gap:6px;list-style:none;cursor:pointer;min-width:0;border-radius:8px}
@@ -77,7 +77,6 @@ details[open]>summary>.conversation-chevron{transform:rotate(90deg)}
 .conversation-work-art circle{fill:currentColor}
 .conversation-work-title{font-size:12px;font-weight:550;line-height:1.8}
 .conversation-work-caption{font-size:11px;color:var(--text-3);line-height:1.8;margin-top:1px}
-.conversation-process-body>.conversation-work{margin-bottom:4px}
 .conversation-process-body>.conversation-resource{margin:4px 0}
 .rs-resource-close{margin-left:auto}
 .rs-foot .rs-resource-version-wrap{margin-left:0}

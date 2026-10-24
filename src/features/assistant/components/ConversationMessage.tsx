@@ -32,9 +32,9 @@ export function ConversationMessage({ message, onOpenResource, authorizedResourc
   const presentation = message.presentation;
   const completed = presentation?.status === 'completed';
   const processActive = presentation?.status === 'running' || presentation?.status === 'waiting' || presentation?.status === 'paused';
-  const [processOpen, setProcessOpen] = useState(processActive);
-  // 等待确认仍在本轮过程内，不覆盖用户手动开合；整轮结束时收起，恢复运行时再展开。
-  useEffect(() => { setProcessOpen(processActive); }, [presentation?.requestId, processActive]);
+  const [processOpen, setProcessOpen] = useState(false);
+  // 新一轮、恢复运行和结束时均默认收起；运行与等待确认之间切换时保留用户手动开合。
+  useEffect(() => { setProcessOpen(false); }, [presentation?.requestId, processActive]);
   if (!presentation) return <>
     {message.thinkingContent && <details className="thinking-block"><summary>思考内容</summary><div className="thinking-content conversation-event-scroll" tabIndex={0} role="region" aria-label="思考详情"><MarkdownText content={message.thinkingContent} /></div></details>}
     <MarkdownText content={message.content} />
@@ -86,10 +86,11 @@ export function ConversationMessage({ message, onOpenResource, authorizedResourc
   const lastPart = [...parts].reverse().find((part) => part.type !== 'resource');
   const workingLabel = lastPart?.type === 'tool' ? ToolNames[lastPart.name] ?? '正在执行工具' : lastPart?.type === 'reasoning' ? '正在梳理与分析' : '正在整理结果';
   return <div className="conversation-response">
+    {/* 动画独立于折叠过程，按整轮状态持续显示，生成最终报告期间也不提前隐藏。 */}
+    {processActive && <WorkingIndicator waiting={status !== 'running'} label={status === 'waiting' ? '等待你的确认或回答' : status === 'paused' ? '任务已暂停' : workingLabel} />}
     {(process.length > 0 || processActive) && <details className="conversation-process" open={processOpen} onToggle={(event) => setProcessOpen(event.currentTarget.open)}>
       <ConversationProcessSummary presentation={presentation} messageCreatedAt={message.createdAt} messageUpdatedAt={message.updatedAt} />
       <div className="conversation-process-body">
-        {processActive && <WorkingIndicator waiting={status !== 'running'} label={status === 'waiting' ? '等待你的确认或回答' : status === 'paused' ? '任务已暂停' : workingLabel} />}
         {process.map(renderPart)}
       </div>
     </details>}
