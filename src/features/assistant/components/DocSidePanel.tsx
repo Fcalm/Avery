@@ -33,6 +33,7 @@ const KindMeta: Record<SideKind, { label: string; icon: 'resumes' | 'profiles'; 
 };
 
 interface DocSidePanelProps {
+  open: boolean;
   resourceSelection?: ConversationResourceSelection | null;
   onClearResourceSelection?: () => void;
   onClose?: () => void;
@@ -59,7 +60,7 @@ interface DocSidePanelProps {
  * 简历渲染沿用当前导出模板（CreateResumeDocumentMarkup），编辑/撤销/保存沿用页面的
  * 锁与保存流程，只把按钮换成原型样式；档案条目在边栏内只读，编辑走档案页抽屉。
  */
-function DocSidePanel({ resourceSelection = null, onClearResourceSelection, onClose, resumes, currentResumeId, editing, resumeText, canUndo, panelWidth, contentRef, onSelectResume, onEditChange, onStartEditing, onCancelEditing, onSaveResume, onUndo, onPanelWidthChange }: DocSidePanelProps) {
+function DocSidePanelContent({ resourceSelection = null, onClearResourceSelection, onClose, resumes, currentResumeId, editing, resumeText, canUndo, panelWidth, contentRef, onSelectResume, onEditChange, onStartEditing, onCancelEditing, onSaveResume, onUndo, onPanelWidthChange }: Omit<DocSidePanelProps, 'open'>) {
   const profiles = useProfiles();
   const [selection, SetSelection] = useState<DocumentSelection | null>(() => resourceSelection ? SelectionFromResource(resourceSelection) : null);
   const [openMenu, SetOpenMenu] = useState<'documents' | 'versions' | null>(null);
@@ -92,7 +93,7 @@ function DocSidePanel({ resourceSelection = null, onClearResourceSelection, onCl
 
   // 宽度上下限与页面 HandleResize 原逻辑一致：窗口放不下时设计下限让位（原型 rsClamp）。
   const WidthRange = () => {
-    const layoutWidth = contentRef && 'current' in contentRef ? contentRef.current?.parentElement?.clientWidth ?? 0 : 0;
+    const layoutWidth = contentRef && 'current' in contentRef ? contentRef.current?.closest<HTMLElement>('.assistant-layout')?.clientWidth ?? 0 : 0;
     const maximum = Math.min(720, Math.max(360, layoutWidth - ASSISTANT_MAIN_MIN_WIDTH));
     return { minimum: Math.min(360, maximum), maximum };
   };
@@ -315,6 +316,25 @@ function DocSidePanel({ resourceSelection = null, onClearResourceSelection, onCl
       </footer>
     </>}
   </section>;
+}
+
+const SidePanelTransitionMs = 280;
+
+/** 关闭动画结束后才卸载资料内容；快速重新打开时撤销卸载，保留进行中的选择和滚动位置。 */
+function DocSidePanel({ open, ...props }: DocSidePanelProps) {
+  const [retained, setRetained] = useState(open);
+  useEffect(() => {
+    if (open) { setRetained(true); return; }
+    const duration = window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : SidePanelTransitionMs;
+    const timer = window.setTimeout(() => setRetained(false), duration);
+    return () => window.clearTimeout(timer);
+  }, [open]);
+
+  if (!open && !retained) return null;
+  return <div className={`rs-presence${open ? ' is-open' : ''}`} inert={!open} aria-hidden={!open}
+    style={{ '--panel-width': `${props.panelWidth}px`, '--rs-transition-duration': `${SidePanelTransitionMs}ms` } as CSSProperties}>
+    <DocSidePanelContent {...props} />
+  </div>;
 }
 
 export { DocSidePanel };

@@ -784,11 +784,31 @@ button { background: none; border: 0; }
 .tr-detail-none { padding: 34px 18px; text-align: center; font-size: 12.5px; line-height: 1.7; color: var(--text-3); }
 
 /* ============================== 右侧资料边栏（原型 .rside 一比一） ============================== */
-/* 原型约束：边栏要么在布局里要么不在，出现与收都不做动画；宽度只由拖拽 grip 改写。 */
+/* 外层平滑让出布局空间，内层保持文档宽度，避免动画期间正文反复折行；clip 不创建滚动容器。 */
+.rs-presence {
+  position: relative; flex: 0 0 0; min-width: 0; height: 100%;
+  overflow: clip; overflow-clip-margin: 5px;
+  transition: flex-basis var(--rs-transition-duration) var(--ease);
+}
+.rs-presence.is-open { flex-basis: var(--panel-width); }
 .rside {
   position: relative; display: flex; flex-direction: column; min-width: 0;
   width: var(--panel-width); flex: 0 0 var(--panel-width); height: 100%;
   background: var(--panel); border-left: 1px solid var(--border);
+}
+.rs-presence > .rside {
+  box-sizing: border-box; opacity: 0; transform: translateX(24px);
+  transition: transform var(--rs-transition-duration) var(--ease), opacity .18s ease;
+}
+.rs-presence.is-open > .rside { opacity: 1; transform: translateX(0); }
+@starting-style {
+  .rs-presence.is-open { flex-basis: 0; }
+  .rs-presence.is-open > .rside { opacity: 0; transform: translateX(24px); }
+}
+/* 用户拖拽时宽度必须跟手，不把每个指针位置再插值为一段动画。 */
+body.is-resizing-resume .rs-presence { transition: none; }
+@media (prefers-reduced-motion: reduce) {
+  .rs-presence, .rs-presence > .rside { transition: none; }
 }
 .rs-grip {
   position: absolute; left: -4px; top: 0; bottom: 0; width: 9px; z-index: 3;

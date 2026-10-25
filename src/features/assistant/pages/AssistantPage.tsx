@@ -1127,7 +1127,7 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
         </div>}
       </div>
     </section>}
-    {resumePanelOpen && <DocSidePanel resourceSelection={resourcePreview} onClearResourceSelection={() => setResourcePreview(null)} onClose={() => { setResourcePreview(null); setResumePanelOpen(false); }} resumes={resumes} currentResumeId={currentResumeId} editing={editing} resumeText={resumeText} canUndo={history.length > 0} panelWidth={panelWidth} contentRef={resumeSideRef} onSelectResume={HandleSelectResume} onEditChange={HandleEditChange} onStartEditing={() => void HandleStartEditing()} onCancelEditing={HandleCancelEditing} onSaveResume={() => void HandleSaveResume()} onUndo={UndoResumeEdit} onPanelWidthChange={setPanelWidth} />}
+    <DocSidePanel open={resumePanelOpen} resourceSelection={resourcePreview} onClearResourceSelection={() => setResourcePreview(null)} onClose={() => { setResourcePreview(null); setResumePanelOpen(false); }} resumes={resumes} currentResumeId={currentResumeId} editing={editing} resumeText={resumeText} canUndo={history.length > 0} panelWidth={panelWidth} contentRef={resumeSideRef} onSelectResume={HandleSelectResume} onEditChange={HandleEditChange} onStartEditing={() => void HandleStartEditing()} onCancelEditing={HandleCancelEditing} onSaveResume={() => void HandleSaveResume()} onUndo={UndoResumeEdit} onPanelWidthChange={setPanelWidth} />
     <Modal
       open={showFullyTrustedWarning}
       title="开启完全信任模式"
