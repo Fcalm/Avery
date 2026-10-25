@@ -7,17 +7,24 @@ import { JobSeekingTypeValues } from './enums';
  * 目的：在进入业务服务前拦截明显畸形的负载，而非替代领域校验。
  */
 
+/** 技能展示快照仅包含标识与名称，不能携带执行权限或工具配置。 */
+export const ChatMessageSkillSchema = z.object({
+  id: z.string().min(1).max(200).regex(/^[a-zA-Z0-9_-]+$/),
+  label: z.string().trim().min(1).max(200),
+}).strict();
+
 /** 追加会话消息的输入形状；时间由后端落库统一填写。 */
 export const ChatMessageInputSchema = z.object({
   id: z.string().min(1).max(200),
   role: z.enum(['user', 'assistant', 'system']),
   content: z.string().max(200000),
   thinkingContent: z.string().max(200000).optional(),
+  skill: ChatMessageSkillSchema.optional(),
   attachments: z.array(z.object({
     name: z.string().min(1).max(500),
     path: z.string().regex(/^attachment:\/\/[^/\s]+\//).max(2000),
   }).strict()).max(10).optional(),
-}).passthrough();
+}).passthrough().refine((message) => message.skill === undefined || message.role === 'user', { message: 'Only user messages may include a skill label.', path: ['skill'] });
 
 /** 会话追加消息数组：单次追加规模有上限，防止超大批写入。 */
 export const ChatMessagesSchema = z.array(ChatMessageInputSchema).max(500);

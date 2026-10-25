@@ -8,6 +8,7 @@ import { AgentHost } from '../../../apps/backend/src/electron/backend/agent-host
 import { CreateDefaultModules } from '../../../packages/agent-modules-defaults/src/index';
 import type { AgentStreamEvent, ModelCompletion } from '../../../packages/agent-sdk/src/index';
 import { ApplyConversationActivity, CreateConversationPresentation } from '../../../packages/agent-sdk/src/conversation';
+import { AttachmentLifecycleService } from '../../../apps/backend/src/electron/backend/services/attachment-lifecycle-service';
 
 const require = createRequire(import.meta.url);
 const Database = require('better-sqlite3');
@@ -17,7 +18,7 @@ function CreateRepository(file = ':memory:', initialize = true) {
   db.pragma('foreign_keys = ON');
   if (initialize) db.exec(`
     CREATE TABLE conversations(id TEXT PRIMARY KEY, title TEXT NOT NULL, scenario_id TEXT NOT NULL DEFAULT 'resume-copilot', environment_id TEXT, environment_root_path TEXT, environment_real_path TEXT, environment_status TEXT NOT NULL DEFAULT 'none', environment_bound_at INTEGER, environment_name TEXT, session_snapshot_json TEXT, tool_array_snapshot_json TEXT NOT NULL DEFAULT '[]', revision INTEGER NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, last_used_at INTEGER NOT NULL, pinned INTEGER NOT NULL DEFAULT 0, archived INTEGER NOT NULL DEFAULT 0);
-    CREATE TABLE conversation_messages(id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE, role TEXT NOT NULL, content TEXT NOT NULL, reasoning_content TEXT, presentation_json TEXT, status TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+    CREATE TABLE conversation_messages(id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE, role TEXT NOT NULL, content TEXT NOT NULL, reasoning_content TEXT, presentation_json TEXT, metadata_json TEXT, status TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
     CREATE TABLE cron_tasks(id TEXT PRIMARY KEY);
     CREATE TABLE attachments(id TEXT PRIMARY KEY, original_name TEXT, deleted_at INTEGER);
     CREATE TABLE attachment_links(attachment_id TEXT, owner_type TEXT, owner_id TEXT, created_at INTEGER);
@@ -31,6 +32,41 @@ function CreateRepository(file = ':memory:', initialize = true) {
 }
 
 describe('ConversationRepository 创建', () => {
+  it('技能展示快照与附件随消息落库，幂等追加和重启后均可恢复且不混入正文', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'avery-message-metadata-'));
+    const file = join(root, 'conversation.db');
+    let { db } = CreateRepository(file);
+    try {
+      db.exec('ALTER TABLE attachments ADD COLUMN orphaned_at INTEGER; ALTER TABLE attachments ADD COLUMN cleanup_error TEXT;');
+      db.prepare('INSERT INTO attachments(id, original_name) VALUES(?, ?)').run('attachment-1', '测试简历.pdf');
+      const repository = new ConversationRepository({ db, attachmentLifecycle: new AttachmentLifecycleService({ db, workspacePath: root }) });
+      repository.Create({ id: 'owner', title: '消息标签' });
+      const user = { id: 'user', role: 'user', content: '请修改第一段', skill: { id: 'resume-tailoring', label: '简历定制' }, attachments: [{ name: '测试简历.pdf', path: 'attachment://attachment-1/测试简历.pdf' }] };
+      repository.AppendMessages('owner', [user, { id: 'reply', role: 'assistant', content: '' }]);
+      repository.AppendMessages('owner', [user]);
+      repository.CompleteMessage('owner', 'reply', '完成');
+      expect(repository.ListAll()[0].messages[0]).toMatchObject(user);
+      expect(db.prepare('SELECT owner_id FROM attachment_links WHERE attachment_id = ?').all('attachment-1')).toEqual([{ owner_id: 'user' }]);
+      db.close();
+      const restored = CreateRepository(file, false);
+      db = restored.db;
+      expect(restored.repository.ListAll()[0].messages).toMatchObject([user, { id: 'reply', content: '完成', skill: undefined }]);
+      expect(restored.repository.ListAll()[0].messages).toHaveLength(2);
+    } finally { if (db.open) db.close(); await rm(root, { recursive: true, force: true }); }
+  });
+
+  it('拒绝畸形技能元数据和助手标签，旧消息按原样读取', () => {
+    const { db, repository } = CreateRepository();
+    try {
+      repository.Create({ id: 'owner', title: '校验' });
+      repository.AppendMessages('owner', [{ id: 'legacy', role: 'user', content: '旧消息' }]);
+      expect(repository.ListAll()[0].messages[0]).toMatchObject({ content: '旧消息', skill: undefined });
+      expect(() => repository.AppendMessages('owner', [{ id: 'bad', role: 'user', content: '', skill: { id: 'resume-tailoring', label: '简历', permissions: ['write'] } }])).toThrow();
+      expect(() => repository.AppendMessages('owner', [{ id: 'bad-assistant', role: 'assistant', content: '', skill: { id: 'resume-tailoring', label: '简历' } }])).toThrow('Only user');
+      expect(repository.ListAll()[0].messages).toHaveLength(1);
+    } finally { db.close(); }
+  });
+
   it('创建会话时定格场景与项目空间，列表读取返回同一快照', () => {
     const { db, repository } = CreateRepository();
     repository.Create({ id: 'conversation-1', title: '投递会话', scenarioId: 'application', projectId: 'project-1', projectName: 'resume-html-pdf' });

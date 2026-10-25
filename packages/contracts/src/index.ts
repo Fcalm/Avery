@@ -14,11 +14,11 @@ export type { JobQueryInput, JobQuery, JobLibraryView, JobQueryResult } from './
 export { JobCollectionInputSchema, JobCollectionLimits } from './job-collection';
 export type { JobCollectionInput, JobCollectionRequest, JobCollectionTask, JobCollectionState, JobCollectionSourceResult, RecruitmentSource, CollectedJob, JobImportResult } from './job-collection';
 export {
-  ApplicationUpsertSchema, ChatMessageInputSchema, ChatMessagesSchema, ConversationCreateSchema,
+  ApplicationUpsertSchema, ChatMessageInputSchema, ChatMessageSkillSchema, ChatMessagesSchema, ConversationCreateSchema,
   JobUpsertSchema, ProfileItemSchema, ProfileItemsSchema, ResumeUpsertSchema, SettingsSubmitSchema,
 } from './write-schemas';
 export type {
-  ApplicationDto, AttachmentDto, ChatMessageDto, ChatMessageInput, ConversationDto, ConversationResourceView, JobDto,
+  ApplicationDto, AttachmentDto, ChatMessageDto, ChatMessageInput, ChatMessageSkill, ConversationDto, ConversationResourceView, JobDto,
   ProfileItemDto, ResumeDto, ResumeRevisionDocumentDto, ResumeRevisionDto, SettingsDto, WorkspaceStatusDto, WorkspaceViewModel,
 } from './dto';
 export {

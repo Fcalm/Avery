@@ -1,4 +1,12 @@
 /* 工作动画独立显示；过程默认收起，其中正文完整显示，思考和工具详情各自折叠。 */
+.user-message-bubble{min-width:0;overflow-wrap:anywhere}
+.user-message-attachments{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px;min-width:0}
+.user-message-attachment{display:inline-flex;align-items:center;gap:5px;max-width:100%;min-width:0;border:1px solid var(--border);border-radius:var(--r-pill);padding:3px 8px;background:var(--bg);color:var(--text-2);font-size:11.5px;line-height:20px}
+.user-message-attachment>.ph{flex:none;color:var(--text-3)}
+.user-message-attachment>span{min-width:0;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.user-message-skill{display:inline-flex;align-items:flex-end;gap:4px;max-width:100%;margin-right:8px;color:var(--accent);font-weight:600;line-height:1;vertical-align:baseline;white-space:nowrap}
+.user-message-skill>.ph{flex:none}
+.user-message-skill>span{min-width:0;overflow:hidden;text-overflow:ellipsis}
 .conversation-response{min-width:0;overflow-wrap:anywhere}
 .conversation-process{margin:0 0 12px}
 .conversation-process>summary,.conversation-reason>summary,.conversation-tool>summary{display:flex;align-items:center;gap:6px;list-style:none;cursor:pointer;min-width:0;border-radius:8px}

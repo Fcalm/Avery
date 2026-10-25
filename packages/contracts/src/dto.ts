@@ -9,6 +9,9 @@ export type ConversationResourceView =
 
 /** 跨进程实体 DTO：形状与当前 preload / Repository 返回保持一致，作为前端 ViewModel 的稳定数据契约。 */
 
+/** 用户发送时的技能展示快照；不授予工具权限，执行仍由 AgentSendRequest.selectedSkillId 单独校验。 */
+export interface ChatMessageSkill { id: string; label: string }
+
 /** 会话消息的跨进程形状；createdAt 为服务端落库的 UTC epoch 毫秒，前端仅用于展示格式化。 */
 export interface ChatMessageDto {
   presentation?: ConversationPresentation;
@@ -20,6 +23,7 @@ export interface ChatMessageDto {
   /** 消息最后落盘时间，仅在旧会话缺少整轮计时时用于估算结束时间。 */
   updatedAt?: number;
   attachments?: Array<{ name: string; path: string }>;
+  skill?: ChatMessageSkill;
 }
 
 /** 追加会话消息时的输入形状；时间由后端落库时统一填写，前端不参与持久化。 */
@@ -29,6 +33,7 @@ export interface ChatMessageInput {
   content: string;
   thinkingContent?: string;
   attachments?: Array<{ name: string; path: string }>;
+  skill?: ChatMessageSkill;
 }
 
 /** 会话 DTO：含 revision 供外部修改冲突校验；pinned/archived 仅控制"最近"列表的排序与可见性。

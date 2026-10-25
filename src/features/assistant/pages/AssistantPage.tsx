@@ -14,6 +14,7 @@ import { useResumes, useUpsertResume } from '../../../features/resume/api/resume
 import { useSettings } from '../../../features/settings/api/settingsQueries';
 import { ApplyModelCatalogToProviders, LoadModelCatalog, SubscribeModelCatalog } from '../../../features/settings/api/modelCatalog';
 import { DocSidePanel } from '../components/DocSidePanel';
+import { UserMessage } from '../components/UserMessage';
 import {
   AcquireResumeEditLock, BindProjectEnvironment, CancelAgentRequest, RespondToAgentInteraction, GetAgentObservability, GetAgentTraceEvents, GetProviderCatalog, GetSessionAssistantState, ImportAttachmentFile,
   ReleaseResumeEditLock, ReloadAgentSession, SelectAgentProjectDirectory, SendAgentRequest, SubscribeAgentStream, UpdateAgentConfirmationMode, UpdateAgentReasoningEffort,
@@ -709,7 +710,11 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
       }
     }
     const requestId = `request-${crypto.randomUUID()}`;
-    const message: ChatMessage = { id: `message-${Date.now()}`, role: 'user', content: `${text || '请分析我上传的文件'}${readyAttachments.length ? `（附 ${readyAttachments.length} 个附件）` : ''}`, createdAt: Date.now() };
+    const message: ChatMessage = {
+      id: `message-${Date.now()}`, role: 'user', content: text || '请分析我上传的文件', createdAt: Date.now(),
+      ...(readyAttachments.length ? { attachments: readyAttachments.map(({ name, path }) => ({ name, path })) } : {}),
+      ...(selectedSkill?.skillId ? { skill: { id: selectedSkill.skillId, label: selectedSkill.label } } : {}),
+    };
     const placeholder: ChatMessage = { id: `reply-${requestId}`, role: 'assistant', content: '', thinkingContent: '', createdAt: Date.now() };
     // 停止可能已携带旧消息快照的查询；即使底层 IPC 无法中止，React Query 也不会再提交其结果。
     await queryClient.cancelQueries({ queryKey: WORKSPACE_QUERY_KEY });
@@ -1015,7 +1020,7 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
   const cacheSharePercent = sessionTokenUsage ? CalculateTokenSharePercent(sessionTokenUsage.cachedInputTokens, sessionTokenUsage.totalTokens) : null;
   return <div className={`assistant-layout ${isComposerCompact ? 'is-composer-compact' : ''}`} style={{ '--assistant-main-min-width': `${ASSISTANT_MAIN_MIN_WIDTH}px` } as CSSProperties}>
     {assistantView === 'trace' ? <section className="assistant-main assistant-trace" aria-label="当前对话轨迹"><ConversationTrace traces={(observability?.traces ?? []).filter((trace) => trace.sessionId === activeConversationId)} sessionTokenUsage={sessionTokenUsage} title={conversation?.title ?? '新对话'} onSelectTrace={GetAgentTraceEvents} /></section> : <section className={`assistant-main ${isNewThread ? 'is-new-thread' : ''}`}>
-      {conversation?.messages.length ? <div key={conversation.id} ref={messageListRef} className="message-list"><div className="message-thread">{conversation.messages.map((message) => <article key={message.id} className={`chat-message ${message.role}`}>{message.role === 'assistant' ? <ConversationMessage message={message} authorizedResources={conversationResources} onOpenResource={OpenConversationResource} /> : <MarkdownText content={message.content} />}</article>)}</div></div> : <EmptyAssistant name={settings.nickname} />}
+      {conversation?.messages.length ? <div key={conversation.id} ref={messageListRef} className="message-list"><div className="message-thread">{conversation.messages.map((message) => <article key={message.id} className={`chat-message ${message.role}`}>{message.role === 'assistant' ? <ConversationMessage message={message} authorizedResources={conversationResources} onOpenResource={OpenConversationResource} /> : message.role === 'user' ? <UserMessage message={message} /> : <MarkdownText content={message.content} />}</article>)}</div></div> : <EmptyAssistant name={settings.nickname} />}
       <div className="composer-dock">
         {!isEmptyConversation && <ConversationScrollToBottom key={conversation.id} scrollContainerRef={messageListRef} onScrollToBottom={() => setScrollToBottomRequest((current) => current + 1)} />}
         {shouldShowTodo && <div className="task-dock"><div className="task-summary"><span className={`task-status-icon ${GetTodoPresentation(activeTodo?.status ?? 'pending').className}`} aria-hidden="true">{GetTodoPresentation(activeTodo?.status ?? 'pending').symbol}</span><span className="task-summary-copy">{activeTodo?.title ?? '正在处理任务'}</span><span className={`task-summary-status ${GetTodoPresentation(activeTodo?.status ?? 'pending').className}`}>{GetTodoPresentation(activeTodo?.status ?? 'pending').label}</span></div><div className="task-card" aria-label="Todo 列表"><div className="task-card-heading">Todo · {agentTodos.length} 项</div><div className="task-list">{agentTodos.map((todo) => { const presentation = GetTodoPresentation(todo.status); return <div key={todo.id} className={`task-list-item ${presentation.className}`}><span className="task-status-icon" aria-hidden="true">{presentation.symbol}</span><span className="task-list-title">{todo.title}</span><span className="task-list-status">{presentation.label}</span></div>; })}</div></div></div>}

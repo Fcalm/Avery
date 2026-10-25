@@ -1,4 +1,4 @@
-import { createContext, Fragment, useContext, useEffect, useState, type ReactNode } from 'react';
+import { cloneElement, createContext, Fragment, isValidElement, useContext, useEffect, useState, type ReactNode } from 'react';
 import { MatchConversationResourceHref, type ConversationResource } from '@avery/agent-sdk';
 import { platformClient, Unwrap } from '../platform/platformClient';
 import { Icon } from './Icon';
@@ -133,7 +133,7 @@ function ParseMarkdownTable(lines: string[], startIndex: number): { headers: str
   return { headers, alignments: divider.map((cell) => GetTableAlignment(cell) ?? 'left'), rows, endIndex: index };
 }
 
-function MarkdownText({ content, className = '', resources, onOpenResource }: { content: string; className?: string } & ResourceContext) {
+function MarkdownText({ content, className = '', leading, resources, onOpenResource }: { content: string; className?: string; leading?: ReactNode } & ResourceContext) {
   const lines = content.replace(/\r\n?/g, '\n').split('\n');
   const nodes: ReactNode[] = [];
   let index = 0;
@@ -196,6 +196,12 @@ function MarkdownText({ content, className = '', resources, onOpenResource }: { 
     nodes.push(<p key={nodes.length}>{paragraph.map((item, itemIndex) => <Fragment key={itemIndex}><InlineText value={item} />{itemIndex < paragraph.length - 1 && <br />}</Fragment>)}</p>);
   }
 
+  // 展示标签放在首段句首，保留正文原有的 Markdown 结构；列表、代码等块级内容则另起一段。
+  if (leading) {
+    const first = nodes[0];
+    if (isValidElement<{ children?: ReactNode }>(first) && first.type === 'p') nodes[0] = cloneElement(first, {}, leading, first.props.children);
+    else nodes.unshift(<p key="leading">{leading}</p>);
+  }
   return <MarkdownResources.Provider value={{ resources, onOpenResource }}><div className={`markdown-text ${className}`}>{nodes}</div></MarkdownResources.Provider>;
 }
 

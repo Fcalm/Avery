@@ -46,6 +46,7 @@ function IsSameMessage(left: ChatMessageDto, right: ChatMessageDto): boolean {
     && left.thinkingContent === right.thinkingContent
     && JSON.stringify(left.presentation) === JSON.stringify(right.presentation)
     && left.createdAt === right.createdAt
+    && JSON.stringify(left.skill) === JSON.stringify(right.skill)
     && JSON.stringify(left.attachments ?? []) === JSON.stringify(right.attachments ?? []);
 }
 

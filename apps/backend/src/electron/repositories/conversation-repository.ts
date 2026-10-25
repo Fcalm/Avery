@@ -1,5 +1,16 @@
 import { GetNow, CreateId, WriteAudit, AssertRevision } from './helpers';
 import { ApplyConversationActivity, IsConversationPresentation, type ConversationPresentation } from '@avery/agent-sdk';
+import { ChatMessageSkillSchema, type ChatMessageSkill } from '@avery/contracts';
+
+/** 旧消息没有展示元数据；不把正文命令或历史技能选择推测为当时已选的技能。 */
+function ReadMessageSkill(json: unknown): ChatMessageSkill | undefined {
+  if (typeof json !== 'string') return undefined;
+  try {
+    const value = JSON.parse(json) as { skill?: unknown } | null;
+    const parsed = ChatMessageSkillSchema.safeParse(value?.skill);
+    return parsed.success ? parsed.data : undefined;
+  } catch { return undefined; }
+}
 
 function ReadPresentation(json: unknown): ConversationPresentation | undefined {
   if (typeof json !== 'string') return undefined;
@@ -38,12 +49,13 @@ export class ConversationRepository {
       scenarioId: conversation.scenario_id === 'application' ? 'application' : 'default',
       projectId: conversation.environment_id ?? null,
       projectName: conversation.environment_name ?? null,
-      messages: this.db.prepare('SELECT id, role, content, reasoning_content, presentation_json, created_at, updated_at FROM conversation_messages WHERE conversation_id = ? ORDER BY created_at, rowid').all(conversation.id).map((message: any) => ({
+      messages: this.db.prepare('SELECT id, role, content, reasoning_content, presentation_json, metadata_json, created_at, updated_at FROM conversation_messages WHERE conversation_id = ? ORDER BY created_at, rowid').all(conversation.id).map((message: any) => ({
         id: message.id,
         role: message.role,
         content: message.content,
         thinkingContent: message.reasoning_content ?? undefined,
         presentation: ReadPresentation(message.presentation_json),
+        skill: message.role === 'user' ? ReadMessageSkill(message.metadata_json) : undefined,
         createdAt: message.created_at,
         updatedAt: message.updated_at,
         attachments: this.db.prepare(`SELECT a.original_name AS name, 'attachment://' || a.id || '/' || a.original_name AS path
@@ -163,7 +175,7 @@ export class ConversationRepository {
     if (!Array.isArray(messages) || messages.length === 0 || messages.length > 50) throw new Error('Conversation messages are invalid.');
     const existing = this.db.prepare('SELECT id FROM conversations WHERE id = ?').get(conversationId);
     if (!existing) throw new Error('Conversation was not found.');
-    const insert = this.db.prepare('INSERT INTO conversation_messages(id, conversation_id, role, content, reasoning_content, status, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET content = excluded.content, reasoning_content = excluded.reasoning_content, updated_at = excluded.updated_at');
+    const insert = this.db.prepare('INSERT INTO conversation_messages(id, conversation_id, role, content, reasoning_content, status, created_at, updated_at, metadata_json) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET content = excluded.content, reasoning_content = excluded.reasoning_content, updated_at = excluded.updated_at, metadata_json = COALESCE(conversation_messages.metadata_json, excluded.metadata_json)');
     const now = GetNow();
     const run = this.db.transaction(() => {
       for (let index = 0; index < messages.length; index += 1) {
@@ -171,9 +183,11 @@ export class ConversationRepository {
         if (!message || typeof message.id !== 'string' || message.id.length === 0 || message.id.length > 200) throw new Error('Conversation message id is invalid.');
         if (message.role !== 'user' && message.role !== 'assistant' && message.role !== 'system') throw new Error('Conversation message role is invalid.');
         if (typeof message.content !== 'string' || message.content.length > 100000) throw new Error('Conversation message content is invalid.');
+        if (message.skill !== undefined && message.role !== 'user') throw new Error('Only user messages may include a skill label.');
+        const metadata = message.skill === undefined ? null : JSON.stringify({ skill: ChatMessageSkillSchema.parse(message.skill) });
         const existingMessage = this.db.prepare('SELECT conversation_id FROM conversation_messages WHERE id = ?').get(message.id);
         if (existingMessage && existingMessage.conversation_id !== conversationId) throw new Error('Conversation message id belongs to another conversation.');
-        insert.run(message.id, conversationId, message.role, message.content, message.thinkingContent ?? null, 'complete', now + index, now + index);
+        insert.run(message.id, conversationId, message.role, message.content, message.thinkingContent ?? null, 'complete', now + index, now + index, metadata);
         this.attachmentLifecycle.ReplaceLinks('message', message.id, message.attachments ?? null);
       }
       this.Touch(conversationId);
