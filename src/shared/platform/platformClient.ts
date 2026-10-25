@@ -100,6 +100,7 @@ export const platformClient = {
     SetTraceRetention: (value: number) => CallBridge(() => RequireAgent().SetTraceRetention(value)),
     ClearObservability: () => CallBridge(() => RequireAgent().ClearObservability()),
     ReloadSession: (sessionId: string) => CallBridge(() => RequireAgent().ReloadSession(sessionId)),
+    GetCommandSkills: (input: Parameters<DesktopAgentBridge['GetCommandSkills']>[0]) => CallBridge(() => RequireAgent().GetCommandSkills(input)),
     SelectProjectDirectory: () => CallBridge(() => RequireAgent().SelectProjectDirectory()),
     GetSessionAssistantState: (sessionId: string) => CallBridge(() => RequireAgent().GetSessionAssistantState(sessionId)),
     ReadConversationResource: (sessionId: string, resource: import('@avery/contracts').ConversationResource) => CallBridge(() => RequireAgent().ReadConversationResource(sessionId, resource)),

@@ -1715,6 +1715,31 @@ export class AgentHost {
     return this.CreateAndPersistSnapshots(sessionId, nextRevision, hadCompleteBundle ? 'ttl_elapsed' : 'session_created', scenarioId);
   }
 
+  /** 已有会话使用冻结索引；新对话只预览当前注册表，不创建会话或授予任何工具权限。 */
+  async GetCommandSkills(input: { sessionId?: string; scenarioId: 'default' | 'application' }): Promise<Array<{ id: string; name: string; description: string }>> {
+    this.EnsureModulesReady();
+    if (!input || !['default', 'application'].includes(input.scenarioId)) throw Object.assign(new Error('命令面板场景无效。'), { code: 'VALIDATION_ERROR' });
+    let snapshot: import('@avery/agent-sdk').SkillSnapshot | undefined;
+    if (input.sessionId !== undefined) {
+      const sessionId = RequireString(input.sessionId, 'sessionId', 200);
+      const cached = this.sessionSnapshots.get(sessionId)?.skills;
+      if (this.HasCompleteSkillSnapshot(cached)) snapshot = cached;
+      else {
+        const stored = await this.business?.GetConversationSnapshots?.(sessionId);
+        if (stored?.toolSnapshotJson) {
+          const combined = JSON.parse(stored.toolSnapshotJson) as { skills?: import('@avery/agent-sdk').SkillSnapshot };
+          if (combined.skills) {
+            if (!this.HasCompleteSkillSnapshot(combined.skills)) throw new Error('会话技能索引不完整，请重载上下文。');
+            snapshot = combined.skills;
+          }
+        }
+      }
+    }
+    // 面板预览不得调用 LoadOrCreateSnapshots：第一次打开不能代替首次 Send 冻结场景。
+    snapshot ??= await this.skillRegistry.BuildSnapshot('composer-preview', 0, input.scenarioId);
+    return snapshot.skills.map(({ manifest }) => ({ id: manifest.id, name: manifest.name, description: manifest.description }));
+  }
+
   /** 空闲时原子重载会话上下文与 Tool 快照；任一步失败保留旧快照。 */
   async ReloadSession(sessionId: string): Promise<any> {
     if (typeof sessionId !== 'string' || sessionId.length === 0 || sessionId.length > 200) throw new Error('Session id is invalid.');
@@ -1967,13 +1992,23 @@ export class AgentHost {
     const skillIndexMessages: AgentMessage[] = history.some((message: AgentMessage) => message.metadata?.kind === 'skill_index' && message.metadata.snapshotId === snapshots.skills.snapshotId)
       ? []
       : [this.skillRegistry.CreateIndexMessage(snapshots.skills)];
-    const explicitSkill = this.skillRegistry.MatchExplicitCommand(userContent, snapshots.skills);
+    const selectedSkillId = input.selectedSkillId === undefined ? undefined : RequireString(input.selectedSkillId, 'selectedSkillId', 200);
+    const explicitSkill = selectedSkillId
+      ? (snapshots.skills as import('@avery/agent-sdk').SkillSnapshot).skills.find((skill) => skill.manifest.id === selectedSkillId)
+      : this.skillRegistry.MatchExplicitCommand(userContent, snapshots.skills);
+    if (selectedSkillId && !explicitSkill) throw Object.assign(new Error('所选技能在当前会话或场景不可用，请重新选择技能或重载上下文。'), { code: 'VALIDATION_ERROR' });
     const alreadyLoadedVersion = explicitSkill
       ? [...sessionLoadedSkills.entries()].find(([id]) => id.toLowerCase() === explicitSkill.manifest.id.toLowerCase())?.[1]
       : undefined;
     const messagesAfterUser: AgentMessage[] = explicitSkill && alreadyLoadedVersion !== explicitSkill.manifest.version
       ? [this.skillRegistry.Load(snapshots.skills, scenarioId, { skillId: explicitSkill.manifest.id }).message]
       : [];
+    // 技能标签不混入用户正文；即使技能此前已加载，本轮仍需传达用户的显式选择。
+    // 复用临时运行上下文类型，避免把本轮选择固化为后续所有任务的指令。
+    if (selectedSkillId && explicitSkill) messagesAfterUser.push({
+      role: 'user', content: `本轮用户明确指定使用技能 /${explicitSkill.manifest.id}。请按已加载的该技能处理本轮任务；场景、工具与确认权限保持不变。`,
+      metadata: { source: 'runtime', visibility: 'hidden', kind: 'runtime_context' },
+    });
     const snapshot = this.modules.contextBuilder.CreateDynamicSnapshot(sessionId, runtimeContext);
     // 动态快照只服务本次 Run；历史中的旧格式快照必须先移除，避免过期档案继续影响模型判断。
     const messagesBeforeUser: AgentMessage[] = [

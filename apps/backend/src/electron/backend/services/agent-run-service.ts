@@ -1,3 +1,5 @@
+import type { DesktopAgentBridge } from '@avery/contracts';
+
 /** Agent 运行的应用服务门面：封装 AgentHost，向 Router 暴露启动/取消/确认/重载命令；Send 由 Kernel 与六槽模块执行。 */
 export class AgentRunService {
   private agent: any;
@@ -67,6 +69,9 @@ export class AgentRunService {
 
   /** 空闲时原子重载会话上下文与工具快照。 */
   ReloadSession(sessionId: string): any { return this.agent.ReloadSession(sessionId); }
+
+  /** 命令面板仅经服务层读取技能索引，保持 Router 与 Host 的调用链完整。 */
+  GetCommandSkills(input: Parameters<DesktopAgentBridge['GetCommandSkills']>[0]): ReturnType<DesktopAgentBridge['GetCommandSkills']> { return this.agent.GetCommandSkills(input); }
 
   GetSessionAssistantState(sessionId: string): any { return this.agent.GetSessionAssistantState(sessionId); }
 

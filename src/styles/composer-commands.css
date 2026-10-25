@@ -1,0 +1,39 @@
+/* 命令面板与原型同源：只保留分组和 32px 单行选项，不额外增加标题或快捷键栏。 */
+.composer { position: relative; container-type: inline-size; }
+.slash-input-root { min-width: 0; }
+.slash-palette { position: absolute; bottom: calc(100% + 8px); left: 0; right: 0; z-index: 12; overflow: hidden; border: 1px solid var(--border-2); border-radius: var(--r-card); background: var(--raised); box-shadow: 0 14px 48px -15px rgba(24,24,27,.21); transform-origin: center bottom; }
+.slash-palette.is-open { animation: slash-panel-in .18s var(--ease) both; }
+.slash-palette.is-closing { animation: slash-panel-out .12s ease-in both; pointer-events: none; }
+.slash-list { overflow-y: auto; overscroll-behavior: contain; padding: 4px; scrollbar-width: thin; scrollbar-color: var(--border-2) transparent; }
+.slash-group { height: 20px; padding: 3px 8px 1px; color: var(--text-3); font-size: 10px; line-height: 16px; }
+.slash-option { display: flex; align-items: center; gap: 8px; width: 100%; height: 32px; min-height: 32px; padding: 4px 8px; border: 0; border-radius: 6px; background: transparent; color: var(--text-2); text-align: left; }
+.slash-option[aria-selected="true"] { background: var(--surface-2); }
+.slash-option[aria-selected="true"] .slash-glyph { color: var(--accent); }
+.slash-option-main { display: flex; flex: 1; align-items: center; gap: 8px; min-width: 0; overflow: hidden; }
+.slash-option-title { flex: none; color: var(--text); font-size: 13px; font-weight: 500; white-space: nowrap; }
+.slash-description { flex: 1; min-width: 0; overflow: hidden; color: var(--text-3); font-size: 12px; line-height: 1.5; text-overflow: ellipsis; white-space: nowrap; }
+.slash-token { flex: none; color: var(--text-3); font-family: var(--font-mono); font-size: 11px; white-space: nowrap; }
+.slash-enter { flex: none; width: 16px; color: var(--text-3); font-size: 12px; opacity: 0; }
+.slash-option[aria-selected="true"] .slash-enter { opacity: 1; }
+.slash-state,.slash-empty { padding: 18px 12px; color: var(--text-2); font-size: 13px; line-height: 1.6; }
+.slash-state button { margin-left: 10px; padding: 2px 5px; color: var(--accent); }
+.slash-empty small { display: block; margin-top: 4px; color: var(--text-3); font-size: 11px; }
+.slash-editor-line { min-height: 30px; max-height: 150px; overflow-y: auto; padding: 4px 2px 2px; color: var(--text); font-size: 14px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; cursor: text; scrollbar-width: thin; scrollbar-color: var(--border-2) transparent; }
+.slash-editor { display: inline; min-width: 1px; padding: 0; border: 0; outline: none; color: inherit; caret-color: var(--text); font: inherit; line-height: inherit; white-space: pre-wrap; overflow-wrap: anywhere; }
+.slash-editor:focus-visible { outline: none; box-shadow: none; }
+.slash-editor.is-empty { display: inline-block; min-width: 1px; min-height: 21px; vertical-align: top; }
+.slash-placeholder { color: var(--text-3); pointer-events: none; }
+.slash-editor[aria-disabled="true"] { opacity: .55; }
+.slash-chips { display: inline; margin: 0; padding: 0; white-space: normal; }
+.slash-chip { display: inline-flex; align-items: flex-end; vertical-align: middle; gap: 4px; margin: 0 8px 0 0; padding: 0; border: 0; background: transparent; color: var(--accent); font-size: 14px; font-weight: 600; line-height: 21px; white-space: nowrap; animation: slash-chip-in .18s var(--ease) both; }
+/* 去掉标签文字行盒的额外留白，使同字号的图标与文字按底部贴齐。 */
+.slash-chip > span { line-height: 1; }
+.slash-chip button { display: inline-grid; flex: none; place-items: center; width: 13px; height: 17px; padding: 0; border: 0; border-radius: 3px; background: transparent; color: inherit; opacity: 0; transition: opacity .12s; }
+.slash-chip:hover button,.slash-chip:focus-within button { opacity: 1; }
+.slash-chip button:hover { background: var(--accent-soft); }
+@keyframes slash-panel-in { from { opacity: 0; transform: translateY(7px) scale(.988); } to { opacity: 1; transform: none; } }
+@keyframes slash-panel-out { to { opacity: 0; transform: translateY(4px) scale(.99); } }
+@keyframes slash-chip-in { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: none; } }
+@container (max-width:640px) { .slash-option .slash-token { display: none; } .slash-option-main { gap: 6px; } .slash-option-title { font-size: 12px; } .slash-description { font-size: 11px; } .slash-option .slash-glyph { font-size: 12px !important; width: 12px !important; height: 12px !important; } }
+@media (hover:none) { .slash-chip button { opacity: 1; } }
+@media (prefers-reduced-motion:reduce) { .slash-palette,.slash-chip { animation: none !important; transition: none !important; } }

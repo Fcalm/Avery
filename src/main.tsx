@@ -9,6 +9,7 @@ import './styles/phosphor.css';
 import './styles/global.css';
 import './styles/shell.css';
 import './styles/conversation.css';
+import './styles/composer-commands.css';
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

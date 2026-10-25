@@ -1,5 +1,8 @@
 /* Phosphor Icons 本地化：只打包随安装包分发的三个字重（Regular / Light / Fill），
    源文件位于 public/fonts/phosphor，许可见同目录 LICENSE（MIT）。 */
+.ph-clipboard-text::before { content: "\e198"; }
+.ph-target::before { content: "\e47c"; }
+.ph-codesandbox-logo::before { content: "\ea06"; }
 @font-face {
   font-family: "Phosphor";
   src: url("/fonts/phosphor/Phosphor-Regular.woff2") format("woff2");

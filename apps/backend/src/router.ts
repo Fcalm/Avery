@@ -73,6 +73,7 @@ export const MethodRoutes: Record<string, MethodRoute> = {
   'agent:delete-traces': { service: 'developer', method: 'DeleteTraces' },
   'agent:set-trace-retention': { service: 'developer', method: 'SetTraceRetention' },
   'agent:reload-session': { service: 'agent', method: 'ReloadSession' },
+  'agent:command-skills': { service: 'agent', method: 'GetCommandSkills' },
   'agent:get-session-assistant-state': { service: 'agent', method: 'GetSessionAssistantState' },
   'agent:read-conversation-resource': { service: 'agent', method: 'ReadConversationResource' },
   'agent:get-session-scenes': { service: 'agent', method: 'GetSessionScenes' },

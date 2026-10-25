@@ -14,7 +14,7 @@ export type ConfirmationMode = 'always_confirm' | 'allow_low_risk' | 'fully_trus
 /** 会话级思考强度；Provider 会按模型官方规则映射实际 effort。 */
 export type ReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 
-/** Agent 请求的显式窄字段：确认模式、附件与项目 ID；简历只能由模型通过 ReadResume 渐进读取和绑定。 */
+/** Agent 请求的显式窄字段：确认模式、附件、项目与技能选择；简历只能由模型通过 ReadResume 渐进读取和绑定。 */
 export interface AgentSendRequest {
   requestId: string;
   sessionId: string;
@@ -30,6 +30,8 @@ export interface AgentSendRequest {
   projectId?: string;
   /** 会话首次发送时冻结场景；后续不得在同一会话切换。 */
   scenarioId?: 'default' | 'application';
+  /** 用户从命令面板明确选择的 Skill；宿主只接受本会话冻结快照内且场景允许的技能。 */
+  selectedSkillId?: string;
 }
 
 export interface BrowserActionState {
@@ -204,6 +206,8 @@ export interface DesktopAgentBridge {
   SetTraceRetention: (value: number) => Promise<{ traceRetention: number }>;
   ClearObservability: () => Promise<{ cleared: boolean }>;
   ReloadSession: (sessionId: string) => Promise<{ reloaded: boolean; sessionRevision?: number; reason?: string }>;
+  /** 仅返回当前场景可用的技能索引，不暴露正文、资源路径或其他会话信息。 */
+  GetCommandSkills: (input: { sessionId?: string; scenarioId: 'default' | 'application' }) => Promise<Array<{ id: string; name: string; description: string }>>;
   SelectProjectDirectory: () => Promise<{ projectId: string; name: string } | null>;
   /** 按会话读取 usage、项目环境、模型与确认权限；绝不暴露项目绝对路径或凭据。 */
   GetSessionAssistantState: (sessionId: string) => Promise<AgentSessionAssistantState>;
@@ -279,7 +283,7 @@ export const BridgeNamespaces = {
     'ConfirmBrowserAction', 'GetBrowserRuntimeStatus', 'GetCronBrowserAccess', 'RevokeCronBrowserAccess',
     'AcquireResumeEditLock', 'ReleaseResumeEditLock', 'GetStatus',
     'GetObservability', 'GetTraceEvents', 'DeleteTraces', 'SetTraceRetention', 'ClearObservability',
-    'ReloadSession', 'SelectProjectDirectory', 'GetSessionAssistantState', 'ReadConversationResource', 'BindProjectEnvironment', 'GetSessionScenes',
+    'ReloadSession', 'GetCommandSkills', 'SelectProjectDirectory', 'GetSessionAssistantState', 'ReadConversationResource', 'BindProjectEnvironment', 'GetSessionScenes',
     'GetModuleConfiguration', 'SelectModuleDirectory', 'ResetModules', 'OnStream',
   ] as const,
   workspace: [

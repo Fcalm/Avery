@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type CSSProperties, type KeyboardEvent } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type CSSProperties } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useLayoutEffect } from 'react';
 import type { AgentObservability, AgentStreamEvent, BrowserActionState, ConfirmationMode, ConversationResource, ReasoningEffort } from '@avery/contracts';
@@ -29,6 +29,8 @@ import type { ChatMessage, PageId } from '../../../types/domain';
 import { useSessionValue } from '../useSessionValue';
 import { ConversationMessage } from '../components/ConversationMessage';
 import { ConversationScrollToBottom } from '../components/ConversationScrollToBottom';
+import { ComposerInput } from '../components/ComposerInput';
+import type { ComposerCommand, ComposerMode } from '../composerCommands';
 
 // 保持旧场景 ID 以兼容会话与定时任务；能力边界与后端白名单一致。
 const ScenarioOptions: Array<{ id: 'default' | 'application'; label: string; icon: IconName; description: string }> = [
@@ -174,6 +176,13 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
   const upsertResume = useUpsertResume({ onConflict: () => ShowNotice('简历已在其他窗口被修改，已刷新为最新版本'), onFailure: () => ShowNotice('简历保存失败，请稍后重试。') });
   const patchConversations = usePatchConversations();
   const [composer, setComposer] = useState('');
+  const [isComposerComposing, setIsComposerComposing] = useState(false);
+  const [isReloadingContext, setIsReloadingContext] = useState(false);
+  const [reloadCommandTrigger, setReloadCommandTrigger] = useState(0);
+  const [selectedSkill, setSelectedSkill, setSelectedSkillForSession] = useSessionValue<ComposerCommand | null>(activeConversationId, null);
+  const [composerMode, setComposerMode, setComposerModeForSession] = useSessionValue<ComposerMode | null>(activeConversationId, null);
+  const composerDraftRef = useRef(composer);
+  composerDraftRef.current = composer;
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
   const [attachmentErrors, setAttachmentErrors] = useState<string[]>([]);
   const [projectEnvironment, setProjectEnvironment] = useState<{ projectId: string | null; name: string } | null>(null);
@@ -212,7 +221,7 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
   const [observability, setObservability] = useState<AgentObservability | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const composerRef = useRef<HTMLDivElement>(null);
-  const composerTextareaRef = useRef<HTMLTextAreaElement>(null);
+  const composerInputRef = useRef<HTMLSpanElement>(null);
   const messageListRef = useRef<HTMLDivElement>(null);
   const enteredConversationRef = useRef<string | null>(null);
   const resumeSideRef = useRef<HTMLElement>(null);
@@ -393,14 +402,6 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
     return () => observer.disconnect();
   }, [assistantView]);
 
-  /** 原型输入框随内容自动增高，超过 150px 后内部滚动。 */
-  useLayoutEffect(() => {
-    const el = composerTextareaRef.current;
-    if (!el) return;
-    el.style.height = 'auto';
-    el.style.height = `${Math.min(150, el.scrollHeight)}px`;
-  }, [composer]);
-
   useEffect(() => {
     if (!showPermission && !showScenario && !showModel && !showReasoningEffort) return undefined;
     const CloseAssistantMenusOnOutsidePointer = (event: PointerEvent) => {
@@ -539,7 +540,7 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
     if (composerSeed === null) return;
     setComposer(composerSeed);
     setComposerSeed(null);
-    composerTextareaRef.current?.focus();
+    composerInputRef.current?.focus();
   }, [composerSeed, setComposerSeed]);
 
   /** 会话切换、页面重进和设置更新时优先恢复会话选择；没有缓存的旧会话才使用安全默认值。 */
@@ -661,16 +662,25 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
     }
   }), [ShowNotice, currentResumeId, SetSessionRun, UpdateSessionTasks, RefreshSessionAssistantState, RefreshWorkspacePreservingMessages, ApplyPendingEvent, setPendingBrowserActionForSession, setCurrentResumeId]);
 
+  async function HandleReloadContext(): Promise<boolean> {
+    const owner = activeConversationId;
+    if (!owner) { ShowNotice('请先发送一条消息建立会话，再重载会话上下文'); return false; }
+    if (activeRequestsRef.current.has(owner)) { ShowNotice('Agent 正在处理，请等待本轮结束后再试'); return false; }
+    setIsReloadingContext(true);
+    try {
+      const result = await ReloadAgentSession(owner);
+      if (!result.reloaded) { ShowNotice(result.reason === 'busy' ? 'Agent 正在处理，请等待本轮结束后再试' : `会话上下文重载失败：${result.reason ?? '请重试'}`); return false; }
+      ShowNotice(`会话上下文已重载（revision ${result.sessionRevision ?? ''}）`);
+      return activeConversationRef.current === owner;
+    } catch (error) { ShowNotice(error instanceof Error ? error.message : '会话上下文重载失败'); return false; }
+    finally { setIsReloadingContext(false); }
+  }
+
   async function HandleSend() {
+    if (isComposerComposing || isReloadingContext) return;
     const text = composer.trim();
-    if (text === '/reload' || text === '/reload-session') {
-      if (!activeConversationId) { ShowNotice('请先发送一条消息建立会话，再重载会话上下文'); return; }
-      const result = await ReloadAgentSession(activeConversationId);
-      if (result.reloaded) ShowNotice(`会话上下文已重载（revision ${result.sessionRevision ?? ''}）`);
-      else ShowNotice(result.reason === 'busy' ? 'Agent 正在处理，请等待本轮结束后再试' : '会话上下文重载失败');
-      return;
-    }
     if (activeConversationId && activeRequestsRef.current.has(activeConversationId)) { ShowNotice('已有任务正在执行，请等待本轮结束或回到原会话停止任务。'); return; }
+    if (/^\/reload(?:-session)?\s*$/.test(composer)) { setReloadCommandTrigger((revision) => revision + 1); return; }
     if (attachments.some((attachment) => attachment.status === 'uploading')) {
       ShowNotice('附件仍在上传，请完成后再发送。');
       return;
@@ -717,6 +727,8 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
     // 追加消息期间新输入的文字及新附件不属于本次提交，必须保留。
     if (activeConversationRef.current === activeConversationId) {
       setComposer((current) => current === composer ? '' : current);
+      setSelectedSkill((current) => current?.id === selectedSkill?.id ? null : current);
+      setComposerMode((current) => current === composerMode ? null : current);
       const submittedAttachments = new Set(readyAttachments.map((attachment) => attachment.id));
       setAttachments((current) => current.filter((attachment) => !submittedAttachments.has(attachment.id)));
     }
@@ -731,8 +743,15 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
         if (activeConversationRef.current === targetId) setProjectEnvironment(boundProject);
       }
       activePlaceholdersRef.current.set(requestId, { conversationId: targetId, requestId, content: '', thinkingContent: '' });
-      await SendAgentRequest({ requestId, sessionId: targetId, content: message.content, provider, model, reasoningEffort, confirmationMode: permission, attachments: readyAttachments.map(({ name, path }) => ({ name, path })), projectId: boundProject?.projectId ?? undefined, scenarioId });
+      await SendAgentRequest({ requestId, sessionId: targetId, content: message.content, provider, model, reasoningEffort, confirmationMode: permission, attachments: readyAttachments.map(({ name, path }) => ({ name, path })), projectId: boundProject?.projectId ?? undefined, scenarioId, ...(selectedSkill?.skillId ? { selectedSkillId: selectedSkill.skillId } : {}) });
     } catch (error) {
+      // 启动失败只恢复仍停留在发送会话的空草稿，不覆盖用户随后输入或切换会话的内容。
+      if (activeConversationRef.current === targetId && !composerDraftRef.current) {
+        setComposer((current) => current || composer);
+        setSelectedSkillForSession(targetId, (current) => current ?? selectedSkill);
+        setComposerModeForSession(targetId, (current) => current ?? composerMode);
+        setAttachments((current) => [...current, ...readyAttachments.filter((attachment) => !current.some((item) => item.id === attachment.id))]);
+      }
       // 保留用户输入和已落盘的过程；启动失败也不能删除已经执行过工具的记录。
       await RefreshWorkspacePreservingMessages();
       if (runVersions.current[targetId] === startedRunVersion) {
@@ -854,7 +873,6 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
     }
   }
 
-  function HandleKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void HandleSend(); } }
   function HandleEditChange(value: string) { setHistory((current) => [...current, resumeText]); setResumeText(value); }
   /** 撤销最近一次编辑：弹回上一份快照；编辑期间随时可用，保存后历史清空。 */
   function UndoResumeEdit() {
@@ -1002,7 +1020,7 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
         {pendingQuestions ? <QuestionComposer questions={pendingQuestions.questions} answers={questionAnswers} otherAnswers={otherAnswers} questionIndex={pendingQuestionIndex} onAnswer={(questionId, answer) => setQuestionAnswers((current) => ({ ...current, [questionId]: answer }))} onOtherAnswer={(questionId, answer) => setOtherAnswers((current) => ({ ...current, [questionId]: answer }))} onPrevious={() => setPendingQuestionIndex((current) => Math.max(0, current - 1))} onCancel={CancelPendingQuestions} onContinue={ContinuePendingQuestions} /> : pendingEdit ? <ConfirmationComposer title="确认 Agent 修改简历" description={pendingEdit.reason} preview={pendingEdit.content} confirmLabel="确认并保存" onCancel={() => void HandlePendingEdit(false)} onConfirm={() => void HandlePendingEdit(true)} /> : pendingCronTask ? <ConfirmationComposer title="确认创建无人值守定时任务" description={`${pendingCronTask.summary}\n任务消息：${pendingCronTask.message}`} preview={JSON.stringify(pendingCronTask.schedule, null, 2)} confirmLabel="确认整个周期" onCancel={() => void HandlePendingCronTask(false)} onConfirm={() => void HandlePendingCronTask(true)} /> : pendingBrowserAction ? <ConfirmationComposer title="确认浏览器外部动作" description={`${pendingBrowserAction.summary ?? pendingBrowserAction.toolName}${pendingBrowserAction.url ? `\n目标网站：${pendingBrowserAction.url}` : ''}\n风险级别：${pendingBrowserAction.risk === 'high' ? '高风险' : pendingBrowserAction.risk === 'medium' ? '中风险' : '低风险'}`} confirmLabel="确认执行" onCancel={() => void HandlePendingBrowserAction(false)} onConfirm={() => void HandlePendingBrowserAction(true)} /> : <div className="composer-col">
           {attachments.length > 0 && <div className="ctx">{attachments.map((attachment) => <span className="ctx-item" key={attachment.id} aria-busy={attachment.status === 'uploading'}>{AttachmentUploadStatus(attachment)}<span className="ctx-name">{attachment.name}</span><button className="ctx-x" type="button" aria-label={`移除 ${attachment.name}`} onClick={() => RemoveAttachment(attachment.id)}><Icon name="close" size={11} /></button></span>)}</div>}
           <div ref={composerRef} className="composer">
-            <textarea ref={composerTextareaRef} rows={1} value={composer} placeholder={scenarioId === 'application' ? '让 Avery 编辑简历、采集岗位或完成浏览器任务…' : '聊聊你的问题，或让 Avery 分析资料、提供建议…'} onChange={(event) => setComposer(event.target.value)} onKeyDown={HandleKeyDown} />
+            <ComposerInput key={activeConversationId ?? '__draft__'} inputRef={composerInputRef} value={composer} onChange={setComposer} sessionId={activeConversationId} scenarioId={scenarioId} busy={Boolean(visibleRequestId) || isReloadingContext} skill={selectedSkill} mode={composerMode} onSkillChange={setSelectedSkill} onModeChange={setComposerMode} onSend={() => void HandleSend()} onReload={HandleReloadContext} reloadTrigger={reloadCommandTrigger} onCompositionChange={setIsComposerComposing} placeholder={scenarioId === 'application' ? '让 Avery 编辑简历、采集岗位或完成浏览器任务…' : '聊聊你的问题，或让 Avery 分析资料、提供建议…'} />
             <div className="cmp-bar">
               <div className="cmp-tools">
                 <input ref={inputRef} className="visually-hidden" type="file" multiple accept=".pdf,.doc,.docx,.txt,image/png,image/jpeg,image/gif,image/webp" onChange={HandleFiles} />
@@ -1070,7 +1088,7 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
                     <div className="cp-note">{usagePresentation.title}</div>
                   </div>
                 </div>
-                {visibleRequestId ? <button className="send" type="button" onClick={HandleStop} aria-label="停止生成"><Icon name="stop" size={16} /></button> : <button className="send" type="button" disabled={(!composer.trim() && attachments.length === 0) || attachments.some((attachment) => attachment.status === 'uploading')} onClick={() => void HandleSend()} aria-label="发送消息"><Icon name="send" size={16} /></button>}
+                {visibleRequestId ? <button className="send" type="button" onClick={HandleStop} aria-label="停止生成"><Icon name="stop" size={16} /></button> : <button className="send" type="button" disabled={isComposerComposing || isReloadingContext || (!composer.trim() && attachments.length === 0) || attachments.some((attachment) => attachment.status === 'uploading')} onClick={() => void HandleSend()} aria-label="发送消息"><Icon name="send" size={16} /></button>}
               </div>
             </div>
           </div>
