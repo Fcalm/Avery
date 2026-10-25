@@ -9,6 +9,7 @@ import { IsRuntimeContextMessage } from '@avery/agent-sdk';
 import type { AgentMessage, AgentModules, AgentStreamEvent, BossContactPort, BrowserAutomationPort, BrowserEngine, CompiledInstructions, ConfirmationMode, JobLibraryPort, KernelCheckpoint, ProviderUsageFact, ReasoningEffort, ResumeSnapshot, ScenarioSnapshot, SkillSnapshot } from '@avery/agent-sdk';
 import { AgentFileReader } from './agent-file-reader';
 import { ConversationRecorder } from './conversation-recorder';
+import { ConversationDocumentChanges } from './conversation-document-changes';
 import { ReadConversationResource } from './conversation-resource-reader';
 import { AgentResumePort } from './agent-resume-port';
 import { ResumeLockStore } from './resume-lock-store';
@@ -278,6 +279,9 @@ export class AgentHost {
   private onCronScheduleChanged: () => Promise<void> | void;
   private scheduledRequestIds = new Set<string>();
   private conversationRecorders = new Map<string, ConversationRecorder>();
+  private documentChanges = new ConversationDocumentChanges((requestId, resource) => {
+    this.conversationRecorders.get(requestId)?.AddResource(resource);
+  }, () => this.SaveState());
   private scheduledOutput = new Map<string, { content: string; thinkingContent: string; terminal?: string; needsAttention: boolean }>();
 
   constructor(options: AgentHostOptions) {
@@ -291,6 +295,7 @@ export class AgentHost {
         event = { ...event, sessionId: event.sessionId ?? recorder.sessionId };
         recorder.Accept(event);
       }
+      if (typeof event?.requestId === 'string' && ['completed', 'cancelled', 'error'].includes(event.type)) this.documentChanges.Forget(event.requestId);
       const output = typeof event?.requestId === 'string' ? this.scheduledOutput.get(event.requestId) : undefined;
       if (output) {
         if (event.type === 'content_delta' && typeof event.delta === 'string') output.content += event.delta;
@@ -449,6 +454,7 @@ export class AgentHost {
       this.requestSessions.delete(requestId);
       this.conversationRecorders.get(requestId)?.Dispose();
       this.conversationRecorders.delete(requestId);
+      this.documentChanges.Forget(requestId);
     }
     for (const [id, response] of this.interactionDecisions) if (response.sessionId === sessionId) this.interactionDecisions.delete(id);
     this.SaveState();
@@ -611,6 +617,7 @@ export class AgentHost {
       this.pendingCronTasks = new Map((Array.isArray(state.pendingCronTasks) ? state.pendingCronTasks : [])
         .filter((entry: unknown) => Array.isArray(entry) && typeof entry[0] === 'string' && entry[1] && typeof entry[1] === 'object'));
       this.pendingEdits = new Map(Array.isArray(state.pendingEdits) ? state.pendingEdits : []);
+      this.documentChanges.Restore(state.documentChangeBaselines);
       this.pendingQuestions = new Map(Array.isArray(state.pendingQuestions) ? state.pendingQuestions : []);
       this.pausedRuns = new Map(Array.isArray(state.pausedRuns) ? state.pausedRuns : []);
       this.interactionDecisions = new Map(Array.isArray(state.interactionDecisions) ? state.interactionDecisions : []);
@@ -650,6 +657,7 @@ export class AgentHost {
       pendingBrowserActions: [...this.pendingBrowserActions.entries()],
       pendingCronTasks: [...this.pendingCronTasks.entries()],
       pendingEdits: [...this.pendingEdits.entries()],
+      documentChangeBaselines: this.documentChanges.Snapshot(),
       pendingQuestions: [...this.pendingQuestions.entries()],
       pausedRuns: [...this.pausedRuns.entries()],
       interactionDecisions: [...this.interactionDecisions.entries()],
@@ -867,7 +875,7 @@ export class AgentHost {
         requestId,
         runId: requestId,
         pendingEdits: this.pendingEdits,
-        ports: { resumeWrite: this.resumeWritePort },
+        ports: { resumeWrite: requestId ? this.documentChanges.ResumePort(requestId, this.resumeWritePort, (id) => this.resumeReadPort.ReadCurrent(id)) : this.resumeWritePort },
         ledger: this.CreateToolLedgerPort(),
         emit: (event: object) => this.Emit({ ...event, requestId, sessionId: pending?.sessionId }),
       });
@@ -2115,14 +2123,15 @@ export class AgentHost {
       ports: {
         file: this.fileReader,
         resumeRead: scopedResumeRead,
-        resumeWrite: this.resumeWritePort,
-        profileWrite: {
+        resumeWrite: this.documentChanges.ResumePort(requestId, this.resumeWritePort, (id) => this.resumeReadPort.ReadCurrent(id)),
+        profileWrite: this.documentChanges.ProfilePort(requestId, {
           Save: async ({ profiles: nextProfiles }: any) => {
             const saved = await this.business?.SaveProfiles?.(nextProfiles, false);
             if (!saved || !Number.isSafeInteger(saved.count)) throw new Error('Profile persistence is unavailable.');
+            this.Emit({ type: 'profile_updated', requestId, sessionId });
             return { count: saved.count };
           },
-        },
+        }, () => this.business.ReadProfilesSnapshot()),
         browser: scenarioId === 'application' ? this.browserRuntime : undefined,
         resumeExport: scenarioId === 'application' ? { Export: (input: { resume: ResumeSnapshot; format: 'pdf' | 'png'; sessionId: string; signal?: AbortSignal }) => this.ExportBoundResumeFile(input.resume, input.format, input.sessionId, input.signal) } : undefined,
         jobLibrary: this.jobLibraryPort ? {

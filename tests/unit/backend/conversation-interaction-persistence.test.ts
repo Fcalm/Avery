@@ -120,7 +120,7 @@ describe('Host 会话交互恢复与结算', () => {
     expect(write).toHaveBeenCalledTimes(1);
     expect(presentation.status).toBe('completed');
     expect(presentation.parts.find((part) => part.type === 'tool')).toMatchObject({ status: 'succeeded', toolCallId: 'call1' });
-    expect(presentation.parts.find((part) => part.type === 'resource')).toMatchObject({ resource: { id: 'r1', revision: 2, produced: true } });
+    expect(presentation.parts.find((part) => part.type === 'resource')).toMatchObject({ resource: { id: 'r1', title: '产品简历', revision: 2, produced: true, lineChanges: { added: 1, removed: 1 } } });
     expect(events.filter((event) => event.type === 'conversation_updated').every((event) => event.sessionId === 'owner' && event.requestId === 'req1')).toBe(true);
     await expect(restarted.ConfirmResumeEdit('resume-confirmation-one', true)).rejects.toThrow();
     expect(write).toHaveBeenCalledTimes(1);

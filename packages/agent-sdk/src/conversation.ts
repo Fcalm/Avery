@@ -9,6 +9,8 @@ export interface ConversationResource {
   /** 文件只接受宿主授权的虚拟标识，不传递绝对路径。 */
   fileName?: string;
   produced?: boolean;
+  /** 宿主根据本轮首次成功保存前与最后保存后的正文计算；零差异不展示修改卡片。 */
+  lineChanges?: { added: number; removed: number };
 }
 export type ConversationPart =
   | { id: string; stepId: string; type: 'text'; text: string }
@@ -75,10 +77,15 @@ export function ApplyConversationActivity(
       const upgrade = resource.produced && !existing.resource.produced;
       const attachTool = activity.toolCallId && (!existing.toolCallId || upgrade);
       // 实体事件可能先于工具回执；补齐调用归属时保留同一张卡片及已确认的产物状态。
-      if (upgrade || attachTool) parts = parts.map((part) => part.id === id ? {
+      if (upgrade || attachTool || resource.lineChanges) parts = parts.map((part) => part.id === id ? {
         ...existing,
         ...(attachTool ? { stepId, toolCallId: activity.toolCallId } : {}),
-        resource: { ...existing.resource, ...resource, produced: existing.resource.produced || resource.produced },
+        resource: {
+          ...existing.resource, ...resource,
+          // 通用工具回执只补调用归属，不能覆盖保存端口提供的真实名称与统计。
+          ...(existing.resource.lineChanges && !resource.lineChanges ? { title: existing.resource.title, lineChanges: existing.resource.lineChanges } : {}),
+          produced: existing.resource.produced || resource.produced,
+        },
       } : part);
     }
   }
@@ -104,6 +111,19 @@ export function GetConversationResult(presentation: ConversationPresentation): s
   return presentation.parts.slice(lastTool + 1).flatMap((part) => part.type === 'text' ? [part.text] : []).join('\n\n');
 }
 
+/** 每轮每份资料只保留最后保存的产物；首尾正文相同的修改不占用卡片。旧记录不补造行数。 */
+export function GetConversationArtifacts(presentation: ConversationPresentation): ConversationResource[] {
+  const latest = new Map<string, ConversationResource>();
+  for (const part of presentation.parts) {
+    if (part.type !== 'resource' || !part.resource.produced) continue;
+    const resource = part.resource, key = JSON.stringify([resource.kind, resource.id]);
+    const previous = latest.get(key);
+    if (previous && (previous.revision ?? 0) > (resource.revision ?? 0)) continue;
+    latest.set(key, resource);
+  }
+  return [...latest.values()].filter((resource) => !resource.lineChanges || resource.lineChanges.added > 0 || resource.lineChanges.removed > 0);
+}
+
 /** 磁盘快照的基础校验；结构不合法时不把它当成新的展示协议。 */
 export function IsConversationPresentation(value: unknown): value is ConversationPresentation {
   if (!value || typeof value !== 'object') return false;
@@ -124,6 +144,9 @@ export function IsConversationPresentation(value: unknown): value is Conversatio
         && typeof part.resource.id === 'string' && typeof part.resource.title === 'string'
         && (part.resource.revision === undefined || Number.isSafeInteger(part.resource.revision) && part.resource.revision > 0)
         && (part.resource.fileName === undefined || typeof part.resource.fileName === 'string')
+        && (part.resource.lineChanges === undefined || !!part.resource.lineChanges
+          && Number.isSafeInteger(part.resource.lineChanges.added) && part.resource.lineChanges.added >= 0
+          && Number.isSafeInteger(part.resource.lineChanges.removed) && part.resource.lineChanges.removed >= 0)
         && (part.resource.produced === undefined || typeof part.resource.produced === 'boolean');
       return false;
     });

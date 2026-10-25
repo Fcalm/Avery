@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AgentHost } from '../../../apps/backend/src/electron/backend/agent-host';
 import { CreateDefaultModules } from '../../../packages/agent-modules-defaults/src/index';
-import type { BrowserActionProposal, BrowserAutomationPort, ModelCompletion } from '../../../packages/agent-sdk/src/index';
+import { GetConversationArtifacts, type BrowserActionProposal, type BrowserAutomationPort, type ConversationPresentation, type ModelCompletion } from '../../../packages/agent-sdk/src/index';
 import { JobLibraryCollectionService } from '../../../apps/backend/src/electron/backend/job-library-collection-service';
 
 const temporaryRoots: string[] = [];
@@ -243,6 +243,33 @@ describe('AgentHost 浏览器失败与用户接管', () => {
       expect(resume.content).toBe(content);
       expect(events).toContainEqual(expect.objectContaining({ type: 'completed', requestId: 'work-local-edit' }));
       expect(save).toHaveBeenCalledTimes(1);
+    } finally { await host.Close(); }
+  });
+
+  it('工作模式档案真实保存后发布产物，统计首尾差异并刷新原资料侧栏', async () => {
+    let profiles = [{ id: 'profile-work', category: 'work', title: '工作经历', content: '第一行\n旧表述', updatedAt: '' }];
+    const provider = CreateProvider((index) => {
+      if (index === 0) return ToolCall(index, 'ReadProfile');
+      if (index === 1 || index === 2) return ToolCall(index, 'UpdateProfile', {
+        items: [{ ...profiles[0], content: index === 1 ? '第一行\n中间表述\n临时行' : '第一行\n最终表述' }].map(({ updatedAt, ...item }) => item),
+      });
+      return { content: '档案已保存。', toolCalls: [] };
+    });
+    const { host, business, events } = await CreateHost(provider, { Close: vi.fn(async () => undefined), ResetPageReferences: vi.fn() } as never);
+    let presentation: ConversationPresentation | undefined;
+    Object.assign(business, {
+      GetProfiles: async () => ({ items: structuredClone(profiles) }),
+      ReadProfilesSnapshot: async () => structuredClone(profiles),
+      SaveProfiles: async (items: typeof profiles) => { profiles = structuredClone(items); return { count: profiles.length }; },
+      SaveConversationPresentation: async (_id: string, value: ConversationPresentation) => { presentation = value; return { saved: true }; },
+    });
+    try {
+      await host.Send({ requestId: 'profile-artifact', sessionId: 'profile-artifact-session', scenarioId: 'application', confirmationMode: 'fully_trusted', content: '请修改工作经历的第二行' });
+      expect(profiles[0].content).toBe('第一行\n最终表述');
+      expect(presentation?.status).toBe('completed');
+      expect(GetConversationArtifacts(presentation!)).toEqual([{ kind: 'profile', id: 'profile-work', title: '工作经历', produced: true, lineChanges: { added: 1, removed: 1 } }]);
+      expect(events.filter((event) => event.type === 'profile_updated')).toHaveLength(2);
+      expect((host as any).documentChanges.Snapshot()).toEqual([]);
     } finally { await host.Close(); }
   });
 

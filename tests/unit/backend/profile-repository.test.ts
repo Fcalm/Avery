@@ -11,6 +11,22 @@ afterEach(async () => {
 });
 
 describe('ProfileRepository', () => {
+  it('统计快照读取实际原文，但不刷新外部改动检测的哈希基线', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'avery-profile-changes-'));
+    temporaryRoots.push(root);
+    const profilePath = join(root, 'profile.json');
+    const original = { id: 'p1', category: '个人信息', title: '信息', content: '旧正文' };
+    await writeFile(profilePath, JSON.stringify({ items: [original] }), 'utf8');
+    const repository = new ProfileRepository({ profilePath });
+    repository.Load([]);
+    const beforeHash = repository.GetHash();
+    await writeFile(profilePath, JSON.stringify({ items: [{ ...original, content: '外部修改' }] }), 'utf8');
+    expect(await repository.ReadSnapshot()).toEqual([expect.objectContaining({ content: '外部修改' })]);
+    expect(repository.GetHash()).toBe(beforeHash);
+    expect(repository.IsModified()).toBe(true);
+    expect(() => repository.Save([original])).toThrow('modified outside');
+  });
+
   it('读取时忽略已删除分类的旧档案', async () => {
     const root = await mkdtemp(join(tmpdir(), 'avery-profile-repository-'));
     temporaryRoots.push(root);

@@ -612,6 +612,8 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
       return;
     }
     if (event.type === 'cron_task_changed') return;
+    // 档案保存后同步原有资料侧栏的数据，避免卡片打开的仍是缓存中的旧正文。
+    if (event.type === 'profile_updated') { void RefreshWorkspacePreservingMessages(); return; }
     if (event.type === 'cron_run_completed') { void RefreshWorkspacePreservingMessages(); return; }
     if (event.type === 'browser_action_completed' && event.browserAction) {
       if (owner) setPendingBrowserActionForSession(owner, (current) => current?.requestId === event.requestId ? null : current);

@@ -75,7 +75,7 @@ export interface AgentStreamEvent {
   /** 面向用户的过程事件与宿主确认后的完整投影，不含原始工具参数。 */
   activity?: import('@avery/agent-sdk').ConversationActivity;
   presentation?: import('@avery/agent-sdk').ConversationPresentation;
-  type: 'conversation_save_error' | 'conversation_activity' | 'conversation_updated' | 'thinking_delta' | 'content_delta' | 'completed' | 'cancelled' | 'error' | 'run_released' | 'run_resumed' | 'resume_updated' | 'resume_created' | 'resume_confirmation' | 'cron_task_confirmation' | 'cron_task_changed' | 'cron_run_completed' | 'task_created' | 'task_updated' | 'task_deleted' | 'question_requested' | 'waiting_user_input' | 'waiting_confirmation' | 'paused' | 'browser_confirmation' | 'browser_action_completed' | 'browser_user_action';
+  type: 'conversation_save_error' | 'conversation_activity' | 'conversation_updated' | 'thinking_delta' | 'content_delta' | 'completed' | 'cancelled' | 'error' | 'run_released' | 'run_resumed' | 'resume_updated' | 'resume_created' | 'profile_updated' | 'resume_confirmation' | 'cron_task_confirmation' | 'cron_task_changed' | 'cron_run_completed' | 'task_created' | 'task_updated' | 'task_deleted' | 'question_requested' | 'waiting_user_input' | 'waiting_confirmation' | 'paused' | 'browser_confirmation' | 'browser_action_completed' | 'browser_user_action';
   requestId?: string;
   sessionId?: string;
   delta?: string;

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { ApplyConversationActivity, CreateConversationPresentation, GetConversationResult, IsConversationPresentation, MatchConversationResourceHref, type ConversationActivity } from '../../../packages/agent-sdk/src/conversation';
+import { ApplyConversationActivity, CreateConversationPresentation, GetConversationArtifacts, GetConversationResult, IsConversationPresentation, MatchConversationResourceHref, type ConversationActivity } from '../../../packages/agent-sdk/src/conversation';
 import { RunAgentLoop } from '../../../packages/agent-core/src/kernel';
 import { GetToolResources } from '../../../packages/agent-core/src/conversation-resources';
 import { CreateKernelHarness, CreateRegisteredTool } from './test-helpers';
@@ -9,6 +9,34 @@ function Project(activities: ConversationActivity[]) {
 }
 
 describe('会话展示投影', () => {
+  it('产物保留最后版本和首尾统计，重复回执不覆盖真实名称，读取不会覆盖产物', () => {
+    const resource = { kind: 'resume' as const, id: 'r1', title: '产品简历', revision: 2, produced: true, lineChanges: { added: 3, removed: 2 } };
+    const value = Project([
+      { kind: 'resource', resource },
+      { kind: 'resource', stepId: 's1', toolCallId: 'c1', resource: { ...resource, title: '简历', lineChanges: undefined } },
+      { kind: 'resource', resource: { ...resource, revision: 3, lineChanges: { added: 1, removed: 1 } } },
+      { kind: 'resource', resource: { ...resource, produced: false, lineChanges: undefined } },
+    ]);
+    expect(value.parts[0]).toMatchObject({ toolCallId: 'c1', resource: { title: '产品简历', lineChanges: { added: 3, removed: 2 } } });
+    expect(GetConversationArtifacts(value)).toEqual([{ ...resource, revision: 3, lineChanges: { added: 1, removed: 1 } }]);
+    expect(IsConversationPresentation(JSON.parse(JSON.stringify(value)))).toBe(true);
+  });
+
+  it('同一档案更新统计归零后隐藏；多份资料保持独立，旧记录不补造行数', () => {
+    const profile = { kind: 'profile' as const, id: 'p1', title: '求职意向', produced: true };
+    const value = Project([
+      { kind: 'resource', resource: { ...profile, lineChanges: { added: 2, removed: 1 } } },
+      { kind: 'resource', resource: { kind: 'resume', id: 'r1', title: '旧版简历', produced: true } },
+      { kind: 'resource', resource: { ...profile, lineChanges: { added: 0, removed: 0 } } },
+      { kind: 'resource', resource: { kind: 'profile', id: 'p2', title: '只读档案', produced: false } },
+    ]);
+    expect(GetConversationArtifacts(value)).toEqual([{ kind: 'resume', id: 'r1', title: '旧版简历', produced: true }]);
+    const invalid = structuredClone(value);
+    const part = invalid.parts[0];
+    if (part.type === 'resource') part.resource.lineChanges = { added: -1, removed: 0 };
+    expect(IsConversationPresentation(invalid)).toBe(false);
+  });
+
   it('分开的思考块保持顺序，同块增量拼接，旧序号不能回滚', () => {
     const value = Project([
       { kind: 'reasoning', stepId: 'step1', partId: 'reason1', delta: '先' },

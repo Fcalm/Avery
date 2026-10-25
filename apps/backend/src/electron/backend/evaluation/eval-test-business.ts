@@ -18,6 +18,7 @@ export class EvalTestBusiness {
 
   GetStoredSettings(): any { return this.browserEngine ? { browserEngine: this.browserEngine } : {}; }
   GetProfiles(): any { return { items: structuredClone(this.profiles), hash: null, modified: false }; }
+  async ReadProfilesSnapshot(): Promise<unknown[]> { return structuredClone(this.profiles); }
   SaveProfiles(items: unknown[]): any { this.profiles = structuredClone(items); return { count: this.profiles.length, revision: 1 }; }
   LoadViewModel(): any { return { conversations: [], resumes: structuredClone(this.resumes), jobs: [], applications: [] }; }
 

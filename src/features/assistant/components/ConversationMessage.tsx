@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { GetConversationResult } from '@avery/agent-sdk';
+import { GetConversationArtifacts, GetConversationResult } from '@avery/agent-sdk';
 import type { ChatMessageDto, ConversationPart, ConversationResource, ConversationToolStatus } from '@avery/contracts';
 import { Icon, type IconName } from '../../../shared/components/Icon';
 import { MarkdownText } from '../../../shared/components/MarkdownText';
@@ -42,17 +42,12 @@ export function ConversationMessage({ message, onOpenResource, authorizedResourc
   const { parts, status } = presentation;
   const resources = parts.flatMap((part) => part.type === 'resource' ? [part.resource] : []);
   const linkResources = [...resources, ...authorizedResources];
+  const artifacts = GetConversationArtifacts(presentation);
   let lastTool = -1;
   parts.forEach((part, index) => { if (part.type === 'tool') lastTool = index; });
-  const process = parts.filter((part, index) => !completed || part.type !== 'text' || index <= lastTool);
+  const process = parts.filter((part, index) => part.type !== 'resource' && (!completed || part.type !== 'text' || index <= lastTool));
   const renderPart = (part: ConversationPart) => {
-    if (part.type === 'resource') {
-      const resource = part.resource;
-      return resource.produced ? <button key={part.id} className="conversation-resource" type="button" onClick={() => onOpenResource(resource)}>
-        <span className="conversation-resource-symbol"><Icon name={ResourceMeta[resource.kind].icon} size={22} /></span>
-        <span className="conversation-resource-copy"><strong>{resource.title}{resource.revision && <small>v{resource.revision}</small>}</strong><span>{ResourceMeta[resource.kind].label} · 已保存，点击查看</span></span><Icon name="arrow-right" size={15} />
-      </button> : null;
-    }
+    if (part.type === 'resource') return null;
     if (part.type === 'text') return <div key={part.id} className="conversation-process-text"><MarkdownText content={part.text} resources={linkResources} onOpenResource={onOpenResource} /></div>;
     if (part.type === 'reasoning') return <details key={part.id} className="conversation-reason">
       <summary><Icon name="brain" size={14} /><span>深度思考</span><Icon name="chevron-right" className="conversation-chevron" size={10} /></summary>
@@ -95,6 +90,19 @@ export function ConversationMessage({ message, onOpenResource, authorizedResourc
       </div>
     </details>}
     {completed && <MarkdownText content={GetConversationResult(presentation)} resources={linkResources} onOpenResource={onOpenResource} />}
+    {completed && artifacts.length > 0 && <div className="conversation-artifacts" aria-label="本轮产物">
+      {artifacts.map((resource) => <button key={JSON.stringify([resource.kind, resource.id])} className="conversation-resource" type="button" onClick={() => onOpenResource(resource)} aria-label={`查看${ResourceMeta[resource.kind].label}：${resource.title}${resource.revision ? `，版本 ${resource.revision}` : ''}`}>
+        <span className="conversation-resource-symbol"><Icon name={ResourceMeta[resource.kind].icon} size={22} /></span>
+        <span className="conversation-resource-copy">
+          <strong><span>{resource.title}</span>{resource.revision !== undefined && <small>v{resource.revision}</small>}</strong>
+          {resource.lineChanges && <span className="conversation-resource-changes">
+            {resource.lineChanges.added > 0 && <span className="is-added" aria-label={`新增 ${resource.lineChanges.added} 行`}>+{resource.lineChanges.added}</span>}
+            {resource.lineChanges.removed > 0 && <span className="is-removed" aria-label={`删除 ${resource.lineChanges.removed} 行`}>−{resource.lineChanges.removed}</span>}
+          </span>}
+        </span>
+        <Icon name="arrow-right" size={15} />
+      </button>)}
+    </div>}
     {presentation.error && <p className="conversation-run-error" role="alert">{presentation.error}</p>}
     {status === 'cancelled' && <p className="conversation-run-note">已停止生成，已保留本轮过程。</p>}
   </div>;

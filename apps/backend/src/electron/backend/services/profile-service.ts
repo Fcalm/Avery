@@ -31,6 +31,9 @@ export class ProfileService {
     return { items: result.items, hash: result.hash, modified: this.repository.IsModified() };
   }
 
+  /** Agent 写入统计读取原文，不改变冲突基线和附件关联。 */
+  ReadSnapshot(): Promise<import('@avery/agent-sdk').ProfileSnapshotItem[]> { return this.repository.ReadSnapshot(); }
+
   /** 原子写入档案；检测到外部修改时除非强制覆盖（保留应用版本）否则拒绝。 */
   Save(items: any[], force = false): any {
     this.workspaceOperations.RequireWritable();

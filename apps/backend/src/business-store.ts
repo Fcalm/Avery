@@ -387,6 +387,8 @@ export class BusinessStore {
   LoadProfiles(fallback: any): any { return this.profileService.Load(fallback); }
   /** 读取档案及外部修改状态，供启动恢复与冲突界面使用。 */
   GetProfiles(): any { return this.profileService.Get(); }
+  /** 仅供宿主在 Agent 保存前读取；不作为 Renderer IPC 能力暴露。 */
+  ReadProfilesSnapshot(): Promise<import('@avery/agent-sdk').ProfileSnapshotItem[]> { return this.profileService.ReadSnapshot(); }
   /** 原子写入档案；检测到外部修改时除非强制覆盖（保留应用版本）否则拒绝。 */
   SaveProfiles(items: any[], force = false): any { return this.profileService.Save(items, force); }
   /** 重新加载磁盘档案版本并更新基线，供冲突界面「重新加载磁盘版本」使用。 */

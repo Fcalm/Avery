@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { closeSync, existsSync, fsyncSync, openSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { readFile } from 'node:fs/promises';
 import { GetNow } from './helpers';
 import { IsCurrentProfileCategory, ProfileItemToStorage, ProfileItemToDisplay } from './enum-map';
 
@@ -10,6 +11,19 @@ export class ProfileRepository {
 
   constructor({ profilePath }: { profilePath: string }) {
     this.profilePath = profilePath;
+  }
+
+  /** 写入统计专用只读快照，不刷新 profileHash，避免把外部改动认可为新的写入基线。 */
+  async ReadSnapshot(): Promise<import('@avery/agent-sdk').ProfileSnapshotItem[]> {
+    let raw: string;
+    try { raw = await readFile(this.profilePath, 'utf8'); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+      throw error;
+    }
+    const parsed = JSON.parse(raw) as { items?: unknown };
+    if (!Array.isArray(parsed.items)) throw new Error('Profiles payload is invalid.');
+    return parsed.items.map(ProfileItemToDisplay).filter((item) => IsCurrentProfileCategory(item?.category));
   }
 
   /** 读取档案并认可当前磁盘内容为哈希基线；缺失或损坏时返回安全回退值。 */
