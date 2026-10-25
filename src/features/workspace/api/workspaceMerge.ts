@@ -1,6 +1,12 @@
 import type { ChatMessageDto, ConversationDto } from '@avery/contracts';
 import type { WorkspaceData } from './workspaceData';
 
+/** 正文与投影可以更新，创建时间不能随内容版本回退到发送时的乐观值，否则会重排整轮消息。 */
+function KeepMessageCreationTime(message: ChatMessageDto, positioned: ChatMessageDto): ChatMessageDto {
+  return positioned.createdAt === undefined || message.createdAt === positioned.createdAt
+    ? message : { ...message, createdAt: positioned.createdAt };
+}
+
 /**
  * 会话消息是 append-only 事实流。后台刷新可能返回开始请求时的旧快照，不能因此删除
  * Renderer 已追加或正在流式生成的消息；同 ID 消息保留正文更完整的一份。
@@ -14,14 +20,15 @@ export function MergeAppendOnlyMessages(local: ChatMessageDto[], remote: ChatMes
     if (!order.has(message.id)) order.set(message.id, nextOrder++);
     const existing = merged.get(message.id);
     if (!existing) { merged.set(message.id, message); return; }
-    if (!preferRicher) { merged.set(message.id, message); return; }
+    if (!preferRicher) { merged.set(message.id, KeepMessageCreationTime(message, existing)); return; }
     if (existing.presentation || message.presentation) {
-      merged.set(message.id, (message.presentation?.sequence ?? -1) > (existing.presentation?.sequence ?? -1) ? message : existing);
+      const latest = (message.presentation?.sequence ?? -1) > (existing.presentation?.sequence ?? -1) ? message : existing;
+      merged.set(message.id, KeepMessageCreationTime(latest, existing));
       return;
     }
     const existingSize = existing.content.length + (existing.thinkingContent?.length ?? 0);
     const candidateSize = message.content.length + (message.thinkingContent?.length ?? 0);
-    merged.set(message.id, candidateSize > existingSize ? message : existing);
+    merged.set(message.id, KeepMessageCreationTime(candidateSize > existingSize ? message : existing, existing));
   };
 
   local.forEach((message) => add(message, false));
@@ -64,7 +71,8 @@ export function MergeConversationSnapshot(
     if (!previous || !IsSameMessage(previous, localMessage)) {
       const remoteMessage = merged.get(localMessage.id);
       if ((remoteMessage?.presentation?.sequence ?? -1) > (localMessage.presentation?.sequence ?? -1)) continue;
-      merged.set(localMessage.id, localMessage);
+      // remote 来自后端事实源；即使本地正文/投影更新，也必须保留对应消息已经落库的创建时间。
+      merged.set(localMessage.id, remoteMessage ? KeepMessageCreationTime(localMessage, remoteMessage) : localMessage);
     }
   }
   const order = new Map(local.messages.map((message, index) => [message.id, index]));
