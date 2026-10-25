@@ -4,7 +4,8 @@
 .user-message-attachment{display:inline-flex;align-items:center;gap:5px;max-width:100%;min-width:0;border:1px solid var(--border);border-radius:var(--r-pill);padding:3px 8px;background:var(--bg);color:var(--text-2);font-size:11.5px;line-height:20px}
 .user-message-attachment>.ph{flex:none;color:var(--text-3)}
 .user-message-attachment>span{min-width:0;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.user-message-skill{display:inline-flex;align-items:flex-end;gap:4px;max-width:100%;margin-right:8px;color:var(--accent);font-weight:600;line-height:1;vertical-align:baseline;white-space:nowrap}
+/* 为字母下伸部和中文保留完整行盒；省略号容器会同时裁切纵向溢出，不能压到一倍行高。 */
+.user-message-skill{display:inline-flex;align-items:baseline;gap:4px;max-width:100%;margin-right:8px;color:var(--accent);font-weight:600;line-height:1.5;vertical-align:baseline;white-space:nowrap}
 .user-message-skill>.ph{flex:none}
 .user-message-skill>span{min-width:0;overflow:hidden;text-overflow:ellipsis}
 .conversation-response{min-width:0;overflow-wrap:anywhere}
