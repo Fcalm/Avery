@@ -1,5 +1,6 @@
 import type { AgentStreamEvent } from './events';
 import type { ModuleManifest, SlotName } from './manifest';
+import type { ProviderUsageSnapshot } from './provider-usage';
 import type { RegisteredAgentTool, ToolContext } from './tools';
 import type { AgentMessage, CompiledInstructions, LogEntry, ModelCompletion, ModelDelta, ModelSummary, ProviderUsageFact, ReasoningEffort, RuntimeContext, ToolCallFragment, ToolExecutionResult, TraceEntry, TraceEventEntry } from './types';
 
@@ -39,6 +40,8 @@ export interface ModelProviderModule extends ModuleManifest {
   Configure(input: unknown): Promise<{ configured: boolean; provider: string; model: string }>;
   TestConnection(input: unknown): Promise<{ connected: boolean; provider: string; baseUrl: string }>;
   GetBalance(): Promise<{ available: boolean; balances: Array<{ currency: string; totalBalance: string }> }>;
+  /** 可选的多供应商账户查询能力，兼容尚未实现该能力的外置 Provider 模块。 */
+  GetProviderUsage?(): Promise<ProviderUsageSnapshot>;
   GetModels(provider?: string): Promise<{ provider: string; models: string[] }>;
   GetProviderCatalog(): Promise<{ providers: Array<{ provider: string; configured: boolean; model: string; models: string[]; baseUrl: string; contextLimit: number; contextLimitMode: 'default' | 'custom'; compressionThreshold: number; thinkingEnabled: boolean }> }>;
   GetStatus(provider?: string): Promise<{

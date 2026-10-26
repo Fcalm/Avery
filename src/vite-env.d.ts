@@ -14,6 +14,11 @@ interface DesktopWindowBridge {
   OnMaximizedChange: (listener: (maximized: boolean) => void) => () => void;
   GetWorkspaceDirectory: () => Promise<string>;
   OpenDeepSeekApiKeys: () => Promise<ResultEnvelope<boolean>>;
+  OpenProviderDashboard: (provider: string) => Promise<ResultEnvelope<boolean>>;
+  /** MiMo 控制台 Cookie 只在主进程的隔离会话中使用，桥接仅返回脱敏状态。 */
+  ReadMimoAccountUsage: () => Promise<ResultEnvelope<import('@avery/contracts').ProviderAccountUsage>>;
+  OpenMimoAccountLogin: () => Promise<ResultEnvelope<{ authorized: boolean }>>;
+  DisconnectMimoAccount: () => Promise<ResultEnvelope<boolean>>;
   WriteClipboardText: (text: string) => Promise<ResultEnvelope<boolean>>;
   OpenWorkspaceDirectory: () => Promise<boolean>;
   SetLoginItemSettings: (openAtLogin: boolean) => Promise<boolean>;

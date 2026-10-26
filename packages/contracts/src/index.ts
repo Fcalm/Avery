@@ -1,5 +1,6 @@
 /** Avery 跨进程契约包：错误码、信封、DTO 与 Bridge 类型的唯一来源。 */
 export type { ConversationActivity, ConversationPart, ConversationPresentation, ConversationResource, ConversationRunStatus, ConversationToolStatus } from '@avery/agent-sdk';
+export type { ProviderAmount, ProviderQuotaWindow, ProviderAccountUsage, ProviderUsageSnapshot } from '@avery/agent-sdk';
 export { ErrorCode } from './error-codes';
 export type { ErrorCodeValue } from './error-codes';
 export { ErrorInfoSchema, RequestEnvelopeSchema, ResultEnvelopeSchema, WriteCommandEnvelopeSchema, CreateResultSuccess, CreateResultFailure } from './envelope';

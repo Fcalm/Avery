@@ -8,6 +8,12 @@ import { AgentRunService } from '../../../apps/backend/src/electron/backend/serv
  * 这里把 IPC → Router → 应用服务门面 → AgentHost 的参数转发钉死，防止回归。
  */
 describe('Router 读通道参数转发', () => {
+  it('供应商用量通过只读路由及服务门面读取', async () => {
+    const GetProviderUsage = vi.fn(async () => ({ providers: [], checkedAt: '2026-10-25T00:00:00Z' }));
+    const backend = CreateBackend({ container: { agent: new AgentRunService({ agentHost: { GetProviderUsage } }) } });
+    const result = await backend.HandleCommand('agent:get-provider-usage', 'usage-1', undefined) as { ok: boolean };
+    expect(result.ok).toBe(true); expect(GetProviderUsage).toHaveBeenCalledOnce();
+  });
   it('agent:get-models 的 provider 参数穿过应用服务门面到达 AgentHost', async () => {
     const GetModels = vi.fn(async (provider?: unknown) => ({ provider, models: [] }));
     // 生产容器把 agent 注册为 AgentRunService 门面：门面漏转发参数时，这里会拿到 undefined（被当成 DeepSeek）。

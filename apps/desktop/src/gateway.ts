@@ -3,6 +3,7 @@ import { release } from 'node:os';
 import type { BrowserWindow, IpcMain, IpcMainInvokeEvent } from 'electron';
 import { FunctionRouteChannels, MethodRoutes, WriteCommandChannels } from '@avery/backend/dist/router';
 import { WriteCommandEnvelopeSchema } from '@avery/contracts';
+import type { MimoAccountService } from './mimo-account';
 
 export const MaxGatewayPayloadBytes = 10 * 1024 * 1024;
 export const WindowControlChannels = ['window:minimize', 'window:toggle-maximize', 'window:is-maximized', 'window:close'] as const;
@@ -119,8 +120,34 @@ async function NotifyRunCompleted({ backendHost, webContentsGetter, iconPath }: 
 }
 
 /** 系统能力通道：文本复制、固定服务商链接、工作空间目录与开机自启；均校验请求来源。 */
-export function RegisterGeneralControls({ webContentsGetter, workspacePath, ipcMainApi = ipcMain }: { webContentsGetter: () => BrowserWindow | undefined; workspacePath: string; ipcMainApi?: IpcMainPort }): void {
+export function RegisterGeneralControls({ webContentsGetter, workspacePath, ipcMainApi = ipcMain, mimoAccount }: { webContentsGetter: () => BrowserWindow | undefined; workspacePath: string; ipcMainApi?: IpcMainPort; mimoAccount?: Pick<MimoAccountService, 'ReadUsage' | 'OpenLogin' | 'Disconnect'> }): void {
   const clipboardLimiter = CreateGatewayLimiter();
+  // 账户登录和会话读取只向可信主窗口开放，无参数接口不接收 Cookie、URL 或请求头。
+  const accountActions: Record<string, () => Promise<unknown>> = {
+    'app:mimo-account-usage': async () => mimoAccount!.ReadUsage(),
+    'app:mimo-account-login': async () => mimoAccount!.OpenLogin(),
+    'app:mimo-account-disconnect': async () => { await mimoAccount!.Disconnect(); return true; },
+  };
+  for (const [channel, action] of Object.entries(accountActions)) {
+    ipcMainApi.handle(channel, async (event, ...args: unknown[]): Promise<ResultEnvelope> => {
+      if (!ValidateSender(event, webContentsGetter)) return { ok: false, error: { code: 'PERMISSION_DENIED', message: '账户请求来源无效。', retryable: false } };
+      if (args.length) return { ok: false, error: { code: 'VALIDATION_ERROR', message: '此账户操作不接受参数。', retryable: false } };
+      if (!mimoAccount) return { ok: false, error: { code: 'INTERNAL_ERROR', message: 'MiMo 账户服务尚未就绪，请重启 Avery。', retryable: true } };
+      if (!clipboardLimiter.Allow(`${event.sender.id}:${channel}`)) return { ok: false, error: { code: 'WORKSPACE_BUSY', message: '账户操作过于频繁，请稍后重试。', retryable: true } };
+      try { return { ok: true, data: await action() }; }
+      catch { return { ok: false, error: { code: 'INTERNAL_ERROR', message: 'MiMo 账户操作失败，请稍后重试。', retryable: true } }; }
+    });
+  }
+  // 只接收供应商 ID，URL 由主进程固定；不允许 Renderer 或外置模块指定外链地址。
+  ipcMainApi.handle('app:open-provider-dashboard', async (event, ...args: unknown[]): Promise<ResultEnvelope> => {
+    if (!ValidateSender(event, webContentsGetter)) return { ok: false, error: { code: 'PERMISSION_DENIED', message: '外部链接请求来源无效。', retryable: false } };
+    const dashboards: Record<string, string> = { DeepSeek: 'https://platform.deepseek.com/usage', MIMO: 'https://platform.xiaomimimo.com/#/console/balance', 'Z.AI': 'https://open.bigmodel.cn/finance-center/finance/overview' };
+    const provider = args[0];
+    if (args.length !== 1 || typeof provider !== 'string' || !Object.hasOwn(dashboards, provider)) return { ok: false, error: { code: 'VALIDATION_ERROR', message: '不支持该供应商的控制台入口。', retryable: false } };
+    if (!clipboardLimiter.Allow(`${event.sender.id}:provider-dashboard`)) return { ok: false, error: { code: 'WORKSPACE_BUSY', message: '打开链接过于频繁，请稍后重试。', retryable: true } };
+    try { await shell.openExternal(dashboards[provider]); return { ok: true, data: true }; }
+    catch { return { ok: false, error: { code: 'INTERNAL_ERROR', message: '无法打开系统浏览器，请稍后重试。', retryable: true } }; }
+  });
   // 只开放引导需要的固定 HTTPS 页面，不接受 Renderer 提供任意 URL 或协议。
   ipcMainApi.handle('app:open-deepseek-api-keys', async (event, ...args: unknown[]): Promise<ResultEnvelope> => {
     if (!ValidateSender(event, webContentsGetter)) return { ok: false, error: { code: 'PERMISSION_DENIED', message: '外部链接请求来源无效。', retryable: false } };

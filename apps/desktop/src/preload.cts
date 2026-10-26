@@ -23,6 +23,7 @@ const agentBridge: DesktopAgentBridge = {
   Configure: (config) => invoke('agent:configure', config) as ReturnType<DesktopAgentBridge['Configure']>,
   TestConnection: (config) => invoke('agent:test-connection', config) as ReturnType<DesktopAgentBridge['TestConnection']>,
   GetBalance: () => invoke('agent:get-balance') as ReturnType<DesktopAgentBridge['GetBalance']>,
+  GetProviderUsage: () => invoke('agent:get-provider-usage') as ReturnType<DesktopAgentBridge['GetProviderUsage']>,
   GetModels: (provider) => invoke('agent:get-models', provider) as ReturnType<DesktopAgentBridge['GetModels']>,
   GetProviderCatalog: () => invoke('agent:get-provider-catalog') as ReturnType<DesktopAgentBridge['GetProviderCatalog']>,
   Send: (request) => invoke('agent:send', request) as ReturnType<DesktopAgentBridge['Send']>,
@@ -155,6 +156,10 @@ contextBridge.exposeInMainWorld('averyWindow', {
   GetWorkspaceDirectory: () => invoke('app:get-workspace-directory') as Promise<string>,
   /** 固定服务商链接；主进程校验来源，不开放任意外部导航。 */
   OpenDeepSeekApiKeys: () => invoke('app:open-deepseek-api-keys') as Promise<ResultEnvelope<boolean>>,
+  OpenProviderDashboard: (provider: string) => invoke('app:open-provider-dashboard', provider) as Promise<ResultEnvelope<boolean>>,
+  ReadMimoAccountUsage: () => invoke('app:mimo-account-usage') as Promise<ResultEnvelope<import('@avery/contracts').ProviderAccountUsage>>,
+  OpenMimoAccountLogin: () => invoke('app:mimo-account-login') as Promise<ResultEnvelope<{ authorized: boolean }>>,
+  DisconnectMimoAccount: () => invoke('app:mimo-account-disconnect') as Promise<ResultEnvelope<boolean>>,
   /** 只写入纯文本；来源与长度由主进程校验，不向页面暴露 Electron clipboard。 */
   WriteClipboardText: (text: string) => invoke('app:write-clipboard-text', text) as Promise<ResultEnvelope<boolean>>,
   OpenWorkspaceDirectory: () => invoke('app:open-workspace-directory') as Promise<boolean>,

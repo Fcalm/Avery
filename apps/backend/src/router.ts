@@ -22,6 +22,7 @@ export const MaxCommandPayloadBytes = 10 * 1024 * 1024;
 
 /** 只读命令通道集合：工作空间迁移期间仍放行，保证 UI 能读到当前数据。 */
 export const ReadOnlyChannels = new Set<string>([
+  'agent:get-provider-usage',
   'workspace:status', 'workspace:get-view-model', 'workspace:get-settings',
   'workspace:jobs-query',
   'workspace:job-collection-sources', 'workspace:job-collection-task',
@@ -52,6 +53,7 @@ export const MethodRoutes: Record<string, MethodRoute> = {
   'agent:configure': { service: 'agent', method: 'Configure' },
   'agent:test-connection': { service: 'agent', method: 'TestConnection' },
   'agent:get-balance': { service: 'agent', method: 'GetBalance' },
+  'agent:get-provider-usage': { service: 'agent', method: 'GetProviderUsage' },
   'agent:get-models': { service: 'agent', method: 'GetModels' },
   'agent:get-provider-catalog': { service: 'agent', method: 'GetProviderCatalog' },
   'agent:send': { service: 'agent', method: 'Send' },

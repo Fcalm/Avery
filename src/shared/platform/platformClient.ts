@@ -68,6 +68,24 @@ function ResolveWriteOptions(options?: WriteCommandOptions): WriteCommandOptions
 /** 统一平台客户端：页面与 feature api 层访问桌面 Bridge 的唯一入口，全部返回统一结果信封。 */
 export const platformClient = {
   desktop: {
+    /** 账户授权仅操作主进程持有的固定 MiMo 会话，不接收任意网址或登录凭据。 */
+    ReadMimoAccountUsage: () => CallBridge(() => {
+      if (!window.averyWindow?.ReadMimoAccountUsage) throw new AppError(ErrorCode.INTERNAL_ERROR, '请重启 Avery 后查看 MiMo 余额。');
+      return Unwrap(window.averyWindow.ReadMimoAccountUsage());
+    }),
+    OpenMimoAccountLogin: () => CallBridge(() => {
+      if (!window.averyWindow?.OpenMimoAccountLogin) throw new AppError(ErrorCode.INTERNAL_ERROR, '请重启 Avery 后登录 MiMo。');
+      return Unwrap(window.averyWindow.OpenMimoAccountLogin());
+    }),
+    DisconnectMimoAccount: () => CallBridge(() => {
+      if (!window.averyWindow?.DisconnectMimoAccount) throw new AppError(ErrorCode.INTERNAL_ERROR, '请重启 Avery 后断开 MiMo 授权。');
+      return Unwrap(window.averyWindow.DisconnectMimoAccount());
+    }),
+    /** 主进程仅接受已知供应商 ID，禁止向系统传递任意 URL。 */
+    OpenProviderDashboard: (provider: string) => CallBridge(() => {
+      if (!window.averyWindow?.OpenProviderDashboard) throw new AppError(ErrorCode.INTERNAL_ERROR, '请重启 Avery 后查看供应商控制台。');
+      return Unwrap(window.averyWindow.OpenProviderDashboard(provider));
+    }),
     /** 系统剪贴板走主进程写入，避免依赖被桌面权限策略禁止的网页 API。 */
     WriteClipboardText: (text: string) => CallBridge(() => {
       if (!window.averyWindow) throw new AppError(ErrorCode.INTERNAL_ERROR, '请使用 Avery 桌面客户端复制。');
@@ -79,6 +97,7 @@ export const platformClient = {
     Configure: (config: Parameters<DesktopAgentBridge['Configure']>[0]) => CallBridge(() => RequireAgent().Configure(config)),
     TestConnection: (config: Parameters<DesktopAgentBridge['TestConnection']>[0]) => CallBridge(() => RequireAgent().TestConnection(config)),
     GetBalance: () => CallBridge(() => RequireAgent().GetBalance()),
+    GetProviderUsage: () => CallBridge(() => RequireAgent().GetProviderUsage()),
     GetModels: (provider?: Parameters<DesktopAgentBridge['GetModels']>[0]) => CallBridge(() => RequireAgent().GetModels(provider)),
     GetProviderCatalog: () => CallBridge(() => RequireAgent().GetProviderCatalog()),
     Send: (request: Parameters<DesktopAgentBridge['Send']>[0]) => CallBridge(() => RequireAgent().Send(request)),

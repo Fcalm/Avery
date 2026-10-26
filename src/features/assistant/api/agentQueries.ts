@@ -26,6 +26,18 @@ export async function GetAgentBalance() {
   return Unwrap(await platformClient.agent.GetBalance());
 }
 
+/** 查询所有已配置供应商的账户用量，不把 API Key 或原始接口响应带入界面。 */
+export async function GetProviderUsage() {
+  const snapshot = await Unwrap(platformClient.agent.GetProviderUsage());
+  const providers = await Promise.all(snapshot.providers.map(async (provider) => {
+    if (provider.provider !== 'MIMO') return provider;
+    // MiMo 是控制台登录态，主进程直接查询；后端模型密钥与 Cookie 永不互换。
+    try { return await Unwrap(platformClient.desktop.ReadMimoAccountUsage()); }
+    catch (error) { return { ...provider, status: 'error' as const, message: error instanceof Error ? error.message : 'MiMo 账户读取失败，请稍后刷新。' }; }
+  }));
+  return { providers, checkedAt: new Date().toISOString() };
+}
+
 /** 读取指定 Provider 当前凭据可访问的模型（DeepSeek / MiMo 走官方 GET /models 同步）。 */
 export async function GetProviderModels(provider: 'DeepSeek' | 'Z.AI' | 'MIMO' | '自定义') {
   return Unwrap(await platformClient.agent.GetModels(provider));

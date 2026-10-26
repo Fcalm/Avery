@@ -170,6 +170,8 @@ export interface DesktopAgentBridge {
   Configure: (config: AgentConfiguration) => Promise<{ configured: boolean }>;
   TestConnection: (config: AgentConfiguration) => Promise<{ connected: boolean }>;
   GetBalance: () => Promise<{ available: boolean; balances: Array<{ currency: string; totalBalance: string }> }>;
+  /** 读取全部已配置供应商的账户用量；凭据仅在后端使用。 */
+  GetProviderUsage: () => Promise<import('@avery/agent-sdk').ProviderUsageSnapshot>;
   /** 读取指定 Provider 凭据可访问的模型列表（DeepSeek / MiMo 走官方 GET /models 同步）；provider 回执用于确认结果来源，凭据不会离开主进程。缺省查询 DeepSeek。 */
   GetModels: (provider?: 'DeepSeek' | 'Z.AI' | 'MIMO' | '自定义') => Promise<{ provider: 'DeepSeek' | 'Z.AI' | 'MIMO' | '自定义'; models: string[] }>;
   /** 返回所有已配置 Provider 及其可选模型，不暴露 API Key。 */
@@ -279,7 +281,7 @@ export interface WorkspaceBridge {
 /** Bridge 方法清单：preload 暴露的方法名唯一来源，供一致性冒烟校验与契约生成使用。 */
 export const BridgeNamespaces = {
   agent: [
-    'Configure', 'TestConnection', 'GetBalance', 'GetModels', 'GetProviderCatalog', 'Send', 'Cancel', 'RespondToInteraction', 'UpdateConfirmationMode', 'UpdateReasoningEffort', 'ConfirmResumeEdit', 'ConfirmCronTask',
+    'Configure', 'TestConnection', 'GetBalance', 'GetProviderUsage', 'GetModels', 'GetProviderCatalog', 'Send', 'Cancel', 'RespondToInteraction', 'UpdateConfirmationMode', 'UpdateReasoningEffort', 'ConfirmResumeEdit', 'ConfirmCronTask',
     'ConfirmBrowserAction', 'GetBrowserRuntimeStatus', 'GetCronBrowserAccess', 'RevokeCronBrowserAccess',
     'AcquireResumeEditLock', 'ReleaseResumeEditLock', 'GetStatus',
     'GetObservability', 'GetTraceEvents', 'DeleteTraces', 'SetTraceRetention', 'ClearObservability',

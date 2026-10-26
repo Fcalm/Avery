@@ -7,6 +7,8 @@ import { CreateDesktopAdapters } from './adapters';
 import { RegisterGateway, RegisterGeneralControls, RegisterWindowControls } from './gateway';
 import { MigrateLegacyUserData } from './brand-migration';
 import { CreateTrayImage } from './tray-image';
+import { IsMimoLoginNavigation, MimoAccountService } from './mimo-account';
+import { CreateMimoSessionStore } from './mimo-session-store';
 
 const smokeStartedAt = Date.now();
 /** 测试环境必须与正式安装版分组，避免 Windows 复用已卸载版本的快捷方式和图标。 */
@@ -77,7 +79,7 @@ function configureSecurityPolicies(): void {
   session.defaultSession.setPermissionCheckHandler(() => false);
   app.on('web-contents-created', (_event, contents) => {
     contents.setWindowOpenHandler(() => ({ action: 'deny' }));
-    contents.on('will-navigate', (event) => event.preventDefault());
+    contents.on('will-navigate', (event, url) => { if (!IsMimoLoginNavigation(contents, url)) event.preventDefault(); });
   });
 }
 
@@ -456,7 +458,8 @@ async function runInstalledVisualScenario(outputDirectory: string): Promise<Reco
     });
     RegisterGateway({ backendHost, webContentsGetter: () => mainWindow, notificationIconPath: resolveAppIconPath() || undefined });
     RegisterWindowControls({ webContentsGetter: () => mainWindow, frameSize: () => nativeClientSize });
-    RegisterGeneralControls({ webContentsGetter: () => mainWindow, workspacePath });
+    const mimoAccount = new MimoAccountService({ getParent: () => mainWindow, sessionStore: CreateMimoSessionStore(userDataPath), ...(process.env.AVERY_MIMO_DIAGNOSTICS === '1' ? { onDiagnostic: (detail: import('./mimo-account').MimoAccountDiagnostic) => console.error('[mimo-account]', JSON.stringify(detail)) } : {}) });
+    RegisterGeneralControls({ webContentsGetter: () => mainWindow, workspacePath, mimoAccount });
     Menu.setApplicationMenu(null);
     if (!cronRunnerLaunch) {
       // 普通应用在首个窗口创建前注册托盘；后台 CronRunner 和自动化冒烟实例不暴露托盘。

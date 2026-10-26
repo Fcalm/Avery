@@ -1,0 +1,50 @@
+/* 菜单及头像入口共占应用高度的 60%；只有供应商列表滚动，底部操作保持可见。 */
+.menu.user-menu {
+  width: min(332px, calc(100vw - 24px)); min-width: 0; display: flex; flex-direction: column;
+  max-height: max(0px, calc(60dvh - var(--user-menu-bottom))); overflow: hidden;
+}
+.user-menu > :not(.pu-providers) { flex-shrink: 0; }
+.user-menu .menu-item { min-height: 32px; padding: 5px 10px; }
+.user-menu .menu-sep { margin: 4px 4px 2px; }
+.pu-section-head { display: flex; align-items: center; justify-content: space-between; padding: 3px 10px 5px; }
+.pu-section-head strong { font-size: 12px; font-weight: 600; }
+.pu-refresh { width: 24px; height: 24px; display: grid; place-items: center; border-radius: 7px; color: var(--text-3); }
+.pu-refresh:hover:not(:disabled) { color: var(--text); background: var(--surface-2); }
+.pu-refresh:disabled { cursor: default; }
+.pu-refresh[aria-busy=true] > .ph { animation: pu-spin .7s linear infinite; }
+@keyframes pu-spin { to { transform: rotate(360deg); } }
+.pu-providers { display: grid; flex: 0 1 auto; min-height: 0; gap: 6px; padding: 0 6px; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: var(--border-2) transparent; }
+.pu-provider { min-width: 0; padding: 9px 10px; border: 1px solid var(--border); border-radius: 10px; }
+.pu-provider-head { display: flex; align-items: center; gap: 7px; }
+.pu-provider-head > :first-child { flex: none; }
+.pu-provider-head strong { font-family: var(--font-data); font-size: 12px; font-weight: 700; }
+.pu-provider-head > span:last-child { margin-left: auto; font-size: 10.5px; color: var(--text-3); white-space: nowrap; }
+.pu-metric { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-top: 6px; }
+.pu-metric > span { font-size: 11.5px; color: var(--text-2); }
+.pu-amount { font: 650 18px/1.25 var(--font-data); letter-spacing: -.4px; overflow-wrap: anywhere; }
+.pu-amount small { font-size: 12px; letter-spacing: 0; margin-left: 2px; }
+.pu-quota { color: var(--accent); }
+.pu-subrow { display: flex; align-items: center; justify-content: space-between; gap: 6px; margin-top: 4px; color: var(--text-3); font-size: 11px; }
+.pu-subrow > :last-child { color: var(--text-2); font-family: var(--font-data); font-variant-numeric: tabular-nums; }
+.pu-provider-foot { display: flex; align-items: center; justify-content: space-between; gap: 6px; margin-top: 7px; padding-top: 5px; border-top: 1px solid var(--border); font-size: 11px; color: var(--text-3); }
+.pu-provider-foot > button { display: inline-flex; align-items: center; gap: 4px; color: var(--text-2); font-size: 11px; padding: 0; }
+.pu-provider-foot > button:hover { color: var(--accent); }
+.pu-windows { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.pu-window { min-width: 0; margin-top: 3px; }
+.pu-window + .pu-window { padding-left: 12px; border-left: 1px solid var(--border); }
+.pu-window .pu-subrow { font-size: 10px; white-space: nowrap; }
+.pu-window .pu-subrow > :first-child { display: none; }
+.pu-track { height: 4px; margin-top: 5px; border-radius: 999px; background: var(--surface-2); overflow: hidden; }
+.pu-track > span { display: block; height: 100%; border-radius: inherit; background: var(--accent); transition: width .3s var(--ease); }
+.pu-sync { padding: 5px 10px 1px; font-size: 10px; color: var(--text-3); }
+.pu-message, .pu-empty { margin: 8px 0 0; font-size: 11.5px; line-height: 1.55; color: var(--text-3); }
+.pu-error { color: var(--danger); }
+.pu-empty { padding: 8px 10px; margin: 0; }
+.pu-empty > button { display: block; padding: 4px 0; color: var(--accent); font-size: inherit; }
+.pu-auth-actions { display: flex; align-items: center; gap: 12px; margin-top: 8px; }
+.pu-auth-actions:empty { display: none; }
+.pu-auth-actions > button { padding: 3px 0; font-size: 11px; color: var(--text-3); }
+.pu-auth-actions > button:hover:not(:disabled) { color: var(--text); }
+.pu-auth-actions > .pu-authorize { padding: 4px 9px; border-radius: 6px; background: var(--accent-soft); color: var(--accent); }
+.pu-auth-actions > button:disabled { cursor: default; opacity: .5; }
+@media (prefers-reduced-motion: reduce) { .pu-refresh[aria-busy=true] > .ph { animation: none; } .pu-track > span { transition: none; } }

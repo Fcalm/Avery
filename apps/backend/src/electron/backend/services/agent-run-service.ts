@@ -18,6 +18,8 @@ export class AgentRunService {
 
   /** 查询已保存 DeepSeek 凭据对应的账户余额。 */
   GetBalance(): any { return this.agent.GetBalance(); }
+  /** 仅返回脱敏用量快照，保持 IPC → Host 的读取边界。 */
+  GetProviderUsage(): ReturnType<DesktopAgentBridge['GetProviderUsage']> { return this.agent.GetProviderUsage(); }
 
   /** 查询指定 Provider 凭据可访问的模型列表；缺省 DeepSeek。参数必须原样转发：漏转发会被当成 DeepSeek 查询，把 DeepSeek 模型列表交回请求其它供应商的调用方。 */
   GetModels(provider?: unknown): any { return this.agent.GetModels(provider); }

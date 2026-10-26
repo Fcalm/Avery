@@ -3,6 +3,7 @@ import type { AgentMessage, ModelCompletion, ModelDelta, ModelProviderModule, Mo
 import { AgentDefaultPorts, ProviderConfig } from './ports';
 import { RequireString } from './helpers';
 import { SummaryPrompt } from './prompts';
+import { QueryProviderAccountUsage } from './provider-usage';
 
 // 保留既有导出，供扩展模块和既有调用方兼容；实际定义集中在 prompts.ts。
 export { SummaryPrompt } from './prompts';
@@ -390,6 +391,12 @@ export function CreateProviderModule(ports: AgentDefaultPorts): ModelProviderMod
       const model = NormalizeDeepSeekModel(requestedModel);
       if (model !== requestedModel) throw new Error('The requested model is not available for DeepSeek.');
       return model;
+    },
+    /** 多供应商独立查询，未配置的供应商不发请求；查询不依赖当前选中的对话模型。 */
+    async GetProviderUsage() {
+      await EnsureConfig();
+      const providers = await Promise.all([...configs.values()].filter((selected) => selected.apiKey).map((selected) => QueryProviderAccountUsage(selected.provider, selected.apiKey, providerFetch)));
+      return { providers, checkedAt: new Date().toISOString() };
     },
     /** 读取 DeepSeek 账户余额。密钥只在主进程私有配置中使用，返回值不含密钥。 */
     async GetBalance() {

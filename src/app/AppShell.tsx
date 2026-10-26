@@ -8,7 +8,8 @@ import type { Conversation, PageId } from '../types/domain';
 import { DialogButton, Modal } from '../shared/components/UI';
 import { Icon } from '../shared/components/Icon';
 import { BrandAssets, BrandBaselines } from '../shared/brand';
-import { GetAgentBalance, IsDesktopAgentAvailable } from '../features/assistant/api/agentQueries';
+import { IsDesktopAgentAvailable } from '../features/assistant/api/agentQueries';
+import { ProviderUsagePanel } from '../features/settings/components/ProviderUsagePanel';
 import { ASSISTANT_MAIN_MIN_WIDTH } from '../shared/layoutConstants';
 import { ListEvalRuns } from '../features/developer/api/evaluationQueries';
 import { DeveloperSidebar } from '../features/developer/components/DeveloperSidebar';
@@ -16,6 +17,18 @@ import { useDeveloperConsole } from '../features/developer/components/DeveloperC
 import { SettingsTabs, type SettingTab } from '../features/settings/pages/SettingsPage';
 
 const MinContentWidth = 800;
+const UserMenuWidth = 332;
+const UserMenuViewportPadding = 12;
+const UserMenuAnchorGap = 7;
+
+/** 与额度面板的 332px 原型宽度一致；窄窗口保留两侧安全间距。 */
+function MeasureUserMenuPosition(trigger: HTMLButtonElement) {
+  const rect = trigger.getBoundingClientRect();
+  return {
+    left: Math.max(UserMenuViewportPadding, Math.min(Math.round(rect.left), window.innerWidth - UserMenuWidth - UserMenuViewportPadding)),
+    bottom: Math.round(window.innerHeight - rect.top + UserMenuAnchorGap),
+  };
+}
 
 type WindowControls = {
   Minimize: () => Promise<boolean>;
@@ -60,12 +73,6 @@ type ArchiveTarget = { id: string; title: string };
 /** 顶栏使用透明应用图标，路径与开屏、引导页共用品牌资源配置。 */
 const BrandMark = <img src={BrandAssets.icon} alt="" />;
 
-function FormatBalance(currency: string, total: string) {
-  const number = Number(total);
-  const amount = Number.isFinite(number) ? number.toFixed(2) : total;
-  return currency === 'CNY' ? `¥ ${amount}` : currency === 'USD' ? `$ ${amount}` : `${currency} ${amount}`;
-}
-
 function AppShell({ page, onNavigate, onRestartOnboarding, settingsTab, onRequestSettingsTab, children }: { page: PageId; onNavigate: (page: PageId) => void; onRestartOnboarding: () => void; settingsTab: SettingTab; onRequestSettingsTab: (tab: SettingTab) => void; children: ReactNode }) {
   const conversations = useConversations();
   const renameConversation = useRenameConversation({ onConflict: () => ShowNotice('会话已在其他窗口被修改，已刷新为最新版本'), onFailure: () => ShowNotice('会话重命名失败，请稍后重试。') });
@@ -81,13 +88,12 @@ function AppShell({ page, onNavigate, onRestartOnboarding, settingsTab, onReques
   const [theme, SetTheme] = useState<ThemeMode>(() => (localStorage.getItem('avery-theme') === 'dark' ? 'dark' : 'light'));
   const [showCrumbMenu, SetShowCrumbMenu] = useState(false);
   const [userMenuPosition, SetUserMenuPosition] = useState<{ left: number; bottom: number } | null>(null);
+  const userMenuTriggerRef = useRef<HTMLButtonElement | null>(null);
   const [rowMenu, SetRowMenu] = useState<RowMenuPosition | null>(null);
   const [renamingConversationId, SetRenamingConversationId] = useState<string | null>(null);
   const [renameTitle, SetRenameTitle] = useState('');
   const [archiveTarget, SetArchiveTarget] = useState<ArchiveTarget | null>(null);
   const [searchQuery, SetSearchQuery] = useState('');
-  const [balance, setBalance] = useState<Array<{ currency: string; totalBalance: string }> | null>(null);
-  const [refreshingBalance, setRefreshingBalance] = useState(false);
   const [isMaximized, SetIsMaximized] = useState(false);
 
   // 场景标注以创建时落库的 scenarioId 为准（快照与 Agent 冻结语义一致，无运行态竞态）；
@@ -169,27 +175,18 @@ function AppShell({ page, onNavigate, onRestartOnboarding, settingsTab, onReques
   const groupedConversationIds = new Set(conversationGroups.flatMap((group) => group.items.map((item) => item.id)));
   const ungroupedConversations = visibleConversations.filter((item) => !groupedConversationIds.has(item.id));
   const crumbLeaf = page === 'assistant' ? (activeConversation?.title ?? '新对话') : MainRoutes.find((route) => route.id === page)?.label ?? '';
-  const balanceText = refreshingBalance && !balance ? '刷新中…' : balance?.map((item) => FormatBalance(item.currency, item.totalBalance)).join(' / ') ?? '未配置';
-
-  const RefreshBalance = useCallback(async (manual = false) => {
-    if (!IsDesktopAgentAvailable() || settings.provider !== 'DeepSeek') return;
-    setRefreshingBalance(true);
-    try {
-      const result = await GetAgentBalance();
-      setBalance(result.balances);
-      if (manual) ShowNotice('余额已刷新');
-    } catch (error) {
-      if (manual) ShowNotice(error instanceof Error ? error.message : '余额刷新失败');
-    } finally {
-      setRefreshingBalance(false);
-    }
-  }, [ShowNotice, settings.provider]);
-
+  const userMenuOpen = userMenuPosition !== null;
   useEffect(() => {
-    void RefreshBalance();
-    const timer = window.setInterval(() => void RefreshBalance(), 5 * 60 * 1000);
-    return () => window.clearInterval(timer);
-  }, [RefreshBalance]);
+    if (!userMenuOpen) return;
+    // 缩放窗口时同步锚点和剩余高度，不能沿用打开时的像素位置突破 60% 高度边界。
+    const Reposition = () => {
+      const trigger = userMenuTriggerRef.current;
+      if (!trigger?.isConnected) { SetUserMenuPosition(null); return; }
+      SetUserMenuPosition(MeasureUserMenuPosition(trigger));
+    };
+    window.addEventListener('resize', Reposition);
+    return () => window.removeEventListener('resize', Reposition);
+  }, [userMenuOpen]);
 
   // 主题即时生效并持久化；默认浅色，切换入口在账户菜单。
   useEffect(() => {
@@ -406,8 +403,8 @@ function AppShell({ page, onNavigate, onRestartOnboarding, settingsTab, onReques
   }
   function OpenUserMenu(trigger: HTMLButtonElement) {
     if (userMenuPosition) { SetUserMenuPosition(null); return; }
-    const rect = trigger.getBoundingClientRect();
-    SetUserMenuPosition({ left: Math.round(rect.left), bottom: Math.round(window.innerHeight - rect.top + 7) });
+    userMenuTriggerRef.current = trigger;
+    SetUserMenuPosition(MeasureUserMenuPosition(trigger));
   }
   /** 侧栏用户头像：上传过图片直接渲染；否则显示昵称首字并应用个性化底色（设置页与侧栏共用同一份设置）。 */
   function RenderUserAvatar() {
@@ -653,12 +650,8 @@ function AppShell({ page, onNavigate, onRestartOnboarding, settingsTab, onReques
     </div>}
 
     {/* 账户菜单锚定在用户卡上方，位于侧栏之外以免被裁剪 */}
-    {userMenuPosition && <div className="menu user-menu open" data-floating-menu role="menu" aria-label="账户" style={{ left: userMenuPosition.left, bottom: userMenuPosition.bottom }}>
-      <div className="um-balance">
-        <span className="l">账户余额</span>
-        <span className="v">{balanceText}</span>
-        <button className="balance-refresh" type="button" onClick={() => void RefreshBalance(true)} disabled={refreshingBalance} aria-label="刷新余额" title="刷新余额"><Icon name="refresh" size={14} /></button>
-      </div>
+    {userMenuPosition && <div className="menu user-menu open" data-floating-menu role="menu" aria-label="账户" style={{ left: userMenuPosition.left, bottom: userMenuPosition.bottom, '--user-menu-bottom': `${userMenuPosition.bottom}px` } as CSSProperties}>
+      <ProviderUsagePanel onConfigure={() => { SetUserMenuPosition(null); onRequestSettingsTab('api'); onNavigate('settings'); }} />
       <div className="menu-sep" aria-hidden="true" />
       <label className={`menu-item um-row ${settings.developerMode ? 'on' : ''}`}>
         <Icon name="developer-mode" size={16} />

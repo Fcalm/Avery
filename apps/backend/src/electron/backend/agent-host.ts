@@ -678,6 +678,12 @@ export class AgentHost {
   TestConnection(config: unknown): any { this.EnsureModulesReady(); return this.modules.modelProvider.TestConnection(config); }
   /** 查询已加密保存的 DeepSeek Key 对应余额；不会向渲染层暴露凭据。 */
   GetBalance(): any { this.EnsureModulesReady(); return this.modules.modelProvider.GetBalance(); }
+  /** 只读的账户查询；旧外置模块缺少能力时明确报错，不能冒用默认供应商。 */
+  GetProviderUsage(): Promise<import('@avery/contracts').ProviderUsageSnapshot> {
+    this.EnsureModulesReady();
+    if (!this.modules.modelProvider.GetProviderUsage) throw new Error('当前 Provider 模块尚不支持账户用量查询。');
+    return this.modules.modelProvider.GetProviderUsage();
+  }
   /**
    * 查询指定 Provider 当前凭据可访问的模型；缺省 DeepSeek。显式未知 Provider 传给模块层按错误拒绝，
    * 不静默归一化——归一化会把其它供应商的模型列表交出去并被合并进错误的供应商。
