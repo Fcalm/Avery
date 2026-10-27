@@ -1,4 +1,4 @@
-/* 工作动画独立显示；过程默认收起，其中正文完整显示，思考和工具详情各自折叠。 */
+/* 一级过程与二级事件卡片默认收起；中间正文随一级展示，工作动画独立显示。 */
 /* 厂商列表允许子菜单溢出，滚动只发生在各自列表内；不能沿用 pop 的整层裁剪。 */
 .composer .menu.pop.model-menu{width:190px;min-width:0;max-height:none;overflow:visible}
 .model-provider-list{max-height:min(52vh,350px);overflow-y:auto;scrollbar-width:thin;scrollbar-color:var(--border-2) transparent}
@@ -23,13 +23,21 @@
 .user-message-skill>.ph{flex:none}
 .user-message-skill>span{min-width:0;overflow:hidden;text-overflow:ellipsis}
 .conversation-response{min-width:0;overflow-wrap:anywhere}
+.conversation-process-body.conversation-process-timeline{gap:12px}
+.conversation-process-card{min-width:0;border:1px solid var(--border);border-radius:var(--r-card);background:var(--panel)}
+.conversation-process-card>summary{display:flex;align-items:center;gap:7px;min-height:36px;padding:7px 10px;list-style:none;cursor:pointer;color:var(--text-2);font-size:12px}
+.conversation-process-card>summary::-webkit-details-marker{display:none}
+.conversation-process-card>summary:hover{color:var(--text)}
+.conversation-process-card>summary>.ph{flex:none;color:var(--text-3)}
+.conversation-process-card>summary>small{margin-left:auto;color:var(--text-3);font-size:11px}
+.conversation-process-card>.conversation-process-body{padding:6px 10px 10px;border-top:1px solid var(--border)}
 .conversation-process{margin:0 0 12px}
 .conversation-process>summary,.conversation-reason>summary,.conversation-tool>summary{display:flex;align-items:center;gap:6px;list-style:none;cursor:pointer;min-width:0;border-radius:8px}
 .conversation-process>summary::-webkit-details-marker,.conversation-reason>summary::-webkit-details-marker,.conversation-tool>summary::-webkit-details-marker{display:none}
 .conversation-process>summary{width:100%;min-height:32px;padding:0 0 8px;border-bottom:1px solid var(--border);border-radius:0;font-size:12px;color:var(--text-2)}
 .conversation-process>summary:hover,.conversation-reason>summary:hover{color:var(--text)}
 /* 延后隐藏原生折叠内容，让手动切换与任务完成后的自动收起都能完成过渡。 */
-:is(.conversation-process,.conversation-reason,.conversation-tool)::details-content{
+:is(.conversation-process,.conversation-process-card,.conversation-reason,.conversation-tool)::details-content{
   display:flow-root;
   interpolate-size:allow-keywords;
   block-size:0;
@@ -37,7 +45,7 @@
   opacity:0;
   transition:block-size .24s cubic-bezier(.2,0,0,1),opacity .18s ease,content-visibility .24s allow-discrete;
 }
-:is(.conversation-process,.conversation-reason,.conversation-tool)[open]::details-content{block-size:auto;opacity:1}
+:is(.conversation-process,.conversation-process-card,.conversation-reason,.conversation-tool)[open]::details-content{block-size:auto;opacity:1}
 /* 过程间距由容器统一控制，避免思考、工具和正文各自的外边距叠加。 */
 .conversation-process-body{display:grid;grid-template-columns:minmax(0,1fr);gap:4px;padding-top:6px}
 .conversation-process-text{min-width:0}

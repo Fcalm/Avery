@@ -18,6 +18,25 @@ function Render(snapshot = presentation) {
   return renderToStaticMarkup(createElement(ConversationMessage, { message: { id: 'reply-req1', role: 'assistant', content: '', presentation: snapshot }, onOpenResource: () => undefined }));
 }
 describe('对话组件内容与默认状态', () => {
+  it('一级与二级过程均默认收起，中间正文只在一级内，最终报告在所有卡片外', () => {
+    const html = Render();
+    expect(html.match(/<details class="conversation-process-card">/g)).toHaveLength(2);
+    expect(html).toContain('<details class="conversation-process">');
+    expect(html).not.toMatch(/<details[^>]*class="conversation-process-card"[^>]*\bopen/);
+    const first = html.indexOf('正在读取简历');
+    const final = html.indexOf('已准备好');
+    for (const [position, expectedDepth] of [[first, 1], [final, 0]]) {
+      let depth = 0;
+      for (const tag of html.slice(0, position).matchAll(/<details\b[^>]*>|<\/details>/g)) depth += tag[0].startsWith('</') ? -1 : 1;
+      expect(depth).toBe(expectedDepth);
+    }
+    const cards = [...html.matchAll(/<details class="conversation-process-card">/g)].map((match) => match.index!);
+    expect(cards[0]).toBeLessThan(first);
+    expect(first).toBeLessThan(cards[1]);
+    expect(cards[1]).toBeLessThan(final);
+    expect(html.match(/已准备好/g)).toHaveLength(1);
+    expect(html).toContain('1 段思考'); expect(html).toContain('1 项工具');
+  });
   it('完成后默认折叠过程，产物与最终回答在折叠组外，工作动画消失', () => {
     const html = Render();
     expect(html).toContain('<details class="conversation-process">');

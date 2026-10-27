@@ -5,6 +5,7 @@ import { Icon, type IconName } from '../../../shared/components/Icon';
 import { MarkdownText } from '../../../shared/components/MarkdownText';
 import { WorkingIndicator } from './WorkingIndicator';
 import { ConversationProcessSummary } from './ConversationProcessSummary';
+import { GroupConversationProcess } from '../conversationProcessGroups';
 
 const ToolNames: Record<string, string> = {
   ReadResume: '读取简历', ReadProfile: '读取档案', ReadJobs: '查询岗位', SearchJobs: '搜索岗位',
@@ -27,13 +28,13 @@ const ResourceMeta: Record<ConversationResource['kind'], { label: string; icon: 
 const ToolTimeFormat = new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
 export const ResourceHref = (resource: ConversationResource) => 'avery://' + resource.kind + '/' + encodeURIComponent(resource.id) + (resource.revision ? '?revision=' + resource.revision : '');
 
-/** 非最终报告统一按执行顺序放入过程；正文完整显示，思考和工具各自折叠。 */
+/** 整轮过程默认收起；中间正文随一级卡片展示，连续思考与工具另归入二级折叠卡片。 */
 export function ConversationMessage({ message, onOpenResource, authorizedResources = [] }: { message: ChatMessageDto; onOpenResource: (resource: ConversationResource) => void; authorizedResources?: ConversationResource[] }) {
   const presentation = message.presentation;
   const completed = presentation?.status === 'completed';
   const processActive = presentation?.status === 'running' || presentation?.status === 'waiting' || presentation?.status === 'paused';
   const [processOpen, setProcessOpen] = useState(false);
-  // 新一轮、恢复运行和结束时均默认收起；运行与等待确认之间切换时保留用户手动开合。
+  // 新一轮和任务结束恢复默认折叠；运行与等待之间切换时保留用户的展开选择。
   useEffect(() => { setProcessOpen(false); }, [presentation?.requestId, processActive]);
   if (!presentation) return <>
     {message.thinkingContent && <details className="thinking-block"><summary>思考内容</summary><div className="thinking-content conversation-event-scroll" tabIndex={0} role="region" aria-label="思考详情"><MarkdownText content={message.thinkingContent} /></div></details>}
@@ -46,6 +47,7 @@ export function ConversationMessage({ message, onOpenResource, authorizedResourc
   let lastTool = -1;
   parts.forEach((part, index) => { if (part.type === 'tool') lastTool = index; });
   const process = parts.filter((part, index) => part.type !== 'resource' && (!completed || part.type !== 'text' || index <= lastTool));
+  const blocks = GroupConversationProcess(process);
   const renderPart = (part: ConversationPart) => {
     if (part.type === 'resource') return null;
     if (part.type === 'text') return <div key={part.id} className="conversation-process-text"><MarkdownText content={part.text} resources={linkResources} onOpenResource={onOpenResource} /></div>;
@@ -83,11 +85,17 @@ export function ConversationMessage({ message, onOpenResource, authorizedResourc
   return <div className="conversation-response">
     {/* 动画独立于折叠过程，按整轮状态持续显示，生成最终报告期间也不提前隐藏。 */}
     {processActive && <WorkingIndicator waiting={status !== 'running'} label={status === 'waiting' ? '等待你的确认或回答' : status === 'paused' ? '任务已暂停' : workingLabel} />}
-    {(process.length > 0 || processActive) && <details className="conversation-process" open={processOpen} onToggle={(event) => setProcessOpen(event.currentTarget.open)}>
+    {(blocks.length > 0 || processActive) && <details className="conversation-process" open={processOpen} onToggle={(event) => setProcessOpen(event.currentTarget.open)}>
       <ConversationProcessSummary presentation={presentation} messageCreatedAt={message.createdAt} messageUpdatedAt={message.updatedAt} />
-      <div className="conversation-process-body">
-        {process.map(renderPart)}
-      </div>
+      <div className="conversation-process-body conversation-process-timeline">{blocks.map((block) => {
+        if (block.type === 'text') return renderPart(block);
+        const reasoningCount = block.events.filter((event) => event.type === 'reasoning').length;
+        const toolCount = block.events.length - reasoningCount;
+        return <details key={block.id} className="conversation-process-card">
+          <summary><Icon name="trace" size={14} /><span>处理过程</span><small>{[reasoningCount ? `${reasoningCount} 段思考` : '', toolCount ? `${toolCount} 项工具` : ''].filter(Boolean).join(' · ')}</small><Icon name="chevron-right" className="conversation-chevron" size={12} /></summary>
+          <div className="conversation-process-body">{block.events.map(renderPart)}</div>
+        </details>;
+      })}</div>
     </details>}
     {completed && <MarkdownText content={GetConversationResult(presentation)} resources={linkResources} onOpenResource={onOpenResource} />}
     {completed && artifacts.length > 0 && <div className="conversation-artifacts" aria-label="本轮产物">
