@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type CSSProperties } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type CSSProperties } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useLayoutEffect } from 'react';
 import type { AgentObservability, AgentStreamEvent, BrowserActionState, ConfirmationMode, ConversationResource, ReasoningEffort } from '@avery/contracts';
@@ -31,6 +31,7 @@ import { useSessionValue } from '../useSessionValue';
 import { ConversationMessage } from '../components/ConversationMessage';
 import { ConversationScrollToBottom } from '../components/ConversationScrollToBottom';
 import { ComposerInput } from '../components/ComposerInput';
+import { ModelPickerMenu } from '../components/ModelPickerMenu';
 import type { ComposerCommand, ComposerMode } from '../composerCommands';
 
 // 保持旧场景 ID 以兼容会话与定时任务；能力边界与后端白名单一致。
@@ -1046,17 +1047,7 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
                 </div>
                 <div className="menu-wrap">
                   <button className="cmp-btn model-button" type="button" aria-label={`模型：${provider} ${model}`} aria-haspopup="true" aria-expanded={showModel} onClick={() => setShowModel((value) => !value)}>{provider === 'DeepSeek' ? <Icon name="deepseek" size={15} /> : provider === 'Z.AI' ? <Icon name="zai" size={15} /> : provider === 'MIMO' ? <Icon name="mimo" size={15} /> : <Icon name="brain" size={15} />}<span>{model}</span><Icon name="chevron-up" className="chev" size={10} /></button>
-                  {showModel && <div className="menu pop model-menu" role="menu" aria-label="使用的模型">
-                    <div className="menu-label">使用的模型</div>
-                    {providerCatalog.map((entry, entryIndex) => <Fragment key={entry.provider}>
-                      {entryIndex > 0 && <div className="menu-sep" />}
-                      {entry.models.map((availableModel) => <button key={`${entry.provider}:${availableModel}`} type="button" role="menuitemradio" aria-checked={entry.provider === provider && availableModel === model} className={entry.provider === provider && availableModel === model ? 'menu-item sel' : 'menu-item'} onClick={() => HandleSelectModel(entry.provider, availableModel)}>
-                        {entry.provider === 'DeepSeek' ? <Icon name="deepseek" size={16} /> : entry.provider === 'Z.AI' ? <Icon name="zai" size={16} /> : entry.provider === 'MIMO' ? <Icon name="mimo" size={16} /> : <Icon name="brain" size={16} />}
-                        <span><span className="mt">{availableModel}</span><span className="md">{entry.provider}</span></span>
-                        <Icon name="check" className="tick" size={14} />
-                      </button>)}
-                    </Fragment>)}
-                  </div>}
+                  {showModel && <ModelPickerMenu providers={providerCatalog} provider={provider} model={model} onSelect={HandleSelectModel} />}
                 </div>
                 <div className="menu-wrap">
                   <button className="cmp-btn reasoning-effort-button" type="button" aria-label={`思考强度：${ReasoningEffortLabels[reasoningEffort]}`} title="思考强度按会话保存，并在下一轮模型请求生效" aria-haspopup="true" aria-expanded={showReasoningEffort} onClick={() => setShowReasoningEffort((value) => !value)}><Icon name="brain" size={15} /><span>思考 {ReasoningEffortLabels[reasoningEffort]}</span><Icon name="chevron-up" className="chev" size={10} /></button>
