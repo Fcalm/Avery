@@ -9,6 +9,8 @@ import {
   type FormField,
   type FormFillOperation,
 } from './browser-form-service';
+import { BrowserDateAdapters, BrowserDateAdapterSelectionScript } from './browser-date-adapters';
+import { MokaDateControlsScript, MokaDateOptionRevealExpression, MokaDatePreparationExpression, MokaFormEnrichmentScript, MokaFormTargetRevealExpression, MokaFormValueScript, MokaOptionEnrichmentScript, MokaSearchOptionsWaitExpression } from './browser-moka-form';
 
 const DynamicPollIntervalMs = 60;
 const DynamicTransitionDelayMs = 60;
@@ -27,6 +29,7 @@ export const FormSemanticEnrichmentExpression = (() => {
     preference: ['targetRole', 'targetProvince', 'targetCity', 'salary', 'availability', 'workMode'],
   };
   return `(() => {
+    ${BrowserDateAdapterSelectionScript}
     const aliases = ${JSON.stringify(aliases)};
     const fieldAliases = ${JSON.stringify(fieldAliases)};
     const sectionAnchors = ${JSON.stringify(sectionAnchors)};
@@ -148,6 +151,7 @@ export const FormSemanticEnrichmentExpression = (() => {
     ].map(canonicalLabel).find(Boolean) || '';
     const structuralEntries = [...document.querySelectorAll(controlSelector)]
       .filter((element) => !element.closest('nav,header,footer,[role="navigation"]'))
+      .filter((element) => !element.closest(dateAdapters.feishu.popup))
       .map((element) => {
         const label = contextLabel(element);
         const key = canonicalKey(label);
@@ -274,14 +278,19 @@ export const FormSemanticEnrichmentExpression = (() => {
         o: record && record.index >= 0 ? record.index : undefined,
       };
     };
-    const encodedName = (element, fallbackLabel) => {
+    const encodedName = (element, fallbackLabel, forceLabel = false, overrides = {}) => {
       const context = contextOf(element);
-      const rawLabel = rawExplicitLabel(element) || context.x[0] || fallbackLabel;
+      const rawLabel = forceLabel ? fallbackLabel : rawExplicitLabel(element) || context.x[0] || fallbackLabel;
+      const rangeEdge = dateAdapterFor(element) === 'feishu' && element.matches(dateAdapters.feishu.rangeEdge);
+      const dateValue = rangeEdge
+        ? text(element).replace(/\\s+/g, '')
+        : dateAdapterFor(element) === 'beisen' && element.matches(dateAdapters.beisen.field) && ['birthDate', 'startDate', 'endDate', 'availability'].includes(canonicalKey(fallbackLabel))
+          ? String(element.querySelector('input')?.value || '') : undefined;
       const filled = element instanceof HTMLInputElement && ['checkbox', 'radio'].includes(element.type)
         ? element.checked
         : element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement
           ? String(element.value || '').trim().length > 0
-          : undefined;
+          : dateValue === undefined ? undefined : rangeEdge ? /^\\d{4}-\\d{1,2}$/.test(dateValue) : dateValue.trim().length > 0;
       const payload = {
         l: String(rawLabel || fallbackLabel || '').replace(/\\s+/g, ' ').trim().slice(0, 180),
         n: String(element.getAttribute('name') || '').slice(0, 120),
@@ -291,6 +300,7 @@ export const FormSemanticEnrichmentExpression = (() => {
         b: String(element.getAttribute('aria-labelledby') || '').slice(0, 120),
         v: filled,
         ...context,
+        ...overrides,
       };
       const bytes = new TextEncoder().encode(JSON.stringify(payload));
       let binary = '';
@@ -302,10 +312,15 @@ export const FormSemanticEnrichmentExpression = (() => {
       element.setAttribute('data-avery-had-' + suffix, element.hasAttribute(attribute) ? '1' : '0');
       if (element.hasAttribute(attribute)) element.setAttribute('data-avery-original-' + suffix, element.getAttribute(attribute) || '');
     };
+    ${MokaFormEnrichmentScript}
+    const mokaFormOnly = matchedAdapters.length === 1 && matchedAdapters[0] === 'moka';
     let annotated = 0;
     let auxiliary = 0;
     for (const element of document.querySelectorAll('input,textarea,select,[contenteditable="true"]')) {
       if (!(element instanceof HTMLElement)) continue;
+      if (mokaFormOnly && !element.closest(dateAdapters.moka.field)) { mokaAuxiliary(element); continue; }
+      if (element.hasAttribute('data-avery-form-semantic') || (dateAdapterFor(element) === 'moka' && element.closest(dateAdapters.moka.field))) continue;
+      if (element.closest(dateAdapters.feishu.popup)) continue;
       const type = String(element.getAttribute('type') || '').toLowerCase();
       if (type === 'hidden' || type === 'password') continue;
       if (element.closest('nav,header,footer,[role="navigation"]')) {
@@ -356,9 +371,35 @@ export const FormSemanticEnrichmentExpression = (() => {
     const decoratedTriggers = new WeakSet();
     const decoratedContainers = new WeakMap();
     let customSelects = 0;
+    // 飞书 ATS 的年月范围由两个 div 承载，隐藏 input 仅用于焦点；分别暴露两端，禁止把整段范围当作文本框。
+    for (const range of document.querySelectorAll(dateAdapters.feishu.range)) {
+      if (!(range instanceof HTMLElement) || !visible(range)) continue;
+      if (dateAdapterFor(range) !== 'feishu') continue;
+      const edges = [...range.children].filter((element) => element.matches(dateAdapters.feishu.rangeEdge));
+      if (edges.length !== 2) continue;
+      for (const [index, trigger] of edges.entries()) {
+        if (dateAdapterFor(trigger) !== 'feishu') continue;
+        const label = index === 0 ? '开始时间' : '结束时间';
+        preserve(trigger, 'aria-label');
+        preserve(trigger, 'role');
+        trigger.setAttribute('role', 'combobox');
+        trigger.setAttribute('aria-label', encodedName(trigger, label, true));
+        trigger.setAttribute('data-avery-form-semantic', 'custom-select');
+        trigger.setAttribute('data-avery-form-key', index === 0 ? 'startDate' : 'endDate');
+        trigger.setAttribute('data-avery-form-section', contextOf(trigger).s);
+        trigger.setAttribute('data-avery-form-label', label);
+        decoratedTriggers.add(trigger);
+        customSelects += 1;
+      }
+    }
     const seeds = document.querySelectorAll('[role="combobox"],[aria-haspopup="listbox"],[class*="select" i],[class*="cascader" i],[class*="picker" i],[class*="dropdown" i]');
     for (const seed of seeds) {
       if (!(seed instanceof HTMLElement) || !visible(seed)) continue;
+      // Moka 的账号菜单与招聘导航位于申请区块外，不能按附近文字推断成“职位”等待填字段。
+      if (mokaFormOnly && !seed.closest(dateAdapters.moka.block)) { mokaAuxiliary(seed); continue; }
+      if (dateAdapterFor(seed) === 'moka' && seed.closest(dateAdapters.moka.field)) continue;
+      // 日期弹层中的年月选项不是申请表字段；否则每个年份都会触发整张表单的语义推断。
+      if (seed.closest(dateAdapters.feishu.popup)) continue;
       if (seed.hasAttribute('data-avery-form-semantic')) continue;
       if (seed.closest('nav,header,footer,[role="navigation"]')) {
         preserve(seed, 'aria-label');
@@ -382,6 +423,8 @@ export const FormSemanticEnrichmentExpression = (() => {
         else break;
       }
       if (['input', 'textarea', 'select'].includes(trigger.tagName.toLowerCase())) continue;
+      // 多个嵌套 seed 可指向同一触发器；不能覆盖第一次备份，否则清理会恢复成编码标签。
+      if (trigger.hasAttribute('data-avery-form-semantic')) continue;
       if (decoratedTriggers.has(trigger)) continue;
       const label = explicitLabel(trigger) || nearbyLabel(trigger);
       if (!label) continue;
@@ -397,10 +440,12 @@ export const FormSemanticEnrichmentExpression = (() => {
       trigger.setAttribute('aria-label', encodedName(trigger, label));
       trigger.setAttribute('data-avery-form-semantic', 'custom-select');
       trigger.setAttribute('data-avery-form-key', canonicalKey(label));
+      trigger.setAttribute('data-avery-form-section', /毕业时间/.test(label) ? 'education' : contextOf(trigger).s);
+      trigger.setAttribute('data-avery-form-label', label);
       decoratedTriggers.add(trigger);
       customSelects += 1;
     }
-    return { annotated, auxiliary, customSelects };
+    return { annotated, auxiliary, customSelects, ats, dateAdapters: matchedAdapters };
   })()`;
 })();
 
@@ -422,6 +467,9 @@ export const FormSemanticCleanupExpression = `(() => {
     }
     element.removeAttribute('data-avery-form-semantic');
     element.removeAttribute('data-avery-form-key');
+    element.removeAttribute('data-avery-form-section');
+    element.removeAttribute('data-avery-form-label');
+    element.removeAttribute('data-avery-form-record');
     cleaned += 1;
   }
   return { cleaned };
@@ -429,6 +477,7 @@ export const FormSemanticCleanupExpression = `(() => {
 
 /** 将当前日期浮层的编辑器、年/月/日与确认动作临时编码为稳定语义，不读取或返回日期值。 */
 export const DateEditorEnrichmentExpression = `(() => {
+  ${BrowserDateAdapterSelectionScript}
   const visible = (element) => {
     const style = getComputedStyle(element);
     const rect = element.getBoundingClientRect();
@@ -438,12 +487,14 @@ export const DateEditorEnrichmentExpression = `(() => {
   const text = (element) => String(element?.innerText || element?.textContent || '').replace(/\\s+/g, '').trim();
   const roots = new Set([...document.querySelectorAll('[class*="calendar" i],[class*="datepicker" i],[class*="date-picker" i],[class*="month-picker" i],[role="dialog"]')]
     .filter((element) => element instanceof HTMLElement && visible(element)
+      && dateAdapterFor(element) !== 'feishu'
       && (element.querySelector('[role="grid"],[role="gridcell"],[class*="year-panel" i],[class*="month-panel" i]') || element.matches('[class*="calendar" i]'))));
   // 哈希类名日期浮层：定位层中同时出现年份或月份动作时才纳入，避免扫描表单正文。
   for (const root of document.querySelectorAll('body *')) {
     if (!(root instanceof HTMLElement) || !visible(root)) continue;
     const position = getComputedStyle(root).position;
     if (!['absolute', 'fixed'].includes(position)) continue;
+    if (dateAdapterFor(root) === 'feishu') continue;
     const labels = [...root.querySelectorAll('[role="button"],[role="gridcell"],button,a')].slice(0, 200).map(text);
     if (labels.some((label) => /^\\d{4}年?$/.test(label))
       && labels.some((label) => /^(?:\\d{1,2}|[一二三四五六七八九十]{1,3})月$/.test(label))) roots.add(root);
@@ -473,27 +524,44 @@ export const DateEditorEnrichmentExpression = `(() => {
     return index < 0 ? undefined : index + 1;
   };
   let annotated = 0;
+  // 飞书年月面板是年、月两个滚动列表，选中月份即提交，不应继续等待日网格或确认按钮。
+  ${MokaDateControlsScript}
+  for (const panel of document.querySelectorAll(dateAdapters.feishu.monthPanel)) {
+    if (!(panel instanceof HTMLElement) || !visible(panel)) continue;
+    if (dateAdapterFor(panel) !== 'feishu') continue;
+    if (annotate(panel, 'group', '__avery_date_month_only__')) annotated += 1;
+    for (const item of panel.querySelectorAll(dateAdapters.feishu.option)) {
+      if (dateAdapterFor(item) !== 'feishu') continue;
+      if (item.getAttribute('aria-disabled') === 'true' || item.hasAttribute('disabled') || /disabled/i.test(String(item.className))) continue;
+      const label = text(item);
+      const prefix = /^\\d{4}$/.test(label) ? '__avery_date_year_option__:' : /^0?[1-9]$|^1[0-2]$/.test(label) ? '__avery_date_month_option__:' : '';
+      if (prefix && annotate(item, 'option', prefix + Number(label))) annotated += 1;
+    }
+  }
   for (const root of roots) {
     for (const input of root.querySelectorAll('input')) {
+      if (['feishu', 'moka'].includes(dateAdapterFor(input))) continue;
       // Phoenix 的 unText input 只是选择器的事件入口，直接 fill 会被组件判为无效并保持弹层打开。
       // 将它交给后面的年/月/日点选状态机，避免先做一轮必然失败的写入与提交轮询。
-      if (input.matches('.phoenix-select__input--unText') || input.readOnly || input.type === 'hidden') continue;
+      if ((dateAdapterFor(input) === 'beisen' && input.matches(dateAdapters.beisen.auxiliaryInput)) || input.readOnly || input.type === 'hidden') continue;
       if (annotate(input, 'textbox', '__avery_date_editor__')) annotated += 1;
     }
     const candidates = root.querySelectorAll('[role="button"],[role="gridcell"],button,a,select,[class*="year-select" i],[class*="month-select" i]');
     for (const element of [...candidates].slice(0, 500)) {
       if (!(element instanceof HTMLElement) || !visible(element)) continue;
+      if (['feishu', 'moka'].includes(dateAdapterFor(element))) continue;
       // Phoenix 把文字 a 放在可点击 td 内；只标记事件实际绑定的 gridcell，避免同一动作产生两个 ref。
       const containingCell = element.closest('[role="gridcell"],[data-avery-date-original-role="gridcell"]');
       if (containingCell && containingCell !== element) continue;
-      const monthOnlyCalendar = Boolean(element.closest('.phoenix-calendar-month-calendar'));
+      const beisen = dateAdapterFor(element) === 'beisen';
+      const monthOnlyCalendar = beisen && Boolean(element.closest(dateAdapters.beisen.monthCalendar));
       // 月选择器同时渲染通用日历头和月面板头；前者不会驱动当前月面板，不能作为年份入口。
-      if (monthOnlyCalendar && element.matches('.phoenix-calendar-year-select,.phoenix-calendar-month-select')) continue;
+      if (monthOnlyCalendar && element.matches(dateAdapters.beisen.calendarHeaders)) continue;
       // 年份按钮的文字 span 也会命中 class*=year-select；只标记实际绑定点击行为的父按钮。
-      const monthPanelYearButton = element.closest('.phoenix-calendar-month-panel-year-select');
+      const monthPanelYearButton = beisen ? element.closest(dateAdapters.beisen.monthYearButton) : null;
       if (monthPanelYearButton && monthPanelYearButton !== element) continue;
-      const monthPanelYear = element.matches('.phoenix-calendar-month-panel-year-select')
-        ? text(element.querySelector('.phoenix-calendar-month-panel-year-select-content'))
+      const monthPanelYear = beisen && element.matches(dateAdapters.beisen.monthYearButton)
+        ? text(element.querySelector(dateAdapters.beisen.monthYearText))
         : '';
       const label = monthPanelYear || text(element);
       const marker = String(element.className || '').toLowerCase();
@@ -524,7 +592,7 @@ export const DateEditorEnrichmentExpression = `(() => {
       if (/^(确定|确认|完成|ok)$/i.test(label) && annotate(element, 'button', '__avery_date_confirmation__')) annotated += 1;
     }
   }
-  return { found: annotated > 0, annotated };
+  return { found: annotated > 0, annotated, ats, dateAdapters: matchedAdapters };
 })()`;
 
 export const DateEditorCleanupExpression = `(() => {
@@ -544,6 +612,9 @@ export const DateEditorCleanupExpression = `(() => {
 
 /** 将门户式下拉/级联弹层中的真实可见条目临时暴露为 option，供原生 ref 点击。 */
 export const DynamicOptionEnrichmentExpression = `(() => {
+  const mokaMenu = ${JSON.stringify(BrowserDateAdapters.moka.menu)};
+  const mokaScope = ${JSON.stringify(BrowserDateAdapters.moka.block + ',' + BrowserDateAdapters.moka.menu)};
+  const mokaRelated = (element) => Boolean(element.closest(mokaScope) || element.querySelector(mokaScope));
   const visible = (element) => {
     const style = getComputedStyle(element);
     const rect = element.getBoundingClientRect();
@@ -551,10 +622,10 @@ export const DynamicOptionEnrichmentExpression = `(() => {
       && rect.width > 0 && rect.height > 0;
   };
   const roots = new Set([...document.querySelectorAll('[role="listbox"],[role="menu"],[class*="select-dropdown" i],[class*="dropdown-menu" i],[class*="cascader-menu" i],[class*="picker-panel" i],[class*="popup" i],[class*="popover" i],[class*="area-selector-container" i],[class*="constant-main-selector-container" i],[class*="constant-main-layer-container" i]')]
-    .filter((element) => element instanceof HTMLElement && visible(element)));
+    .filter((element) => element instanceof HTMLElement && visible(element) && !mokaRelated(element)));
   // 部分招聘站使用哈希类名和无 ARIA 的门户浮层；只把当前可见的定位层纳入候选范围，避免扫描整页正文。
   for (const element of [...document.body.querySelectorAll('*')].slice(0, 5000)) {
-    if (!(element instanceof HTMLElement) || !visible(element)) continue;
+    if (!(element instanceof HTMLElement) || !visible(element) || mokaRelated(element)) continue;
     const style = getComputedStyle(element);
     if (style.position !== 'absolute' && style.position !== 'fixed') continue;
     const text = String(element.innerText || element.textContent || '').replace(/\\s+/g, ' ').trim();
@@ -562,17 +633,20 @@ export const DynamicOptionEnrichmentExpression = `(() => {
   }
   // React/Vue 的 portal 根节点本身可能是 static；由实际候选节点向上寻找最小可见控件根，不能只依赖定位样式。
   for (const seed of document.querySelectorAll('[class*="area-item-container" i],[class*="area-text-label" i],[class*="list-item-container" i],[class*="item-text-label" i],[role="option"],[role="treeitem"],[class*="menu-item" i],[class*="option" i]')) {
-    if (!(seed instanceof HTMLElement) || !visible(seed)) continue;
+    if (!(seed instanceof HTMLElement) || !visible(seed) || mokaRelated(seed)) continue;
     let root = seed.parentElement;
     for (let depth = 0; root?.parentElement && depth < 8; depth += 1, root = root.parentElement) {
       if (root.matches('[class*="area-selector-container" i],[class*="constant-main-selector-container" i],[role="listbox"],[role="menu"],[class*="dropdown" i],[class*="popup" i],[class*="popover" i]')) break;
       if (root.querySelectorAll('[class*="area-item-container" i],[role="option"],[role="treeitem"],[class*="menu-item" i],[class*="option" i]').length > 300) break;
     }
-    if (root instanceof HTMLElement && visible(root) && !['BODY', 'HTML'].includes(root.tagName)) roots.add(root);
+    if (root instanceof HTMLElement && visible(root) && !mokaRelated(root) && !['BODY', 'HTML'].includes(root.tagName)) roots.add(root);
   }
   const candidateText = new Map();
   const confirmations = new Set();
+  ${MokaOptionEnrichmentScript}
   for (const root of roots) {
+    // Moka 只使用已确认的候选行，不能再用通用扫描覆盖其标签或纳入“添加自定义值”。
+    if (root.matches(mokaMenu)) continue;
     // 北森民族等常量选择器采用虚拟列表；目标项未渲染时，后续可通过这个固定搜索入口收窄列表。
     for (const element of root.querySelectorAll('input[placeholder*="搜索"],input[placeholder*="search" i]')) {
       if (!(element instanceof HTMLInputElement) || !visible(element) || element.hasAttribute('data-avery-dynamic-search')) continue;
@@ -681,6 +755,7 @@ export function DynamicOptionMatch(
   fieldKey: string,
   desiredValue: string,
   visitedActions: Set<string>,
+  exactOnly = false,
 ): { ref: string; label: string; complete: boolean; role: string; actionKey: string } | undefined {
   const refs = data?.refs && typeof data.refs === 'object' ? data.refs as Record<string, Record<string, unknown>> : {};
   const clickable = new Set<string>();
@@ -707,6 +782,7 @@ export function DynamicOptionMatch(
     const label = String(metadata?.name ?? '').replace(/\s+/g, ' ').trim().slice(0, 120);
     const normalized = normalizeOption(label);
     if (!normalized || normalized.length > 80 || /^(请选择|请输入|确定|取消|关闭)$/.test(normalized)) continue;
+    if (exactOnly && normalized !== desired) continue;
     // 浏览器快照可能沿用标记前的可访问性角色，因此已补为 option 的原生 li 仍会回报 listitem。
     if (!clickable.has(rawRef.replace(/^@/, '')) && !['button', 'option', 'listitem', 'menuitem', 'treeitem', 'radio'].includes(role)) continue;
     const actionKey = `${role}:${normalized}`;
@@ -752,7 +828,17 @@ export function DynamicSearchMatch(data: Record<string, any>): { ref: string } |
 export function MatchingDynamicFormFields(fields: FormField[], operation: FormFillOperation): FormField[] {
   const dynamic = fields.filter((field) => field.control === 'select' && !field.options?.length);
   const semantic = dynamic.filter((field) => field.semantic.concept === operation.concept);
+  if (operation.targetOccurrence !== undefined) {
+    return semantic.filter((field) => NormalizeFormLabel(field.label) === NormalizeFormLabel(operation.label)
+      && (operation.targetRecordIndex === undefined || field.context.recordIndex === operation.targetRecordIndex));
+  }
   return semantic.length ? semantic : dynamic.filter((field) => CanonicalFormField(field.label) === operation.key);
+}
+
+function DynamicFormTarget(fields: FormField[], operation: FormFillOperation): FormField | undefined {
+  const matches = MatchingDynamicFormFields(fields, operation);
+  if (operation.targetRecordIndex !== undefined) return matches.length === 1 ? matches[0] : undefined;
+  return operation.targetOccurrence === undefined ? matches[operation.occurrence] ?? matches[0] : matches[operation.targetOccurrence];
 }
 
 export function DynamicConfirmationMatch(data: Record<string, any>): { ref: string; label: string } | undefined {
@@ -803,9 +889,37 @@ export function DynamicDateRef(
 export function DynamicSelectionVerificationExpression(operation: FormFillOperation, selectedLabels: string[]): string {
   const selected = selectedLabels.map(NormalizeFormLabel).filter(Boolean);
   return `(() => {
+    ${MokaFormValueScript}
     const normalize = (value) => String(value || '').toLowerCase().replace(/[\\s_\\-—–·:：()（）[\\]【】*＊]/g, '');
     const triggers = [...document.querySelectorAll('[data-avery-form-semantic="custom-select"]')]
       .filter((element) => element.getAttribute('data-avery-form-key') === ${JSON.stringify(operation.key)});
+    if (${JSON.stringify(operation.adapter === 'moka' && operation.targetOccurrence !== undefined)}) {
+      const candidates = triggers.filter((element) => element.getAttribute('data-avery-form-section') === ${JSON.stringify(operation.concept.split('.')[0])}
+        && normalize(element.getAttribute('data-avery-form-label')) === normalize(${JSON.stringify(operation.label)})
+        && (${operation.targetRecordIndex === undefined} || element.getAttribute('data-avery-form-record') === ${JSON.stringify(String(operation.targetRecordIndex))}));
+      const target = candidates[${operation.targetRecordIndex === undefined ? operation.targetOccurrence ?? 0 : 0}];
+      if (!(target instanceof HTMLElement)) return { filled: false };
+      if (${operation.kind === 'custom_date'}) {
+        const parse = (value) => String(value || '').match(/^(\\d{4})[-/.年](\\d{1,2})(?:[-/.月](\\d{1,2}))?[月日]?$/);
+        const actual = parse(mokaSelectedValue(target)), desired = parse(${JSON.stringify(operation.value)});
+        return { filled: Boolean(actual && desired && Number(actual[1]) === Number(desired[1]) && Number(actual[2]) === Number(desired[2])) };
+      }
+      return { filled: normalize(mokaSelectedValue(target)) === normalize(${JSON.stringify(operation.value)}) };
+    }
+    // 日期只比较本次字段的真实值；禁止从另一端、相邻经历或仍打开的日历文本中借用目标日期。
+    if (${JSON.stringify(operation.kind === 'custom_date' && operation.targetOccurrence !== undefined)}) {
+      const candidates = triggers.filter((element) => element.getAttribute('data-avery-form-section') === ${JSON.stringify(operation.concept.split('.')[0])}
+        && normalize(element.getAttribute('data-avery-form-label')) === normalize(${JSON.stringify(operation.label)}));
+      const target = candidates[${operation.targetOccurrence ?? 0}];
+      if (!(target instanceof HTMLElement)) return { filled: false };
+      const input = target.querySelector('input');
+      const value = target.matches(${JSON.stringify(BrowserDateAdapters.feishu.rangeEdge)}) ? target.textContent : input?.value;
+      const parse = (raw) => String(raw || '').trim().match(/^(\\d{4})[-/.年](\\d{1,2})(?:[-/.月](\\d{1,2}))?[月日]?$/);
+      const desired = parse(${JSON.stringify(operation.value)});
+      const actual = parse(value);
+      return { filled: Boolean(desired && actual && Number(desired[1]) === Number(actual[1])
+        && Number(desired[2]) === Number(actual[2]) && (!desired[3] || Number(desired[3]) === Number(actual[3]))) };
+    }
     const trigger = triggers[${operation.occurrence}] || triggers[0];
     if (!(trigger instanceof HTMLElement)) return { filled: false };
     const visibleControls = (root) => [...root.querySelectorAll('input,textarea,select,[role="combobox"],[aria-haspopup="listbox"]')]
@@ -901,12 +1015,14 @@ export class BrowserFormDriver {
   async InspectForm(
     options: { signal?: AbortSignal; deadline?: number },
     retainSemantics = false,
+    target?: FormFillOperation,
   ): Promise<BrowserFormCommandEnvelope> {
     const cleanup = ['eval', '-b', Buffer.from(FormSemanticCleanupExpression, 'utf8').toString('base64')];
     await this.port.runCommand(cleanup, options);
     await this.port.runCommand(['eval', '-b', Buffer.from(FormSemanticEnrichmentExpression, 'utf8').toString('base64')], options);
+    if (target?.adapter === 'moka') await this.port.runCommand(['eval', '-b', Buffer.from(MokaFormTargetRevealExpression(target), 'utf8').toString('base64')], options);
     try {
-      return await this.port.runCommand(['snapshot', '-i', '-c', '--urls'], options);
+      return await this.port.runCommand(['snapshot', '-i', '-c', '--urls', '--form'], options);
     } finally {
       if (!retainSemantics) {
         try { await this.port.runCommand(cleanup, options); } catch { /* 快照结果优先，临时属性会在下次 Inspect 前再次清理。 */ }
@@ -1021,6 +1137,30 @@ export class BrowserFormDriver {
     return this.port.runCommand(['snapshot', '-i', '-c', '--urls'], options);
   }
 
+  /** 滚动年月列表以显露目标项，再由快照与点击执行原有命中检查；不发布被裁剪或遮挡的引用。 */
+  private async RevealDatePickerChoices(value: string, options: { signal?: AbortSignal; deadline?: number }): Promise<void> {
+    const desired = ParseDateTarget(value);
+    if (!desired) return;
+    const expression = `(() => {
+      ${BrowserDateAdapterSelectionScript}
+      const desired = ${JSON.stringify(desired)};
+      for (const panel of document.querySelectorAll(dateAdapters.feishu.monthPanel)) {
+        if (!(panel instanceof HTMLElement) || panel.getBoundingClientRect().height <= 0) continue;
+        if (dateAdapterFor(panel) !== 'feishu') continue;
+        for (const list of panel.querySelectorAll(dateAdapters.feishu.optionList)) {
+          const items = [...list.querySelectorAll(dateAdapters.feishu.option)];
+          const isYear = items.some((item) => /^\\d{4}$/.test(item.textContent.trim()));
+          const item = items.find((item) => Number(item.textContent.trim()) === (isYear ? desired.year : desired.month));
+          if (!item) continue;
+          const rect = item.getBoundingClientRect(), bounds = list.getBoundingClientRect();
+          list.scrollTop += rect.top - bounds.top - (list.clientHeight - rect.height) / 2;
+        }
+      }
+      return { revealed: true };
+    })()`;
+    await this.port.runCommand(['eval', '-b', Buffer.from(expression, 'utf8').toString('base64')], options);
+  }
+
   /** 等待日期弹层暴露可编辑输入框或年、月控件，避免在前端尚未完成渲染时读取空快照。 */
   private async WaitForDatePickerSnapshot(
     options: { signal?: AbortSignal; deadline?: number },
@@ -1071,7 +1211,8 @@ export class BrowserFormDriver {
     const desiredYearOption = marker('__avery_date_year_option__:', desired.year);
     let yearOption = desiredYearOption(initialData);
     const monthYearHeader = DynamicDateRef(initialData, (label) => label.startsWith('__avery_date_month_year_header__:'));
-    const monthOnly = Boolean(monthYearHeader);
+    const monthOnly = Boolean(monthYearHeader) || Object.values(initialData.refs ?? {}).some((entry) =>
+      (entry as Record<string, unknown>)?.name === '__avery_date_month_only__');
     const yearHeader = yearOption ? undefined : monthYearHeader
       ?? DynamicDateRef(initialData, (label) => label.startsWith('__avery_date_year_header__:'))
       ?? await this.WaitForDateRef((data) => DynamicDateRef(data, (label) => label.startsWith('__avery_date_month_year_header__:')
@@ -1090,6 +1231,7 @@ export class BrowserFormDriver {
       await this.port.delay(DynamicTransitionDelayMs, options.signal);
     }
 
+    await this.RevealDatePickerChoices(operation.value, options);
     const monthControl = await this.WaitForDateRef(
       (data) => marker('__avery_date_month_option__:', desired.month)(data)
         ?? DynamicDateRef(data, (label) => label.startsWith('__avery_date_month_header__:')),
@@ -1142,16 +1284,16 @@ export class BrowserFormDriver {
     operation: FormFillOperation,
     options: { signal?: AbortSignal; deadline?: number },
   ): Promise<{ filled: boolean; reason?: string }> {
-    const formSnapshot = await this.InspectForm(options, true);
+    const formSnapshot = await this.InspectForm(options, true, operation);
     const fields = FormFields(formSnapshot.data?.refs && typeof formSnapshot.data.refs === 'object' ? formSnapshot.data.refs : {}, this.port.pageRevision());
-    const matchingFields = MatchingDynamicFormFields(fields, operation);
-    const target = matchingFields[operation.occurrence] ?? matchingFields[0];
-    if (!target) return { filled: false, reason: 'dynamic_field_not_found' };
+    const target = DynamicFormTarget(fields, operation);
     const selectedLabels: string[] = [];
     const region = ['nativePlace', 'residence', 'hukou', 'targetProvince', 'targetCity'].includes(operation.key);
     let committed = false;
 
     try {
+      if (!target) return { filled: false, reason: 'dynamic_field_not_found' };
+      if (target.disabled || target.readOnly) return { filled: false, reason: 'field_not_editable' };
       await this.ClickDynamicRef(target.ref, options);
       const visitedActions = new Set<string>();
       let selectedAny = false;
@@ -1164,7 +1306,16 @@ export class BrowserFormDriver {
         let latestOptionSnapshot: BrowserFormCommandEnvelope = { success: true, data: {} };
         for (let attempt = 0; attempt < 10 && !option; attempt += 1) {
           latestOptionSnapshot = await this.SnapshotDynamicOptions(options);
-          option = DynamicOptionMatch(latestOptionSnapshot.data ?? {}, operation.key, operation.value, visitedActions);
+          option = DynamicOptionMatch(latestOptionSnapshot.data ?? {}, operation.key, operation.value, visitedActions, operation.adapter === 'moka' && !region);
+          if (!option && !searchedDynamicList && operation.adapter === 'moka') {
+            const search = DynamicSearchMatch(latestOptionSnapshot.data ?? {});
+            if (search) {
+              await this.port.runCommand(['fill', search.ref, operation.value], options);
+              searchedDynamicList = true;
+              const timeoutMs = Math.max(0, Math.min(6000, (options.deadline ?? Date.now() + 6000) - Date.now() - 100));
+              await this.port.runCommand(['eval', '-b', Buffer.from(MokaSearchOptionsWaitExpression(operation.value, timeoutMs), 'utf8').toString('base64')], options);
+            }
+          }
           if (!option && attempt < 9) await this.port.delay(DynamicPollIntervalMs, options.signal);
         }
         if (!option) {
@@ -1187,7 +1338,7 @@ export class BrowserFormDriver {
           // 再按相同语义选择，避免重复执行已完成的级联步骤。
           if (!(error instanceof AgentBrowserError) || error.code !== 'BROWSER_STALE_PAGE_REF') throw error;
           const refreshedSnapshot = await this.SnapshotDynamicOptions(options);
-          const refreshed = DynamicOptionMatch(refreshedSnapshot.data ?? {}, operation.key, operation.value, visitedActions);
+          const refreshed = DynamicOptionMatch(refreshedSnapshot.data ?? {}, operation.key, operation.value, visitedActions, operation.adapter === 'moka' && !region);
           if (!refreshed) throw error;
           option = refreshed;
           await this.port.runCommand(['click', option.ref], options);
@@ -1244,7 +1395,7 @@ export class BrowserFormDriver {
       try { await this.port.runCommand(['eval', '-b', Buffer.from(DynamicOptionCleanupExpression, 'utf8').toString('base64')], options); } catch { /* 字段结果优先，下次候选快照仍会先清理。 */ }
       try { await this.port.runCommand(['eval', '-b', Buffer.from(FormSemanticCleanupExpression, 'utf8').toString('base64')], options); } catch { /* 下次 Inspect 会再次清理。 */ }
       // 地区确认成功后组件应自行关闭；再次切换触发器可能反而重开弹层。失败路径才执行恢复性收尾。
-      if (!committed || !region) await this.DismissTransientOverlay(options, operation);
+      if (!committed || !region) await this.DismissTransientOverlay(options, target ? operation : undefined);
     }
   }
 
@@ -1253,16 +1404,19 @@ export class BrowserFormDriver {
     operation: FormFillOperation,
     options: { signal?: AbortSignal; deadline?: number },
   ): Promise<{ filled: boolean; reason?: string }> {
-    const formSnapshot = await this.InspectForm(options, true);
+    const formSnapshot = await this.InspectForm(options, true, operation);
     const fields = FormFields(formSnapshot.data?.refs && typeof formSnapshot.data.refs === 'object' ? formSnapshot.data.refs : {}, this.port.pageRevision());
     const matchingFields = MatchingDynamicFormFields(fields, operation);
-    const target = matchingFields[operation.occurrence] ?? matchingFields[0];
-    if (!target) return { filled: false, reason: 'dynamic_field_not_found' };
+    const target = operation.targetRecordIndex !== undefined ? DynamicFormTarget(fields, operation) : matchingFields[operation.targetOccurrence ?? operation.occurrence];
     let committed = false;
 
     try {
+      if (!target) return { filled: false, reason: 'dynamic_field_not_found' };
+      if (target.disabled || target.readOnly) return { filled: false, reason: 'field_not_editable' };
+      if (operation.adapter === 'moka') return await this.ExecuteMokaDate(operation, target.ref, options);
       await this.ClickDynamicRef(target.ref, options);
       await this.port.delay(DynamicTransitionDelayMs, options.signal);
+      await this.RevealDatePickerChoices(operation.value, options);
       let editorSnapshot: BrowserFormCommandEnvelope;
       const cleanupDateEditor = ['eval', '-b', Buffer.from(DateEditorCleanupExpression, 'utf8').toString('base64')];
       try {
@@ -1309,7 +1463,7 @@ export class BrowserFormDriver {
           const refreshedForm = await this.InspectForm(options, true);
           const refreshedFields = FormFields(refreshedForm.data?.refs && typeof refreshedForm.data.refs === 'object' ? refreshedForm.data.refs : {}, this.port.pageRevision());
           const refreshedMatches = MatchingDynamicFormFields(refreshedFields, operation);
-          const refreshedTarget = refreshedMatches[operation.occurrence] ?? refreshedMatches[0];
+          const refreshedTarget = operation.targetRecordIndex !== undefined ? DynamicFormTarget(refreshedFields, operation) : refreshedMatches[operation.targetOccurrence ?? operation.occurrence];
           if (!refreshedTarget) return { filled: false, reason: 'dynamic_field_not_found' };
           await this.ClickDynamicRef(refreshedTarget.ref, options);
           await this.port.delay(DynamicTransitionDelayMs, options.signal);
@@ -1324,10 +1478,60 @@ export class BrowserFormDriver {
       }
       return { filled: true };
     } finally {
+      if (operation.adapter === 'moka') {
+        try { await this.port.runCommand(['eval', '-b', Buffer.from("(() => { for (const element of document.querySelectorAll('[data-avery-moka-active-date]')) element.removeAttribute('data-avery-moka-active-date'); return { cleaned: true }; })()", 'utf8').toString('base64')], options); } catch { /* 不覆盖原字段结果。 */ }
+      }
       try { await this.port.runCommand(['eval', '-b', Buffer.from(DateEditorCleanupExpression, 'utf8').toString('base64')], options); } catch { /* 下次日期操作仍会先清理。 */ }
       try { await this.port.runCommand(['eval', '-b', Buffer.from(FormSemanticCleanupExpression, 'utf8').toString('base64')], options); } catch { /* 下次 Inspect 会再次清理。 */ }
-      await this.DismissTransientOverlay(options, operation);
+      await this.DismissTransientOverlay(options, target ? operation : undefined);
     }
+  }
+
+  /** Moka 就读时间必须分别选择年、月；输入搜索词或按 Tab 均不构成选中。 */
+  private async ExecuteMokaDate(operation: FormFillOperation, ref: string, options: { signal?: AbortSignal; deadline?: number }): Promise<{ filled: boolean; reason?: string }> {
+    const desired = ParseDateTarget(operation.value);
+    if (!desired) return { filled: false, reason: 'date_value_unsupported' };
+    const prepared = await this.port.runCommand(['eval', '-b', Buffer.from(MokaDatePreparationExpression(operation), 'utf8').toString('base64')], options);
+    const data = prepared.data?.result;
+    if (!data?.found) return { filled: false, reason: 'dynamic_field_not_found' };
+    if (!data.range) {
+      await this.ClickDynamicRef(ref, options);
+      let snapshot = await this.WaitForDatePickerSnapshot(options);
+      const header = DynamicDateRef(snapshot.data ?? {}, label => label.startsWith('__avery_date_year_header__:'));
+      if (header && Number(header.label.split(':').pop()) !== desired.year) {
+        await this.ClickDynamicRef(header.ref, options);
+        // 年份面板每次展示一个十年区间，最多跨越 ParseDateTarget 允许的 1900—2200 年范围。
+        for (let step = 0; step < 32; step += 1) {
+          snapshot = await this.SnapshotDateControls(options);
+          const year = DynamicDateRef(snapshot.data ?? {}, label => label === `__avery_date_year_option__:${desired.year}`);
+          if (year) break;
+          const refs = snapshot.data?.refs as Record<string, Record<string, unknown>> | undefined;
+          const decade = Object.values(refs ?? {}).map(entry => String(entry.name ?? '')).find(label => label.startsWith('__avery_moka_decade__:'));
+          if (!decade) return { filled: false, reason: 'date_year_control_not_found' };
+          const [, start, end] = decade.split(':');
+          const direction = desired.year < Number(start) ? '__avery_moka_previous_years__' : desired.year > Number(end) ? '__avery_moka_next_years__' : '';
+          const navigation = DynamicDateRef(snapshot.data ?? {}, label => label === direction);
+          if (!navigation) return { filled: false, reason: 'date_year_not_found' };
+          await this.ClickDynamicRef(navigation.ref, options);
+        }
+      }
+      const result = await this.ExecuteDatePickerChoices(operation, snapshot.data ?? {}, options);
+      if (!result.filled) return result;
+    } else {
+      for (const [controlName, prefix, value] of [
+        ['__avery_moka_year_control__', '__avery_date_year_option__:', desired.year],
+        ['__avery_moka_month_control__', '__avery_date_month_option__:', desired.month],
+      ] as const) {
+        const control = await this.WaitForDateRef(snapshot => DynamicDateRef(snapshot, label => label === controlName), options);
+        if (!control) return { filled: false, reason: 'date_control_not_found' };
+        await this.ClickDynamicRef(control.ref, options);
+        await this.port.runCommand(['eval', '-b', Buffer.from(MokaDateOptionRevealExpression(value), 'utf8').toString('base64')], options);
+        const option = await this.WaitForDateRef(snapshot => DynamicDateRef(snapshot, label => label === `${prefix}${value}`), options);
+        if (!option) return { filled: false, reason: 'date_option_not_found' };
+        await this.ClickDynamicRef(option.ref, options);
+      }
+    }
+    return await this.WaitForDateSelectionCommit(operation, [operation.value], options) ? { filled: true } : { filled: false, reason: 'selection_not_committed' };
   }
 
 }

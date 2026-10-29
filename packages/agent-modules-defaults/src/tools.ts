@@ -382,7 +382,7 @@ function BuildRegistry(): RegisteredAgentTool[] {
     },
     {
       ...BrowserBase,
-      definition: CreateDefinition('BrowserFillForm', 'Inspect and fill the current form from selected profile records and/or the resume already bound by ReadResume. The Host performs inspection, matching, DOM rebinding, and bounded execution internally. Continue a partial fill with continuationId; send only short fieldId-to-candidateId resolutions returned by the previous call, or explicit user decisions for missing facts. It cannot upload, accept agreements, submit, or navigate. Call BrowserValidateForm afterwards.', {
+      definition: CreateDefinition('BrowserFillForm', 'Inspect and fill the current form from selected profile records and/or the resume already bound by ReadResume. The Host performs inspection, matching, DOM rebinding, and bounded execution internally, including supported ATS date pickers and search dropdowns. Search text alone is not a committed selection; the Host selects real options and verifies retained values. Disabled fields populated by the website are skipped. Continue a partial fill with continuationId; send only short fieldId-to-candidateId resolutions returned by the previous call, or explicit user decisions for missing facts. It cannot upload, accept agreements, submit, or navigate. Call BrowserValidateForm afterwards.', {
         type: 'object',
         properties: {
           profileIds: { type: 'array', minItems: 1, maxItems: 20, uniqueItems: true, items: { type: 'string', minLength: 1, maxLength: 200 } },

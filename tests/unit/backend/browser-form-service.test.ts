@@ -371,7 +371,7 @@ describe('BrowserFormService 匹配阈值与等价值候选', () => {
     expect(DateEditorEnrichmentExpression).toContain('__avery_date_month_option__:');
     expect(DateEditorEnrichmentExpression).toContain('__avery_date_day_option__:');
     expect(DateEditorEnrichmentExpression).toContain('[data-avery-date-original-role="gridcell"]');
-    expect(DateEditorEnrichmentExpression).toContain("input.matches('.phoenix-select__input--unText')");
+    expect(DateEditorEnrichmentExpression).toContain('.phoenix-select__input--unText');
     expect(DateEditorEnrichmentExpression).toContain('__avery_date_month_year_header__:');
     expect(DateEditorEnrichmentExpression).toContain('.phoenix-calendar-month-panel-year-select-content');
     expect(DateEditorEnrichmentExpression).toContain('monthPanelYearButton !== element');

@@ -140,7 +140,7 @@ export async function NormalizePersonalBrowserUrl(value: unknown): Promise<strin
   if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || !url.hostname) {
     throw new AgentBrowserError('BROWSER_NAVIGATION_DENIED', 'Only http/https URLs without embedded credentials are allowed.');
   }
-  url.hash = '';
+  // Moka 等招聘站通过 hash 路由定位申请表；删除片段会把用户带回招聘首页。
   return url.toString();
 }
 

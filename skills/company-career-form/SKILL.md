@@ -35,11 +35,15 @@ Call `BrowserValidateForm` to find empty required fields and browser-native vali
 
 - For a small number of unsupported text fields, use `BrowserFill` only after confirming that the value comes from user-authorized data.
 - For custom or unmatched selects, inspect the real options before using `BrowserSelect` or the necessary `BrowserClick`. Never guess an option value.
+- On Moka, school and major inputs are search boxes: typing a value, pressing Tab, or pressing Enter alone does not prove selection. Let `BrowserFillForm` select an exact real option and verify the displayed selection. For a remaining manual correction, choose an observed option and review its retained value; do not repeat the search or create a custom school/major to bypass a missing match. Leave disabled summary fields such as highest education or most recent major to the website's education-record linkage.
+- Moka education dates use separate year/month dropdowns for each endpoint. Its supported birth-date picker commits on month selection and may append an age to the display. Use only authorized dates and preserve the precision supported by the control. Do not look for an additional day or confirmation action after a month-only picker has committed.
 - Use `BrowserSetChecked` for ordinary checkboxes or radio controls. Privacy policies, agreements, and authorization consent are separate actions and must not be accepted by `BrowserFillForm`.
 - Before uploading a resume or another document, call `BrowserSnapshot` to obtain a fresh file-input reference, then call `BrowserUploadFile` with an authorized `fileId`.
 - Hand login, CAPTCHA, identity verification, and ambiguous authorization to the user.
 
 Call `BrowserValidateForm` again after corrections. `valid: null` only means that the site did not expose native validity metadata; it does not prove that validation passed. Check visible required-field feedback and never invent a successful state.
+
+Retained page values do not prove that the website saved a server-side draft. When the user requests filling without submission, do not use preview/submit or resume-sync controls as a substitute for saving. Report any unverified draft persistence; avoid refreshing or navigating away from an unsaved form.
 
 ## 4. Submit and record the outcome
 

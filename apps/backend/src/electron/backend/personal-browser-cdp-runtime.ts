@@ -1265,7 +1265,9 @@ export class PersonalBrowserCdpRuntime implements PersonalBrowserRuntimePort {
       const temporaryFormName = String(expected.name || '').startsWith('__avery_field__');
       if (actual.tag !== expected.tag || actual.type !== expected.type
         || (!temporaryFormName && (actual.role !== expected.role || actual.name !== expected.name))) return { stale: true };
-      element.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
+      // 日期候选已由面板滚动显露；再次居中会滚动页面并触发 ATS 关闭弹层。
+      const alignment = element.hasAttribute('data-avery-date-editor') ? 'nearest' : 'center';
+      element.scrollIntoView({ block: alignment, inline: alignment, behavior: 'instant' });
       const rect = element.getBoundingClientRect();
       const style = getComputedStyle(element);
       if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity || 1) <= 0 || rect.width <= 0 || rect.height <= 0) return { stale: true };

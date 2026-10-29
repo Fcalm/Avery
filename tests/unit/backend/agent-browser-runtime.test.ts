@@ -2,7 +2,7 @@ import { access, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { AgentBrowserError, AgentBrowserRuntime, DetectBossRisk, IsBossBrowserUrl, NormalizePublicBrowserUrl } from '../../../apps/backend/src/electron/backend/agent-browser-runtime';
+import { AgentBrowserError, AgentBrowserRuntime, DetectBossRisk, IsBossBrowserUrl, NormalizePublicBrowserUrl, NormalizePersonalBrowserUrl } from '../../../apps/backend/src/electron/backend/agent-browser-runtime';
 import { BrowserExtensionProtocolRevision, type BrowserExtensionBridge } from '../../../apps/backend/src/electron/backend/browser-extension-bridge';
 import { DynamicSelectionVerificationExpression, FormSemanticEnrichmentExpression } from '../../../apps/backend/src/electron/backend/browser-form-driver';
 import { PersonalBrowserCdpError, type PersonalBrowserRuntimePort } from '../../../apps/backend/src/electron/backend/personal-browser-cdp-runtime';
@@ -282,6 +282,13 @@ describe('AgentBrowserRuntime', () => {
     'http://[::1]/test',
   ])('拒绝受限导航地址 %s', async (url) => {
     await expect(NormalizePublicBrowserUrl(url, vi.fn() as never)).rejects.toMatchObject({ code: 'BROWSER_NAVIGATION_DENIED' });
+  });
+
+  it('个人浏览器保留 Moka 申请页的 hash 路由，同时拒绝危险协议与内嵌凭据', async () => {
+    const url = 'https://app.mokahr.com/campus-recruitment/company/123?locale=zh-CN#/job/job-id/apply';
+    await expect(NormalizePersonalBrowserUrl(url)).resolves.toBe(url);
+    await expect(NormalizePersonalBrowserUrl('javascript:alert(1)')).rejects.toMatchObject({ code: 'BROWSER_NAVIGATION_DENIED' });
+    await expect(NormalizePersonalBrowserUrl('https://user:password@app.mokahr.com/#/job/a/apply')).rejects.toMatchObject({ code: 'BROWSER_NAVIGATION_DENIED' });
   });
 
   it('DNS 任一结果落入私网时拒绝，公开地址被规范化', async () => {

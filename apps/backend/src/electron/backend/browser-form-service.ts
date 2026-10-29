@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { ProfileCategoryValues } from '@avery/contracts';
+import { BrowserDateAdapters, type BrowserDateAdapterId } from './browser-date-adapters';
 
 const FormSemanticAcceptScore = 0.78;
 const FormHighConfidenceScore = 0.95;
@@ -52,6 +53,7 @@ export type FormField = {
     confidence: number;
   };
   interaction: {
+    adapter?: BrowserDateAdapterId;
     kind: 'input' | 'textarea' | 'select' | 'radio' | 'checkbox' | 'cascader' | 'datePicker' | 'upload' | 'unknown';
     editable: boolean;
     levels?: number;
@@ -60,10 +62,15 @@ export type FormField = {
 };
 
 export type FormFillOperation = {
+  adapter?: BrowserDateAdapterId;
   kind: 'fill' | 'select' | 'check' | 'custom_select' | 'custom_date';
   ref: string;
   key: string;
   occurrence: number;
+  /** 日期定位使用完整表单中同语义、同标签的序号，不能随已填字段过滤而变化。 */
+  targetOccurrence?: number;
+  /** ATS 重复经历的页面记录序号，与来源记录匹配序号分开保存。 */
+  targetRecordIndex?: number;
   value: string;
   label: string;
   sourceTitle: string;
@@ -161,6 +168,9 @@ function FieldInteraction(
   options: FormField['options'],
   metadata: Record<string, unknown>,
 ): FormField['interaction'] {
+  if (metadata.adapter === 'moka' && control === 'select') return {
+    adapter: 'moka', kind: ['date', 'yearMonth'].includes(definition?.valueType ?? '') ? 'datePicker' : 'select', editable: false, requiresCommit: true,
+  };
   if (control === 'file') return { kind: 'upload', editable: false };
   if (control === 'radio') return { kind: 'radio', editable: true };
   if (control === 'checkbox') return { kind: 'checkbox', editable: true };
@@ -195,6 +205,8 @@ function DecodeFormFieldContext(value: unknown): Record<string, unknown> {
       ...(Array.isArray(parsed.f) ? { followingLabels: parsed.f } : {}),
       ...(Number.isSafeInteger(parsed.o) ? { recordIndex: parsed.o } : {}),
       ...(typeof parsed.v === 'boolean' ? { filledState: parsed.v } : {}),
+      ...(parsed.d === true ? { disabled: true } : {}),
+      ...(typeof parsed.t === 'string' && Object.hasOwn(BrowserDateAdapters, parsed.t) ? { adapter: parsed.t } : {}),
     };
   } catch { return {}; }
 }
@@ -214,6 +226,8 @@ export function FormFields(refs: Record<string, unknown>, pageRevision = 0): For
     if (!rawMetadata || typeof rawMetadata !== 'object' || Array.isArray(rawMetadata)) continue;
     const originalMetadata = rawMetadata as Record<string, unknown>;
     if (originalMetadata.formExcluded === true) continue;
+    // 辅助搜索框即使从父节点继承了已选文字，也不能再次成为独立申请字段。
+    if (originalMetadata.name === '__avery_internal_form_control__' || originalMetadata.ariaLabel === '__avery_internal_form_control__') continue;
     const decodedContext = DecodeFormFieldContext(originalMetadata.name);
     const metadata = { ...originalMetadata, ...decodedContext };
     const role = String(metadata.role ?? '').toLowerCase();
@@ -258,7 +272,10 @@ export function FormFields(refs: Record<string, unknown>, pageRevision = 0): For
     };
     const explicitTexts = [raw.label, raw.name, raw.id, raw.placeholder, raw.ariaLabel, raw.ariaLabelledBy, raw.autocomplete].filter((value): value is string => Boolean(value));
     const observedSection = CanonicalFormSection(metadata.section) ?? InferTemporalSection(explicitTexts);
-    const resolved = ResolveFieldKey({ explicitTexts, contextualTexts: raw.nearbyTexts, section: observedSection });
+    // Moka 已提供精确业务标题，未知字段不能再从附近正文猜成另一种资料。
+    const mokaKey = metadata.adapter === 'moka' ? CanonicalFormField(label) : undefined;
+    const resolved = metadata.adapter === 'moka' ? { key: mokaKey, exact: Boolean(mokaKey), confidence: mokaKey ? 1 : 0 }
+      : ResolveFieldKey({ explicitTexts, contextualTexts: raw.nearbyTexts, section: observedSection });
     // 精确字段名比页面容器边界更可靠；通用开始/结束时间仍必须依赖所在模块消歧。
     const fixedDefinition = resolved.exact && resolved.key && resolved.key !== 'startDate' && resolved.key !== 'endDate'
       ? DefinitionForKey(resolved.key)
@@ -272,7 +289,7 @@ export function FormFields(refs: Record<string, unknown>, pageRevision = 0): For
       followingLabels: StringList(metadata.followingLabels, 4),
     };
     const contextualTexts = [...raw.nearbyTexts, context.groupHeading ?? '', ...context.precedingLabels, ...context.followingLabels].filter(Boolean);
-    const contextualResolution = resolved.exact ? resolved : ResolveFieldKey({ explicitTexts, contextualTexts, section });
+    const contextualResolution = resolved.exact || metadata.adapter === 'moka' ? resolved : ResolveFieldKey({ explicitTexts, contextualTexts, section });
     // 复合手机号控件中的选择器仅用于国际区号，当前自动填写只处理实际号码输入框。
     if (control === 'select' && contextualResolution.key === 'phone') continue;
     const definition = fixedDefinition ?? (contextualResolution.key ? DefinitionForKey(contextualResolution.key, section) : undefined);
@@ -321,17 +338,17 @@ export const FormFieldAliases: Array<[string, string[]]> = [
   ['email', ['邮箱', '电子邮箱', '电子邮件', 'email']],
   ['name', ['姓名', '真实姓名', 'name', 'fullname']],
   ['gender', ['性别', 'gender', 'sex']],
-  ['birthDate', ['出生日期', '出生年月', '生日', 'birthdate', 'birthday']],
-  ['nationality', ['国籍', '国籍/地区', 'nationality']],
+  ['birthDate', ['出生日期', '出生日期 (年龄)', '出生年月', '生日', 'birthdate', 'birthday']],
+  ['nationality', ['国籍', '国籍/地区', '国家/地区', 'nationality']],
   ['nativePlace', ['籍贯', '祖籍', 'nativeplace']],
   ['ethnicity', ['民族', 'ethnicity']],
-  ['residence', ['现居地', '居住地', '现居住地', 'residence', 'currentlocation']],
+  ['residence', ['现居地', '居住地', '现居住地', '所在地', 'residence', 'currentlocation']],
   ['hukou', ['户籍所在地', '户口所在地', '户籍', 'hukou']],
   ['workYears', ['工作年限', '工作经验', '从业年限', 'workyears', 'workexperience']],
   ['politicalStatus', ['政治面貌', 'politicalstatus']],
   ['maritalStatus', ['婚姻状况', '婚姻状态', 'maritalstatus']],
   ['school', ['学校', '学校名称', '毕业院校', '院校', 'school', 'university']],
-  ['major', ['专业', '专业名称', 'major']],
+  ['major', ['专业', '专业名称', '最近毕业专业', 'major']],
   ['educationType', ['学历类型', '学习形式', '教育类型', 'educationtype', 'studytype']],
   ['degreeLevel', ['学历', '最高学历', 'educationlevel', 'degreelevel']],
   ['degree', ['学位', 'degree']],
@@ -350,7 +367,7 @@ export const FormFieldAliases: Array<[string, string[]]> = [
   ['endDate', ['结束时间', '毕业时间', '离职时间', 'enddate']],
   ['targetRole', ['目标岗位', '期望职位', '期望岗位', '求职岗位', 'targetrole']],
   ['targetProvince', ['期望省份', '工作省份', 'targetprovince']],
-  ['targetCity', ['期望城市', '工作城市', '意向城市', 'targetcity']],
+  ['targetCity', ['期望城市', '工作城市', '意向城市', '意向工作城市', 'targetcity']],
   ['targetCategory', ['期望职类', '职位类别', '目标职类', 'targetcategory']],
   ['targetFunction', ['期望职能', '职位职能', '目标职能', 'targetfunction']],
   ['salary', ['期望薪资', '薪资要求', 'expectedsalary', 'salary']],
@@ -592,7 +609,8 @@ function FormValueCompatible(field: FormField, fact: FormFact): boolean {
   if (targetType !== 'unknown' && fact.valueType !== targetType) {
     if (!(['date', 'yearMonth'].includes(targetType) && ['date', 'yearMonth'].includes(fact.valueType))) return false;
   }
-  if (['date', 'yearMonth'].includes(fact.valueType) && !/\d{4}[^\d]?\d{1,2}/.test(fact.value)) return false;
+  if (['date', 'yearMonth'].includes(fact.valueType) && !/\d{4}[^\d]?\d{1,2}/.test(fact.value)
+    && !(fact.key === 'availability' && field.control === 'text' && !/^(date|month)$/.test(field.inputType ?? ''))) return false;
   return true;
 }
 
@@ -851,7 +869,10 @@ export function CreateFormFillPlan(fields: FormField[], sources: Record<string, 
     if (field.control === 'select') {
       if (!field.options?.length) {
         const kind = ['birthDate', 'startDate', 'endDate', 'availability'].includes(key) ? 'custom_date' : 'custom_select';
-        operations.push({ kind, ref: field.ref, key, occurrence, value: fact.value, label: field.label, sourceTitle: fact.sourceTitle, sourcePath: fact.sourcePath, sourcePaths, concept: fact.concept, strategy });
+        const targetOccurrence = kind === 'custom_date' || field.interaction.adapter === 'moka' ? fields.filter((candidate) => candidate.control === 'select'
+          && !candidate.options?.length && candidate.semantic.concept === field.semantic.concept
+          && NormalizeFormLabel(candidate.label) === NormalizeFormLabel(field.label)).indexOf(field) : undefined;
+        operations.push({ kind, ...(field.interaction.adapter ? { adapter: field.interaction.adapter } : {}), ...(field.interaction.adapter === 'moka' && field.context.recordIndex !== undefined ? { targetRecordIndex: field.context.recordIndex } : {}), ref: field.ref, key, occurrence, ...(targetOccurrence === undefined ? {} : { targetOccurrence }), value: fact.value, label: field.label, sourceTitle: fact.sourceTitle, sourcePath: fact.sourcePath, sourcePaths, concept: fact.concept, strategy });
         continue;
       }
       const option = field.options.find((candidate) => NormalizeFormLabel(candidate.label) === NormalizeFormLabel(fact.value) || NormalizeFormLabel(candidate.value) === NormalizeFormLabel(fact.value));
