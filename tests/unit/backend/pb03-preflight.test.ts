@@ -33,13 +33,13 @@ describe('PB-03 attach-only browser preflight', () => {
         statusReads += 1;
         return statusReads < 3
           ? { state: 'offline', connected: false, handshakeReceived: false }
-          : { state: 'online', connected: true, handshakeReceived: true, handshakeSource: 'poll', actualVersion: '0.2.0', actualProtocolRevision: 'avery-browser-extension-bridge-v2' };
+          : { state: 'online', connected: true, handshakeReceived: true, handshakeSource: 'poll', actualVersion: '0.2.0', actualProtocolRevision: 'avery-browser-extension-bridge-v3' };
       }),
       Request: vi.fn(),
       Launch: vi.fn(),
     };
     const result = await WaitForPb03Handshake({ bridge, intervalMs: 100, timeoutMs: 1_000, sleep: async () => undefined });
-    expect(result).toMatchObject({ ready: true, status: 'ready', handshakeReceived: true, source: 'poll', actualVersion: '0.2.0', actualProtocolRevision: 'avery-browser-extension-bridge-v2', attempts: 3 });
+    expect(result).toMatchObject({ ready: true, status: 'ready', handshakeReceived: true, source: 'poll', actualVersion: '0.2.0', actualProtocolRevision: 'avery-browser-extension-bridge-v3', attempts: 3 });
     expect(bridge.Start).toHaveBeenCalledTimes(1);
     expect(bridge.Request).not.toHaveBeenCalled();
     expect(bridge.Launch).not.toHaveBeenCalled();

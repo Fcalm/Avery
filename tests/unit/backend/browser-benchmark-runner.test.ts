@@ -7,8 +7,10 @@ vi.mock('../../../apps/backend/src/electron/backend/agent-browser-runtime', asyn
   const actual = await importOriginal<typeof import('../../../apps/backend/src/electron/backend/agent-browser-runtime')>();
   return { ...actual, AgentBrowserRuntime: class {
     options: any;
+    closeTaskTabs = true;
     constructor(options: any) { this.options = options; state.runtimes.push(this); }
     async SetEngine() {}
+    SetCloseTaskTabs(value: boolean) { this.closeTaskTabs = value; }
     async FlushLocalEvaluationPage() {}
     async Close() {}
   } };
@@ -48,10 +50,11 @@ async function input(signal = new AbortController().signal) {
   return { runId: 'run-a', caseRunId: 'case-a', candidate: { id: 'a', name: 'A', promptOverrides: {} }, testCase: ParseEvalDataset(BuildApplicationBenchmarkDataset())[0], model: 'mimo-v2.6-flash', toolNames: ['BrowserRunScript', 'BrowserNavigate', 'BrowserFillForm'], maxModelTurns: 100, userSimulator: 'approve_valid' as const, fixtureBranch: 'career-portal' as const, browserEngine: 'chrome' as const, caseRoot, signal };
 }
 describe('BrowserEvalRunner 拟真平台编排', () => {
-  it('现有 Runner 注入合成资料和二进制附件，保留令牌片段，返回业务成绩及实际 usage', async () => {
+  it.each([true, false])('Runner 冻结关闭策略 %s，注入合成资料与附件，返回业务成绩及实际 usage', async (closeTaskTabs) => {
     state.failure = false; state.sent = []; state.runtimes = [];
     const runner = new BrowserEvalRunner({ credentialPort: {}, browserExtensionBridge: {} as any, externalBrowserPaths: {} });
-    const result = await runner.Execute(await input());
+    const result = await runner.Execute({ ...await input(), closeTaskTabs });
+    expect(state.runtimes[0].closeTaskTabs).toBe(closeTaskTabs);
     expect(result.finalState).toMatchObject({ benchmark: { report: { passed: true, fieldAccuracy: 100 } } });
     expect(result.metrics).toMatchObject({ promptTokens: 120, completionTokens: 30, totalTokens: 150, cachedTokens: 100, taskCompleted: true });
     expect(state.sent).toHaveLength(1); expect(state.sent[0].content).not.toContain('controller-token');

@@ -427,6 +427,8 @@ export const FormSemanticEnrichmentExpression = (() => {
       if (dateAdapterFor(seed) === 'moka' && seed.closest(dateAdapters.moka.field)) continue;
       // 日期弹层中的年月选项不是申请表字段；否则每个年份都会触发整张表单的语义推断。
       if (seed.closest(dateAdapters.feishu.popup)) continue;
+      // 两端已分别标记；范围容器及内部年月文字不能再按附近标题推断成“学校名称”。
+      if (seed.closest(dateAdapters.feishu.range) && dateAdapterFor(seed) === 'feishu') continue;
       if (seed.hasAttribute('data-avery-form-semantic')) continue;
       if (seed.closest('.atsx-select,.atsx-select-dropdown') || seed.querySelector('.atsx-select')) continue;
       if (seed.closest('nav,header,footer,[role="navigation"]')) {
@@ -1197,7 +1199,8 @@ export class BrowserFormDriver {
     const expression = operation?.adapter === 'feishu' ? FeishuSelectOptionsExpression(operation) : DynamicOptionEnrichmentFor(operation?.adapter === 'moka');
     const enrichment = await this.port.runCommand(['eval', '-b', Buffer.from(expression, 'utf8').toString('base64')], options);
     if (operation?.adapter === 'feishu' && enrichment.data?.result?.ready !== true) {
-      throw new AgentBrowserError('BROWSER_FORM_MENU_NOT_READY', 'The Feishu select menu is unavailable or still moving. Observe the field before selecting.');
+      const reason = String(enrichment.data?.result?.reason ?? 'unknown');
+      throw new AgentBrowserError('BROWSER_FORM_MENU_NOT_READY', `The Feishu select menu is not ready (${reason}). Observe the field before selecting.`);
     }
     // 个人浏览器的 ref 包含严格语义指纹；标记必须保留到本次点击完成，下次快照会先清理。
     const snapshot = await this.port.runCommand(['snapshot', '-i', '-c', '--urls'], options);

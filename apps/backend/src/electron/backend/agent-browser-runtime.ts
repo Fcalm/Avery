@@ -59,6 +59,7 @@ function MergeCleanupOutcome(left: BrowserTaskCleanupOutcome, right: BrowserTask
     ...(left.code || right.code ? { code: left.code ?? right.code } : {}),
     ...(left.message || right.message ? { message: left.message ?? right.message } : {}),
     closedTabs: left.closedTabs + right.closedTabs,
+    ...(left.retainedTabs !== undefined || right.retainedTabs !== undefined ? { retainedTabs: (left.retainedTabs ?? 0) + (right.retainedTabs ?? 0) } : {}),
     unknownTabs: left.unknownTabs === null || right.unknownTabs === null ? null : left.unknownTabs + right.unknownTabs,
   };
 }
@@ -172,14 +173,14 @@ export interface AgentBrowserRuntimeOptions {
   browserExtensionBridge: BrowserExtensionBridge;
   /** 评测复用生产 Bridge 时仅释放自己的任务页。 */
   closeBridgeOnClose?: boolean;
-  externalBrowserPaths?: Partial<Record<'chrome' | 'edge', string>>;
+  externalBrowserPaths?: Partial<Record<'chrome' | 'edge' | 'ego', string>>;
   /** 仅供契约测试替换扩展任务驱动。 */
-  createExtensionRuntime?: (input: { bridge: BrowserExtensionBridge; engine: 'chrome' | 'edge'; now: () => number; delay: NonNullable<AgentBrowserRuntimeOptions['delay']> }) => PersonalBrowserRuntimePort;
+  createExtensionRuntime?: (input: { bridge: BrowserExtensionBridge; engine: 'chrome' | 'edge' | 'ego'; now: () => number; delay: NonNullable<AgentBrowserRuntimeOptions['delay']> }) => PersonalBrowserRuntimePort;
   /** 仅记录表单字段阶段、耗时和错误码，不得包含填写值。 */
   recordLog?: (level: 'INFO' | 'WARN', event: string, detail: string) => void;
 }
 
-/** 扩展任务页串行 Runtime；页面引用、文件解析与取消均由此边界持有。 */
+/** 浏览器任务串行 Runtime；页面引用、文件解析、取消与收尾策略均由此边界持有。 */
 export class AgentBrowserRuntime implements BrowserAutomationPort {
   private readonly runtimeRoot: string;
   private readonly resolveUploadFile: AgentBrowserRuntimeOptions['resolveUploadFile'];
@@ -190,7 +191,7 @@ export class AgentBrowserRuntime implements BrowserAutomationPort {
   private readonly createExtensionRuntime: NonNullable<AgentBrowserRuntimeOptions['createExtensionRuntime']>;
   private readonly browserExtensionBridge: BrowserExtensionBridge;
   private readonly closeBridgeOnClose: boolean;
-  private readonly externalBrowserPaths: Partial<Record<'chrome' | 'edge', string>>;
+  private readonly externalBrowserPaths: Partial<Record<'chrome' | 'edge' | 'ego', string>>;
   private readonly recordLog?: AgentBrowserRuntimeOptions['recordLog'];
   private commandTail: Promise<void> = Promise.resolve();
   private running = false;
@@ -205,9 +206,12 @@ export class AgentBrowserRuntime implements BrowserAutomationPort {
   private tabs = new Set<string>();
   private lastRuntimeError: { code: string; message: string } | null = null;
   private unattended = false;
-  private browserEngine: 'chrome' | 'edge' = 'edge';
+  private browserEngine: BrowserEngine = 'edge';
   private lastBossActionAt = 0;
   private personalBrowserRuntime: PersonalBrowserRuntimePort | null = null;
+  private closeTaskTabs = true;
+  /** 策略随任务身份冻结；运行中修改设置仅影响下一次新任务，不能改变旧任务的断线清理。 */
+  private readonly runtimeClosePolicies = new WeakMap<PersonalBrowserRuntimePort, boolean>();
   private readonly retiredBrowserTaskIds = new Set<string>();
   private scheduledCronTaskId: string | null = null;
   private scheduledBrowserTaskGrant: BrowserTaskGrantSnapshot | null = null;
@@ -266,14 +270,19 @@ export class AgentBrowserRuntime implements BrowserAutomationPort {
     if (externalEffect && !grant.allowExternalSend) Deny('external sending or submission');
   }
 
-  /** 切换 Chrome/Edge 时收回旧任务页和引用。 */
+  /** 切换浏览器时收回旧任务页和引用。 */
   async SetEngine(value: BrowserEngine): Promise<void> {
-    if (value !== 'chrome' && value !== 'edge') throw new AgentBrowserError('BROWSER_ARGUMENT_INVALID', 'Browser engine is invalid.');
+    if (value !== 'chrome' && value !== 'edge' && value !== 'ego') throw new AgentBrowserError('BROWSER_ARGUMENT_INVALID', 'Browser engine is invalid.');
     if (this.browserEngine === value) return;
     if (this.personalBrowserRuntime) await this.RetireBrowserInstance();
     this.browserEngine = value;
     this.lastRuntimeError = null;
     this.InvalidateRefs();
+  }
+
+  SetCloseTaskTabs(value: boolean): void {
+    if (typeof value !== 'boolean') throw new AgentBrowserError('BROWSER_ARGUMENT_INVALID', 'closeTaskTabs must be a boolean.');
+    this.closeTaskTabs = value;
   }
 
   /** 个人浏览器只建立浏览器级连接；任务标签页由首个页面工具按需创建。 */
@@ -288,14 +297,17 @@ export class AgentBrowserRuntime implements BrowserAutomationPort {
       this.personalBrowserRuntime = null;
     }
     try {
+      const closeTabs = this.closeTaskTabs;
       await this.browserExtensionBridge.EnsureConnected(this.browserEngine, options);
       const runtime = this.createExtensionRuntime({ bridge: this.browserExtensionBridge, engine: this.browserEngine, now: this.now, delay: this.delay });
+      this.runtimeClosePolicies.set(runtime, closeTabs);
       const browserTaskId = runtime.GetBrowserTaskId?.();
       if (browserTaskId && this.retiredBrowserTaskIds.has(browserTaskId)) {
         await runtime.Close();
         throw new AgentBrowserError('BROWSER_TASK_RETIRED', 'A retired browserTaskId cannot be reused.');
       }
-      await runtime.Connect(options);
+      try { await runtime.Connect(options); }
+      catch (error) { await runtime.Close(); throw error; }
       this.personalBrowserRuntime = runtime;
       this.running = true;
       this.lastRuntimeError = null;
@@ -307,13 +319,17 @@ export class AgentBrowserRuntime implements BrowserAutomationPort {
     }
   }
 
-  /** 只关闭当前扩展 Runtime 生成的 browserTaskId；Bridge 服务本身继续在线供后续任务复用。 */
+  /** 按创建时冻结的策略关闭或交还当前任务页面，并撤销权限；共享 Bridge 保持在线。 */
   private async ReleasePersonalBrowserRuntime(runtime: PersonalBrowserRuntimePort, deadline: number): Promise<BrowserTaskCleanupOutcome> {
     const browserTaskId = runtime.GetBrowserTaskId?.() ?? null;
+    const closeTabs = this.runtimeClosePolicies.get(runtime) ?? true;
     if (browserTaskId) this.retiredBrowserTaskIds.add(browserTaskId);
     let outcome: BrowserTaskCleanupOutcome = { status: 'confirmed', browserTaskId, closedTabs: 0, unknownTabs: 0 };
-    if (browserTaskId) {
-      outcome = await this.browserExtensionBridge.CloseTask(this.browserEngine, browserTaskId, { deadline });
+    if (runtime.CloseTask) {
+      try { outcome = await runtime.CloseTask({ deadline, closeTabs }); }
+      catch (error) { outcome = { status: 'status_unknown', browserTaskId, code: 'BROWSER_TASK_CLEANUP_UNKNOWN', message: error instanceof Error ? error.message : 'Browser task cleanup could not be confirmed.', closedTabs: 0, unknownTabs: null }; }
+    } else if (browserTaskId) {
+      outcome = await this.browserExtensionBridge.CloseTask(this.browserEngine, browserTaskId, { deadline, closeTabs });
     }
     try { await AwaitBeforeDeadline(runtime.Close(), deadline, this.now); }
     catch (error) {
@@ -1007,10 +1023,11 @@ export class AgentBrowserRuntime implements BrowserAutomationPort {
     running: boolean;
     pageRevision: number;
     state: 'not_installed' | 'stopped' | 'ready' | 'unhealthy';
-    engine: 'chrome' | 'edge';
+    engine: BrowserEngine;
     message?: string;
     currentUrl?: string;
-    extension: ReturnType<BrowserExtensionBridge['Status']>;
+    extension?: ReturnType<BrowserExtensionBridge['Status']>;
+    connection?: { connected: boolean; state: 'online' | 'offline' };
   }> {
     const browserPath = this.externalBrowserPaths[this.browserEngine];
     const available = Boolean(browserPath && existsSync(browserPath));
@@ -1041,7 +1058,7 @@ export class AgentBrowserRuntime implements BrowserAutomationPort {
     this.formReviews.Clear();
   }
 
-  /** Host 在一次交互任务结束时调用；仅收回任务页，不关闭共享扩展 Bridge。 */
+  /** Host 在任务结束时调用；按冻结策略关闭或交还页面，不关闭共享扩展 Bridge。 */
   async CloseTask(options: { deadline?: number } = {}): Promise<BrowserTaskCleanupOutcome> {
     return await this.RetireBrowserInstance(options.deadline ?? this.now() + BrowserTaskCleanupTimeoutMs);
   }

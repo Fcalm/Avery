@@ -183,7 +183,7 @@ interface EvalServiceOptions {
   scorer?: EvalScorer;
   browserRunner?: BrowserEvalRunner;
   browserExtensionBridge?: BrowserExtensionBridge;
-  externalBrowserPaths?: Partial<Record<'chrome' | 'edge', string>>;
+  externalBrowserPaths?: Partial<Record<'chrome' | 'edge' | 'ego', string>>;
 }
 
 /** 设置采用整体替换语义；运行中省略 developerMode 与显式 false 同样会关闭门禁。 */
@@ -456,8 +456,9 @@ export class EvalService {
     const snapshot = this.BuildSnapshot(project, cases, { ...runConfig, candidates });
     if (project.runnerType === 'browser') {
       const settings = await this.getStoredSettings();
-      const browserEngine = settings.browserEngine === 'chrome' || settings.browserEngine === 'edge' ? settings.browserEngine : this.defaultBrowserEngine;
+      const browserEngine = settings.browserEngine === 'chrome' || settings.browserEngine === 'edge' || settings.browserEngine === 'ego' ? settings.browserEngine : this.defaultBrowserEngine;
       (snapshot.environment as Record<string, unknown>).browserEngine = browserEngine;
+      (snapshot.environment as Record<string, unknown>).closeTaskTabs = settings.closeTaskTabs !== false;
     }
     const snapshotHash = createHash('sha256').update(JSON.stringify(snapshot)).digest('hex');
     const id = `run-${randomUUID()}`;
@@ -541,7 +542,7 @@ export class EvalService {
                   userSimulator: projectConfig.userSimulator, caseRoot, signal: controller.signal,
                 };
                 const result = run.runnerType === 'browser'
-                  ? await this.browserRunner.Execute({ ...commonInput, fixtureBranch: projectConfig.fixtureBranch, browserEngine: snapshot.environment.browserEngine === 'chrome' ? 'chrome' : 'edge' })
+                  ? await this.browserRunner.Execute({ ...commonInput, fixtureBranch: projectConfig.fixtureBranch, browserEngine: snapshot.environment.browserEngine === 'ego' ? 'ego' : snapshot.environment.browserEngine === 'chrome' ? 'chrome' : 'edge', closeTaskTabs: snapshot.environment.closeTaskTabs !== false })
                   : await this.promptRunner.Execute(commonInput);
                 this.ThrowIfCancelled(controller.signal);
                 await this.store.UpsertEvalCaseRunRecord({

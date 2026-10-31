@@ -88,7 +88,8 @@ export const SettingsSubmitSchema = z.object({
   compressionThreshold: z.number().int().min(1).max(100).optional(),
   onboardingCompleted: z.boolean().optional(),
   customContext: z.string().max(50000).optional(),
-  browserEngine: z.enum(['chrome', 'edge']).optional(),
+  browserEngine: z.enum(['chrome', 'edge', 'ego']).optional(),
+  closeTaskTabs: z.boolean().optional(),
 }).passthrough();
 
 /** 档案单项：id 为结构必需。 */

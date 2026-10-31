@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { FeishuSelectOptionsExpression, FeishuSelectValueScript } from '../../../apps/backend/src/electron/backend/browser-feishu-form';
+import { FeishuSelectEnrichmentScript, FeishuSelectOptionsExpression, FeishuSelectValueScript } from '../../../apps/backend/src/electron/backend/browser-feishu-form';
 import { FormRetainedValuesExpression } from '../../../apps/backend/src/electron/backend/browser-form-driver';
 import { BrowserFormReviewService } from '../../../apps/backend/src/electron/backend/browser-form-review';
 import { EncodedFormFieldPrefix, FormFields, type FormFillOperation } from '../../../apps/backend/src/electron/backend/browser-form-service';
@@ -11,10 +11,14 @@ class Element {
   children: Element[] = [];
   textContent = '';
   value = '';
+  id = 'education[0].school';
   disabled = false;
   readonly classList = { contains: (name: string) => this.attributes.get('class')?.split(' ').includes(name) ?? false };
   closest(selector: string): Element | null { return selector.includes('atsx-select') ? this.root : null; }
   querySelectorAll(_selector: string): Element[] { return this.children; }
+  querySelector(selector: string): Element | null {
+    return this.children.find(child => selector.startsWith('input') ? child instanceof Input : child.getAttribute('role') === 'combobox') ?? null;
+  }
   getBoundingClientRect() { return { x: 0, y: 0, width: 200, height: 40 }; }
   getAttribute(key: string) { return this.attributes.get(key) ?? null; }
   hasAttribute(key: string) { return this.attributes.has(key); }
@@ -50,6 +54,34 @@ function MenuFixture() {
 afterEach(() => vi.useRealTimers());
 
 describe('飞书 Select 业务值和候选稳定性', () => {
+  it('允许直接录入的学校 combobox 使用输入值，普通下拉仍只读取已选项', () => {
+    const root = new Element(), input = new Input();
+    root.setAttribute('class', 'atsx-select atsx-select-combobox');
+    root.children = [input]; input.root = root; input.value = '南昌大学';
+    const read = new Function('element', `${FeishuSelectValueScript}; return feishuSelectedValue(element);`);
+    expect(read(input)).toBe('南昌大学');
+    input.value = '';
+    expect(read(input)).toBe('');
+  });
+
+  it.each([true, false])('可编辑模式=%s 时只规划一个学校目标，隐藏内部辅助目标', editable => {
+    const root = new Element(), trigger = new Element(), input = new Input();
+    root.setAttribute('class', editable ? 'atsx-select atsx-select-combobox' : 'atsx-select');
+    trigger.setAttribute('role', 'combobox'); trigger.root = root; input.root = root;
+    root.children = [trigger, input];
+    const encode = (_element: Element, label: string, _force: boolean, overrides: Record<string, unknown>) => EncodedFormFieldPrefix
+      + Buffer.from(JSON.stringify({ l: label, ...overrides })).toString('base64url');
+    const run = new Function('document', 'HTMLElement', 'HTMLInputElement', 'visibleForContext', 'rawExplicitLabel', 'nearbyLabel', 'contextOf', 'preserve', 'encodedName', 'canonicalKey',
+      `${FeishuSelectValueScript}; ${FeishuSelectEnrichmentScript}`);
+    run({ querySelectorAll: () => [root] }, Element, Input, () => true, () => '学校名称', () => '', () => ({ s: 'education' }),
+      () => undefined, encode, () => 'school');
+    const fields = FormFields(Object.fromEntries([trigger, input].map((e, i) => [`e${i}`, {
+      role: e instanceof Input ? 'textbox' : 'combobox', tag: e instanceof Input ? 'input' : 'div', name: e.getAttribute('aria-label'),
+    }])));
+    expect(fields).toHaveLength(1);
+    expect(fields[0]).toMatchObject({ label: '学校名称', control: editable ? 'text' : 'select', context: { recordIndex: 0 } });
+  });
+
   it.each(['', '硕士'])('已选本科时不把内部搜索词 %s 当作学历值', search => {
     const root = new Element(), input = new Input();
     root.children = [selected('本科')]; input.root = root; input.value = search;

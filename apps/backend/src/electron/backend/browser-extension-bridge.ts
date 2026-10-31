@@ -13,7 +13,8 @@ const ExtensionOnlineWindowMs = 35_000;
  * 判断 Chrome 当前运行的 Service Worker 是否已经重载，因此连接必须携带这
  * 个稳定值；任何缺失或不匹配都按陈旧 Worker 处理。
  */
-export const BrowserExtensionProtocolRevision = 'avery-browser-extension-bridge-v2';
+// v3 清理命令携带 closeTabs；旧 Worker 不能忽略保留策略后仍执行删除。
+export const BrowserExtensionProtocolRevision = 'avery-browser-extension-bridge-v3';
 /** 与 apps/browser-extension/manifest.json 保持一致；旧 Worker 必须按 stale 处理。 */
 export const BrowserExtensionManifestVersion = '0.2.0';
 type BrowserExtensionConnectionState = 'offline' | 'stale' | 'online';
@@ -72,6 +73,8 @@ export type BrowserTaskCleanupOutcome = {
   code?: string;
   message?: string;
   closedTabs: number;
+  /** 页面保留且任务权限已收回时记录；不等于仍可由原任务继续操作。 */
+  retainedTabs?: number;
   /** null means the extension could not report an exact count. */
   unknownTabs: number | null;
 };
@@ -93,10 +96,10 @@ export type BrowserExtensionTargetInfo = {
 
 export interface BrowserExtensionBridgeOptions {
   statePath: string;
-  browserPaths?: Partial<Record<'chrome' | 'edge', string>>;
+  browserPaths?: Partial<Record<'chrome' | 'edge' | 'ego', string>>;
   port?: number;
   now?: () => number;
-  launchBrowser?: (engine: 'chrome' | 'edge', url: string) => Promise<void> | void;
+  launchBrowser?: (engine: 'chrome' | 'edge' | 'ego', url: string) => Promise<void> | void;
   expectedExtensionVersion?: string;
 }
 
@@ -146,7 +149,7 @@ async function ReadJson(request: import('node:http').IncomingMessage): Promise<a
  */
 export class BrowserExtensionBridge {
   private readonly statePath: string;
-  private readonly browserPaths: Partial<Record<'chrome' | 'edge', string>>;
+  private readonly browserPaths: Partial<Record<'chrome' | 'edge' | 'ego', string>>;
   private readonly requestedPort: number;
   private readonly now: () => number;
   private readonly launchBrowser?: BrowserExtensionBridgeOptions['launchBrowser'];
@@ -605,16 +608,16 @@ export class BrowserExtensionBridge {
     return `http://127.0.0.1:${this.port}/pair#token=${this.token}&port=${this.port}`;
   }
 
-  private async Launch(engine: 'chrome' | 'edge'): Promise<void> {
+  private async Launch(engine: 'chrome' | 'edge' | 'ego'): Promise<void> {
     const executable = this.browserPaths[engine];
-    if (!executable || !existsSync(executable)) throw new BrowserExtensionBridgeError('BROWSER_NOT_INSTALLED', `${engine === 'chrome' ? 'Google Chrome' : 'Microsoft Edge'} is not installed.`);
+    if (!executable || !existsSync(executable)) throw new BrowserExtensionBridgeError('BROWSER_NOT_INSTALLED', `${engine === 'chrome' ? 'Google Chrome' : engine === 'ego' ? 'ego lite' : 'Microsoft Edge'} is not installed.`);
     const url = this.PairUrl();
     if (this.launchBrowser) { await this.launchBrowser(engine, url); return; }
     const child = spawn(executable, [url], { shell: false, detached: true, stdio: 'ignore', windowsHide: false });
     child.unref();
   }
 
-  async EnsureConnected(engine: 'chrome' | 'edge', options: { launch?: boolean; signal?: AbortSignal; deadline?: number } = {}): Promise<void> {
+  async EnsureConnected(engine: 'chrome' | 'edge' | 'ego', options: { launch?: boolean; signal?: AbortSignal; deadline?: number } = {}): Promise<void> {
     const end = Math.min(options.deadline ?? this.now() + 20_000, this.now() + 20_000);
     if (options.signal?.aborted) throw new BrowserExtensionBridgeError('CANCELLED', 'Browser extension connection was cancelled.');
     if (this.now() >= end) throw new BrowserExtensionBridgeError('BROWSER_COMMAND_TIMEOUT', 'Browser extension connection timed out.');
@@ -660,7 +663,7 @@ export class BrowserExtensionBridge {
     );
   }
 
-  async Request(engine: 'chrome' | 'edge', operation: string, payload: unknown, options: { signal?: AbortSignal; deadline?: number; responseDeadline?: number; browserTaskId?: string; runId?: string } = {}): Promise<any> {
+  async Request(engine: 'chrome' | 'edge' | 'ego', operation: string, payload: unknown, options: { signal?: AbortSignal; deadline?: number; responseDeadline?: number; browserTaskId?: string; runId?: string } = {}): Promise<any> {
     if (!Number.isSafeInteger(options.deadline) || (options.deadline as number) <= 0) {
       throw new BrowserExtensionBridgeError('BROWSER_COMMAND_DEADLINE_REQUIRED', 'A browser command deadline is required.');
     }
@@ -767,7 +770,7 @@ export class BrowserExtensionBridge {
     };
   }
 
-  async CloseTask(engine: 'chrome' | 'edge', browserTaskId?: string, options: { deadline?: number } = {}): Promise<BrowserTaskCleanupOutcome> {
+  async CloseTask(engine: 'chrome' | 'edge' | 'ego', browserTaskId?: string, options: { deadline?: number; closeTabs?: boolean } = {}): Promise<BrowserTaskCleanupOutcome> {
     if (!IsBrowserTaskId(browserTaskId)) throw new BrowserExtensionBridgeError('BROWSER_TASK_ID_REQUIRED', 'A browserTaskId is required to close a browser task.');
     const responseDeadline = options.deadline ?? this.now() + 5_000;
     // 给 worker 留出一个共同清理 deadline，并为扩展回传逐标签页结果保留余量。
@@ -784,7 +787,7 @@ export class BrowserExtensionBridge {
       };
     }
     try {
-      const response = await this.Request(engine, 'close_task', {}, { deadline, responseDeadline, browserTaskId });
+      const response = await this.Request(engine, 'close_task', { closeTabs: options.closeTabs !== false }, { deadline, responseDeadline, browserTaskId });
       // close_task's worker payload is the cleanup outcome itself; unlike CDP commands,
       // it is not wrapped in { id, result } before EnqueueCommand puts it in body.data.
       const result = response && typeof response === 'object' ? response : {};
@@ -797,6 +800,7 @@ export class BrowserExtensionBridge {
         ...(typeof result.code === 'string' ? { code: result.code } : {}),
         ...(typeof result.message === 'string' ? { message: result.message.slice(0, 300) } : {}),
         closedTabs: Number.isSafeInteger(result.closedTabs) && result.closedTabs >= 0 ? result.closedTabs : 0,
+        ...(Number.isSafeInteger(result.retainedTabs) && result.retainedTabs >= 0 ? { retainedTabs: result.retainedTabs } : {}),
         unknownTabs: Number.isSafeInteger(result.unknownTabs) && result.unknownTabs >= 0
           ? result.unknownTabs
           : status === 'confirmed' ? 0 : null,

@@ -185,7 +185,17 @@ describe('AgentHost 浏览器失败与用户接管', () => {
       expect(browser.Execute.mock.calls).toHaveLength(2);
     } finally { await host.Close(); }
   });
-  it('用户重载扩展后，新 Run 注入当前连接事实，历史断线错误不再充当实时状态', async () => {
+  it.each([true, false, undefined])('工作任务读取真实设置并传递自动关闭策略 %s', async (closeTaskTabs) => {
+    const provider = CreateProvider(() => ({ content: '本轮完成', toolCalls: [] }));
+    const browser = { GetStatus: vi.fn(), SetEngine: vi.fn(), SetCloseTaskTabs: vi.fn(), ResetPageReferences: vi.fn(), Close: vi.fn(async () => undefined) };
+    const { host } = await CreateHost(provider, browser as never, { closeTaskTabs });
+    try {
+      await Send(host, 'close-policy-run', '总结本轮进度');
+      expect(browser.SetCloseTaskTabs).toHaveBeenCalledWith(closeTaskTabs !== false);
+    } finally { await host.Close(); }
+  });
+
+  it.each(['chrome', 'ego'] as const)('浏览器恢复后，新 Run 注入 %s 当前连接事实，历史断线不再充当实时状态', async (engine) => {
     let connected = false;
     const snapshots: unknown[] = [];
     const provider = CreateProvider(() => ({ content: '已读取本轮连接状态', toolCalls: [] }));
@@ -195,16 +205,18 @@ describe('AgentHost 浏览器失败与用户接管', () => {
       return stream(request);
     });
     const browser = {
-      GetStatus: vi.fn(async () => ({ engine: 'chrome', extension: { connected, state: connected ? 'online' : 'stale', actualProtocolRevision: connected ? 'avery-browser-extension-bridge-v2' : 'avery-browser-extension-bridge-v1', expectedProtocolRevision: 'avery-browser-extension-bridge-v2' } })),
-      ResetPageReferences: vi.fn(), Close: vi.fn(async () => undefined),
+      GetStatus: vi.fn(async () => ({ engine, ...(engine === 'ego' ? { connection: { connected, state: connected ? 'online' : 'offline' } } : {}), extension: { connected, state: connected ? 'online' : 'stale', actualProtocolRevision: connected ? 'avery-browser-extension-bridge-v3' : 'avery-browser-extension-bridge-v1', expectedProtocolRevision: 'avery-browser-extension-bridge-v3' } })),
+      SetEngine: vi.fn(), ResetPageReferences: vi.fn(), Close: vi.fn(async () => undefined),
     };
-    const { host } = await CreateHost(provider, browser as never);
+    const { host } = await CreateHost(provider, browser as never, { browserEngine: engine });
     try {
       await Send(host, 'before-reload', '继续任务');
       connected = true;
       await Send(host, 'after-reload', '扩展已重载，继续任务');
       expect(String(snapshots[0])).toContain('"connected":false');
       expect(String(snapshots[1])).toContain('"connected":true');
+      expect(String(snapshots[1])).toContain(`"engine":"${engine}"`);
+      expect(browser.SetEngine).toHaveBeenCalledWith(engine);
       expect(String(snapshots[1])).toContain('不得仅凭历史连接错误断言仍失败');
       expect(browser.GetStatus).toHaveBeenCalledWith(false);
     } finally { await host.Close(); }

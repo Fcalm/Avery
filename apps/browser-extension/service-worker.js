@@ -14,7 +14,8 @@ const PairConfigKeyPrefix = 'averyBridge.';
 const PairConfigSchemaVersion = 1;
 // 该指纹独立于 manifest version；Chrome 可能继续运行同版本的旧 Service Worker。
 // 任何 Bridge 请求都携带它，Backend 缺失或不匹配时会拒绝整条连接。
-const BrowserExtensionProtocolRevision = 'avery-browser-extension-bridge-v2';
+// v3 清理命令携带 closeTabs；旧 Worker 不能忽略保留策略后仍执行删除。
+const BrowserExtensionProtocolRevision = 'avery-browser-extension-bridge-v3';
 
 // This value identifies the in-memory Service Worker generation.  A manifest
 // version is not sufficient here: Chrome can keep an old worker alive while a
@@ -586,14 +587,17 @@ async function RemoveTab(tabId, deadline) {
   } catch { /* tab may already be gone or the browser may be disconnected. */ }
 }
 
-async function DetachTab(tabId, deadline) {
+async function DetachTab(tabId, deadline, requireConfirmation = false) {
   if (!Number.isSafeInteger(tabId)) return;
   try {
     await AwaitExternal(() => chrome.debugger.detach({ tabId }), TaskDeadline(deadline), {
       statusUnknown: true,
       message: 'The browser debugger detach timed out.',
     });
-  } catch { /* detach is best effort during task cleanup. */ }
+  } catch (error) {
+    // 保留页面时必须确认已解除调试；已脱离或页面已不存在等价于权限已收回。
+    if (requireConfirmation && !/not attached|No tab with (?:given )?id/i.test(String(error?.message || ''))) throw error;
+  }
 }
 
 async function LateCreatedTab(taskId, tab) {
@@ -743,7 +747,7 @@ async function ActivateTaskTab(taskId, tab, beforeExternalCommand, deadline) {
   }, deadline);
 }
 
-async function CloseTask(taskId, beforeExternalCommand, deadline) {
+async function CloseTask(taskId, beforeExternalCommand, deadline, closeTabs = true) {
   await beforeExternalCommand?.(false);
   let record;
   try { record = await ReadTaskRecord(taskId, deadline); }
@@ -765,8 +769,18 @@ async function CloseTask(taskId, beforeExternalCommand, deadline) {
   catch (error) { firstError = error; }
   const attached = attachedTabIds.get(taskId);
   if (attached) {
-    await Promise.all(tabIds.filter((tabId) => attached.has(tabId)).map((tabId) => DetachTab(tabId, deadline)));
+    const detached = await Promise.all(tabIds.filter((tabId) => attached.has(tabId)).map((tabId) =>
+      DetachTab(tabId, deadline, !closeTabs).then(() => null, (error) => error)));
+    for (const error of detached) firstError ||= error;
     attachedTabIds.delete(taskId);
+  }
+  if (!closeTabs) {
+    // 摘除持久登记并解除调试后交还用户；旧任务即使重放也不能再操作保留的页面。
+    return {
+      closed: false, status: firstError ? firstError.statusUnknown ? 'status_unknown' : 'failed' : 'confirmed',
+      browserTaskId: taskId, closedTabs: 0, retainedTabs: tabIds.length, unknownTabs: firstError ? null : 0,
+      ...(firstError ? { code: firstError.code || 'BROWSER_TASK_CLEANUP_FAILED', message: String(firstError.message || 'Task release could not be confirmed.').slice(0, 300) } : {}),
+    };
   }
   try { await beforeExternalCommand?.(true); } catch (error) { firstError ||= error; }
   // close_task 已经进入收尾后，按固定 tabIds 尝试清理；每次 Chrome await 仍有界，
@@ -893,7 +907,11 @@ async function HandleCommand(command, epoch, config) {
   }
   const taskId = command?.browserTaskId;
   if (!IsTaskId(taskId)) throw ErrorWithCode('BROWSER_TASK_ID_REQUIRED', 'A browserTaskId is required for browser operations.');
-  if (command?.operation === 'close_task') return CloseTask(taskId, beforeExternalCommand, command.deadline);
+  if (command?.operation === 'close_task') {
+    const closeTabs = command.payload?.closeTabs;
+    if (closeTabs !== undefined && typeof closeTabs !== 'boolean') throw ErrorWithCode('BROWSER_ARGUMENT_INVALID', 'closeTabs must be a boolean.');
+    return CloseTask(taskId, beforeExternalCommand, command.deadline, closeTabs !== false);
+  }
   if (retiredTaskIds.has(taskId)) throw ErrorWithCode('BROWSER_TASK_RETIRED', 'This browserTaskId has already been retired and cannot be reused.');
   if (command?.operation === 'cdp') return HandleCdp(taskId, command.payload, beforeExternalCommand, command.deadline);
   throw ErrorWithCode('BROWSER_COMMAND_NOT_ALLOWED', 'Unknown browser bridge operation.');

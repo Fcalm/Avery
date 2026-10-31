@@ -434,7 +434,7 @@ button { background: none; border: 0; }
 /* 原型同款底部居中通知：药丸外形、深底浅字（随主题反转，深色下自动变为浅底深字）。
    无进度条；带撤回动作时右侧出现反色小药丸按钮，停留时长由 UiStore 按动作区分。 */
 .app-toast {
-  position: fixed; left: 50%; bottom: 26px; z-index: 80;
+  position: fixed; left: 50%; bottom: 26px; z-index: 1000;
   display: flex; align-items: center; gap: 9px; padding: 9px 15px;
   max-width: min(calc(100vw - 40px), 480px);
   background: var(--text); color: var(--bg); border-radius: var(--r-pill);
@@ -996,6 +996,13 @@ body.is-resizing-resume .rs-presence { transition: none; }
 /* 展开菜单统一走共享 Select 的自定义浮层（同权限选择），触发器高度与输入框一致。 */
 .dw-drawer .custom-select-trigger { min-height: 32px; padding: 0 10px; font-size: 12.5px; }
 .dw-drawer .custom-select-option { font-size: 12.5px; }
+
+/* 校验只在尝试保存后显示；红框覆盖悬停与聚焦样式，补齐字段后立即移除。 */
+.dw-drawer :is(input, textarea, .custom-select-trigger)[aria-invalid="true"] {
+  border: 1px solid var(--danger);
+  box-shadow: 0 0 0 1px var(--danger);
+}
+.dw-drawer .profile-field-error { color: var(--danger); font-size: 11px; line-height: 1.5; }
 
 /* ================================================== 投递记录（applications board）
    对齐原型 applications 视图：上方 dashboard（七日折线 + 进展圆环），下方三阶段看板（已投递/笔试/面试）。
@@ -1623,6 +1630,11 @@ body.settings-has-configured-api-key .model-set-scope .set-field:has(input[type=
 .gn-line { display: flex; align-items: baseline; gap: 10px; min-width: 0; flex-wrap: wrap; }
 .gn-path { min-width: 0; font-family: var(--font-data); font-size: 12.5px; color: var(--text-2); overflow-wrap: anywhere; }
 .gn-ctl { flex: none; display: flex; align-items: center; gap: 8px; }
+/* 浏览器选项长短不同，菜单按最长文案展开，避免选中较短名称后截断其他选项。 */
+.browser-engine-select .custom-select-menu { left: auto; width: max-content; min-width: 100%; }
+/* 菜单仍位于卡片内，不能由卡片裁剪；首个分组条自行贴合 1px 边框内侧的圆角。 */
+.browser-settings-card { overflow: visible; }
+.browser-settings-card > .gn-cap:first-child { border-radius: calc(var(--r-card) - 1px) calc(var(--r-card) - 1px) 0 0; }
 .set-root .quiet-btn {
   display: inline-flex; height: 34px; align-items: center; gap: 7px; padding: 0 13px; cursor: pointer;
   border-radius: var(--r-control); background: var(--surface-2);

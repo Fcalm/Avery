@@ -2,7 +2,7 @@
 
 ## 1. 目标与结论
 
-Avery 的浏览器能力统一迁移到用户日常使用的 Chrome 或 Edge。浏览器扩展负责页面操作，本地桥接服务负责与 Agent、文件资源和 CronTask 通信。目标方案不再依赖隔离 Electron 浏览器、独立 Profile、`agent-browser` CLI 或远程调试端口。
+Avery 支持用户日常使用的 Chrome、Edge 和 ego lite，三者均通过 Avery Browser 扩展接入。ego lite 的当前接入规则见 [工具说明](03-tools.md#ego-lite-扩展接入)。浏览器扩展负责页面操作，本地桥接服务负责与 Agent、文件资源和 CronTask 通信。目标方案不再依赖隔离 Electron 浏览器、独立 Profile、`agent-browser` CLI 或远程调试端口。
 
 PB-03/PB-04 已由用户确认完成，PB-05 已通过代码、安装包、生产浏览器和定时链路回归。浏览器测评 Runner 已完成本地案例并保存轨迹；发布收尾完成前，不将 PB-05 标记为整体通过。
 
@@ -91,7 +91,7 @@ interface BrowserTaskGrant {
 
 Chrome 或 Edge 已运行时，扩展连接现有浏览器；未运行时，Avery 可以正常启动用户配置的浏览器，扩展加载后恢复连接。Avery 不复制、迁移或清理用户 Profile。
 
-任务结束后关闭由该任务创建的标签页；用户原有标签页保持不变。连接断开后废弃全部页面引用，恢复时重新登记标签页并生成 Snapshot。
+任务创建时冻结“任务结束后自动关闭标签页”设置：开启则结束后关闭任务页面，关闭则保留并撤销控制权；用户原有标签页保持不变。连接断开后废弃全部页面引用，恢复时重新登记标签页并生成 Snapshot。
 
 ## 6. 工具执行映射
 

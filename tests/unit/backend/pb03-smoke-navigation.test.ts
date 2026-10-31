@@ -397,12 +397,15 @@ describe('PB-03 fixture BrowserNavigate result handling', () => {
       await runtime.Execute({ proposal: await runtime.Prepare({ toolName: 'BrowserNavigate', arguments: { url: fixture.url } }) });
       const snapshot = await runtime.Execute({ proposal: await runtime.Prepare({ toolName: 'BrowserSnapshot', arguments: {} }) });
       const pageRevision = (snapshot.data as { pageRevision: number }).pageRevision;
-      const result = await runtime.Execute({ proposal: await runtime.Prepare({ toolName: 'BrowserFill', arguments: { ref: '@e1', text: '新填写内容', pageRevision } }) });
+      const execution = runtime.Execute({ proposal: await runtime.Prepare({ toolName: 'BrowserFill', arguments: { ref: '@e1', text: '新填写内容', pageRevision } }) });
+      // 聚焦失败尚未改动文本；与清空、插入后结果未知的暂停路径分别校验。
+      if (failure === 'focus') await expect(execution).rejects.toMatchObject({ code: 'BROWSER_COMMAND_FAILED', statusUnknown: false });
+      const result = failure === 'focus' ? undefined : await execution;
       expect(bridge.GetFillStateChecks().map(check => check.valid)).toEqual(validChecks);
       const target = bridge.GetTaskTargets(runtime.GetBrowserTaskId()!)[0];
       expect(bridge.GetInputValue(target.targetId, 1)).toBe(expectedValue);
       if (failure) {
-        expect(result).toMatchObject({ status: 'status_unknown', data: { code: 'BROWSER_COMMAND_FAILED' } });
+        if (failure !== 'focus') expect(result).toMatchObject({ status: 'status_unknown', data: { code: 'BROWSER_COMMAND_FAILED' } });
         if (failure !== 'insert') expect(bridge.GetProtocolMethods()).not.toContain('Input.insertText');
       } else {
         expect(result).toMatchObject({ status: 'succeeded', data: { filled: true } });

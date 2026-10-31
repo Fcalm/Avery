@@ -53,6 +53,8 @@ export interface BrowserTaskCleanupOutcome {
   code?: string;
   message?: string;
   closedTabs: number;
+  /** 任务权限已收回、交还用户的页面数量。 */
+  retainedTabs?: number;
   unknownTabs: number | null;
 }
 
@@ -63,7 +65,7 @@ export interface AgentBrowserRuntimeStatus {
   state: 'not_installed' | 'stopped' | 'ready' | 'unhealthy';
   message?: string;
   currentUrl?: string;
-  engine: 'chrome' | 'edge';
+  engine: 'chrome' | 'edge' | 'ego';
 }
 
 export interface CronBrowserAccessStatus {

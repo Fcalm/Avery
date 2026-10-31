@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 
 import { useQueryClient } from '@tanstack/react-query';
 import { useUiStore } from '../../../app/UiStore';
 import { useSettingsStore } from '../../../features/settings/api/settingsQueries';
+import { CheckAppUpdates } from '../../updates/appUpdates';
 import { ClearAgentObservability, ConfigureAgent, GetAgentModuleConfiguration, GetAgentStatus, GetBrowserRuntimeStatus, GetCronBrowserAccess, GetProviderCatalog, GetProviderModels, GetModelConfiguration, SaveModelConfiguration, IsDesktopAgentAvailable, ResetAgentModules, RevokeCronBrowserAccess, SelectAgentModuleDirectory, SetAgentTraceRetention, TestAgentConnection } from '../../../features/assistant/api/agentQueries';
 import { ApplyModelRuntime, CreateCatalogModel, DefaultContextWindow, DefaultMaxOutput, FindCatalogModel, FindCatalogProvider, FormatContextWindow, IsSyncedModelsTrusted, IsValidContextWindow, IsValidMaxOutput, LegacyModelOverrides, LoadModelCatalog, MergeBackendProviders, MergeModelConfigurations, MergeProviderModels, ModelApiFormats, SanitizeModelCatalog, SaveModelCatalog, type ModelApiFormat, type ModelCatalog, type ModelCatalogModel, type ModelCatalogProvider, type ModelCatalogProviderId } from '../api/modelCatalog';
 import type { ModelCapabilityOverrides, ModelCapabilityValues, ResolvedModelConfiguration } from '@avery/agent-sdk';
@@ -9,19 +10,20 @@ import { MigrateWorkspace } from '../../../features/workspace/api/workspaceActio
 import { WORKSPACE_QUERY_KEY } from '../../../features/workspace/api/workspaceData';
 import { Button, DialogButton, Modal, Select } from '../../../shared/components/UI';
 import { Icon } from '../../../shared/components/Icon';
+import { platformClient, Unwrap } from '../../../shared/platform/platformClient';
 import type { SettingsDraft } from '../../../types/domain';
-import type { AgentBrowserRuntimeStatus, AgentModuleConfiguration, CronBrowserAccessStatus } from '@avery/contracts';
+import type { AgentBrowserRuntimeStatus, AgentModuleConfiguration, BrowserExtensionSetup, CronBrowserAccessStatus } from '@avery/contracts';
 
 export type SettingTab = 'general' | 'persona' | 'api' | 'browser' | 'developer';
 export const SettingsTabs: Array<{ id: SettingTab; label: string; description: string }> = [
   { id: 'general', label: '常规', description: '语言、工作空间、通知与更新的默认行为，改完就生效。' },
   { id: 'persona', label: '个性化', description: '头像、昵称、说话方式和界面外观，都按你的习惯来。' },
   { id: 'api', label: '模型配置', description: '管理模型供应商、默认模型与上下文能力；凭据加密存储在本机。' },
-  { id: 'browser', label: '浏览器控制', description: '连接日常使用的 Chrome 或 Edge，查看连接状态，管理隔离浏览器留下的数据。' },
+  { id: 'browser', label: '浏览器控制', description: '选择 Chrome、Edge 或 ego lite，查看连接状态和任务授权。' },
   { id: 'developer', label: '开发者模式', description: '查看本地日志、Trace 和上下文用量界面。' },
 ];
-/** 浏览器显示名：选择项只保留 Chrome/Edge（隔离浏览器已整体迁移），electron 仅用于展示运行时上报的旧引擎。 */
-const BrowserEngineLabels = { chrome: 'Google Chrome', edge: 'Microsoft Edge' } as const;
+/** 浏览器显示名与后端引擎枚举一致，三者共用扩展接入流程。 */
+const BrowserEngineLabels = { chrome: 'Google Chrome', edge: 'Microsoft Edge', ego: 'ego lite' } as const;
 const BrowserGrantPurposeLabels = { job_search: '岗位搜索', job_application: '企业投递', boss_contact: 'BOSS 沟通' } as const;
 /** 模型配置侧栏的分组：推荐 = 官方供应商，自定义供应商可删除并改用自定义端点。 */
 const ProviderGroups = ['推荐', '自定义供应商'];
@@ -63,8 +65,8 @@ function NormalizeProviderSettings(settings: SettingsDraft): SettingsDraft {
     : settings.provider === 'MIMO' ? 'https://api.xiaomimimo.com/v1'
     : settings.provider === 'DeepSeek' ? 'https://api.deepseek.com'
     : settings.baseUrl;
-  // 隔离浏览器已整体迁移到 Chrome/Edge：设置里残留的 electron 不再是可选项，草稿统一按 Edge 处理。
-  const browserEngine = settings.browserEngine === 'chrome' ? 'chrome' : 'edge';
+  // 保留支持的浏览器选择；旧 electron 设置值统一按 Edge 处理。
+  const browserEngine = settings.browserEngine === 'ego' ? 'ego' : settings.browserEngine === 'chrome' ? 'chrome' : 'edge';
   return { ...settings, model, baseUrl, contextLength, contextLimitMode, browserEngine, thinkingEnabled: settings.provider === 'Z.AI' ? true : settings.thinkingEnabled };
 }
 
@@ -125,6 +127,8 @@ function SettingsPage({ onNavigateDeveloper, tab, requestedTab, tabRequestVersio
   const [showResetModules, setShowResetModules] = useState(false);
   const [browserRuntime, setBrowserRuntime] = useState<AgentBrowserRuntimeStatus | null>(null);
   const [browserRuntimeBusy, setBrowserRuntimeBusy] = useState(false);
+  const [browserSetup, setBrowserSetup] = useState<BrowserExtensionSetup | null>(null);
+  const [browserSetupBusy, setBrowserSetupBusy] = useState(false);
   const [cronBrowserAccess, setCronBrowserAccess] = useState<CronBrowserAccessStatus | null>(null);
   const [cronBrowserTaskId, setCronBrowserTaskId] = useState('');
   const browserRuntimeRequest = useRef(0);
@@ -318,6 +322,13 @@ function SettingsPage({ onNavigateDeveloper, tab, requestedTab, tabRequestVersio
     if (tab === 'browser') { void RefreshBrowserRuntime(); void RefreshCronBrowserAccess(); }
   }, [tab]);
   useEffect(() => {
+    if (tab !== 'browser' || !browserSetup || browserSetup.engine !== settings.browserEngine) return;
+    // 用户从安装页返回时只读刷新握手；打开安装入口本身不能算连接成功。
+    const refresh = () => { if (!browserRuntimeBusy) void RefreshBrowserRuntime(); };
+    window.addEventListener('focus', refresh);
+    return () => window.removeEventListener('focus', refresh);
+  }, [tab, browserSetup, settings.browserEngine, browserRuntimeBusy]);
+  useEffect(() => {
     if (tab !== 'general') return;
     let cancelled = false;
     window.averyWindow?.GetWorkspaceDirectory().then((path) => { if (!cancelled && path) setWorkspacePath(path); }).catch(() => { if (!cancelled) setWorkspacePath(null); });
@@ -397,9 +408,17 @@ function SettingsPage({ onNavigateDeveloper, tab, requestedTab, tabRequestVersio
       ShowNotice(error instanceof Error ? error.message : '无法打开工作空间目录');
     }
   }
-  /** 更新发布通道尚未接入：只如实报告当前版本，不伪造「已是最新」的检查结果。 */
-  function CheckForUpdatesNotice() {
-    ShowNotice(`当前版本 v${__APP_VERSION__}；自动更新通道尚未接入`);
+  /** 手动检查与自动任务共用 Main 更新服务，失败不得显示“已是最新”。 */
+  async function CheckForUpdatesNotice() {
+    try {
+      const state = await CheckAppUpdates();
+      const message = state.status === 'not_available' ? `当前已是最新版本 v${state.currentVersion}`
+        : state.status === 'downloaded' ? `v${state.version} 已就绪，可在侧栏重启安装`
+        : state.status === 'downloading' ? `正在后台下载 v${state.version}`
+        : state.status === 'available' ? `发现新版本 v${state.version}，可在侧栏下载`
+        : state.message ?? '正在检查更新…';
+      ShowNotice(message);
+    } catch (error) { ShowNotice(error instanceof Error ? error.message : '检查更新失败，请稍后重试。'); }
   }
   /** 常规/个性化页即改即存：直接写入设置存储（乐观更新 + 300ms 防抖持久化），没有页头保存按钮。 */
   function ApplySettings(patch: Partial<SettingsDraft>) {
@@ -486,6 +505,25 @@ function SettingsPage({ onNavigateDeveloper, tab, requestedTab, tabRequestVersio
         ? current
         : status.tasks.find((task) => task.browserAuthorized)?.id ?? status.tasks[0]?.id ?? '');
     } catch { setCronBrowserAccess(null); }
+  }
+  async function StartBrowserSetup() {
+    const engine = settings.browserEngine;
+    if (browserSetupBusy || (engine !== 'chrome' && engine !== 'edge' && engine !== 'ego')) return;
+    setBrowserSetupBusy(true);
+    try {
+      // 选择项使用防抖保存；进入安装流程前先落盘，后续检测才能使用同一个引擎。
+      await saveSettingsNow(settings);
+      const setup = await Unwrap(platformClient.desktop.OpenBrowserExtensionSetup(engine));
+      setBrowserSetup(setup);
+    } catch (error) { ShowNotice(error instanceof Error ? error.message : '无法打开浏览器接入引导', 'error'); }
+    finally { setBrowserSetupBusy(false); }
+  }
+  async function CopyExtensionDirectory() {
+    if (!browserSetup) return;
+    try {
+      await Unwrap(platformClient.desktop.WriteClipboardText(browserSetup.extensionDirectory));
+      ShowNotice('扩展目录已复制', 'success');
+    } catch (error) { ShowNotice(error instanceof Error ? error.message : '复制扩展目录失败', 'error'); }
   }
   async function RevokeCronBrowserAccessHandler() {
     if (!cronBrowserTaskId) return;
@@ -980,42 +1018,57 @@ function SettingsPage({ onNavigateDeveloper, tab, requestedTab, tabRequestVersio
   }
   if (tab === 'browser') {
     // 旧设置值统一按 Edge 兜底。
-    const engine = settings.browserEngine === 'chrome' ? 'chrome' : 'edge';
+    const engine = settings.browserEngine === 'ego' ? 'ego' : settings.browserEngine === 'chrome' ? 'chrome' : 'edge';
     const engineLabel = BrowserEngineLabels[engine];
-    // 未连接时告诉用户如何建立连接（原型 statusDesc 的 need 文案，按扩展模型改写）。
     const needCopy = `在 ${engineLabel} 里加载 Avery Browser 扩展，再点击“检测状态”；Avery 只操作自己创建的任务标签页，不读取其他个人页面，关闭任务也不会关闭浏览器。`;
     let statusCopy: string;
     let pill: 'busy' | 'on' | 'off' | 'undetected';
-    if (browserRuntimeBusy) { statusCopy = `正在连接 ${engineLabel}，完成扩展配对前不会操作任何页面。`; pill = 'busy'; }
+    if (browserSetupBusy) { statusCopy = `正在打开 ${engineLabel} 的扩展接入引导。`; pill = 'busy'; }
+    else if (browserRuntimeBusy) { statusCopy = `正在检测 ${engineLabel} 连接。`; pill = 'busy'; }
     else if (!browserRuntime) { statusCopy = `还没有检测过。${needCopy}`; pill = 'undetected'; }
-    else if (browserRuntime.running && browserRuntime.state === 'ready') { statusCopy = `已连接。${browserRuntime.currentUrl || `已经连上 ${BrowserEngineLabels[browserRuntime.engine]}，可以接管任务标签页。`}`; pill = 'on'; }
+    else if (browserRuntime.running && browserRuntime.state === 'ready') { statusCopy = `已连接。${browserRuntime.currentUrl || `已经连上 ${BrowserEngineLabels[browserRuntime.engine]}，可以执行网页任务。`}`; pill = 'on'; }
     else if (browserRuntime.state === 'not_installed') { statusCopy = `没有连上。${BrowserEngineLabels[browserRuntime.engine]} 未安装或无法启动。`; pill = 'off'; }
     else if (browserRuntime.state === 'unhealthy') { statusCopy = `连接异常。${browserRuntime.message || '可以再检测一次。'}`; pill = 'off'; }
     else { statusCopy = `还没有连接。${browserRuntime.message || needCopy}`; pill = 'off'; }
     const pillClass = pill === 'on' ? 'on' : pill === 'busy' ? 'busy' : 'off';
     const pillText = pill === 'busy' ? '检测中' : pill === 'on' ? '已连接' : pill === 'undetected' ? '未检测' : '未连接';
     return <div className="settings-page is-set-page"><div className="set-root">
-      <div className="set-head"><div><h1>浏览器控制</h1><p>连接日常使用的 Chrome 或 Edge，查看扩展连接状态和定时任务授权。</p></div></div>
-      <div className="gn-card">
+      <div className="set-head"><div><h1>浏览器控制</h1><p>选择 Chrome、Edge 或 ego lite，查看连接状态和定时任务授权。</p></div></div>
+      <div className="gn-card browser-settings-card">
         <div className="gn-cap">浏览器</div>
         <div className="gn-row">
           <div className="gn-txt"><span className="gn-t">使用的浏览器</span><span className="gn-d">执行网页任务时打开哪一个，切换后立刻生效。</span></div>
-          <div className="gn-ctl"><Select value={engine} onChange={(value) => {
+          <div className="gn-ctl"><Select className="browser-engine-select" value={engine} disabled={browserSetupBusy} onChange={(value) => {
             // 切换引擎后旧状态不再代表当前选择：作废在途刷新并把状态复位为未检测。
             browserRuntimeRequest.current += 1;
-            ApplySettings({ browserEngine: value as 'chrome' | 'edge' });
+            setBrowserRuntimeBusy(false);
+            ApplySettings({ browserEngine: value as 'chrome' | 'edge' | 'ego' });
             setBrowserRuntime(null);
-          }} ariaLabel="使用的浏览器" options={(['chrome', 'edge'] as const).map((value) => ({ value, label: BrowserEngineLabels[value] }))} /></div>
+            setBrowserSetup(null);
+          }} ariaLabel="使用的浏览器" options={(['chrome', 'edge', 'ego'] as const).map((value) => ({ value, label: value === 'ego' ? 'ego lite（推荐）' : BrowserEngineLabels[value] }))} /></div>
         </div>
+        <div className="gn-row">
+          <div className="gn-txt"><span className="gn-t">接入 Avery 扩展</span><span className="gn-d">{`打开 ${engineLabel} 的扩展管理页和随附扩展目录，按提示完成安装。`}</span></div>
+          <div className="gn-ctl"><button className="quiet-btn" type="button" disabled={browserSetupBusy || browserRuntimeBusy} onClick={() => void StartBrowserSetup()}><Icon name={browserSetupBusy ? 'loading' : 'plugs-connected'} size={14} />{browserSetupBusy ? '正在接入' : '一键接入'}</button></div>
+        </div>
+        {browserSetup && browserSetup.engine === engine && !(browserRuntime?.running && browserRuntime.state === 'ready') && <div className="gn-row stack" role="region" aria-label="扩展安装步骤">
+          <div className="gn-txt"><span className="gn-t">在 {engineLabel} 中完成安装</span>
+            <span className="gn-d">① 开启「开发者模式」。</span>
+            <span className="gn-d">② 点击「{engine === 'edge' ? '加载解压缩的扩展' : '加载已解压的扩展程序'}」，选择下方目录。</span>
+            <span className="gn-d">③ 安装 Avery Browser 后，回到这里点击「检测状态」完成连接。</span>
+            {!browserSetup.directoryOpened && <span className="gn-d">扩展目录未能自动打开，请复制路径并粘贴到文件夹选择窗口。</span>}
+          </div>
+          <div className="gn-line"><span className="gn-path">{browserSetup.extensionDirectory}</span><button className="quiet-btn" type="button" onClick={() => void CopyExtensionDirectory()}>复制目录</button></div>
+        </div>}
         <div className="gn-row">
           <div className="gn-txt"><span className="gn-t">连接状态</span><span className="gn-d">{statusCopy}</span></div>
           <div className="gn-ctl">
             <span className={`pill ${pillClass}`}>{pill === 'busy' && <Icon name="loading" size={13} />}{pillText}</span>
-            <button className="quiet-btn" type="button" disabled={browserRuntimeBusy} onClick={() => void RefreshBrowserRuntime(true)}><Icon name="plugs-connected" size={14} />检测状态</button>
+            <button className="quiet-btn" type="button" disabled={browserRuntimeBusy || browserSetupBusy} onClick={() => void RefreshBrowserRuntime(true)}><Icon name="plugs-connected" size={14} />检测状态</button>
           </div>
         </div>
         <div className="gn-cap">行为</div>
-        <RenderGeneralSwitch label="任务结束后自动关闭标签页" description="Avery 自己打开的标签页在任务结束时关掉，你自己开的窗口不动；真实关闭策略暂未接入，先记录你的选择。" checked={settings.closeTaskTabs ?? true} onToggle={() => ApplySettings({ closeTaskTabs: !(settings.closeTaskTabs ?? true) })} />
+        <RenderGeneralSwitch label="任务结束后自动关闭标签页" description="对新浏览器任务生效：开启则结束后关闭任务页面；关闭则保留并交还你操作。" checked={settings.closeTaskTabs ?? true} onToggle={() => ApplySettings({ closeTaskTabs: !(settings.closeTaskTabs ?? true) })} />
       </div>
       <div className="gn-card">
         <div className="gn-cap">定时任务授权</div>

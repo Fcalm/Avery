@@ -224,7 +224,7 @@ export interface BrowserTaskGrantSnapshot {
   revokedAt?: string;
 }
 
-export type BrowserEngine = 'chrome' | 'edge';
+export type BrowserEngine = 'chrome' | 'edge' | 'ego';
 
 /** 浏览器动作提案由宿主根据当前页面引用生成；模型不能自行构造哈希或内部路径。 */
 export interface BrowserActionProposal {
@@ -255,8 +255,10 @@ export interface BrowserAutomationPort {
   Close(): Promise<void>;
   /** Cron Runner 设置可信任务上下文；任务级持久授权与浏览器在线状态分别校验。 */
   SetUnattended?(value: boolean, context?: { cronTaskId?: string; browserTaskGrant?: BrowserTaskGrantSnapshot }): Promise<void> | void;
-  /** 设置下一次浏览器动作使用的 Chrome/Edge；切换时淘汰旧任务页引用。 */
+  /** 设置下一次浏览器动作使用的 Chrome/Edge/ego lite；切换时淘汰旧任务页引用。 */
   SetEngine?(value: BrowserEngine): Promise<void> | void;
+  /** 下一次创建任务时冻结关闭策略；关闭自动关闭后仍须撤销控制权，不能保留旧任务授权。 */
+  SetCloseTaskTabs?(value: boolean): Promise<void> | void;
   /** 仅供受信任 Host 适配器运行固定页面提取表达式；不存在对应模型工具，也不得传入模型生成的脚本。 */
   EvaluateTrustedPage?(input: { site: 'boss_zhipin'; expression: string; signal?: AbortSignal; deadline?: number }): Promise<unknown>;
 }

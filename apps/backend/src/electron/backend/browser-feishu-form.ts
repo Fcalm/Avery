@@ -1,17 +1,20 @@
 import type { FormFillOperation } from './browser-form-service';
 
-/** 飞书 Select 的搜索 input 不是业务值；单选显示与学校标签均从同一控件的已选节点读取。 */
+/** combobox 模式允许直接录入学校；普通 Select 的内部搜索词不能当成已选业务值。 */
 export const FeishuSelectValueScript = `
   const feishuSelectRoot = (element) => element.closest('.atsx-select');
   const feishuSelectedValue = (element) => {
     const root = feishuSelectRoot(element);
     if (!root) return undefined;
+    if (root.classList.contains('atsx-select-combobox')) {
+      return String(root.querySelector('input.atsx-select-search__field')?.value || '').trim();
+    }
     return [...root.querySelectorAll('.atsx-select-selection-selected-value,.atsx-select-selection__choice__content')]
       .map(selected => String(selected.textContent || '').trim()).filter(Boolean).join(' ');
   };
 `;
 
-/** 一个 Select 只标记一个触发器；内部搜索框和嵌套包装层不能形成重复的档案目标。 */
+/** 一个 Select 只保留一个业务目标；可编辑输入与下拉触发器按控件模式互斥暴露。 */
 export const FeishuSelectEnrichmentScript = `
   for (const root of document.querySelectorAll('.atsx-select')) {
     if (!(root instanceof HTMLElement) || !visibleForContext(root)) continue;
@@ -19,27 +22,30 @@ export const FeishuSelectEnrichmentScript = `
     if (!(trigger instanceof HTMLElement) || trigger.hasAttribute('data-avery-form-semantic')) continue;
     const label = rawExplicitLabel(root) || nearbyLabel(root);
     if (!label) continue;
-    const value = feishuSelectedValue(trigger);
+    const input = root.classList.contains('atsx-select-combobox') ? root.querySelector('input.atsx-select-search__field') : null;
+    const target = input instanceof HTMLInputElement ? input : trigger;
+    const value = feishuSelectedValue(target);
     const record = /^(education|project|career|internship)\\[(\\d+)\\]/.exec(root.id);
     const context = contextOf(root);
     const section = record ? ({education:'education',project:'project',career:'work',internship:'work'})[record[1]] : context.s;
-    preserve(trigger,'aria-label');
-    preserve(trigger,'role');
-    trigger.setAttribute('aria-label',encodedName(trigger,label,true,{
+    preserve(target,'aria-label');
+    preserve(target,'role');
+    target.setAttribute('aria-label',encodedName(target,label,true,{
       t:'feishu',v:Boolean(value),s:section,o:record ? Number(record[2]) : context.o,
       d:root.classList.contains('atsx-select-disabled') || trigger.getAttribute('aria-disabled') === 'true',
       u:Boolean(root.closest('.atsx-form-item')?.querySelector('.atsx-form-item-required')),
     }));
-    trigger.setAttribute('data-avery-form-semantic','custom-select');
-    trigger.setAttribute('data-avery-form-key',canonicalKey(label));
-    trigger.setAttribute('data-avery-form-section',section || '');
-    trigger.setAttribute('data-avery-form-label',label);
-    if (record) trigger.setAttribute('data-avery-form-record',record[2]);
-    for (const input of root.querySelectorAll('input')) {
-      if (input.hasAttribute('data-avery-form-semantic')) continue;
-      preserve(input,'aria-label');
-      input.setAttribute('aria-label','__avery_internal_form_control__');
-      input.setAttribute('data-avery-form-semantic','auxiliary');
+    target.setAttribute('data-avery-form-semantic',target === trigger ? 'custom-select' : 'label');
+    target.setAttribute('data-avery-form-key',canonicalKey(label));
+    target.setAttribute('data-avery-form-section',section || '');
+    target.setAttribute('data-avery-form-label',label);
+    if (record) target.setAttribute('data-avery-form-record',record[2]);
+    // 可编辑组合框只暴露实际输入；普通 Select 只暴露触发器，避免同一字段重复规划。
+    for (const auxiliary of [trigger, ...root.querySelectorAll('input')]) {
+      if (auxiliary === target || auxiliary.hasAttribute('data-avery-form-semantic')) continue;
+      preserve(auxiliary,'aria-label');
+      auxiliary.setAttribute('aria-label','__avery_internal_form_control__');
+      auxiliary.setAttribute('data-avery-form-semantic','auxiliary');
     }
   }
 `;

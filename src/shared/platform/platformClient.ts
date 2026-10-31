@@ -68,6 +68,11 @@ function ResolveWriteOptions(options?: WriteCommandOptions): WriteCommandOptions
 /** 统一平台客户端：页面与 feature api 层访问桌面 Bridge 的唯一入口，全部返回统一结果信封。 */
 export const platformClient = {
   desktop: {
+    /** 固定的扩展安装入口，不接受自定义 URL 或本地路径。 */
+    OpenBrowserExtensionSetup: (engine: import('@avery/contracts').ExtensionBrowserEngine) => CallBridge(() => {
+      if (!window.averyWindow?.OpenBrowserExtensionSetup) throw new AppError(ErrorCode.INTERNAL_ERROR, '请重启 Avery 桌面客户端后接入浏览器。');
+      return Unwrap(window.averyWindow.OpenBrowserExtensionSetup(engine));
+    }),
     /** 账户授权仅操作主进程持有的固定 MiMo 会话，不接收任意网址或登录凭据。 */
     ReadMimoAccountUsage: () => CallBridge(() => {
       if (!window.averyWindow?.ReadMimoAccountUsage) throw new AppError(ErrorCode.INTERNAL_ERROR, '请重启 Avery 后查看 MiMo 余额。');

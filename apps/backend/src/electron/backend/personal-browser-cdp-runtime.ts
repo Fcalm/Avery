@@ -1,6 +1,6 @@
 import { writeFile } from 'node:fs/promises';
 import { setTimeout as Delay } from 'node:timers/promises';
-import type { BrowserExtensionTargetInfo } from './browser-extension-bridge';
+import type { BrowserExtensionTargetInfo, BrowserTaskCleanupOutcome } from './browser-extension-bridge';
 
 const SocketOpen = 1;
 const DefaultTimeoutMs = 60_000;
@@ -82,6 +82,8 @@ export interface PersonalBrowserRuntimePort {
   IsConnected(): boolean;
   /** Extension-backed runtimes expose the task identity for close_task routing. */
   GetBrowserTaskId?(): string | undefined;
+  /** 独立空间传输自行收回任务；扩展传输仍由上层 Bridge 执行 close_task。 */
+  CloseTask?(options: { deadline: number; closeTabs?: boolean }): Promise<BrowserTaskCleanupOutcome>;
   Close(): Promise<void>;
 }
 
@@ -95,6 +97,8 @@ export interface PersonalBrowserCdpRuntimeOptions {
   anchorUrl?: string;
   /** Present only for the extension transport; direct CDP keeps its legacy single-target behavior. */
   browserTaskId?: string;
+  /** 扩展必须验证原始 tabs 身份；ego 使用其空间内真实 CDP targetId，不伪造 tabs.id。 */
+  taskTargetIdentity?: 'extension_tab' | 'cdp_target';
   now?: () => number;
   delay?: (milliseconds: number, signal?: AbortSignal) => Promise<void>;
   webSocketFactory?: (url: string, options?: PersonalBrowserCommandOptions) => BrowserSocket;
@@ -650,6 +654,7 @@ export class PersonalBrowserCdpRuntime implements PersonalBrowserRuntimePort {
   private readonly preferredAnchorUrl?: string;
   private readonly browserTaskId?: string;
   private readonly taskScoped: boolean;
+  private readonly requiresRawTabId: boolean;
   private readonly now: () => number;
   private readonly delay: NonNullable<PersonalBrowserCdpRuntimeOptions['delay']>;
   private readonly webSocketFactory: NonNullable<PersonalBrowserCdpRuntimeOptions['webSocketFactory']>;
@@ -671,6 +676,7 @@ export class PersonalBrowserCdpRuntime implements PersonalBrowserRuntimePort {
     this.preferredAnchorUrl = options.anchorUrl;
     this.browserTaskId = options.browserTaskId;
     this.taskScoped = Boolean(options.browserTaskId);
+    this.requiresRawTabId = this.taskScoped && options.taskTargetIdentity !== 'cdp_target';
     this.now = options.now ?? Date.now;
     this.delay = options.delay ?? ((milliseconds, signal) => Delay(milliseconds, undefined, signal ? { signal } : undefined));
     this.webSocketFactory = options.webSocketFactory ?? ((url) => {
@@ -926,7 +932,7 @@ export class PersonalBrowserCdpRuntime implements PersonalBrowserRuntimePort {
     // 扩展任务的 target identity 必须始终来自 Chrome tabs 原始字段。
     // 不再根据 targetId 形状猜测是否需要 raw 字段；猜测会让缺失
     // windowId/tabId 的恶意或损坏响应绕过 task-scoped 边界。
-    const requireRawTabId = this.taskScoped;
+    const requireRawTabId = this.requiresRawTabId;
     if (targetValues.some((target) => !IsTargetInfo(target, requireRawTabId))) {
       throw new PersonalBrowserCdpError('BROWSER_OUTPUT_INVALID', 'The browser target list contains an invalid raw target identity.');
     }
@@ -1033,13 +1039,13 @@ export class PersonalBrowserCdpRuntime implements PersonalBrowserRuntimePort {
     }
     const targetInfo = ReadOwnData(result, 'targetInfo');
     const info = targetInfo.present ? targetInfo.value as CdpTargetInfo : undefined;
-    if (!IsTargetInfo(info, this.taskScoped && Boolean(this.taskTargetId))) throw new PersonalBrowserCdpError('BROWSER_TAB_NOT_FOUND', 'The Avery task tab is no longer available.');
+    if (!IsTargetInfo(info, this.requiresRawTabId && Boolean(this.taskTargetId))) throw new PersonalBrowserCdpError('BROWSER_TAB_NOT_FOUND', 'The Avery task tab is no longer available.');
     return NormalizeTargetInfo(info);
   }
 
   private TabData(target: CdpTargetInfo, active = target.active === true): Record<string, unknown> {
     return {
-      ...(Number.isSafeInteger(target.tabId) ? { tabId: target.tabId } : {}),
+      ...(Number.isSafeInteger(target.tabId) ? { tabId: target.tabId } : !this.requiresRawTabId ? { tabId: target.targetId } : {}),
       targetId: target.targetId,
       ...(Number.isSafeInteger(target.windowId) ? { windowId: target.windowId } : {}),
       ...(target.openerTabId === null || Number.isSafeInteger(target.openerTabId) ? { openerTabId: target.openerTabId ?? null } : {}),
@@ -1389,6 +1395,7 @@ export class PersonalBrowserCdpRuntime implements PersonalBrowserRuntimePort {
         || (!temporaryFormName && (actual.role !== expected.role || actual.name !== expected.name))) return { stale: true };
       // 日期候选已由面板滚动显露；再次居中会滚动页面并触发 ATS 关闭弹层，导致点击落在旧坐标。
       const alignment = element.hasAttribute('data-avery-date-editor') ? 'nearest' : 'center';
+      if (innerWidth <= 0 || innerHeight <= 0) return { unavailableViewport: true };
       element.scrollIntoView({ block: alignment, inline: alignment, behavior: 'instant' });
       const rect = element.getBoundingClientRect();
       const style = getComputedStyle(element);
@@ -1414,6 +1421,7 @@ export class PersonalBrowserCdpRuntime implements PersonalBrowserRuntimePort {
         type: actual.type,
         checked: 'checked' in element ? Boolean(element.checked) : undefined,
         disabled: Boolean(element.disabled || element.getAttribute('aria-disabled') === 'true' || element.classList.contains('disabled')),
+        readOnly: element.readOnly === true,
         contentEditable: element.isContentEditable,
       };
     })()`;
@@ -1421,6 +1429,9 @@ export class PersonalBrowserCdpRuntime implements PersonalBrowserRuntimePort {
 
   private async Locate(locator: ElementFingerprint, options: PersonalBrowserCommandOptions): Promise<Record<string, any>> {
     const value = this.Value(await this.EvaluateReference(this.LocateExpression(locator), locator, options));
+    if (value?.unavailableViewport === true) {
+      throw new PersonalBrowserCdpError('BROWSER_COMMAND_FAILED', 'The browser task page has no visible viewport. Restore the browser window before continuing.');
+    }
     if (!value || value.stale === true || !Number.isFinite(value.x) || !Number.isFinite(value.y)) {
       throw new PersonalBrowserCdpError('BROWSER_STALE_PAGE_REF', 'The browser element changed or is no longer clickable. Take a new snapshot.');
     }
@@ -1455,7 +1466,7 @@ export class PersonalBrowserCdpRuntime implements PersonalBrowserRuntimePort {
   }
 
   /** 清空前绑定焦点，插入前确认旧值已清空；被页面阻止时停止，禁止继续追加到旧内容。 */
-  private async AssertFillState(locator: ElementFingerprint, expectedValue: string | undefined, options: PersonalBrowserCommandOptions): Promise<void> {
+  private async AssertFillState(locator: ElementFingerprint, expectedValue: string | undefined, options: PersonalBrowserCommandOptions, stage: 'focus' | 'clear' | 'insert'): Promise<void> {
     const expression = `(() => {
       const expected = ${SafeJson(locator)};
       const expectedFillValue = ${expectedValue === undefined ? 'undefined' : SafeJson(expectedValue)};
@@ -1465,12 +1476,20 @@ export class PersonalBrowserCdpRuntime implements PersonalBrowserRuntimePort {
       const active = root.activeElement;
       const focused = active === element || (element.isContentEditable && element.contains(active));
       const value = 'value' in element ? String(element.value) : String(element.textContent || '');
-      return { fillStateValid: focused && !element.disabled && !element.readOnly
+      return { focused, disabled: element.disabled === true, readOnly: element.readOnly === true,
+        valueMatches: expectedFillValue === undefined || value === expectedFillValue,
+        fillStateValid: focused && !element.disabled && !element.readOnly
         && (expectedFillValue === undefined || value === expectedFillValue) };
     })()`;
     const result = this.Value(await this.EvaluateReference(expression, locator, options));
-    if (result?.stale) throw new PersonalBrowserCdpError('BROWSER_STALE_PAGE_REF', 'The browser input changed. Take a new snapshot.', true);
-    if (result?.fillStateValid !== true) throw new PersonalBrowserCdpError('BROWSER_COMMAND_FAILED', 'The input lost focus or rejected text replacement. Observe the field before continuing.', true);
+    // 聚焦检查失败时尚未清空或插入文本；清空之后的失败仍需核对页面，不能自动重试写入。
+    const textMayHaveChanged = stage !== 'focus';
+    if (result?.stale) throw new PersonalBrowserCdpError('BROWSER_STALE_PAGE_REF', `The browser input changed (${stage}). Take a new snapshot.`, textMayHaveChanged);
+    if (result?.fillStateValid !== true) {
+      const reason = result?.disabled ? 'disabled' : result?.readOnly ? 'read_only'
+        : result?.focused === false ? 'focus_lost' : result?.valueMatches === false ? 'value_mismatch' : 'invalid_state';
+      throw new PersonalBrowserCdpError('BROWSER_COMMAND_FAILED', `Input replacement failed (${stage}: ${reason}). ${textMayHaveChanged ? 'Verify the current field value before continuing.' : 'No text was replaced. Observe the field before continuing.'}`, textMayHaveChanged);
+    }
   }
 
   private async InsertText(text: string, options: PersonalBrowserCommandOptions): Promise<void> {
@@ -1487,6 +1506,7 @@ export class PersonalBrowserCdpRuntime implements PersonalBrowserRuntimePort {
     const locator = this.Ref(ref);
     const point = await this.Locate(locator, options);
     if (point.type === 'password') throw new PersonalBrowserCdpError('BROWSER_ARGUMENT_INVALID', 'Password inputs cannot be filled by the personal-browser driver.');
+    if (point.readOnly === true) throw new PersonalBrowserCdpError('BROWSER_ARGUMENT_INVALID', 'The browser input is read-only.');
     if (!['input', 'textarea'].includes(point.tag) && point.contentEditable !== true) throw new PersonalBrowserCdpError('BROWSER_ARGUMENT_INVALID', 'BrowserFill requires a text input.');
     if (point.tag === 'input' && point.type === 'date') {
       const expression = `(() => {
@@ -1510,11 +1530,11 @@ export class PersonalBrowserCdpRuntime implements PersonalBrowserRuntimePort {
       return { filled: true, textLength: value.length };
     }
     await this.ClickPoint(point as { x: number; y: number }, options);
-    await this.AssertFillState(locator, undefined, options);
+    await this.AssertFillState(locator, undefined, options, 'focus');
     await this.ClearFocused(options);
-    await this.AssertFillState(locator, '', options);
+    await this.AssertFillState(locator, '', options, 'clear');
     await this.InsertText(value, options);
-    await this.AssertFillState(locator, value, options);
+    await this.AssertFillState(locator, value, options, 'insert');
     return { filled: true, textLength: value.length };
   }
 
@@ -1762,7 +1782,9 @@ export class PersonalBrowserCdpRuntime implements PersonalBrowserRuntimePort {
         return { success: true, data: { tabs: targets.map((target) => this.TabData(target)) } };
       }
       const requestedId = String(args[0]);
-      const selectedTarget = targets.find((target) => Number.isSafeInteger(target.tabId) && String(target.tabId) === requestedId);
+      const selectedTarget = targets.find((target) => this.requiresRawTabId
+        ? Number.isSafeInteger(target.tabId) && String(target.tabId) === requestedId
+        : target.targetId === requestedId);
       if (!selectedTarget) throw new PersonalBrowserCdpError('BROWSER_TAB_NOT_FOUND', 'The browser tab is not registered in this task.');
       const selectedId = selectedTarget.targetId;
       this.taskTargetId = selectedId;

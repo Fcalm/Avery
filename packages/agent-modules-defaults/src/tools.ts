@@ -336,7 +336,7 @@ function BuildRegistry(): RegisteredAgentTool[] {
   registry.push(
     {
       ...BrowserBase,
-      definition: CreateDefinition('BrowserNavigate', 'Navigate the Avery task tab to an http/https URL. Special protocols and URLs with embedded credentials are rejected. A personal browser may open public or user-accessible internal recruitment pages, but the tool cannot inspect other personal tabs.', { type: 'object', properties: { url: { type: 'string', maxLength: 2048 } }, required: ['url'], additionalProperties: false }),
+      definition: CreateDefinition('BrowserNavigate', 'Navigate the Avery task tab to an http/https URL. When ego lite is selected, Avery automatically creates a new task space on the first browser action and reuses it for the task. Special protocols and URLs with embedded credentials are rejected. A personal browser may open public or user-accessible internal recruitment pages, but the tool cannot inspect other personal tabs.', { type: 'object', properties: { url: { type: 'string', maxLength: 2048 } }, required: ['url'], additionalProperties: false }),
       // 首次导航包含隔离 Electron 与 CLI 后台进程冷启动，不能套用已热启动页面动作的 30 秒预算。
       timeoutMs: 120_000,
       sideEffect: 'none', risk: 'low', confirmation: 'never', idempotency: 'not_needed',

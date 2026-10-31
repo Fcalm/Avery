@@ -35,6 +35,7 @@ export type {
 } from './enums';
 export { BridgeNamespaces } from './bridge';
 export type { BridgeNamespaceName } from './bridge';
+export type { BrowserExtensionSetup, EgoBrowserSetup, ExtensionBrowserEngine } from './browser-setup';
 export type {
   AgentBrowserRuntimeStatus, AgentConfiguration, AgentModuleConfiguration, AgentObservability, AgentSendRequest, AgentSessionAssistantState, AgentStreamEvent, AgentTraceEvent, BrowserActionState, ConfirmationMode, CronBrowserAccessStatus, ReasoningEffort,
   DesktopAgentBridge, WorkspaceBridge,

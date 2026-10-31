@@ -84,14 +84,14 @@ describe('BrowserExtensionBridge', () => {
         .rejects.toMatchObject({ code: 'BROWSER_EXTENSION_STALE', message: expect.stringContaining('chrome://extensions') });
       expect(launchBrowser).not.toHaveBeenCalled();
 
-      const wrong = await post('/bridge/hello', { version: '0.2.0', protocolRevision: 'avery-browser-extension-bridge-v0' });
+      const wrong = await post('/bridge/hello', { version: '0.2.0', protocolRevision: 'avery-browser-extension-bridge-v2' });
       expect(wrong.status).toBe(409);
       expect(await wrong.json()).toMatchObject({
         code: 'BROWSER_EXTENSION_STALE',
         expectedProtocolRevision: BrowserExtensionProtocolRevision,
-        actualProtocolRevision: 'avery-browser-extension-bridge-v0',
+        actualProtocolRevision: 'avery-browser-extension-bridge-v2',
       });
-      expect(bridge.Status()).toMatchObject({ connected: false, state: 'stale', protocolRevision: 'avery-browser-extension-bridge-v0' });
+      expect(bridge.Status()).toMatchObject({ connected: false, state: 'stale', protocolRevision: 'avery-browser-extension-bridge-v2' });
 
       const right = await post('/bridge/hello', { version: '0.2.0', protocolRevision: BrowserExtensionProtocolRevision });
       expect(right.status).toBe(200);
@@ -177,7 +177,7 @@ describe('BrowserExtensionBridge', () => {
       const deliveredAssertion = expect(delivered).rejects.toMatchObject({ code: 'BROWSER_EXTENSION_STALE', statusUnknown: true });
       const queuedAssertion = expect(queued).rejects.toMatchObject({ code: 'BROWSER_EXTENSION_STALE', statusUnknown: false });
 
-      expect((await post('/bridge/poll', { protocolRevision: 'avery-browser-extension-bridge-v0' })).status).toBe(409);
+      expect((await post('/bridge/poll', { protocolRevision: 'avery-browser-extension-bridge-v2' })).status).toBe(409);
       await Promise.all([deliveredAssertion, queuedAssertion]);
 
       const staleDiagnostics = bridge.GetDiagnostics().filter((diagnostic) => diagnostic.event === 'stale_revoke');
@@ -222,7 +222,7 @@ describe('BrowserExtensionBridge', () => {
       const ensureConnected = bridge.EnsureConnected.bind(bridge);
       vi.spyOn(bridge, 'EnsureConnected').mockImplementation(async (engine, options) => {
         await ensureConnected(engine, options);
-        expect((await post('/bridge/hello', { protocolRevision: 'avery-browser-extension-bridge-v0' })).status).toBe(409);
+        expect((await post('/bridge/hello', { protocolRevision: 'avery-browser-extension-bridge-v2' })).status).toBe(409);
       });
 
       await expect(bridge.Request('chrome', 'cdp', { id: 21, method: 'Target.createTarget', params: {} }, {
@@ -257,7 +257,7 @@ describe('BrowserExtensionBridge', () => {
         await new Promise((resolveWait) => setTimeout(resolveWait, 5));
       }
       expect((bridge as any).pollResponse).not.toBeNull();
-      expect((await post('/bridge/hello', { protocolRevision: 'avery-browser-extension-bridge-v0' })).status).toBe(409);
+      expect((await post('/bridge/hello', { protocolRevision: 'avery-browser-extension-bridge-v2' })).status).toBe(409);
       await expect(bridge.Request('chrome', 'cdp', { id: 22, method: 'Target.createTarget', params: {} }, {
         deadline: Date.now() + 1_000, browserTaskId: 'long-poll-task', runId: 'long-poll-run',
       })).rejects.toMatchObject({ code: 'BROWSER_EXTENSION_STALE', statusUnknown: false });
@@ -318,13 +318,13 @@ describe('BrowserExtensionBridge', () => {
     }
   });
 
-  it('通过一次配对建立鉴权长轮询，并原样返回扩展命令结果', async () => {
+  it.each((['chrome', 'edge', 'ego'] as const).flatMap(engine => [true, false].map(closeTabs => ({ engine, closeTabs }))))('$engine 配对后透传 CDP 与任务清理 closeTabs=$closeTabs，并保留清理回执', async ({ engine, closeTabs }) => {
     const root = await mkdtemp(join(tmpdir(), 'avery-extension-bridge-'));
     roots.push(root);
     const statePath = join(root, 'bridge.json');
     let launchedUrl = '';
     let bridge!: BrowserExtensionBridge;
-    const launchBrowser = vi.fn(async (_engine: 'chrome' | 'edge', url: string) => {
+    const launchBrowser = vi.fn(async (_engine: 'chrome' | 'edge' | 'ego', url: string) => {
       launchedUrl = url;
       const state = JSON.parse(await readFile(statePath, 'utf8'));
       const port = bridge.Status().port;
@@ -337,20 +337,20 @@ describe('BrowserExtensionBridge', () => {
     });
     bridge = new BrowserExtensionBridge({
       statePath,
-      browserPaths: { chrome: process.execPath },
+      browserPaths: { [engine]: process.execPath },
       port: 0,
       launchBrowser,
     });
 
     try {
-      await bridge.EnsureConnected('chrome');
-      expect(launchBrowser).toHaveBeenCalledOnce();
+      await bridge.EnsureConnected(engine);
+      expect(launchBrowser).toHaveBeenCalledExactlyOnceWith(engine, expect.any(String));
       expect(launchedUrl).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/pair#token=[a-f0-9]{64}&port=\d+$/);
       expect(bridge.Status()).toMatchObject({ connected: true, version: '0.2.0' });
 
       const state = JSON.parse(await readFile(statePath, 'utf8'));
       const port = bridge.Status().port;
-      const resultPromise = bridge.Request('chrome', 'cdp', { id: 7, method: 'Target.getTargets', params: {} }, { deadline: Date.now() + 5_000, browserTaskId: 'task-test' });
+      const resultPromise = bridge.Request(engine, 'cdp', { id: 7, method: 'Target.getTargets', params: {} }, { deadline: Date.now() + 5_000, browserTaskId: 'task-test' });
       const poll = await fetch(`http://127.0.0.1:${port}/bridge/poll`, {
         method: 'POST',
         headers: { authorization: `Bearer ${state.token}`, 'content-type': 'application/json' },
@@ -368,20 +368,20 @@ describe('BrowserExtensionBridge', () => {
       });
       await expect(resultPromise).resolves.toEqual({ id: 7, result: { targetInfos: [] } });
 
-      const closePromise = bridge.CloseTask('chrome', 'task-test');
+      const closePromise = bridge.CloseTask(engine, 'task-test', { closeTabs });
       const closePoll = await fetch(`http://127.0.0.1:${port}/bridge/poll`, {
         method: 'POST',
         headers: { authorization: `Bearer ${state.token}`, 'content-type': 'application/json' },
         body: JSON.stringify(WorkerBody({ version: '0.2.0', protocolRevision: BrowserExtensionProtocolRevision })),
       }).then((response) => response.json()) as any;
       expect(closePoll.commands).toHaveLength(1);
-      expect(closePoll.commands[0]).toMatchObject({ operation: 'close_task', browserTaskId: 'task-test', deadline: expect.any(Number) });
+      expect(closePoll.commands[0]).toMatchObject({ operation: 'close_task', browserTaskId: 'task-test', deadline: expect.any(Number), payload: { closeTabs } });
       await fetch(`http://127.0.0.1:${port}/bridge/result`, {
         method: 'POST',
         headers: { authorization: `Bearer ${state.token}`, 'content-type': 'application/json' },
-        body: JSON.stringify(WorkerBody({ id: closePoll.commands[0].id, ok: true, data: { closed: true, status: 'confirmed', browserTaskId: 'task-test', closedTabs: 2, unknownTabs: 0 }, version: '0.2.0', protocolRevision: BrowserExtensionProtocolRevision })),
+        body: JSON.stringify(WorkerBody({ id: closePoll.commands[0].id, ok: true, data: { closed: closeTabs, status: 'confirmed', browserTaskId: 'task-test', closedTabs: closeTabs ? 2 : 0, unknownTabs: 0, ...(!closeTabs ? { retainedTabs: 2 } : {}) }, version: '0.2.0', protocolRevision: BrowserExtensionProtocolRevision })),
       });
-      await expect(closePromise).resolves.toEqual({ status: 'confirmed', browserTaskId: 'task-test', closedTabs: 2, unknownTabs: 0 });
+      await expect(closePromise).resolves.toEqual({ status: 'confirmed', browserTaskId: 'task-test', closedTabs: closeTabs ? 2 : 0, unknownTabs: 0, ...(!closeTabs ? { retainedTabs: 2 } : {}) });
 
       const unauthorized = await fetch(`http://127.0.0.1:${port}/bridge/poll`, { method: 'POST', body: '{}' });
       expect(unauthorized.status).toBe(401);
@@ -759,8 +759,8 @@ describe('BrowserExtensionBridge', () => {
       Status: () => ({
         port: 17653,
         state: 'stale' as const,
-        protocolRevision: 'avery-browser-extension-bridge-v0',
-        actualProtocolRevision: 'avery-browser-extension-bridge-v0',
+        protocolRevision: 'avery-browser-extension-bridge-v2',
+        actualProtocolRevision: 'avery-browser-extension-bridge-v2',
         expectedProtocolRevision: BrowserExtensionProtocolRevision,
       }),
       EnsureConnected: vi.fn(async () => undefined),

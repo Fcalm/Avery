@@ -149,6 +149,29 @@ function AbortableWait(signal?: AbortSignal): Promise<never> {
 }
 
 describe('Avery browser extension worker', () => {
+  it.each([{ closeTabs: true, detachFails: false }, { closeTabs: false, detachFails: false }, { closeTabs: false, detachFails: true }])('任务清理 %j：解除调试并退休任务，只按策略关闭自有标签页', async ({ closeTabs, detachFails }) => {
+    const removed: number[] = [];
+    const detached: number[] = [];
+    const session = SeedTaskRegistry({ 'policy-task': { tabIds: [42], parentTabId: 42, activeTabId: 42 } });
+    const context = StartWorker({
+      storage: { local: StorageArea({}), session: StorageArea(session) },
+      runtime: { onMessage: { addListener() {} }, onStartup: { addListener() {} }, onInstalled: { addListener() {} }, getManifest: () => ({ version: '0.2.0' }) },
+      alarms: { create() {}, onAlarm: { addListener() {} } },
+      tabs: { remove: async (id: number) => { removed.push(id); } },
+      debugger: { detach: async ({ tabId }: { tabId: number }) => { detached.push(tabId); if (detachFails) throw Object.assign(new Error('detach timed out'), { code: 'BROWSER_COMMAND_TIMEOUT', statusUnknown: true }); } },
+    }, async () => ({ ok: true, json: async () => ({}) }));
+    runInContext("attachedTabIds.set('policy-task', new Set([42]))", context);
+    const outcome = await runInContext(`CloseTask('policy-task', undefined, Date.now() + 5000, ${closeTabs})`, context);
+    expect(outcome).toMatchObject({ status: detachFails ? 'status_unknown' : 'confirmed', closedTabs: closeTabs ? 1 : 0, unknownTabs: detachFails ? null : 0 });
+    if (!closeTabs) expect(outcome.retainedTabs).toBe(1);
+    expect(removed).toEqual(closeTabs ? [42] : []);
+    expect(detached).toEqual([42]);
+    expect(runInContext("retiredTaskIds.has('policy-task')", context)).toBe(true);
+    expect(LatestTaskRegistry(session)?.['policy-task']).toBeUndefined();
+    expect(runInContext("attachedTabIds.has('policy-task')", context)).toBe(false);
+    await expect(runInContext("HandleCommand({ operation: 'cdp', browserTaskId: 'policy-task', deadline: Date.now() + 5000, payload: { id: 1, method: 'Target.getTargets' } }, pollEpoch, {})", context)).rejects.toMatchObject({ code: 'BROWSER_TASK_RETIRED' });
+  });
+
   it('hello 与全部 Bridge 心跳携带 exact protocolRevision，而不是只依赖 manifest version', async () => {
     let onMessage: MessageListener | undefined;
     const requests: Array<{ path: string; body: any }> = [];
@@ -177,11 +200,11 @@ describe('Avery browser extension worker', () => {
     await expect(CallMessage(onMessage!, { type: 'avery_pair', token: 'a'.repeat(64), port: 17653 })).resolves.toMatchObject({ value: { ok: true } });
     await WaitUntil(() => requests.some((request) => request.path === '/bridge/hello'));
     const hello = requests.find((request) => request.path === '/bridge/hello');
-    expect(hello?.body).toMatchObject({ version: '0.2.0', protocolRevision: 'avery-browser-extension-bridge-v2' });
+    expect(hello?.body).toMatchObject({ version: '0.2.0', protocolRevision: 'avery-browser-extension-bridge-v3' });
     expect(hello?.body.workerInstanceId).toEqual(expect.any(String));
     await WaitUntil(() => requests.some((request) => request.path === '/bridge/poll'));
     const poll = requests.find((request) => request.path === '/bridge/poll');
-    expect(poll?.body).toMatchObject({ version: '0.2.0', protocolRevision: 'avery-browser-extension-bridge-v2', workerInstanceId: hello?.body.workerInstanceId });
+    expect(poll?.body).toMatchObject({ version: '0.2.0', protocolRevision: 'avery-browser-extension-bridge-v3', workerInstanceId: hello?.body.workerInstanceId });
   });
 
   it('TargetInfo only consumes own raw tab identity data and ignores unrelated Chrome fields', () => {
@@ -587,8 +610,8 @@ describe('Avery browser extension worker', () => {
     expect(Object.keys(storage).some((key) => key.startsWith('averyTaskTabs.'))).toBe(false);
     await new Promise((done) => setTimeout(done, 0));
     expect(results).toEqual(expect.arrayContaining([
-      expect.objectContaining({ id: 'old-close', ok: true, data: { closed: true, status: 'confirmed', browserTaskId: 'old-task', closedTabs: 1, unknownTabs: 0 }, version: '0.2.0', protocolRevision: 'avery-browser-extension-bridge-v2', workerInstanceId: expect.any(String) }),
-      expect.objectContaining({ id: 'new-create', ok: true, data: { id: 2, result: { targetId: '20' } }, version: '0.2.0', protocolRevision: 'avery-browser-extension-bridge-v2', workerInstanceId: expect.any(String) }),
+      expect.objectContaining({ id: 'old-close', ok: true, data: { closed: true, status: 'confirmed', browserTaskId: 'old-task', closedTabs: 1, unknownTabs: 0 }, version: '0.2.0', protocolRevision: 'avery-browser-extension-bridge-v3', workerInstanceId: expect.any(String) }),
+      expect.objectContaining({ id: 'new-create', ok: true, data: { id: 2, result: { targetId: '20' } }, version: '0.2.0', protocolRevision: 'avery-browser-extension-bridge-v3', workerInstanceId: expect.any(String) }),
     ]));
   });
 
@@ -652,8 +675,8 @@ describe('Avery browser extension worker', () => {
     }
     expect(events).toEqual(['remove:10']);
     expect(results).toEqual(expect.arrayContaining([
-      expect.objectContaining({ id: 'first-close', ok: true, data: { closed: true, status: 'confirmed', browserTaskId: 'close-task', closedTabs: 1, unknownTabs: 0 }, version: '0.2.0', protocolRevision: 'avery-browser-extension-bridge-v2', workerInstanceId: expect.any(String) }),
-      expect.objectContaining({ id: 'late-create', ok: false, error: { code: 'BROWSER_COMMAND_TIMEOUT', message: 'Browser command expired before execution.', statusUnknown: false }, version: '0.2.0', protocolRevision: 'avery-browser-extension-bridge-v2', workerInstanceId: expect.any(String) }),
+      expect.objectContaining({ id: 'first-close', ok: true, data: { closed: true, status: 'confirmed', browserTaskId: 'close-task', closedTabs: 1, unknownTabs: 0 }, version: '0.2.0', protocolRevision: 'avery-browser-extension-bridge-v3', workerInstanceId: expect.any(String) }),
+      expect.objectContaining({ id: 'late-create', ok: false, error: { code: 'BROWSER_COMMAND_TIMEOUT', message: 'Browser command expired before execution.', statusUnknown: false }, version: '0.2.0', protocolRevision: 'avery-browser-extension-bridge-v3', workerInstanceId: expect.any(String) }),
     ]));
   });
 

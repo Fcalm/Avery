@@ -186,7 +186,7 @@ export interface AgentHostOptions {
   credentialPort: any;
   resolveProjectEnvironment?: (projectId: string) => Promise<unknown> | unknown;
   resumeLockStore?: ResumeLockStore;
-  externalBrowserPaths?: Partial<Record<'chrome' | 'edge', string>>;
+  externalBrowserPaths?: Partial<Record<'chrome' | 'edge' | 'ego', string>>;
   browserExtensionBridge?: BrowserExtensionBridge;
   /** 桌面主进程复用现有 PDF/PNG 渲染；仅 Backend AgentHost 能接收生成路径。 */
   renderResumeFile?: (input: { resume: { name: string; summary: string; content: string }; format: 'pdf' | 'png'; assetId: string }) => Promise<{ path: string; fileName: string }>;
@@ -1307,10 +1307,11 @@ export class AgentHost {
     // 设置页可能在投递 Run 期间刷新状态；此时只保存偏好，不得关闭正在使用的浏览器。
     if (this.browserRunId && !force) return;
     const settings = (await this.business?.GetStoredSettings?.()) ?? {};
-    const engine = settings.browserEngine === 'chrome' || settings.browserEngine === 'edge'
+    const engine = settings.browserEngine === 'chrome' || settings.browserEngine === 'edge' || settings.browserEngine === 'ego'
       ? settings.browserEngine
       : this.defaultBrowserEngine;
     await this.browserRuntime.SetEngine?.(engine);
+    await this.browserRuntime.SetCloseTaskTabs?.(settings.closeTaskTabs !== false);
   }
 
   /** 返回浏览器运行时状态；显式探测会做只读握手，Renderer 始终看不到本地物理路径。 */
@@ -1326,10 +1327,11 @@ export class AgentHost {
     try { status = await this.browserRuntime.GetStatus(false); }
     catch { /* 读取失败明确记为未知，不把历史在线状态继续当作当前事实。 */ }
     const value = status && typeof status === 'object' && !Array.isArray(status) ? status as Record<string, unknown> : {};
-    const extension = value.extension && typeof value.extension === 'object' && !Array.isArray(value.extension) ? value.extension as Record<string, unknown> : {};
+    const connection = value.connection ?? value.extension;
+    const extension = connection && typeof connection === 'object' && !Array.isArray(connection) ? connection as Record<string, unknown> : {};
     const protocol = (field: string) => typeof extension[field] === 'string' ? (extension[field] as string).slice(0, 120) : null;
     return {
-      checkedAt: new Date().toISOString(), engine: value.engine === 'chrome' || value.engine === 'edge' ? value.engine : 'unknown',
+      checkedAt: new Date().toISOString(), engine: value.engine === 'chrome' || value.engine === 'edge' || value.engine === 'ego' ? value.engine : 'unknown',
       connected: typeof extension.connected === 'boolean' ? extension.connected : null,
       state: typeof extension.state === 'string' && ['online', 'offline', 'stale'].includes(extension.state) ? extension.state : 'unknown',
       actualProtocolRevision: protocol('actualProtocolRevision'), expectedProtocolRevision: protocol('expectedProtocolRevision'),

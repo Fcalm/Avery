@@ -20,6 +20,8 @@ class TranscriptSocket {
   fillStateValid = true;
   fillStateChecks = 0;
   failFillStateAt?: number;
+  readOnlyInput = false;
+  unavailableViewport = false;
   readonly sent: Array<{ id: number; method: string; params: Record<string, any>; sessionId?: string }> = [];
   readonly sentOptions: PersonalBrowserCommandOptions[] = [];
   private readonly listeners = new Map<string, Listener[]>();
@@ -88,7 +90,8 @@ class TranscriptSocket {
       if (expression.includes('__host_test__')) return { result: { type: 'object', value: { ok: true } } };
       if (expression.includes('const expectedFillValue =')) {
         this.fillStateChecks += 1;
-        return { result: { type: 'object', value: { fillStateValid: this.fillStateValid && this.fillStateChecks !== this.failFillStateAt } } };
+        const valid = this.fillStateValid && this.fillStateChecks !== this.failFillStateAt;
+        return { result: { type: 'object', value: { fillStateValid: valid, focused: valid, valueMatches: true } } };
       }
       // SnapshotExpression itself now reports readyState, so recognize the
       // candidate collector before the small readiness probe.
@@ -130,9 +133,10 @@ class TranscriptSocket {
       if (expression.includes("element.type !== 'file'")) return { result: { type: 'object', objectId: 'boss-file-input' } };
       if (expression.includes("element.type !== 'date'")) return { result: { type: 'object', value: { filled: true, value: '2000-01-15' } } };
       if (expression.includes('elementFromPoint')) {
+        if (this.unavailableViewport) return { result: { type: 'object', value: { unavailableViewport: true } } };
         const input = expression.includes('"tag":"input"');
         const date = expression.includes('"type":"date"');
-        return { result: { type: 'object', value: { stale: false, x: input ? 100 : 200, y: 60, tag: input ? 'input' : 'button', type: input ? (date ? 'date' : 'search') : '', disabled: false } } };
+        return { result: { type: 'object', value: { stale: false, x: input ? 100 : 200, y: 60, tag: input ? 'input' : 'button', type: input ? (date ? 'date' : 'search') : '', disabled: false, readOnly: this.readOnlyInput } } };
       }
     }
     if (message.method === 'Page.captureScreenshot') return { data: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).toString('base64') };
@@ -327,10 +331,27 @@ describe('PersonalBrowserCdpRuntime', () => {
     try {
       await runtime.Run(['snapshot']);
       socket.failFillStateAt = failureAt;
-      await expect(runtime.Run(['fill', '@e1', 'replacement'])).rejects.toMatchObject({ code: 'BROWSER_COMMAND_FAILED' });
+      await expect(runtime.Run(['fill', '@e1', 'replacement'])).rejects.toMatchObject({
+        code: 'BROWSER_COMMAND_FAILED', statusUnknown: failureAt !== 1,
+        message: expect.stringContaining(`(${['focus', 'clear', 'insert'][failureAt - 1]}: focus_lost)`),
+      });
       expect(socket.sent.some(message => message.method === 'Input.insertText')).toBe(failureAt === 3);
       const commands = socket.sent.filter(message => message.method === 'Input.dispatchKeyEvent').flatMap(message => message.params.commands ?? []);
       expect(commands).toEqual(failureAt === 1 ? [] : ['selectAll', 'deleteBackward']);
+    } finally { await runtime.Close(); }
+  });
+
+  it.each(['readOnlyInput', 'unavailableViewport'] as const)('%s 时在点击和编辑前返回明确失败', async mode => {
+    const socket = new TranscriptSocket();
+    const runtime = new PersonalBrowserCdpRuntime({ endpoint: 'ws://127.0.0.1:9222/devtools/browser/test-id', webSocketFactory: () => socket, delay: async () => undefined });
+    try {
+      await runtime.Run(['snapshot']);
+      socket[mode] = true;
+      await expect(runtime.Run(['fill', '@e1', 'replacement'])).rejects.toMatchObject({
+        code: mode === 'readOnlyInput' ? 'BROWSER_ARGUMENT_INVALID' : 'BROWSER_COMMAND_FAILED', statusUnknown: false,
+        message: expect.stringContaining(mode === 'readOnlyInput' ? 'read-only' : 'Restore the browser window'),
+      });
+      expect(socket.sent.some(message => message.method.startsWith('Input.'))).toBe(false);
     } finally { await runtime.Close(); }
   });
 

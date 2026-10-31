@@ -7,7 +7,7 @@ export class EvalTestBusiness {
   private snapshots = new Map<string, { sessionSnapshotJson: string; toolSnapshotJson: string }>();
   private attachments: Map<string, string>;
 
-  constructor(fixtures: { profile?: unknown[]; resume?: Record<string, unknown> }, attachments: Map<string, string> = new Map(), private readonly browserEngine?: 'chrome' | 'edge') {
+  constructor(fixtures: { profile?: unknown[]; resume?: Record<string, unknown> }, attachments: Map<string, string> = new Map(), private readonly browserEngine?: 'chrome' | 'edge' | 'ego', private readonly closeTaskTabs = true) {
     this.profiles = structuredClone(fixtures.profile ?? []);
     const resume = fixtures.resume && typeof fixtures.resume === 'object'
       ? { id: 'eval-resume', name: '测评简历', content: '', summary: '', targetRoles: [], revision: 1, ...structuredClone(fixtures.resume) }
@@ -16,7 +16,7 @@ export class EvalTestBusiness {
     this.attachments = new Map(attachments);
   }
 
-  GetStoredSettings(): any { return this.browserEngine ? { browserEngine: this.browserEngine } : {}; }
+  GetStoredSettings(): any { return { ...(this.browserEngine ? { browserEngine: this.browserEngine } : {}), closeTaskTabs: this.closeTaskTabs }; }
   GetProfiles(): any { return { items: structuredClone(this.profiles), hash: null, modified: false }; }
   async ReadProfilesSnapshot(): Promise<unknown[]> { return structuredClone(this.profiles); }
   SaveProfiles(items: unknown[]): any { this.profiles = structuredClone(items); return { count: this.profiles.length, revision: 1 }; }

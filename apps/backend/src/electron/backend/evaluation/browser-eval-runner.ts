@@ -23,7 +23,8 @@ export interface BrowserEvalCaseInput {
   maxModelTurns: number;
   userSimulator: EvalUserSimulatorStrategy;
   fixtureBranch: 'clean' | 'realistic-dom' | 'career-portal';
-  browserEngine: 'chrome' | 'edge';
+  browserEngine: 'chrome' | 'edge' | 'ego';
+  closeTaskTabs?: boolean;
   caseRoot: string;
   signal: AbortSignal;
 }
@@ -38,7 +39,7 @@ export interface BrowserEvalCaseResult {
 interface BrowserEvalRunnerOptions {
   credentialPort: any;
   browserExtensionBridge: BrowserExtensionBridge;
-  externalBrowserPaths: Partial<Record<'chrome' | 'edge', string>>;
+  externalBrowserPaths: Partial<Record<'chrome' | 'edge' | 'ego', string>>;
 }
 
 export function BuildBrowserEvalPromptFragments(candidate: EvalPromptCandidate) {
@@ -108,7 +109,7 @@ export class BrowserEvalRunner {
       await writeFile(physicalPath, file.content, 'utf8');
       attachments.set(fileId, physicalPath); runtimeAttachments.push({ name: file.name, path: fileId });
     }
-    const business = new EvalTestBusiness(input.testCase.fixtures, attachments, input.browserEngine);
+    const business = new EvalTestBusiness(input.testCase.fixtures, attachments, input.browserEngine, input.closeTaskTabs !== false);
     const events: BrowserEvalCaseResult['events'] = [];
     const browserRuntime = new AgentBrowserRuntime({
       browserExtensionBridge: this.options.browserExtensionBridge,
@@ -119,6 +120,7 @@ export class BrowserEvalRunner {
       normalizeNavigationUrl: CreateExactOriginNormalizer(fixture.origin, Boolean(portal)),
     });
     await browserRuntime.SetEngine(input.browserEngine);
+    browserRuntime.SetCloseTaskTabs(input.closeTaskTabs !== false);
     const fragments = BuildBrowserEvalPromptFragments(input.candidate);
     const allowedTools = [...new Set(input.toolNames)].filter((name) => ApplicationScenario.toolNames.includes(name));
     const scenario: ScenarioSnapshot = { ...ApplicationScenario, toolNames: allowedTools, budgets: { maxModelTurns: input.maxModelTurns } };

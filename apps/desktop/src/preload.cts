@@ -168,3 +168,5 @@ contextBridge.exposeInMainWorld('averyWindow', {
   OpenWorkspaceDirectory: () => invoke('app:open-workspace-directory') as Promise<boolean>,
   SetLoginItemSettings: (openAtLogin: boolean) => invoke('app:set-login-item', openAtLogin) as Promise<boolean>,
 });
+  /** 只传浏览器枚举；安装页、扩展目录及启动方式由 Main 决定。 */
+  OpenBrowserExtensionSetup: (engine: import('@avery/contracts').ExtensionBrowserEngine) => invoke('app:open-browser-extension-setup', engine) as Promise<ResultEnvelope<import('@avery/contracts').BrowserExtensionSetup>>,

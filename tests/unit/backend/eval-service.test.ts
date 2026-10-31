@@ -273,7 +273,7 @@ describe('Agent evaluation service', () => {
     store.Close();
   });
 
-  it('browser 项目分派给 BrowserEvalRunner 并使用 Fixture 状态判分', async () => {
+  it.each([['chrome', true], ['ego', false]] as const)('browser 项目冻结 %s 并分派给 BrowserEvalRunner 使用 Fixture 判分', async (browserEngine, closeTaskTabs) => {
     const root = await mkdtemp(join(tmpdir(), 'avery-eval-browser-dispatch-')); roots.push(root);
     const store = new ObservabilityStore(root);
     const browserExecute = vi.fn(async () => ({
@@ -281,7 +281,7 @@ describe('Agent evaluation service', () => {
       metrics: { taskCompleted: true, modelTurns: 2, toolCalls: 3, toolErrors: 0, promptTokens: 2, completionTokens: 2, totalTokens: 4 },
     }));
     const service = new EvalService({
-      userDataPath: root, store, credentialPort: {}, getStoredSettings: async () => ({ developerMode: true, browserEngine: 'chrome' }), Emit: vi.fn(),
+      userDataPath: root, store, credentialPort: {}, getStoredSettings: async () => ({ developerMode: true, browserEngine, closeTaskTabs }), Emit: vi.fn(),
       browserRunner: { Execute: browserExecute } as any, scorer: scorer as any,
     });
     await service.Initialize();
@@ -300,8 +300,9 @@ describe('Agent evaluation service', () => {
     const run = await service.StartRun(project.id); const completed = await WaitForTerminal(service, run.id);
     expect(completed.status).toBe('completed'); expect(browserExecute).toHaveBeenCalledTimes(1);
     expect((completed.snapshot as any).environment.maxConcurrency).toBe(1);
-    expect((completed.snapshot as any).environment.browserEngine).toBe('chrome');
-    expect(browserExecute).toHaveBeenCalledWith(expect.objectContaining({ browserEngine: 'chrome' }));
+    expect((completed.snapshot as any).environment.browserEngine).toBe(browserEngine);
+    expect((completed.snapshot as any).environment.closeTaskTabs).toBe(closeTaskTabs);
+    expect(browserExecute).toHaveBeenCalledWith(expect.objectContaining({ browserEngine, closeTaskTabs }));
     expect(completed.summary?.taskCompletionRate).toBe(1);
     expect(scorer.Score).not.toHaveBeenCalled();
     project = await service.ReadProject(project.id);

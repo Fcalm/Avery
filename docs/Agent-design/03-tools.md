@@ -22,8 +22,7 @@ ReadResume
 UpdateResume
 SearchJobs
 ReadUrl
-CreateTodo
-DeleteTodo
+WriteTodo
 LoadSkill
 ```
 
@@ -38,7 +37,7 @@ LoadSkill
 规则：
 
 - 工具名称区分大小写，发布后保持稳定。
-- 动作优先放在名称前面，例如 `ReadResume`、`UpdateProfile`、`CreateTodo`。
+- 动作优先放在名称前面，例如 `ReadResume`、`UpdateProfile`、`WriteTodo`。
 - 工具版本、业务域和内部唯一 ID 使用独立字段，不编码进模型可见名称。
 - 内部可以保存 `{ name: 'ReadResume', version: 1, domain: 'resume' }`，无需使用 `resume.read.v1`。
 - 工具重命名视为协议变更，必须有迁移和 Provider fixture，不能静默复用旧 Tool Ledger。
@@ -129,7 +128,7 @@ interface AgentToolDefinition<TInput, TOutput> {
   status: 'active',
   toolNames: [
     'Read', 'Glob', 'Grep', 'ReadProfile', 'UpdateProfile', 'ReadResume', 'CreateResume', 'UpdateResume',
-    'CreateTodo', 'UpdateTodo', 'DeleteTodo', 'ReadTodo', 'AskUserQuestion', 'LoadSkill',
+    'WriteTodo', 'ReadTodo', 'AskUserQuestion', 'LoadSkill',
     'CreateCronTask', 'ReadCronTask', 'UpdateCronTask', 'DeleteCronTask',
     'ExportResumeFile', 'CollectJobs', 'ReadJobs', 'ContactBossJobs', 'ReadApplicationStatus', 'SaveJob', 'UpdateApplicationStatus',
     'BrowserNavigate', 'BrowserSnapshot', 'BrowserScreenshot', 'BrowserReadPage', 'BrowserClick',
@@ -171,7 +170,7 @@ interface AgentToolDefinition<TInput, TOutput> {
 
 四个 CronTask 工具在工作场景开放，聊天仅开放 `ReadCronTask`。创建任务时，只读本地问答可选择 `scenarioId=default`，浏览器或业务写入任务选择 `application`；后台工作禁止编辑简历和档案。`CreateCronTask` 先冻结提案：`fully_trusted` 直接提交并返回真实任务 ID 与 Tool Ledger 回执；其他档位展示一次周期级无人值守确认，确认前不写数据库、不注册系统任务。两条路径均冻结授权并注册系统调度，注册失败时撤销新建任务。创建后每次 occurrence 创建独立会话，以真实 `user` 消息执行，并使用 `fully_trusted + unattended`，但仍受冻结场景、Schema、资源授权、网络边界与 Tool Ledger 约束。
 
-投递 CronTask 在创建时生成个人浏览器任务授权，并持久绑定到真实 `cronTaskId`；完全信任直接冻结，其他档位确认后冻结。授权冻结任务用途、导航、填表、上传、外部发送和持久资源范围。单次任务完成、周期任务结束、任务删除或用户手动撤销后不再使用。后台 Run 通过 Browser Bridge 连接或正常启动用户配置的 Chrome/Edge，由扩展创建任务标签页，不在执行时等待标签页或远程调试授权；扩展离线、浏览器启动失败、未登录或需要人工处理时暂停并保留待接管会话。旧版本任务默认不获得新版授权。
+投递 CronTask 在创建时生成个人浏览器任务授权，并持久绑定到真实 `cronTaskId`；完全信任直接冻结，其他档位确认后冻结。授权冻结任务用途、导航、填表、上传、外部发送和持久资源范围。单次任务完成、周期任务结束、任务删除或用户手动撤销后不再使用。后台 Run 在 Chrome/Edge 下通过 Browser Bridge 连接或正常启动浏览器，由扩展创建任务标签页；在 ego lite 下连接已运行的原生服务并创建任务空间，不在执行时等待标签页或远程调试授权；扩展离线、浏览器启动失败、未登录或需要人工处理时暂停并保留待接管会话。旧版本任务默认不获得新版授权。
 
 支持 `once`、`daily` 和带 `daysOfWeek` 的 `weekly` 调度；重复时间按 IANA 时区的本地日历计算。关机或休眠导致多次逾期时只补最近一次，其余写为 `missed`。系统只维护一个 `Avery Cron Runner` 唤醒任务，业务数据库保存全部计划与运行历史。无人值守 Run 不暴露四个 CronTask 工具，防止递归调度。
 其他档位的创建确认会明示系统可在计划时间唤醒或后台启动应用；完全信任不弹出确认。Windows 唤醒允许电池供电时启动，且切换到电池后不中止已开始的 Run。
@@ -288,7 +287,7 @@ ReadUrl
 
 ### 5.4 浏览器操作工具（投递场景规划）
 
-浏览器能力由 Host 映射到 Browser Bridge，再由 Avery 浏览器扩展在用户日常 Chrome/Edge 中执行。目标实现不使用隔离 Electron 浏览器、独立 Profile、`agent-browser` CLI 或远程调试端口。扩展通过仅监听 `127.0.0.1` 的随机令牌鉴权长轮询连接 Backend，并只附着 Avery 创建的任务标签页。模型只能调用冻结的 `Browser*` 工具，不能接触扩展 API、本机通信令牌、选择器、任意 JavaScript、Cookie 或本地文件路径。
+浏览器能力由 Host 调度。Chrome/Edge 使用 Browser Bridge 与 Avery 扩展；ego lite 使用固定原生桥接脚本创建专属空间，再复用 Avery 的页面 Runtime。目标实现不使用隔离 Electron 浏览器、独立 Profile、`agent-browser` CLI 或远程调试端口。扩展通过仅监听 `127.0.0.1` 的随机令牌鉴权长轮询连接 Backend，并只附着 Avery 创建的任务标签页。模型只能调用冻结的 `Browser*` 工具，不能接触扩展 API、本机通信令牌、选择器、任意 JavaScript、Cookie 或本地文件路径。
 
 扩展首次启用时由用户一次性授予网页访问权限，用于覆盖 BOSS、第三方招聘平台、未知企业官网和跨域投递流程。每次 Run 只登记任务创建的标签页，其他个人标签页不得进入模型结果或 Trace。个人浏览器沿用用户网络环境，允许访问公开或内网招聘页面；导航仅接受 `http/https`，拒绝浏览器内部页面、扩展页面、本地文件和携带明文凭据的 URL。页面输出限长，上传只接受 Host 签发的文件引用；提交、发送和敏感上传继续由 Harness 和 CronTask 的冻结任务授权控制。
 
@@ -331,7 +330,9 @@ ATS 日期适配器统一登记在 `browser-date-adapters.ts`，目前包含飞�
 
 飞书 ATS 年月范围控件分别识别开始、结束日期，使用当前经历的字段定位。填写时先显露年月列表中的目标选项，保留点击命中与遮挡检查；日期选项仅作必要滚动。北森 Phoenix 日期控件沿用年、月、日面板的交互。验证只读取目标端点或日期输入框的真实值，不使用相邻字段或日历候选文本判断成功。已有日期保留，目标字段丢失时停止该字段操作。
 
-飞书 Select 每个控件只暴露一个业务目标，内部搜索框不作为独立字段。规划、上传前基线和校验统一读取已选显示值，不读取搜索词。选择仅使用当前字段关联的真实菜单，等待弹层动效和位置稳定后点击候选行；菜单不稳定或关联失效时停止，不改点相邻选项。
+飞书 Select 每个控件只暴露一个业务目标。普通下拉隐藏内部搜索框，规划、上传前基线和校验统一读取已选显示值；允许直接录入的 combobox（如学校名称）只暴露实际输入框，按文本填写并回读输入值。选择仅使用当前字段关联的真实菜单，等待弹层动效和位置稳定后点击候选行；菜单不稳定或关联失效时停止，不改点相邻选项。年月范围仅暴露开始、结束两个端点。
+
+BrowserFill 在聚焦、清空和插入后分别校验输入状态。只读或零视口在编辑前拒绝；聚焦失败且尚未改动文本时返回明确失败。清空或插入后状态无法确认时保留 STATUS_UNKNOWN 暂停，先核对当前值再继续，禁止自动重放。
 
 Moka 的字段标题、所属区块及重复记录序号来自申请表组件。就读时间拆分为开始、结束两端，各自选择年、月；出生日期的年月面板支持跨十年选年，选月即提交，验证忽略网站附加的年龄。学校、专业等搜索下拉只接受真实候选，搜索后有界等待目标候选出现，不把搜索词或“添加自定义值”视为成功；验证读取已选显示值。辅助搜索框、国家区号、证件类型不冒充业务文本框，禁用的联动摘要不参与填写，未知标题不从周围文字猜测字段。内部表单规划可保留被固定页头遮挡的已标记字段，真正点击仍检查可见性与命中。页面值保留不代表服务端草稿已保存。
 
@@ -358,52 +359,50 @@ await page.snapshot();
 
 已有会话的冻结工具集不自动扩展；新建工作会话或 `/reload` 后使用脚本工具。
 
+### 任务结束后的页面保留策略
+
+- 设置 `closeTaskTabs` 为布尔值，默认 `true`，新浏览器任务创建时冻结，运行中切换仅影响后续新任务。
+- 开启时关闭任务登记的标签页；关闭时保留页面并交还用户。
+- 两种策略均撤销调试连接、登记和页面引用；保留的页面不再属于旧任务，后续任务不能复用其授权。
+- 完成、取消、切换浏览器和会话均执行已冻结策略；等待用户输入、确认或可恢复暂停时继续保留任务以便续跑。
+- 开发者浏览器测评也冻结并执行同一设置；测评结束后本地 Fixture 服务仍按原规则释放。
+- 清理回执区分关闭数量 `closedTabs`、保留数量 `retainedTabs` 与结果未知 `unknownTabs`，解除调试或交还失败不能报告成功。
+- Chrome/Edge/ego lite 扩展清理协议为 `avery-browser-extension-bridge-v3`；旧 Worker 必须重新加载，不能忽略保留策略执行删除。
+
+### ego lite 扩展接入
+
+- 设置中的浏览器可选 `ego`，生产任务和开发者浏览器测评使用同一选择。
+- 与 Chrome/Edge 一样，先在 ego lite 中加载 Avery Browser 扩展；「一键接入」打开 `chrome://extensions/` 和随附扩展目录。
+- 连接状态以扩展真实握手为准，打开浏览器或安装引导不代表已连接。
+- 页面操作使用现有 Browser 工具、脚本、增量快照、FillForm、权限和文件授权。
+- 扩展只操作 Avery 创建并登记的任务标签页，不操作其他个人页面；应用任务不再创建原生 ego 空间或启动 ego CLI。
+- 任务结束、取消或切换浏览器时，按创建时冻结的自动关闭设置关闭任务标签页，或撤销权限后保留页面。清理未确认时报告结果未知，不关闭浏览器进程。
+
 ### 5.5 Todo
 
-Todo 是当前 Run 的执行清单，不属于整个 Session，避免旧目标污染新任务。MVP 保留：
+Todo 是当前 Run 的执行清单。写入只提供 `WriteTodo`，读取提供 `ReadTodo`。
 
-```text
-CreateTodo
-UpdateTodo
-DeleteTodo
-ReadTodo
-```
-
-`CreateTodo` 的工具描述必须明确：
-
-> 为当前 Run 创建 Todo。只有当用户目标、预期交付物和必要范围已经明确时才能使用；存在关键歧义时应先提问，简单单步任务不得创建 Todo。
-
-推荐 Input：
+`WriteTodo` 每次提交完整清单，最多 20 项；新清单全量覆盖旧清单，未包含的条目删除。`todos: []` 清空全部；`description: ""` 或省略描述会清空描述。空标题、缺少清单或非法状态会拒绝整批写入，不改变已有状态。
 
 ```ts
-interface CreateTodoInput {
+interface WriteTodoInput {
   todos: Array<{
-    title: string;
-    description?: string;
+    title: string; // 1–300 字符，不能全为空白
+    description?: string; // 最多 2000 字符
+    status: 'pending' | 'inProgress' | 'completed' | 'cancelled';
   }>;
 }
 ```
 
-一次允许创建 1–10 条，每个 Run 最多 20 条。ID、顺序和初始状态由系统生成；默认状态为 `pending`。
+条目按输入顺序保存，ID 由宿主内部生成，模型不需要维护 ID。更新进度时提交所有需要保留的条目及其状态。放弃执行但需要保留的条目使用 `cancelled`。不设置 `blocked`；等待用户输入、确认和其他阻断由 Run 状态表示。
 
-状态只保留：
+只有目标、交付物和范围明确的多步骤任务才使用 Todo；关键歧义先提问，简单单步任务不创建 Todo。压缩或恢复后进度不确定时使用 `ReadTodo`。
 
-```ts
-type TodoStatus = 'pending' | 'inProgress' | 'completed' | 'cancelled';
-```
+`WriteTodo` 是低风险内部进度写入，不要求用户确认，仅在工作场景开放，仍要求持久化 Tool Ledger。幂等键包含调用 ID，相同调用重放不重复写入，不同调用允许恢复以前的清单内容。旧 `CreateTodo`、`UpdateTodo`、`DeleteTodo` 及旧写入别名不再执行，不能将旧参数直接解释为全量覆盖。
 
-允许的状态转换：
+`WriteTodo` 成功后返回完整 `tasks` 和回执。`ReadTodo` 一次返回完整列表及各状态计数，无需拆成 List/Get。
 
-```text
-pending → inProgress | cancelled
-inProgress → completed | cancelled
-```
-
-`completed` 和 `cancelled` 为终态。Todo 不设置 `blocked`；缺少用户输入时由 Run 进入 `waiting_user_input`，需要确认时进入 `waiting_confirmation`，其他阻断进入 `paused`，当前 Todo 可以继续保持 `inProgress`。
-
-`DeleteTodo` 接收 `todoId`，用于彻底移除已经不属于当前任务范围的条目；如果只是放弃执行但仍需保留过程记录，应使用 `UpdateTodo` 将状态改为 `cancelled`。删除成功后返回被删除条目和最新完整列表，并写入 Tool Ledger 以支持幂等重放。
-
-`ReadTodo` 不拆成 List/Get。Todo 数量有界，因此一次返回当前 Run 的完整列表、revision 和各状态计数。`CreateTodo`、`UpdateTodo`、`DeleteTodo` 成功后也返回最新完整列表，避免模型立即重复读取。
+已有会话的工具快照保持冻结；更新后通过 `/reload` 或新建工作会话使用 `WriteTodo`。
 
 ### 5.6 Skill 加载工具
 
@@ -443,8 +442,7 @@ inProgress → completed | cancelled
 | `CreateResume` | 保留；确认阶段由 Harness 管理 |
 | `EditResume` | 更名为 `UpdateResume`，改为结构化 patch |
 | `AskUserQuestion` | 保留，统一 wait disposition |
-| `TaskCreate` | 更名并调整为批量 `CreateTodo` |
-| `TaskUpdate` | 更名为 `UpdateTodo` |
+| `TaskCreate` / `TaskUpdate` | 移除，写入统一使用全量覆盖的 `WriteTodo` |
 | `TaskList` / `TaskGet` | 合并为一个 `ReadTodo` |
 | 当前无岗位网络工具 | 0.2.0 保持无网络；保留 `SearchJobs`/`ReadUrl` 的 `disabled_draft` Schema，不注册 |
 
@@ -509,7 +507,7 @@ Provider 的 strict tool calling 只能提高参数命中率，不能替代上�
 批次 2：ReadResume({})           串行读取索引
 批次 3：ReadResume({resumeId})   串行读取正文并建立绑定
 批次 4：UpdateResume             串行写入并刷新绑定 revision
-批次 5：UpdateTodo               串行写入 run:todos
+批次 5：WriteTodo               串行写入 run:todos
 ```
 
 `ReadResume` 统一串行执行，避免同一批次读取多份正文时产生绑定竞态。若具体 `resumeId` 需要根据索引选择，模型必须先等待索引结果，再在下一轮读取正文；已明确知道 ID 时，Harness 仍按工具顺序先完成绑定再放行后续依赖写入。
@@ -556,7 +554,7 @@ interface ToolEnvelope<T> {
 - 模型可见工具名全部符合 PascalCase 规则且跨 Provider 可接受。
 - 默认场景按意图进一步收窄工具，不暴露任何投递或浏览器能力。
 - 0.2.0 默认场景不注册、不展示也不执行 `SearchJobs`、`ReadUrl`。
-- 聊天暴露冻结的11个只读或交互工具；工作暴露冻结的41个工具，包含简历与档案编辑、浏览器脚本；两者都不包含 `SearchJobs` 或 `ReadUrl`。
+- 聊天暴露冻结的11个只读或交互工具；工作暴露冻结的39个工具，包含简历与档案编辑、浏览器脚本；两者都不包含 `SearchJobs` 或 `ReadUrl`。
 - CronTask 在完全信任下直接创建并返回真实回执，其他档位确认前数据库与 OS 调度均无新增记录；无人值守 Run 即使恢复旧快照也不能调用 CronTask 工具。
 - 多次逾期只执行最近 occurrence；既有 Run 活跃、浏览器长期占用、登录或验证码接管均写入明确的 `missed`/`needsAttention` 原因。
 - 投递 Agent 在浏览器执行前读取投递状态，并只在有效回执后更新 `applied`。
@@ -564,7 +562,7 @@ interface ToolEnvelope<T> {
 - 模型直接请求未进入冻结快照的已注册/草案工具时，执行入口返回 `TOOL_NOT_ALLOWED`，实现函数调用次数为 0。
 - 0.3.0 fixture 必须证明 `ReadUrl` 只接受用户明确 URL，并拒绝 localhost、内网、文件协议、凭据、Cookie 和未校验重定向。
 - `SearchJobs` 在 0.3.0 仍保持禁用；任何岗位网络结果都不会自动写入岗位库。
-- `CreateTodo` 在目标含关键歧义或单步任务中不应被模型调用。
+- `WriteTodo` 在目标含关键歧义或单步任务中不应被模型调用。
 - Todo 不出现 `blocked`，Run 等待/暂停状态与 Todo `inProgress` 可以并存。
 - 无 Todo 自动注入时记录主动读取率、进度遗漏率和提前完成率。
 - Preview/Commit 不作为模型工具；确认后执行的参数与 proposal hash 完全一致。

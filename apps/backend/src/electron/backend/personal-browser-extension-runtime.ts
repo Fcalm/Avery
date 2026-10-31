@@ -21,7 +21,7 @@ class BrowserExtensionSocket {
 
   constructor(
     private readonly bridge: BrowserExtensionBridge,
-    private readonly engine: 'chrome' | 'edge',
+    private readonly engine: 'chrome' | 'edge' | 'ego',
     private readonly browserTaskId: string,
     options: { signal?: AbortSignal; deadline?: number } = {},
   ) {
@@ -119,7 +119,7 @@ class BrowserExtensionSocket {
 
 export function CreatePersonalBrowserExtensionRuntime(input: {
   bridge: BrowserExtensionBridge;
-  engine: 'chrome' | 'edge';
+  engine: 'chrome' | 'edge' | 'ego';
   now?: () => number;
   delay?: (milliseconds: number, signal?: AbortSignal) => Promise<void>;
 }): PersonalBrowserRuntimePort {

@@ -94,6 +94,36 @@ afterEach(async () => {
 });
 
 describe('AgentBrowserRuntime', () => {
+  it.each([true, false])('新任务冻结 closeTaskTabs=%s，后续切换偏好不改变旧任务，收尾仍撤销引用', async (closeTabs) => {
+    const runtimeRoot = await mkdtemp(join(tmpdir(), 'avery-browser-close-policy-'));
+    temporaryRoots.push(runtimeRoot);
+    const bridge = {
+      EnsureConnected: vi.fn(async () => undefined), Close: vi.fn(async () => undefined),
+      CloseTask: vi.fn(async () => ({ status: 'confirmed' as const, browserTaskId: 'policy', closedTabs: 0, unknownTabs: 0 })),
+    };
+    const runtime = CreateTestRuntime({ runtimeRoot, resolveUploadFile: async () => null, browserExtensionBridge: bridge,
+      createExtensionRuntime: () => PersonalRuntimeStub() });
+    const navigate = async () => runtime.Execute({ proposal: await runtime.Prepare({ toolName: 'BrowserNavigate', arguments: { url: 'https://example.com/' } }) });
+    try {
+      await runtime.SetEngine('chrome');
+      runtime.SetCloseTaskTabs(closeTabs);
+      await navigate();
+      const firstTask = runtime.GetBrowserTaskId();
+      runtime.SetCloseTaskTabs(!closeTabs);
+      await runtime.CloseTask();
+      expect(bridge.CloseTask).toHaveBeenNthCalledWith(1, 'chrome', firstTask, expect.objectContaining({ closeTabs }));
+      expect(runtime.GetBrowserTaskId()).toBeUndefined();
+      await runtime.CloseTask();
+      expect(bridge.CloseTask).toHaveBeenCalledOnce();
+      await navigate();
+      const nextTask = runtime.GetBrowserTaskId();
+      expect(nextTask).not.toBe(firstTask);
+      // 切换浏览器与普通完成共享同一清理策略，仍按新任务创建时的偏好执行。
+      await runtime.SetEngine('edge');
+      expect(bridge.CloseTask).toHaveBeenNthCalledWith(2, 'chrome', nextTask, expect.objectContaining({ closeTabs: !closeTabs }));
+    } finally { await runtime.Close(); }
+  });
+
   it('测评同步只允许指定的本地轮次页面，不向调用方接受任意表达式', async () => {
     const runtimeRoot = await mkdtemp(join(tmpdir(), 'avery-eval-flush-')); temporaryRoots.push(runtimeRoot);
     const url = 'http://127.0.0.1:43210/runs/00000000-0000-4000-8000-000000000000/';

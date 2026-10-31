@@ -59,16 +59,16 @@ export const Tutorials: TutorialContent[] = [
   },
   {
     title: '网页上的申请，也可以一起完成',
-    description: '需要在招聘网页填写申请时，先连接 Chrome 或 Edge，再选择「工作」场景。Avery 会使用自己创建的任务标签页协助操作。',
+    description: '需要在招聘网页填写申请时，先连接 Chrome、Edge 或 ego lite，再选择「工作」场景。Avery 会使用自己创建的任务标签页协助操作。',
     steps: [
-      { title: '选择浏览器', text: '在「设置 → 浏览器控制」选择日常使用的 Chrome 或 Edge。' },
-      { title: '连接 Avery Browser 扩展', text: '加载扩展后回到 Avery，点击「检测状态」，确认连接成功。' },
+      { title: '选择浏览器', text: '在「设置 → 浏览器控制」选择 Chrome、Edge 或 ego lite。' },
+      { title: '检测连接', text: '在所选浏览器中加载 Avery Browser 扩展，再回到 Avery 点击「检测状态」。' },
       { title: '切换到工作场景', text: '新建对话，在输入框下方选择「工作」，说明目标岗位、申请链接和要使用的简历。' },
     ],
     prompt: '请打开我提供的岗位链接，使用当前简历协助填写申请；提交前让我核对。',
     tip: '遇到登录、验证码或无法判断的字段时，先在浏览器中处理，再回到对话继续。提交前检查公司、岗位、简历和附件。',
     images: [{ file: '07-browser', alt: '设置中的浏览器选择、未连接状态与检测按钮' }, { file: '07-scene', alt: '对话输入区的聊天与工作场景菜单' }],
-    detail: { title: '如何安装扩展？', paragraphs: ['打开浏览器扩展管理页：Edge 使用 edge://extensions，Chrome 使用 chrome://extensions。', '开启开发者模式，选择「加载解压缩的扩展」或「加载已解压的扩展程序」，选择 Avery 随附的 Browser 扩展文件夹。', '回到 Avery 点击「检测状态」。开发环境的扩展位于项目 apps/browser-extension；安装版使用应用随附的扩展目录。'] },
+    detail: { title: '如何安装扩展？', paragraphs: ['Chrome、Edge 和 ego lite 均使用 Avery Browser 扩展；在「设置 → 浏览器控制」点击「一键接入」，打开所选浏览器的扩展管理页和扩展目录。', 'Edge 使用 edge://extensions；Chrome 和 ego lite 使用 chrome://extensions。', '开启开发者模式，选择「加载解压缩的扩展」或「加载已解压的扩展程序」，选择 Avery 随附的 Browser 扩展文件夹。', '回到 Avery 点击「检测状态」。开发环境的扩展位于项目 apps/browser-extension；安装版使用应用随附的扩展目录。'] },
   },
   {
     title: '记住进度，也记住下一步',
