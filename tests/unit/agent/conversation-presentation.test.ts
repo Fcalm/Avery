@@ -9,6 +9,16 @@ function Project(activities: ConversationActivity[]) {
 }
 
 describe('会话展示投影', () => {
+  it('暂停和等待冻结用时，静态工具更新不延长暂停时间，恢复运行后清除冻结点', () => {
+    const initial = ApplyConversationActivity(CreateConversationPresentation('timing'), { kind: 'step' }, 1, 1000);
+    const paused = ApplyConversationActivity(initial, { kind: 'status', status: 'paused', summary: '请登录' }, 2, 2000);
+    const updated = ApplyConversationActivity(paused, { kind: 'tool', name: 'BrowserSnapshot', toolCallId: 's', toolStatus: 'paused' }, 3, 9000);
+    expect(updated.pausedAt).toBe(2000);
+    expect(IsConversationPresentation(JSON.parse(JSON.stringify(updated)))).toBe(true);
+    const resumed = ApplyConversationActivity(updated, { kind: 'status', status: 'running' }, 4, 10000);
+    expect(resumed.pausedAt).toBeUndefined();
+    expect(resumed.statusMessage).toBeUndefined();
+  });
   it('产物保留最后版本和首尾统计，重复回执不覆盖真实名称，读取不会覆盖产物', () => {
     const resource = { kind: 'resume' as const, id: 'r1', title: '产品简历', revision: 2, produced: true, lineChanges: { added: 3, removed: 2 } };
     const value = Project([

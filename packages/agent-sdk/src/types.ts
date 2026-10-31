@@ -269,6 +269,13 @@ export interface AgentMessage {
     | {
       source: 'runtime';
       visibility: 'hidden';
+      /** 摘要是派生历史，不计为真实用户轮次；来源原文由宿主独立归档。 */
+      kind: 'context_summary';
+      summaryId: string;
+    }
+    | {
+      source: 'runtime';
+      visibility: 'hidden';
       /** 仅在当前模型请求可见的业务只读快照，禁止写入会话历史。 */
       kind: 'runtime_context';
     }
@@ -428,6 +435,16 @@ export interface AttachmentDescriptor {
 
 /** 归一化后的受限业务上下文；确认模式只通过 Runtime Reminder 传递。 */
 export interface RuntimeContext {
+  /** 本轮宿主读取的连接事实，不能当作页面状态、执行回执或额外授权。 */
+  browserConnection?: {
+    checkedAt: string;
+    engine: string;
+    connected: boolean | null;
+    state: string;
+    actualProtocolRevision: string | null;
+    expectedProtocolRevision: string | null;
+    guidance: string;
+  };
   resumeEditing: boolean;
   /** 只显示会话绑定元数据，绝不把简历正文自动注入 user 消息。 */
   boundResume: Pick<ResumeSnapshot, 'id' | 'name' | 'revision'> | null;

@@ -55,6 +55,8 @@ export interface ModelProviderModule extends ModuleManifest {
   }>;
   ResolveRequestModel(requestedModel: string | undefined, provider?: string): string;
   StreamCompletion(request: {
+    /** 宿主在 Run 创建时冻结的能力快照；配置更新不改变正在执行的请求。 */
+    modelConfiguration?: import('./model-capabilities').ResolvedModelConfiguration;
     requestId: string;
     provider: string;
     model: string;
@@ -72,7 +74,16 @@ export interface ModelProviderModule extends ModuleManifest {
     /** 输出 token 上限：防止结构化输出被中途截断；省略时沿用 Provider 默认。 */
     maxTokens?: number;
   }): Promise<ModelCompletion>;
-  CreateSummary(provider: string, model: string, messages: AgentMessage[], onRequest?: (snapshot: ProviderRequestSnapshot) => void): Promise<ModelSummary>;
+  CreateSummary(provider: string, model: string, messages: AgentMessage[], onRequest?: (snapshot: ProviderRequestSnapshot) => void, options?: {
+    modelConfiguration?: import('./model-capabilities').ResolvedModelConfiguration;
+    /** 与当前运行相同的思考强度；不为压缩切换用户思考开关。 */
+    reasoningEffort?: ReasoningEffort;
+    signal?: AbortSignal;
+    compressionInstructions?: string;
+    protectedState?: string;
+    /** 后续保留的用户纠正只作参考，避免摘要把旧值再次写成当前事实。 */
+    recentContext?: AgentMessage[];
+  }): Promise<ModelSummary>;
   EstimateTokens(value: unknown): number;
   /** 返回上下文长度上限与压缩阈值百分比；供 Kernel 与宿主读取。 */
   GetRuntimeLimits(provider?: string, model?: string): { contextLimit: number; threshold: number };
@@ -97,7 +108,7 @@ export interface ContextBuilderModule extends ModuleManifest {
 export interface CompactionModule extends ModuleManifest {
   slot: 'compaction';
   ShouldCompact(estimate: number, contextLimit: number, threshold: number): boolean;
-  SplitRecentTurns(history: AgentMessage[]): { earlier: AgentMessage[]; recent: AgentMessage[] };
+  SplitRecentTurns(history: AgentMessage[], budget?: { maxRecentTokens: number; estimate: (messages: AgentMessage[]) => number }): { earlier: AgentMessage[]; recent: AgentMessage[] };
   DropOldestTurns(history: AgentMessage[], count: number): AgentMessage[];
   /** 按完整 TurnGroup 保留最近 count 组；供 Kernel 保存历史快照。 */
   KeepRecentTurnGroups?(history: AgentMessage[], count: number): AgentMessage[];

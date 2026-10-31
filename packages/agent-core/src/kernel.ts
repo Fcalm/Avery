@@ -1,4 +1,6 @@
 import { IsRuntimeContextMessage } from '@avery/agent-sdk';
+import { CompactContextHistory, ContextCompactionError } from './context-compaction';
+import { ReconcileInterruptedTools } from './tool-protocol';
 import type { AgentMessage, KernelRunInput, KernelRunResult, ModelUsage, ProviderRequestSnapshot, ProviderUsageFact, RunDisposition, ToolCallFragment, ToolDisposition, ToolExecutionResult } from '@avery/agent-sdk';
 import { CreateRuntimeReminderMessage, ShouldInjectRuntimeReminder } from './runtime-reminder';
 import { GetToolResources } from './conversation-resources';
@@ -25,6 +27,10 @@ function EstimateTraceTokens(value: unknown): number {
 
 /** 浏览器填写与上传参数可能包含简历、联系方式或附件标识；Trace 只记录结构，不保存敏感明文。 */
 function ScrubToolArguments(toolName: string, value: string): string {
+  if (toolName === 'BrowserRunScript') {
+    // 脚本常直接含档案字段；Trace 保留长度，逐步动作另有脱敏事件，不落完整脚本。
+    return JSON.stringify({ script: '[REDACTED_BROWSER_SCRIPT]', length: value.length });
+  }
   if (!['BrowserFill', 'BrowserFillForm', 'BrowserUploadFile'].includes(toolName)) return ScrubTraceContent(value);
   try {
     const parsed = JSON.parse(value) as Record<string, unknown>;
@@ -116,10 +122,20 @@ function HistorySnapshot(transcript: AgentMessage[]): AgentMessage[] {
  * 将已提交的 transcript 同步到宿主并建立持久化屏障。
  * 历史只能由已经越过取消检查的消息组成；流式增量和取消后迟到的 Provider 结果绝不能进入这里。
  */
-function CommitHistory(input: KernelRunInput, transcript: AgentMessage[]): AgentMessage[] {
+async function CommitHistory(input: KernelRunInput, transcript: AgentMessage[], archive?: { summaryId: string; messages: AgentMessage[]; original?: AgentMessage[] }): Promise<AgentMessage[]> {
+  if (archive) {
+    if (!input.archiveHistory) throw new ContextCompactionError('宿主未提供原文归档能力，不能安全切换压缩视图。');
+    await input.archiveHistory(archive);
+    input.signal.throwIfAborted();
+  }
   const history = HistorySnapshot(transcript);
+  const previous = input.histories.get(input.sessionId);
   input.histories.set(input.sessionId, history);
-  input.persistHistory();
+  try { await input.persistHistory(); } catch (error) {
+    if (previous) input.histories.set(input.sessionId, previous);
+    else input.histories.delete(input.sessionId);
+    throw error;
+  }
   return history;
 }
 
@@ -223,72 +239,13 @@ function CreateTurnBudgetExhaustedResult(call: ToolCallFragment): ToolExecutionR
   };
 }
 
-/** 按真实用户轮次压缩早期历史；重试循环内置 3 次熔断，全部失败抛出压缩错误（宿主据此传播）。 */
-async function CompressIfNeeded(input: KernelRunInput, history: AgentMessage[], onCompressed: () => void, nextApiRequestIndex: () => number): Promise<AgentMessage[]> {
-  const { modules, toolArray } = input;
-  const { contextLimit, threshold } = modules.modelProvider.GetRuntimeLimits(input.provider);
-  const estimate = modules.modelProvider.EstimateTokens({
-    system: input.instructions.compiled,
-    tools: toolArray,
-    messages: [
-      ...history,
-      ...(input.messagesBeforeUser ?? []),
-      input.userMessage ?? { role: 'user', content: input.userContent },
-      ...(input.messagesAfterUser ?? []),
-    ],
-  });
-  if (!modules.compaction.ShouldCompact(estimate, contextLimit, threshold)) return history;
-  let candidate = history;
-  // 标记是否已因摘要失败降级截断过：若截断后仍无更早轮可切分，说明压缩无法推进，进入熔断而非静默丢弃历史。
-  let dropped = false;
-  for (let retry = 0; retry <= 3; retry += 1) {
-    try {
-      const { earlier, recent } = modules.compaction.SplitRecentTurns(candidate);
-      if (!earlier.length) {
-        if (dropped) throw new Error('Context compression cannot make progress: history has no earlier turns to compact.');
-        return candidate;
-      }
-      let apiRequestIndex = 0;
-      const summary = await modules.modelProvider.CreateSummary(input.provider, input.model, earlier, (snapshot) => {
-        apiRequestIndex = nextApiRequestIndex();
-        RecordProviderRequest(input, apiRequestIndex, snapshot);
-      });
-      ThrowIfRunCancelled(input.signal);
-      input.onModelUsage?.(CreateProviderUsageFact(summary.usage));
-      if (apiRequestIndex) {
-        const response = CreateTraceMessage({ role: 'assistant', content: summary.content });
-        modules.observability.AppendTraceEvent(input.requestId, 'provider_response', {
-          apiRequestIndex,
-          kind: 'summary',
-          message: response,
-        }, EstimateTraceTokens(JSON.stringify(response)));
-      }
-      const compacted: AgentMessage[] = [{ role: 'user', content: `<summary summary_id="summary-${input.createId()}">${summary.content}</summary>` }, ...recent];
-      RecordAppendedMessage(input, apiRequestIndex + 1, 'runtime', compacted[0]);
-      CommitHistory(input, compacted);
-      onCompressed();
-      modules.observability.AppendTraceEvent(input.requestId, 'context_compressed', { retry, removed: earlier.length });
-      modules.observability.RecordLog('INFO', 'context.compressed', `retry=${retry}; removed=${earlier.length}`);
-      return compacted;
-    } catch (error) {
-      // 熔断错误（无更早轮）直接上抛，不再尝试降级截断。
-      if (error instanceof Error && /cannot make progress/i.test(error.message)) throw error;
-      candidate = modules.compaction.DropOldestTurns(candidate, 5);
-      dropped = true;
-      modules.observability.AppendTraceEvent(input.requestId, 'context_compress_retry', { retry: retry + 1 });
-      modules.observability.RecordLog('WARN', 'context.compress_retry', `retry=${retry + 1}`);
-    }
-  }
-  throw new Error('Context compression failed after three retries. Start a new conversation or shorten the request.');
-}
-
 /** 按 tool_call 顺序执行工具批次；只读并行、写/交互屏障，等待后跳过未执行节点。 */
-async function RunToolBatch(input: KernelRunInput, calls: ToolCallFragment[], stepId: string): Promise<{ results: AgentMessage[]; disposition: RunDisposition }> {
+async function RunToolBatch(input: KernelRunInput, calls: ToolCallFragment[], stepId: string, contextToolCallIds: ReadonlySet<string>, onSettled?: (message: AgentMessage) => void): Promise<{ results: AgentMessage[]; disposition: RunDisposition }> {
   ThrowIfRunCancelled(input.signal);
   const skillLoadIndex = calls.findIndex((call) => call.function.name === 'LoadSkill');
   if (skillLoadIndex >= 0 && calls.length > 1) {
     const selected = calls[skillLoadIndex];
-    const single = await RunToolBatch(input, [selected], stepId);
+    const single = await RunToolBatch(input, [selected], stepId, contextToolCallIds, onSettled);
     for (const call of calls.filter((_, index) => index !== skillLoadIndex)) input.emit({ type: 'conversation_activity', requestId: input.requestId, activity: {
       kind: 'tool', stepId, toolCallId: call.id, name: call.function.name, toolStatus: 'skipped', summary: '技能加载后需要重新规划，本次未执行',
     } });
@@ -341,8 +298,11 @@ async function RunToolBatch(input: KernelRunInput, calls: ToolCallFragment[], st
       input.modules.observability.AppendTraceEvent(input.requestId, 'tool_call', { name: call.function.name, arguments: argumentsText }, EstimateTraceTokens(argumentsText));
       const registered = input.toolArray.some((tool) => tool.definition.function.name === call.function.name);
       const allowedByScenario = input.scenario?.toolNames.includes(call.function.name) ?? false;
-      const result = registered && allowedByScenario
-        ? await input.modules.tools.ExecuteToolCall(call, { ...input.toolContext, signal: input.signal })
+      const needsObservation = input.toolContext.requiresBrowserSnapshot && /^Browser(?:Click|Fill|Select|SetChecked|Press|Upload|Drag|Hover)/.test(call.function.name);
+      const result = needsObservation
+        ? { role: 'tool' as const, tool_call_id: call.id, content: JSON.stringify({ ok: false, code: 'BROWSER_SNAPSHOT_CONTEXT_LOST', message: '上下文已压缩，请先调用 BrowserSnapshot 重新观察，再使用当前页面引用。' }) }
+        : registered && allowedByScenario
+        ? await input.modules.tools.ExecuteToolCall(call, { ...input.toolContext, signal: input.signal, allowedToolNames: new Set(input.toolArray.map((tool) => tool.definition.function.name)), hasToolResultInContext: (id) => contextToolCallIds.has(id) })
         : CreateToolNotAllowedResult(call);
       let resultState: { ok: boolean; code: string; message: string } = { ok: false, code: 'UNPARSEABLE', message: '' };
       try {
@@ -350,6 +310,7 @@ async function RunToolBatch(input: KernelRunInput, calls: ToolCallFragment[], st
         resultState = { ok: parsed.ok === true, code: String(parsed.code ?? ''), message: ScrubTraceContent(String(parsed.message ?? '').slice(0, 200)) };
       } catch { /* 工具结果无法解析时保留默认失败标记。 */ }
       input.modules.observability.AppendTraceEvent(input.requestId, 'tool_result', { name: call.function.name, ...resultState }, EstimateTraceTokens(resultState.message));
+      if (call.function.name === 'BrowserSnapshot' && resultState.ok) input.toolContext.requiresBrowserSnapshot = false;
       const disposition = ParseToolDisposition(result);
       input.emit({ type: 'conversation_activity', requestId: input.requestId, activity: {
         kind: 'tool', stepId, toolCallId: call.id, name: call.function.name,
@@ -359,12 +320,23 @@ async function RunToolBatch(input: KernelRunInput, calls: ToolCallFragment[], st
       let parsed: { [key: string]: unknown } = {};
       let args: { [key: string]: unknown } = {};
       try { parsed = JSON.parse(result.content); args = JSON.parse(call.function.arguments || '{}'); } catch { /* 非结构化回执不建立资源引用。 */ }
+      if (call.function.name === 'BrowserRunScript' && parsed.ok === true && parsed.browserState && typeof parsed.browserState === 'object') {
+        const requiresSnapshot = (parsed.browserState as { requiresSnapshot?: unknown }).requiresSnapshot;
+        if (typeof requiresSnapshot === 'boolean') input.toolContext.requiresBrowserSnapshot = requiresSnapshot;
+      }
       const resources = GetToolResources(call.function.name, parsed, args);
       for (const resource of resources) {
         input.emit({ type: 'conversation_activity', requestId: input.requestId, activity: { kind: 'resource', stepId, toolCallId: call.id, resource } });
       }
       // 将经过回执验证的引用交给下一轮模型，回答可使用内链；正文里自行编造的引用仍不可点击。
       const resultWithResources = resources.length ? { ...result, content: JSON.stringify({ ...parsed, conversationResources: resources.map((resource) => ({ ...resource, href: 'avery://' + resource.kind + '/' + encodeURIComponent(resource.id) + (resource.revision ? '?revision=' + resource.revision : '') })) }) } : result;
+      // 阶段返回前取消仍会走异常路径；保留已结算事实，不能因批次未整体提交而丢掉失败回执。
+      // 取消后的迟到成功、待确认提案及依赖 Skill 正文的结果不在这里单独提交。
+      if ((!input.signal.aborted || resultState.code === 'CANCELLED' || resultState.code === 'STATUS_UNKNOWN')
+        && !result.followupMessages?.length && !['wait_confirmation', 'wait_user_input'].includes(ParseToolDisposition(result))) {
+        const { followupMessages: _followups, ...protocolResult } = resultWithResources;
+        onSettled?.(protocolResult);
+      }
       return { call, result: resultWithResources };
     }));
     ThrowIfRunCancelled(input.signal);
@@ -400,6 +372,15 @@ export async function RunAgentLoop(input: KernelRunInput): Promise<KernelRunResu
   let compressionCount = 0;
   let requestHistory: AgentMessage[];
   let transcript: AgentMessage[] = [];
+  const settledTools = new Map<string, AgentMessage>();
+  const RecoverInterruptedTools = (messages: AgentMessage[]) => {
+    const result = ReconcileInterruptedTools(messages, settledTools);
+    if (result.recovered.length) {
+      modules.observability.AppendTraceEvent(requestId, 'tool_protocol_recovered', { callIds: result.recovered.map((message) => message.tool_call_id) });
+      result.recovered.forEach((message) => RecordAppendedMessage(input, Math.max(1, apiRequestCount), 'runtime', message));
+    }
+    return result.history;
+  };
   let inputTokens = 0;
   const checkpoint = input.resume?.checkpoint;
   let assistantContent = checkpoint?.assistantContent ?? '';
@@ -413,6 +394,11 @@ export async function RunAgentLoop(input: KernelRunInput): Promise<KernelRunResu
   const maxTurns = input.scenario?.budgets?.maxModelTurns ?? input.maxTurns;
   // 场景只有显式配置时才限制工具总数；投递场景依赖较多原子浏览器动作，不另设浏览器动作预算。
   const maxToolCalls = input.scenario?.budgets?.maxToolCalls ?? Number.POSITIVE_INFINITY;
+  input.toolContext.consumeBrowserScriptStep = () => {
+    if (toolCallCount >= maxToolCalls) return false;
+    toolCallCount += 1;
+    return true;
+  };
   const hadHistoryAtRunStart = input.requestHistory.length > 0;
 
   try {
@@ -423,9 +409,10 @@ export async function RunAgentLoop(input: KernelRunInput): Promise<KernelRunResu
       transcript = [{ role: 'system', content: input.systemContext }, ...input.requestHistory, ...resumedMessages];
       resumedMessages.forEach((message) => RecordAppendedMessage(input, apiRequestCount + 1, message.role === 'tool' ? 'tool' : 'runtime', message));
       input.onResumed?.();
-      CommitHistory(input, transcript);
+      await CommitHistory(input, transcript);
     }
-    requestHistory = await CompressIfNeeded(input, input.resume ? HistorySnapshot(transcript) : input.requestHistory, () => { compressionCount += 1; }, NextApiRequestIndex);
+    requestHistory = input.resume ? HistorySnapshot(transcript) : RecoverInterruptedTools(input.requestHistory);
+    let requiresBrowserSnapshot = requestHistory.some((message) => message.metadata?.kind === 'context_summary');
     const beforeUser = CommitInitialSyntheticMessages(input, input.messagesBeforeUser ?? []);
     const afterUser = CommitInitialSyntheticMessages(input, input.messagesAfterUser ?? []);
     transcript = [
@@ -444,7 +431,15 @@ export async function RunAgentLoop(input: KernelRunInput): Promise<KernelRunResu
     if (!input.resume) RecordAppendedMessage(input, firstCompletionRequestIndex, 'user', input.userMessage ?? { role: 'user', content: input.userContent });
     afterUser.forEach((message) => RecordAppendedMessage(input, firstCompletionRequestIndex, 'runtime', message));
     // 用户输入一旦进入模型可见 transcript，即使本轮随后取消也必须能在下一轮恢复。
-    CommitHistory(input, transcript);
+    await CommitHistory(input, transcript);
+    if (!input.resume && input.prepareBrowserObservation) {
+      const observation = await input.prepareBrowserObservation();
+      signal.throwIfAborted();
+      if (observation) {
+        transcript = [...transcript, observation];
+        RecordAppendedMessage(input, apiRequestCount + 1, 'runtime', observation);
+      }
+    }
     inputTokens = modules.modelProvider.EstimateTokens({ system: input.instructions.compiled, tools: input.toolArray, messages: transcript });
     while (true) {
       // 取消不经循环顶部轮询：模型流经 signal 中止抛错，由 catch 统一 FinishTrace 并 emit cancelled。
@@ -471,7 +466,7 @@ export async function RunAgentLoop(input: KernelRunInput): Promise<KernelRunResu
         }, reminderRevision);
         transcript = [...transcript, reminder];
         RecordAppendedMessage(input, apiRequestCount + 1, 'runtime', reminder);
-        CommitHistory(input, transcript);
+        await CommitHistory(input, transcript);
         modules.observability.AppendTraceEvent(requestId, 'runtime_reminder', {
           reminderRevision,
           injectedAtTurn: turn,
@@ -493,10 +488,38 @@ export async function RunAgentLoop(input: KernelRunInput): Promise<KernelRunResu
       // Provider 可能在 Promise settle 或取消后仍回调；仅当前流处于 active 时接收增量，避免终态后污染 UI。
       let acceptsProviderDelta = true;
       let streamedText = '', streamedReasoning = '';
+      // 工具批次完整返回后、每次业务模型调用前统一检查；当前用户原文与动态状态完整计入预算。
+      const dynamic = transcript.filter((message) => message.role === 'system' || IsRuntimeContextMessage(message));
+      let compacted: Awaited<ReturnType<typeof CompactContextHistory>>;
+      try {
+        compacted = await CompactContextHistory({
+          modules, provider: input.provider, model: input.model, reasoningEffort: input.reasoningEffort,
+          modelConfiguration: input.modelConfiguration,
+          history: HistorySnapshot(transcript), system: input.instructions.compiled, tools: input.toolArray,
+          extraMessages: dynamic, signal, createId: input.createId, protectedState: input.getCompactionState?.(),
+          onRequest: (snapshot) => { apiRequestIndex = NextApiRequestIndex(); RecordProviderRequest(input, apiRequestIndex, snapshot); },
+          onUsage: (summary) => input.onModelUsage?.(CreateProviderUsageFact(summary.usage)),
+        });
+        if (compacted.archive) {
+          await CommitHistory(input, compacted.history, compacted.archive);
+          transcript = [...dynamic.filter((message) => message.role === 'system'), ...compacted.history, ...dynamic.filter((message) => message.role !== 'system')];
+          compressionCount += 1;
+          RecordAppendedMessage(input, apiRequestIndex + 1, 'runtime', compacted.history[0]);
+          requiresBrowserSnapshot = true;
+          modules.observability.AppendTraceEvent(requestId, 'context_compressed', { before: compacted.before, after: compacted.after, summaryId: compacted.archive.summaryId });
+        }
+      } catch (error) {
+        signal.throwIfAborted();
+        throw new ContextCompactionError(error instanceof Error ? error.message : '上下文压缩或原文归档失败，原历史已保留。');
+      }
+      if (compacted.archive || input.toolContext.requiresBrowserSnapshot === undefined) input.toolContext.requiresBrowserSnapshot = requiresBrowserSnapshot;
+      requiresBrowserSnapshot = input.toolContext.requiresBrowserSnapshot;
+      inputTokens = compacted.after;
       const completion = await modules.modelProvider.StreamCompletion({
         requestId,
         provider: input.provider,
         model: input.model,
+        modelConfiguration: input.modelConfiguration,
         reasoningEffort: input.reasoningEffort,
         history: transcript,
         tools: input.toolArray,
@@ -527,13 +550,13 @@ export async function RunAgentLoop(input: KernelRunInput): Promise<KernelRunResu
       };
       transcript = [...transcript, assistantMessage];
       if (apiRequestIndex) RecordAppendedMessage(input, apiRequestIndex, 'provider', assistantMessage);
-      CommitHistory(input, transcript);
+      await CommitHistory(input, transcript);
       if (!completion.toolCalls.length) break;
       if (finalTurn) {
         const exhaustedResults = completion.toolCalls.map(CreateTurnBudgetExhaustedResult);
         transcript = [...transcript, ...exhaustedResults];
         if (apiRequestIndex) exhaustedResults.forEach((message) => RecordAppendedMessage(input, apiRequestIndex, 'runtime', message));
-        CommitHistory(input, transcript);
+        await CommitHistory(input, transcript);
         modules.observability.RecordLog('WARN', 'conversation.circuit_open', 'iteration_limit');
         modules.observability.FinishTrace(requestId, 'circuit_open', 'Final model turn attempted new tool calls.');
         emit({ type: 'error', requestId, message: '本轮模型轮数已用尽，最后一轮的新工具调用未执行；上下文已保存，可继续提问' });
@@ -541,12 +564,18 @@ export async function RunAgentLoop(input: KernelRunInput): Promise<KernelRunResu
       }
       toolCallCount += completion.toolCalls.length;
       if (toolCallCount > maxToolCalls) {
+        const exhausted = completion.toolCalls.map((call) => ({ role: 'tool' as const, tool_call_id: call.id, content: JSON.stringify({ ok: false, code: 'TOOL_CALL_BUDGET_EXHAUSTED', executed: false, message: '工具调用预算已用尽，本批次未执行。' }) }));
+        transcript = [...transcript, ...exhausted];
+        if (apiRequestIndex) exhausted.forEach((message) => RecordAppendedMessage(input, apiRequestIndex, 'runtime', message));
+        await CommitHistory(input, transcript);
         modules.observability.RecordLog('WARN', 'conversation.circuit_open', 'tool_call_limit');
         modules.observability.FinishTrace(requestId, 'circuit_open', 'Circuit opened: tool_call_limit.');
         emit({ type: 'error', requestId, message: '本轮工具调用达到上限，已暂停；可继续提问或缩小目标' });
         return { outcome: 'circuit_open', disposition: 'paused', reason: 'tool_call_limit', transcript: HistorySnapshot(transcript), inputTokens, compressionCount };
       }
-      const { results, disposition } = await RunToolBatch(input, completion.toolCalls, stepId);
+      const contextToolCallIds = new Set(transcript.flatMap((message) => message.role === 'tool' && message.tool_call_id ? [message.tool_call_id] : []));
+      settledTools.clear();
+      const { results, disposition } = await RunToolBatch(input, completion.toolCalls, stepId, contextToolCallIds, (message) => { if (message.tool_call_id) settledTools.set(message.tool_call_id, message); });
       const toolResults = results as ToolExecutionResult[];
       const toolFollowups = CommitToolFollowups(input, toolResults);
       const protocolResults = toolResults.map(({ followupMessages: _followupMessages, ...result }) => result);
@@ -564,7 +593,7 @@ export async function RunAgentLoop(input: KernelRunInput): Promise<KernelRunResu
         pendingCall: completion.toolCalls[waitingIndex], pendingResult: toolResults[waitingIndex],
         remainingResults: protocolResults.slice(waitingIndex + 1), followups: toolFollowups,
       });
-      CommitHistory(input, transcript);
+      await CommitHistory(input, transcript);
       if (disposition !== 'continue') {
         const waitOutcome = disposition === 'waiting_user_input' ? 'waiting_user_input' : disposition === 'waiting_confirmation' ? 'waiting_confirmation' : 'paused';
         modules.observability.RecordLog('INFO', `conversation.${waitOutcome}`, `turns=${turn}`);
@@ -580,18 +609,28 @@ export async function RunAgentLoop(input: KernelRunInput): Promise<KernelRunResu
   } catch (error) {
     if (signal.aborted) {
       // 取消前已构建的用户输入、已完成的模型回复和工具结果仍属于会话事实；取消前尚未建好 transcript 时保留旧历史。
-      if (transcript.length) CommitHistory(input, transcript);
+      if (transcript.length) { transcript = RecoverInterruptedTools(transcript); await CommitHistory(input, transcript); }
       modules.observability.FinishTrace(requestId, 'cancelled', 'Cancelled by user.');
       emit({ type: 'cancelled', requestId });
       return { outcome: 'cancelled', disposition: 'cancelled', transcript: HistorySnapshot(transcript), inputTokens, compressionCount };
     }
     const message = error instanceof Error ? error.message : 'Agent request failed.';
-    const compressionExhausted = /compression/i.test(message);
+    if (transcript.some((item) => item.tool_calls?.length)) {
+      const recovered = RecoverInterruptedTools(transcript);
+      if (recovered !== transcript) { transcript = recovered; await CommitHistory(input, transcript); }
+    }
+    const compressionExhausted = error instanceof ContextCompactionError;
     modules.observability.RecordLog('ERROR', 'conversation.failed', message);
     const errorText = ScrubTraceContent(message);
     modules.observability.AppendTraceEvent(requestId, 'error', { message: errorText }, EstimateTraceTokens(errorText));
-    modules.observability.FinishTrace(requestId, compressionExhausted ? 'circuit_open' : 'failed', compressionExhausted ? 'compression_retry_exhausted' : message);
-    emit({ type: 'error', requestId, message: (compressionExhausted ? '上下文压缩连续失败，已暂停本轮；可新建会话或缩短请求' : message).slice(0, 500) });
+    if (compressionExhausted) {
+      // 压缩只在完整工具批次之间运行。此处暂停不创建待确认检查点，Host 保留浏览器任务供用户续轮。
+      modules.observability.FinishTrace(requestId, 'paused', 'context_compaction');
+      emit({ type: 'paused', requestId, message: `上下文压缩未完成，本轮已暂停；原历史和浏览器任务已保留。${message}`.slice(0, 500) });
+      return { outcome: 'paused', disposition: 'paused', reason: 'context_compaction', transcript: HistorySnapshot(transcript), inputTokens, compressionCount };
+    }
+    modules.observability.FinishTrace(requestId, 'failed', message);
+    emit({ type: 'error', requestId, message: message.slice(0, 500) });
     throw new Error(message);
   }
 }

@@ -342,10 +342,10 @@ describe('agent-core RunAgentLoop', () => {
     const summaries = appended.filter(({ message }) => message.content.includes('<summary summary_id='));
     expect(summaries).toHaveLength(1);
     expect(summaries[0]).toMatchObject({ apiRequestIndex: 2, source: 'runtime' });
-    expect(appended.find(({ message }) => message.content === 'test request')).toMatchObject({ apiRequestIndex: 2, source: 'user' });
+    expect(appended.find(({ message }) => message.content === 'test request')).toMatchObject({ apiRequestIndex: 1, source: 'user' });
   });
 
-  it('压缩连续失败时熔断并记录 circuit_open，不留下 running Trace', async () => {
+  it('压缩连续失败时暂停并保留任务，不留下 running Trace', async () => {
     const history = [{ role: 'user' as const, content: 'old turn' }, { role: 'assistant' as const, content: 'old answer' }];
     const harness = CreateKernelHarness({
       history,
@@ -355,10 +355,11 @@ describe('agent-core RunAgentLoop', () => {
       dropOldestTurns: vi.fn((candidate) => candidate),
     });
 
-    await expect(RunAgentLoop(harness.input)).rejects.toThrow(/compression failed/i);
-    expect(harness.modules.modelProvider.CreateSummary).toHaveBeenCalledTimes(4);
-    expect(harness.trace.finish).toHaveBeenCalledWith('request-1', 'circuit_open', 'compression_retry_exhausted');
-    expect(harness.events.at(-1)).toEqual(expect.objectContaining({ type: 'error' }));
+    expect(await RunAgentLoop(harness.input)).toMatchObject({ outcome: 'paused', reason: 'context_compaction' });
+    expect(harness.modules.modelProvider.CreateSummary).toHaveBeenCalledTimes(2);
+    expect(harness.modules.compaction.DropOldestTurns).not.toHaveBeenCalled();
+    expect(harness.trace.finish).toHaveBeenCalledWith('request-1', 'paused', 'context_compaction');
+    expect(harness.events.at(-1)).toEqual(expect.objectContaining({ type: 'paused' }));
   });
 
   it('场景白名单外的已注册工具不得进入工具模块', async () => {

@@ -3,5 +3,6 @@ export { CreateDefaultModules, DefaultsPackageName, DefaultsSdkVersion, Defaults
 export type { AgentDefaultPorts, ObservabilityStorePort, ProviderConfig } from './ports';
 export {
   ApplicationScenario, ApplicationScenarioPlaceholder, BuildApplicationCompiledInstructions, BuildApplicationPromptFragments, BuildDefaultCompiledInstructions, BuildDefaultPromptFragments, CompilePrompt, DefaultScenario, ScenarioPolicyVersion,
+  CompactionTranslationPrompt,
 } from './prompts';
 export type { PromptFragment } from '@avery/agent-sdk';

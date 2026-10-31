@@ -127,6 +127,8 @@ export interface AgentSessionAssistantState {
     contextLimit: number;
     compressionCount: number;
     compressionThreshold: number;
+    /** 手动压缩后尚无业务请求的真实输入测量；累计 usage 仍是 Provider 事实。 */
+    contextPending?: boolean;
     source: 'actual' | 'unavailable' | 'legacy_estimate';
     promptTokens: number;
     completionTokens: number;
@@ -167,12 +169,12 @@ export interface AgentTraceEvent {
 
 /** preload `averyAgent` 命名空间的类型化 Bridge 接口。 */
 export interface DesktopAgentBridge {
-  Configure: (config: AgentConfiguration) => Promise<{ configured: boolean }>;
-  TestConnection: (config: AgentConfiguration) => Promise<{ connected: boolean }>;
   /** 读取或显式刷新目录后的模型能力；返回脱敏生效值和个人覆盖，未知模型不推断视觉能力。 */
   GetModelConfiguration: (input: import('./model-configuration').GetModelConfigurationInput) => Promise<import('./model-configuration').ResolvedModelConfiguration>;
   /** 原子保存单模型个人覆盖；revision 冲突时拒绝覆盖其他窗口的更新。 */
   SaveModelConfiguration: (input: import('./model-configuration').SaveModelConfigurationInput) => Promise<import('./model-configuration').ResolvedModelConfiguration>;
+  Configure: (config: AgentConfiguration) => Promise<{ configured: boolean }>;
+  TestConnection: (config: AgentConfiguration) => Promise<{ connected: boolean }>;
   GetBalance: () => Promise<{ available: boolean; balances: Array<{ currency: string; totalBalance: string }> }>;
   /** 读取全部已配置供应商的账户用量；凭据仅在后端使用。 */
   GetProviderUsage: () => Promise<import('@avery/agent-sdk').ProviderUsageSnapshot>;
@@ -212,6 +214,8 @@ export interface DesktopAgentBridge {
   SetTraceRetention: (value: number) => Promise<{ traceRetention: number }>;
   ClearObservability: () => Promise<{ cleared: boolean }>;
   ReloadSession: (sessionId: string) => Promise<{ reloaded: boolean; sessionRevision?: number; reason?: string }>;
+  /** 空闲会话的上下文操作；原始 instructions 仅用于翻译，不直接交给摘要模型。 */
+  CompactSession: (input: { requestId: string; sessionId: string; instructions?: string; provider?: AgentSendRequest['provider']; model?: string; reasoningEffort?: ReasoningEffort }) => Promise<{ compacted: boolean; beforeTokens: number; afterTokens: number; summary?: string }>;
   /** 仅返回当前场景可用的技能索引，不暴露正文、资源路径或其他会话信息。 */
   GetCommandSkills: (input: { sessionId?: string; scenarioId: 'default' | 'application' }) => Promise<Array<{ id: string; name: string; description: string }>>;
   SelectProjectDirectory: () => Promise<{ projectId: string; name: string } | null>;
@@ -289,7 +293,7 @@ export const BridgeNamespaces = {
     'ConfirmBrowserAction', 'GetBrowserRuntimeStatus', 'GetCronBrowserAccess', 'RevokeCronBrowserAccess',
     'AcquireResumeEditLock', 'ReleaseResumeEditLock', 'GetStatus',
     'GetObservability', 'GetTraceEvents', 'DeleteTraces', 'SetTraceRetention', 'ClearObservability',
-    'ReloadSession', 'GetCommandSkills', 'SelectProjectDirectory', 'GetSessionAssistantState', 'ReadConversationResource', 'BindProjectEnvironment', 'GetSessionScenes',
+    'ReloadSession', 'CompactSession', 'GetCommandSkills', 'SelectProjectDirectory', 'GetSessionAssistantState', 'ReadConversationResource', 'BindProjectEnvironment', 'GetSessionScenes',
     'GetModuleConfiguration', 'SelectModuleDirectory', 'ResetModules', 'OnStream',
   ] as const,
   workspace: [

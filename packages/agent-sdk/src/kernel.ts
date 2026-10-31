@@ -51,7 +51,13 @@ export interface KernelRunInput {
    * Kernel 每次提交可恢复历史后调用的宿主持久化屏障。
    * 取消只会阻止尚未提交的 Provider/Tool 结果，不能丢弃已接受的用户输入。
    */
-  persistHistory: () => void;
+  persistHistory: () => void | Promise<void>;
+  /** 原文必须先落盘，再切换 histories；避免其他并发 Run 把未归档的摘要视图写入状态文件。 */
+  archiveHistory?: (archive: { summaryId: string; messages: AgentMessage[]; original?: AgentMessage[] }) => void | Promise<void>;
+  /** 来自宿主事实源的任务/回执状态，不由摘要生成授权。 */
+  getCompactionState?: () => string;
+  /** 新 Run 首次请求前只读恢复宿主持有的浏览器任务观察，返回本轮临时上下文；不重放历史动作。 */
+  prepareBrowserObservation?: () => Promise<AgentMessage | undefined>;
   /** 本次请求的工具数组（来自会话 Tool 快照顺序）。 */
   toolArray: RegisteredAgentTool[];
   modules: AgentModules;
@@ -91,7 +97,7 @@ export interface KernelRunResult {
   disposition: RunDisposition;
   /** 不含 system 消息的最新 transcript 副本（供宿主持久化）。 */
   transcript: AgentMessage[];
-  /** circuit_open 原因：iteration_limit 或压缩失败消息。 */
+  /** 退出原因，如 iteration_limit、tool_call_limit 或 context_compaction。 */
   reason?: string;
   /** 本次请求估算输入 token 数（供宿主更新 Usage）。 */
   inputTokens: number;

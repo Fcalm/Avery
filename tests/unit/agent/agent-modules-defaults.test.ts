@@ -262,7 +262,7 @@ describe('agent-modules-defaults', () => {
     }
   });
 
-  it('聊天只读11个工具，工作完整40个工具，两者注册表与场景白名单一致', () => {
+  it('聊天只读11个工具，工作完整41个工具，两者注册表与场景白名单一致', () => {
     const tools = CreateToolsModule(CreatePorts()).GetToolDefinitions();
     const names = tools.map((tool) => tool.definition.function.name);
 
@@ -279,7 +279,7 @@ describe('agent-modules-defaults', () => {
     expect(ApplicationScenarioPlaceholder.enabled).toBe(true);
     const applicationNames = CreateToolsModule(CreatePorts()).GetToolDefinitions('application').map((tool) => tool.definition.function.name);
     expect(new Set(applicationNames)).toEqual(new Set(ApplicationScenario.toolNames));
-    expect(applicationNames).toHaveLength(40);
+    expect(applicationNames).toHaveLength(41);
     expect(applicationNames).toContain('DeleteTodo');
     expect(CreateToolsModule(CreatePorts()).GetToolDefinitions('application').find((tool) => tool.definition.function.name === 'ExportResumeFile')?.definition.function.description)
       .toMatch(/^Use when a company application form requires a resume file upload or BOSS chat requires a resume image/);
@@ -318,10 +318,10 @@ describe('agent-modules-defaults', () => {
     expect(applicationDefinitions.find((tool) => tool.definition.function.name === 'BrowserInspectForm')).toBeUndefined();
     expect(applicationDefinitions.find((tool) => tool.definition.function.name === 'BrowserValidateForm')?.sideEffect).toBe('none');
     const fillForm = applicationDefinitions.find((tool) => tool.definition.function.name === 'BrowserFillForm');
-    expect(fillForm?.definition.function.description).toContain('selected profile records');
+    expect(fillForm?.definition.function.description).toContain('mode:plan');
     expect(fillForm?.timeoutMs).toBe(120_000);
     expect((fillForm?.definition.function.parameters.properties?.profileIds as { maxItems?: number })?.maxItems).toBe(20);
-    expect((fillForm?.definition.function.parameters.properties?.resolutions as { maxItems?: number })?.maxItems).toBe(20);
+    expect((fillForm?.definition.function.parameters.properties?.selections as { maxItems?: number })?.maxItems).toBe(100);
     expect(fillForm?.definition.function.parameters.properties).not.toHaveProperty('pageRevision');
     expect(fillForm?.definition.function.parameters.properties).not.toHaveProperty('mappings');
     expect(names).not.toContain('BrowserFillForm');
@@ -521,7 +521,7 @@ describe('agent-modules-defaults', () => {
         ...call.function,
         arguments: JSON.stringify({
           continuationId: 'form-123e4567-e89b-12d3-a456-426614174000',
-          resolutions: [{ fieldId: 'f1', candidateId: 'c2' }],
+          mode: 'execute', selections: [{ fieldId: 'f1', factId: 's2' }],
         }),
       },
     }, applicationContext);
@@ -538,7 +538,7 @@ describe('agent-modules-defaults', () => {
       toolName: 'BrowserFillForm',
       arguments: {
         continuationId: 'form-123e4567-e89b-12d3-a456-426614174000',
-        resolutions: [{ fieldId: 'f1', candidateId: 'c2' }],
+        mode: 'execute', selections: [{ fieldId: 'f1', factId: 's2' }],
       },
     }));
     expect(execute).toHaveBeenCalledTimes(2);
@@ -803,13 +803,12 @@ describe('agent-modules-defaults', () => {
 
     expect(compaction.ShouldCompact(700, 1_000, 70)).toBe(true);
     expect(compaction.ShouldCompact(699, 1_000, 70)).toBe(false);
-    const { earlier, recent } = compaction.SplitRecentTurns(history);
-    expect(earlier.some((message) => message.content.includes('【待确认】'))).toBe(false);
-    expect(recent).toHaveLength(15);
-    expect(recent[0].content).toBe('user-2');
-    expect(recent.some((message) => message.content.includes('【待确认】'))).toBe(true);
-    expect(recent.filter((message) => message.role === 'assistant')).toHaveLength(5);
-    expect(recent.filter((message) => message.role === 'tool')).toHaveLength(5);
+    const { earlier, recent } = compaction.SplitRecentTurns(history, { maxRecentTokens: 10, estimate: (messages) => messages.length });
+    expect(earlier.some((message) => message.content.includes('【待确认】'))).toBe(true);
+    expect(recent).toHaveLength(9);
+    expect(recent[0].content).toBe('user-4');
+    expect(recent.filter((message) => message.role === 'assistant')).toHaveLength(3);
+    expect(recent.filter((message) => message.role === 'tool')).toHaveLength(3);
   });
 
   it('压缩不把 Skill 合成消息当用户轮次，并固定保留最新索引与已加载正文', () => {
@@ -827,12 +826,12 @@ describe('agent-modules-defaults', () => {
     history.splice(5, 0, loaded);
 
     expect(SplitTurnGroups(history)).toHaveLength(7);
-    const { earlier, recent } = compaction.SplitRecentTurns(history);
+    const { earlier, recent } = compaction.SplitRecentTurns(history, { maxRecentTokens: 8, estimate: (messages) => messages.length });
 
     expect(earlier).not.toContain(index);
     expect(earlier).not.toContain(loaded);
     expect(recent.slice(0, 2)).toEqual([index, loaded]);
-    expect(recent.filter((message) => message.role === 'user' && message.metadata?.source !== 'runtime')).toHaveLength(5);
+    expect(recent.filter((message) => message.role === 'user' && message.metadata?.source !== 'runtime')).toHaveLength(3);
   });
 
   it('确认阶段重新加锁并校验冻结 revision，等待期间不持锁', async () => {
@@ -910,24 +909,43 @@ describe('agent-modules-defaults', () => {
     expect(context.emit).toHaveBeenCalledWith(expect.objectContaining({ type: 'task_deleted', task: expect.objectContaining({ id: 'todo-1' }) }));
   });
 
-  it('CreateCronTask 只生成待确认提案，确认前不执行持久化写入', async () => {
+  it.each(['always_confirm', 'allow_low_risk'] as const)('CreateCronTask 在 %s 下只生成待确认提案', async (confirmationMode) => {
     const prepare = vi.fn(async () => ({ confirmationId: 'cron-confirmation-1', summary: '无人值守授权', scenarioId: 'default' as const }));
+    const commit = vi.fn();
     const events: any[] = [];
     const base = CreateToolContext();
-    const context = CreateToolContext({ ports: { ...base.ports, cronTask: { PrepareCreate: prepare, Read: vi.fn(), Update: vi.fn(), Delete: vi.fn() } }, emit: (event) => events.push(event) });
+    const context = CreateToolContext({ confirmationMode, ports: { ...base.ports, cronTask: { PrepareCreate: prepare, CommitCreate: commit, Read: vi.fn(), Update: vi.fn(), Delete: vi.fn() } }, emit: (event) => events.push(event) });
     const result = await CreateToolsModule(CreatePorts()).ExecuteToolCall({
       id: 'cron-create-1', type: 'function', function: { name: 'CreateCronTask', arguments: JSON.stringify({ title: '晨间复盘', message: '总结岗位进展', scenarioId: 'default', schedule: { type: 'once', executeAt: '2030-01-01T09:00:00+08:00', timeZone: 'Asia/Shanghai' } }) },
     }, context);
     expect(prepare).toHaveBeenCalledOnce();
+    expect(commit).not.toHaveBeenCalled();
     expect(JSON.parse(result.content)).toMatchObject({ ok: false, code: 'CONFIRMATION_REQUIRED', confirmationId: 'cron-confirmation-1' });
     expect(result.disposition).toBe('wait_confirmation');
     expect(events).toContainEqual(expect.objectContaining({ type: 'cron_task_confirmation', confirmationId: 'cron-confirmation-1' }));
   });
 
+  it('CreateCronTask 在完全信任下直接创建并记录真实回执，重复调用不新增任务', async () => {
+    const prepare = vi.fn(async () => ({ confirmationId: 'cron-auto', summary: '无人值守授权', scenarioId: 'default' as const }));
+    const commit = vi.fn(async () => ({ created: true, task: { id: 'cron-saved' } }));
+    const base = CreateToolContext();
+    const context = CreateToolContext({ ports: { ...base.ports, cronTask: { PrepareCreate: prepare, CommitCreate: commit, Read: vi.fn(), Update: vi.fn(), Delete: vi.fn() } } });
+    const tools = CreateToolsModule(CreatePorts());
+    const call = { id: 'auto-cron', type: 'function' as const, function: { name: 'CreateCronTask', arguments: JSON.stringify({ title: '晨间复盘', message: '总结进展', scenarioId: 'default', schedule: { type: 'once', executeAt: '2030-01-01T09:00:00+08:00', timeZone: 'Asia/Shanghai' } }) } };
+    const result = await tools.ExecuteToolCall(call, context);
+    expect(JSON.parse(result.content)).toMatchObject({ ok: true, created: true, task: { id: 'cron-saved' } });
+    expect(result.receipt).toMatchObject({ toolDefinitionId: 'CreateCronTask', resourceIds: ['cron-saved'] });
+    expect(commit).toHaveBeenCalledWith('cron-auto', expect.any(AbortSignal));
+    expect(context.emit).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'cron_task_confirmation' }));
+    expect(JSON.parse((await tools.ExecuteToolCall({ ...call, id: 'auto-cron-repeat' }, context)).content)).toMatchObject({ ok: true, replayed: true, task: { id: 'cron-saved' } });
+    expect(prepare).toHaveBeenCalledOnce();
+    expect(commit).toHaveBeenCalledOnce();
+  });
+
   it('无人值守 Run 即使旧快照含 Cron 工具，执行入口仍拒绝递归调度', async () => {
     const prepare = vi.fn();
     const base = CreateToolContext();
-    const context = CreateToolContext({ unattended: true, ports: { ...base.ports, cronTask: { PrepareCreate: prepare, Read: vi.fn(), Update: vi.fn(), Delete: vi.fn() } } });
+    const context = CreateToolContext({ unattended: true, ports: { ...base.ports, cronTask: { PrepareCreate: prepare, CommitCreate: vi.fn(), Read: vi.fn(), Update: vi.fn(), Delete: vi.fn() } } });
     const result = await CreateToolsModule(CreatePorts()).ExecuteToolCall({
       id: 'cron-recursive-1', type: 'function', function: { name: 'CreateCronTask', arguments: JSON.stringify({ title: '递归', message: '再次创建', scenarioId: 'default', schedule: { type: 'once', executeAt: '2030-01-01T09:00:00+08:00', timeZone: 'Asia/Shanghai' } }) },
     }, context);

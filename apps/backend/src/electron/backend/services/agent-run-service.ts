@@ -74,6 +74,8 @@ export class AgentRunService {
 
   /** 空闲时原子重载会话上下文与工具快照。 */
   ReloadSession(sessionId: string): any { return this.agent.ReloadSession(sessionId); }
+  /** 专用命令入口，不将 compact 后缀当成普通业务消息发送。 */
+  CompactSession(input: Parameters<DesktopAgentBridge['CompactSession']>[0]): ReturnType<DesktopAgentBridge['CompactSession']> { return this.agent.CompactSession(input); }
 
   /** 命令面板仅经服务层读取技能索引，保持 Router 与 Host 的调用链完整。 */
   GetCommandSkills(input: Parameters<DesktopAgentBridge['GetCommandSkills']>[0]): ReturnType<DesktopAgentBridge['GetCommandSkills']> { return this.agent.GetCommandSkills(input); }

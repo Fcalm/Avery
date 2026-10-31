@@ -48,6 +48,7 @@ const agentBridge: DesktopAgentBridge = {
   SetTraceRetention: (value) => invoke('agent:set-trace-retention', value) as ReturnType<DesktopAgentBridge['SetTraceRetention']>,
   ClearObservability: () => invoke('agent:clear-observability') as ReturnType<DesktopAgentBridge['ClearObservability']>,
   ReloadSession: (id) => invoke('agent:reload-session', id) as ReturnType<DesktopAgentBridge['ReloadSession']>,
+  CompactSession: (input) => invoke('agent:compact-session', input) as ReturnType<DesktopAgentBridge['CompactSession']>,
   GetCommandSkills: (input) => invoke('agent:command-skills', input) as ReturnType<DesktopAgentBridge['GetCommandSkills']>,
   SelectProjectDirectory: () => invoke('agent:select-project-directory') as ReturnType<DesktopAgentBridge['SelectProjectDirectory']>,
   GetSessionAssistantState: (id) => invoke('agent:get-session-assistant-state', id) as ReturnType<DesktopAgentBridge['GetSessionAssistantState']>,

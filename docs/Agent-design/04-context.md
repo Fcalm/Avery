@@ -29,6 +29,10 @@ Provider 必需的连续性状态由 Adapter 生成。例如某些推理模型�
 
 ## 3. 不可变快照
 
+工作场景每轮另附宿主本次读取的 `browserConnection`，只包含检测时间、浏览器类型、连接状态与协议版本，不保存为历史。当前握手事实更新历史断线信息；用户继续任务且连接恢复后，可用导航／观察重新核实页面。结果未知的外部写操作仍需对账，不自动重放。
+
+浏览器接管后恢复时，若宿主仍持有该会话授权的任务页，首次模型请求前先读取全量页面观察，作为临时 `browserObservation` 一并发送。无法取得观察时明确保留未知或当前阻塞原因；不把旧登录提示当成当前事实，不重放旧动作。观察取消后不进入模型或持久历史。
+
 ```ts
 interface ContextSnapshot {
   snapshotId: string;
@@ -82,29 +86,13 @@ Snapshot 保存完整正文、资源和内容哈希，普通 Run 不重新读取
 `contextLimit` 由 Provider 统一解析：默认目标为 256K，并以模型能力上限钳制；用户在 API 配置中开启自定义限制时使用经 Provider 校验的自定义值。Context 与 Kernel 不维护第二份模型能力表。
 
 ```text
-inputBudget = contextLimit
-            - reservedOutputTokens
-            - providerProtocolReserve
-            - toolGrowthReserve
+inputBudget = contextLimit - min(8192, contextLimit * 10%)
+trigger = inputBudget * compressionThreshold / 100
 ```
 
-默认建议：
+沿用 Provider 设置的阈值。估算包括编译后的 system、工具定义、会话与动态上下文、历史及当前输入；每次业务模型调用前检查。估算是启发式预判，不保证等于供应商 tokenizer。
 
-- `reservedOutputTokens`：取模型输出上限与上下文的 15% 中较小的合理值，但不少于场景最低输出需要。
-- `providerProtocolReserve`：5%，用于 Provider 包装、未知 tokenizer 偏差和结束事件。
-- `toolGrowthReserve`：10%，工具场景用于后续工具结果；无工具请求可回收。
-
-在 `inputBudget` 内的初始软配额：
-
-| 部分 | 建议上限 | 超限处理 |
-| --- | ---: | --- |
-| Prompt + Tool schemas | 20% | 减少场景工具、压缩描述；不裁剪安全规则 |
-| 结构化记忆与业务快照 | 20% | 按字段重要性和当前目标选取 |
-| 早期摘要 | 15% | 重新压缩并保留不变量 |
-| 最近完整轮次 | 35% | 至少保留最近 5 个完整用户轮次；预算不足时先收缩其他部分或暂停，不能减少到 5 轮以下，也不能拆工具组 |
-| 当前工具结果 | 10% | 分页、结构化裁剪或 artifact reference |
-
-这是软配额，未使用部分可按优先级回收。当前用户输入、待确认提案和最近失败信息具有高优先级，不能因比例表被裁掉。
+近期原文空间以 `min(inputBudget * 50%, trigger * 70%)` 为目标，扣除固定内容及摘要余量；手动压缩还限制为历史估算的 25%。这些是空间预算，不是固定保留轮数。当前用户原文、有效 Skill、最新运行提醒不静默截掉；放不下时暂停。
 
 ## 5. Token 计数
 
@@ -158,7 +146,7 @@ interface TokenMeasurement {
 
 ## 7. Transcript 原子组
 
-历史保留和压缩以 `TurnGroup` 为单位：
+普通历史读取仍可使用完整 `TurnGroup`；压缩以完整工具批次为最小单位，允许在同一复杂用户轮次内总结早期步骤：
 
 ```text
 user message
@@ -172,7 +160,9 @@ assistant continuation
 - 单独保留 tool result 而丢掉 tool call。
 - 保留 tool call 但丢掉结果，并让 Provider 误以为仍待执行。
 - 仅按最后 40 条消息截取。
-- 在一个未完成工具链中间生成摘要并移除 Provider 必需状态。
+- 在一个未完成工具批次中间生成摘要并移除 Provider 必需状态。
+
+取消、异常退出或工具预算耗尽后，每个已接受的调用仍需有配对回执。已结算结果保留；尚无可提交回执的中断调用由程序补充 `TOOL_RESULT_MISSING`，明确业务结果未知，不等于未执行或成功，不自动重放。已有断裂历史在新 Run 请求前恢复配对，原消息和用户重试内容保留；待确认检查点仍由原 Run 的结构化恢复处理。
 
 `skill_index`、`loaded_skill`、`loaded_skill_resource`、`skill_state_reset` 和 Runtime Reminder 都是合成 user 消息，不建立新的真实用户 TurnGroup。位于首条真实用户消息之前的合成消息作为 `prefixMessages` 保持原顺序附着于该组。
 
@@ -201,27 +191,29 @@ Run 存在待确认简历草稿时，Context 必须保留 `draftId`、`contentHa
 
 ## 9. 压缩触发与流程
 
-第一版在预计输入达到 `inputBudget` 的 70% 时预压缩，而不是等到 Provider 拒绝请求。场景可以降低阈值，不得自行提高；调整默认值必须更新 ADR 和压缩回归基线。
+预计输入达到预算乘以 Provider 保存的压缩阈值时触发；压缩后再次估算，候选必须比原视图更小且低于触发线。
 
 顺序：
 
 1. 识别可重建的派生内容；正常追加路径不得就地删除或替换旧 Runtime Reminder，只有本次明确进入压缩流程时才可重建消息视图并记录缓存失效。
-2. 将大型工具结果替换为带哈希的 artifact reference 和已验证摘要。
-3. 将已结束的早期 TurnGroup 送入独立摘要调用。
-4. 生成结构化摘要：目标、事实、决策、约束、工具结果、未完成事项、来源范围。
-5. Harness 验证关键 ID、数字、日期、否定词、权限和 pending 状态未漂移。
-6. 保存 `MemoryVersion`、摘要、覆盖事件范围、Prompt 版本和哈希。
-7. 重新构建 Context 并复测 token。
+2. 按预算选择近期原文，工具调用和全部回执完整配对；保留浏览器增量时必须同时保留完整依赖链，否则整链进入摘要。
+3. 将早期历史规范化为数据供摘要阅读，不重放旧工具协议或隐藏推理。过大消息可分片阅读，原文完整保留；最多八次摘要请求。
+4. 生成目标约束、关键事实、当前状态、浏览器任务、问题纠正与下一步摘要，参考保留尾部的最新纠正。
+5. 附带程序事实源中的任务与动作回执状态；摘要不构成权限或事实源。语义检查依赖提示词与场景测试，当前未实现逐字段自动保真验证器。
+6. 校验摘要非空、长度及压缩后完整预算，异步归档原文，然后持久化替换视图；失败回退旧视图。
+7. 压缩后操作页面前重新观察，首次快照返回 full；不把摘要中的旧元素引用用于执行。
 
 压缩还必须固定保留最新 Skill 索引、最近一次 `skill-state-reset`，以及 reset 之后每个已加载 Skill/资源的最新完整正文。不能只保留 reminder 中的 `Loaded skills` 列表而丢掉实际指令。
 
 摘要不得直接覆盖原始历史；原始事件仍保存在本地，用于恢复、审计和重新压缩。
 
+手动 `/compact [instructions]` 只允许空闲会话。Agent 先结合历史优化用户要求，仅提示词要求一次 `CompactContext` 调用，工具选择保持 auto，沿用当前思考设置。原始后缀不直传摘要模型；单次有效调用之外均失败，不执行业务工具。归档按会话与摘要 ID 隔离，可在后续定向压缩时展开来源；删除会话同时删除对应归档。
+
 ## 10. 压缩失败
 
-- 首次摘要失败：允许一次受控重试，携带结构化验证问题，不扩大输入范围。
-- 第二次失败：尝试只做确定性去重、分页和 artifact 化。
-- 仍超预算：Run 进入 `paused`，提示新建会话、缩小材料范围或选择需保留内容。
+- 首次摘要失败：允许一次受控重试，仍使用相同原文；参数或认证错误不重试。
+- 仍失败或预算超限：Run 进入 `paused`，保留历史与当前浏览器任务页，提示缩小范围、重试压缩或新建会话。
+- 取消、归档失败或保存失败不发布候选视图；手动命令保留输入草稿。
 - 不允许静默删除最早五轮后继续，也不允许把压缩错误伪装成正常回复。
 
 确定性丢弃仅限可证明可重建的派生内容，例如重复快照或已有完整 artifact 的展示片段；所有丢弃都记录 manifest。
@@ -247,7 +239,7 @@ Run 存在待确认简历草稿时，Context 必须保留 `draftId`、`contentHa
 - Scenario/Prompt/Tool/DataScope/Provider 使用相同 Run snapshot revision；运行中重载不会混入当前请求。
 - 0.2.0 Context 不包含 `SearchJobs`、`ReadUrl` Schema 或任何岗位网络结果。
 - 预算计算为 Prompt、工具 Schema、消息和协议开销分别记账。
-- 最近轮次按完整 TurnGroup 保留。
+- 同一用户轮次内也可压缩已完成工具批次，保留调用与回执配对。
 - 压缩前后 confirmed facts、pending interaction、权限和 receipt 集合一致。
 - 大工具结果分页后始终是合法 JSON，且显示省略量。
 - Provider Usage 缺失时 UI 为未知，压缩预估值不冒充真实 usage。

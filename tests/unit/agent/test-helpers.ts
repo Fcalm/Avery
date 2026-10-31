@@ -124,7 +124,13 @@ export function CreateKernelHarness(options: {
         onRequest?.({ kind: 'summary', model, messages: [{ role: 'system', content: 'summary prompt' }, ...messages], toolCount: 0 });
         return { content: 'summary' };
       }),
-      EstimateTokens: vi.fn(() => options.shouldCompact ? 800 : 100),
+      EstimateTokens: vi.fn((value: unknown) => {
+        const messages = !Array.isArray(value) && value && typeof value === 'object' ? (value as { messages?: AgentMessage[] }).messages : undefined;
+        if (!options.shouldCompact || !messages?.length || messages.some((message) => message.content.startsWith('<summary'))
+          || !messages.some((message) => message.role !== 'system')) return 100;
+        // 模拟早期历史占用；移出早期原文后的保留尾部应能独立通过预算预检。
+        return messages.some((message) => message.content === options.history?.[0]?.content) ? 800 : 100;
+      }),
       GetRuntimeLimits: vi.fn(() => ({ contextLimit: 1_000, threshold: 70 })),
       BaseUrl: vi.fn(() => 'https://example.test'),
     },
@@ -166,6 +172,7 @@ export function CreateKernelHarness(options: {
     requestHistory: options.history ?? [],
     userContent: 'test request',
     histories: new Map(),
+    archiveHistory: vi.fn(),
     persistHistory: vi.fn(),
     toolArray: tools,
     modules,
