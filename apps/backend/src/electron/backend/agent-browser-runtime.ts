@@ -19,8 +19,10 @@ import {
   type FormField,
   type FormFillOperation,
   type FormFillPlan,
+  type BrowserFormPreparation,
 } from './browser-form-service';
 import { BrowserFormDriver } from './browser-form-driver';
+import { BrowserFormReviewService, FindOperationField, OperationValueMatches, type FormSelection } from './browser-form-review';
 
 export { AgentBrowserError } from './browser-form-service';
 
@@ -195,8 +197,11 @@ export class AgentBrowserRuntime implements BrowserAutomationPort {
   private pageRevision = 0;
   private currentUrl: string | undefined;
   private refs = new Map<string, Record<string, unknown>>();
+  /** 仅成功填写后的下一次 Enter 可保留引用；实际文档与节点身份仍由驱动逐次校验。 */
+  private lastFilledInputRevision: number | undefined;
   /** 表单服务独立保存短寿命计划；Runtime 不持有资料正文或语义匹配状态。 */
   private readonly formService = new BrowserFormService();
+  private readonly formReviews = new BrowserFormReviewService();
   private tabs = new Set<string>();
   private lastRuntimeError: { code: string; message: string } | null = null;
   private unattended = false;
@@ -338,6 +343,7 @@ export class AgentBrowserRuntime implements BrowserAutomationPort {
     this.tabs.clear();
     this.InvalidateRefs();
     this.formService.Clear();
+    this.formReviews.Clear();
     const outcome = runtime
       ? await this.ReleasePersonalBrowserRuntime(runtime, deadline)
       : { status: 'confirmed' as const, browserTaskId, closedTabs: 0, unknownTabs: 0 };
@@ -372,6 +378,11 @@ export class AgentBrowserRuntime implements BrowserAutomationPort {
     const completed: FormFillOperation[] = [];
     const skipped = [...plan.skipped];
     const hardDeadline = options.deadline ?? this.now() + 120_000;
+    if (this.formReviews.resumeImport.Current(this.currentUrl) && plan.continuationId) {
+      await this.RefreshCurrentUrl(options.signal,hardDeadline);
+      const current = await this.formDriver.InspectForm(options);
+      this.formReviews.AssertCurrent(plan.continuationId,FormFields(current.data?.refs ?? {},this.pageRevision),this.now(),this.currentUrl ?? '');
+    }
     const softDeadline = Math.max(this.now(), hardDeadline - FormFillCleanupReserveMs);
     const LogField = (phase: string, operation: FormFillOperation, startedAt: number, code = '') => {
       const elapsedMs = Math.max(0, this.now() - startedAt);
@@ -455,12 +466,8 @@ export class AgentBrowserRuntime implements BrowserAutomationPort {
         }
         if (verifiedFields) {
           for (const operation of successful) {
-            const exact = verifiedFields.find((field) => field.ref === operation.ref);
-            const semantic = verifiedFields.filter((field) => field.semantic.concept === operation.concept)[operation.occurrence];
-            // ref 序号可能因临时语义节点改变而漂移：同 ref 已明确非空时可直接确认，
-            // 否则优先使用重新识别出的同语义字段，避免把另一个空字段当成后置条件。
-            const verified = exact?.filled === true ? exact : semantic ?? exact;
-            if (verified?.filled === true) {
+            const verified = FindOperationField(verifiedFields, operation);
+            if (verified && OperationValueMatches(verified, operation)) {
               completed.push(operation);
               LogField('completed', operation, this.now());
             } else {
@@ -489,7 +496,7 @@ export class AgentBrowserRuntime implements BrowserAutomationPort {
       const fieldOptions = { ...options, deadline: softDeadline };
       try {
         await this.formDriver.DismissTransientOverlay(fieldOptions);
-        const result = operation.kind === 'custom_date'
+        const result: Awaited<ReturnType<BrowserFormDriver['ExecuteCustomSelect']>> = operation.kind === 'custom_date'
           ? await this.formDriver.ExecuteCustomDate(operation, fieldOptions)
           : await this.formDriver.ExecuteCustomSelect(operation, fieldOptions);
         if (result.filled) {
@@ -497,7 +504,10 @@ export class AgentBrowserRuntime implements BrowserAutomationPort {
           LogField('completed', operation, startedAt);
         } else {
           const reason = result.reason ?? 'option_not_found';
-          skipped.push({ fieldId: `field-${operation.ref.replace(/^@/, '')}`, label: operation.label, reason });
+          skipped.push({ fieldId: `field-${operation.ref.replace(/^@/, '')}`, label: operation.label, reason,
+            ...('observedOptions' in result ? { requestedValue: result.requestedValue, observedOptions: result.observedOptions,
+              optionsTruncated: result.optionsTruncated, observationScope: result.observationScope,
+              selectedPath: result.selectedPath, searchAttempted: result.searchAttempted, optionsBeforeSearch:result.optionsBeforeSearch } : {}) });
           LogField('skipped', operation, startedAt, reason);
         }
       } catch (error) {
@@ -531,19 +541,27 @@ export class AgentBrowserRuntime implements BrowserAutomationPort {
       }
     }
     this.formService.RecordCompleted(plan, completed);
+    this.formReviews.RecordExecution(plan, this.currentUrl ?? '', completed);
     if (plan.operations.some((operation) => operation.kind !== 'fill')) this.InvalidateRefs();
     const needsContinuation = plan.ambiguous.length > 0
       || plan.missingFields.length > 0
-      || skipped.some((item) => item.reason === 'reinspect_after_selection' || item.reason === 'execution_budget_deferred');
+      || skipped.length > 0;
     this.formService.Finish(plan, needsContinuation);
     return {
       data: {
         filledCount: completed.length,
+        phase: 'execute',
+        requiresNewPlan: true,
+        completionScope: 'selected_fields_only',
         filled: completed.map((operation) => ({
           fieldId: `field-${operation.ref.replace(/^@/, '')}`,
           label: operation.label,
           concept: operation.concept,
           strategy: operation.strategy,
+          expected: operation.expectedValue ?? operation.value,
+          section: operation.targetSection,
+          recordIndex: operation.targetRecordIndex,
+          source: operation.sourceTitle,
           control: operation.kind === 'fill' ? 'text' : operation.kind === 'check' ? 'radio' : 'select',
         })),
         skipped: skipped.slice(0, 100),
@@ -552,7 +570,7 @@ export class AgentBrowserRuntime implements BrowserAutomationPort {
         unmatched: plan.unmatched,
         remainingCount: skipped.filter((item) => item.reason === 'reinspect_after_selection' || item.reason === 'execution_budget_deferred').length,
         done: !needsContinuation,
-        ...(needsContinuation && plan.continuationId ? { continuationId: plan.continuationId } : {}),
+        ...(plan.continuationId ? { continuationId: plan.continuationId } : {}),
         pageRevision: this.pageRevision,
         currentUrl: this.currentUrl,
       },
@@ -561,6 +579,7 @@ export class AgentBrowserRuntime implements BrowserAutomationPort {
   }
 
   private InvalidateRefs(): void {
+    this.lastFilledInputRevision = undefined;
     this.pageRevision += 1;
     this.refs.clear();
     this.formService.ClearPlans();
@@ -643,22 +662,25 @@ export class AgentBrowserRuntime implements BrowserAutomationPort {
         if (Number.isSafeInteger(args.pageRevision) && args.pageRevision !== this.pageRevision) throw new AgentBrowserError('BROWSER_STALE_PAGE_REF', 'The form changed after it was inspected.');
         const privateSources = args.__formSources;
         const fields = await this.InspectCurrentFormForFill();
-        const prepared = this.formService.Prepare({
-          fields,
-          pageRevision: this.pageRevision,
-          now: this.now(),
-          ...(this.currentUrl ? { url: this.currentUrl } : {}),
-          ...(privateSources && typeof privateSources === 'object' && !Array.isArray(privateSources) ? { sources: privateSources as Record<string, unknown> } : {}),
-          ...(typeof args.continuationId === 'string' ? { continuationId: args.continuationId } : {}),
-          resolutions: args.resolutions,
-          decisions: args.__formDecisions,
-          legacyMappings: args.mappings,
-        });
+        const mode = args.mode ?? 'plan';
+        if (mode !== 'plan' && mode !== 'execute') throw new AgentBrowserError('BROWSER_ARGUMENT_INVALID', 'mode must be plan or execute.');
+        let prepared: BrowserFormPreparation;
+        if (mode === 'plan') {
+          const review = this.formReviews.Plan(fields,
+            privateSources && typeof privateSources === 'object' && !Array.isArray(privateSources) ? privateSources as Record<string, unknown> : undefined,
+            this.now(), this.currentUrl ?? '', typeof args.continuationId === 'string' ? args.continuationId : undefined);
+          prepared = this.formService.StoreReviewedPlan({ review, operations: [], skipped: [], missingFields: [], ambiguous: [], unmatched: [], sourceTitles: [],
+            pageRevision: this.pageRevision, createdAt: this.now(), continuationId: String(review.continuationId) });
+        } else {
+          if (typeof args.continuationId !== 'string' || !Array.isArray(args.selections)) throw new AgentBrowserError('BROWSER_FORM_REVIEW_REQUIRED', 'Execute requires a reviewed continuationId and explicit selections. Request mode:plan first.');
+          prepared = this.formService.StoreReviewedPlan(this.formReviews.Compile(args.continuationId, args.selections as FormSelection[], fields, this.now(), this.currentUrl ?? '', this.pageRevision));
+        }
         const { plan, planId, planHash, continuationId } = prepared;
         delete args.__formSources;
         delete args.__formDecisions;
         delete args.decisions;
         delete args.mappings;
+        delete args.selections;
         delete args.pageRevision;
         args.planId = planId;
         args.continuationId = continuationId;
@@ -677,7 +699,10 @@ export class AgentBrowserRuntime implements BrowserAutomationPort {
     if (toolName === 'BrowserSelect') args.value = RequireString(args.value, 'value', 2_000);
     if (toolName === 'BrowserSetChecked' && typeof args.checked !== 'boolean') throw new AgentBrowserError('BROWSER_ARGUMENT_INVALID', 'checked must be boolean.');
     if (toolName === 'BrowserPressKey') args.key = RequireString(args.key, 'key', 50);
-    if (toolName === 'BrowserUploadFile') args.fileId = RequireString(args.fileId, 'fileId', 1_000);
+    if (toolName === 'BrowserUploadFile') {
+      args.fileId = RequireString(args.fileId, 'fileId', 1_000);
+      if (args.purpose !== undefined && !['resume','attachment'].includes(String(args.purpose))) throw new AgentBrowserError('BROWSER_ARGUMENT_INVALID','purpose must be resume or attachment.');
+    }
     if (toolName === 'BrowserSwitchTab') {
       if (Object.keys(args).some((key) => key !== 'tabId')) throw new AgentBrowserError('BROWSER_ARGUMENT_INVALID', 'BrowserSwitchTab accepts only a task-owned tabId.');
       args.tabId = RequireString(args.tabId, 'tabId', 200);
@@ -689,13 +714,14 @@ export class AgentBrowserRuntime implements BrowserAutomationPort {
     const strongAction = /submit|apply|send|authorize|delete|withdraw|agree|投递|提交|发送|授权|删除|撤回|同意/i.test(targetText);
     const agreement = toolName === 'BrowserSetChecked' && /terms|privacy|agreement|协议|隐私|条款/i.test(targetText);
     const enter = toolName === 'BrowserPressKey' && /^(enter|return)$/i.test(String(args.key));
-    const forceConfirmation = toolName === 'BrowserUploadFile' || strongAction || agreement || enter;
+    const formPlanning = toolName === 'BrowserFillForm' && (args.mode ?? 'plan') === 'plan';
+    const forceConfirmation = !formPlanning && (toolName === 'BrowserUploadFile' || strongAction || agreement || enter);
     this.AssertCronGrant(toolName, args, forceConfirmation && toolName !== 'BrowserUploadFile');
-    const risk: BrowserActionProposal['risk'] = forceConfirmation ? 'high'
+    const risk: BrowserActionProposal['risk'] = formPlanning ? 'low' : forceConfirmation ? 'high'
       : ['BrowserFill', 'BrowserFillForm', 'BrowserSelect', 'BrowserSetChecked', 'BrowserClick'].includes(toolName) ? 'medium' : 'low';
     const summary = toolName === 'BrowserNavigate' ? `打开 ${String(args.url)}`
       : toolName === 'BrowserUploadFile' ? `向 ${targetText || String(args.ref)} 上传已授权文件`
-        : toolName === 'BrowserFillForm' ? `使用 ${((metadata.sourceTitles as string[] | undefined) ?? []).join('、') || '已授权资料'} 填写 ${((metadata.labels as string[] | undefined) ?? []).length} 个表单字段${targetText ? `：${targetText}` : ''}`
+        : toolName === 'BrowserFillForm' ? formPlanning ? '生成表单字段与资料匹配计划（不填写）' : `使用 ${((metadata.sourceTitles as string[] | undefined) ?? []).join('、') || '已授权资料'} 填写 ${((metadata.labels as string[] | undefined) ?? []).length} 个表单字段${targetText ? `：${targetText}` : ''}`
         : `${toolName} ${targetText || String(args.ref ?? args.key ?? args.tabId ?? '')}`.trim();
     const proposalHash = HashProposal(toolName, args, this.pageRevision, this.currentUrl);
     return {
@@ -715,6 +741,9 @@ export class AgentBrowserRuntime implements BrowserAutomationPort {
   }
 
   async Execute({ proposal, signal, deadline }: { proposal: BrowserActionProposal; signal?: AbortSignal; deadline?: number }): Promise<{ data: unknown; status: 'succeeded' | 'status_unknown' }> {
+    const filledInputRevision = this.lastFilledInputRevision;
+    // 任意中间动作、失败或取消都会消费这次资格，不能把独立 Enter 当成字段确认。
+    this.lastFilledInputRevision = undefined;
     const refreshed = await this.Prepare({ toolName: proposal.toolName, arguments: proposal.canonicalArguments });
     if (refreshed.proposalHash !== proposal.proposalHash) {
       // SPA 可能在只读观察的准备与执行之间规范化 URL；重新冻结只读提案即可，写操作仍严格拒绝旧页面。
@@ -760,7 +789,8 @@ export class AgentBrowserRuntime implements BrowserAutomationPort {
       case 'BrowserWait': {
         const kind = String(args.kind ?? 'load');
         const value = RequireString(args.value, 'value', 2_000);
-        if (kind === 'selector') command = ['wait', value];
+        if (kind === 'resume_parse' && value === 'settled') command = [];
+        else if (kind === 'selector') command = ['wait', value];
         else if (kind === 'text') command = ['wait', '--text', value];
         else if (kind === 'url') command = ['wait', '--url', value];
         else if (kind === 'load' && ['load', 'domcontentloaded', 'networkidle'].includes(value)) command = ['wait', '--load', value];
@@ -802,7 +832,26 @@ export class AgentBrowserRuntime implements BrowserAutomationPort {
       if (screenshotPath) await mkdir(join(this.runtimeRoot, 'screenshots'), { recursive: true });
       if (proposal.toolName === 'BrowserFillForm') {
         const plan = this.formService.GetPlan(String(args.planId ?? ''), this.pageRevision, this.now());
-        return await this.ExecuteFormFillPlan(plan, { signal, deadline });
+        if (plan.review) return { data: { ...plan.review, pageRevision: this.pageRevision, currentUrl: this.currentUrl }, status: 'succeeded' };
+        // 私有提案也只能执行一次；不能通过重放 canonicalArguments 绕过审阅句柄消费检查。
+        try { return await this.ExecuteFormFillPlan(plan, { signal, deadline }); }
+        finally { this.formService.DeletePlan(String(args.planId ?? '')); }
+      }
+      if (proposal.toolName === 'BrowserWait' && args.kind === 'resume_parse') {
+        const current = this.formReviews.resumeImport.Current(this.currentUrl);
+        if (!current) throw new AgentBrowserError('BROWSER_RESUME_IMPORT_REQUIRED','No tracked resume upload is pending. Upload the authorized resume with purpose:resume first.');
+        const parsing = await this.formDriver.WaitForResumeImport(current.id,{signal,deadline});
+        this.formReviews.resumeImport.Complete(current.id,parsing.parseStatus);
+        this.InvalidateRefs();
+        return {status:'succeeded',data:{...parsing,resumeImportId:current.id,pageRevision:this.pageRevision,currentUrl:this.currentUrl}};
+      }
+      let resumeImportId: string | undefined;
+      if (proposal.toolName === 'BrowserUploadFile' && args.purpose === 'resume') {
+        const baseline = await this.formDriver.CaptureResumeForm({signal,deadline});
+        this.formService.Clear();
+        this.formReviews.ResetForResumeUpload();
+        resumeImportId = this.formReviews.resumeImport.Begin(baseline.fields,baseline.url,this.now());
+        await this.formDriver.StartResumeImport(resumeImportId,{signal,deadline});
       }
       const response = ['BrowserInspectForm', 'BrowserValidateForm'].includes(proposal.toolName)
         ? await this.formDriver.InspectForm({ signal, deadline })
@@ -830,10 +879,14 @@ export class AgentBrowserRuntime implements BrowserAutomationPort {
         if (!upload || upload.uploaded !== true || !uploadMetadata) {
           throw new AgentBrowserError('BROWSER_OUTPUT_INVALID', 'BrowserUploadFile did not confirm the uploaded file.');
         }
+        const parsing = resumeImportId ? await this.formDriver.WaitForResumeImport(resumeImportId,{signal,deadline}) : undefined;
+        if (resumeImportId && parsing) this.formReviews.resumeImport.Complete(resumeImportId,parsing.parseStatus);
+        this.InvalidateRefs();
         return {
           data: {
             ...upload,
             ...uploadMetadata,
+            ...(parsing ? {resumeImportId,...parsing,requiresNewPlan:true} : {}),
             pageRevision: this.pageRevision,
             currentUrl: this.currentUrl,
           },
@@ -862,6 +915,8 @@ export class AgentBrowserRuntime implements BrowserAutomationPort {
               issues,
               inspectedFieldCount: fields.length,
               validationMetadataAvailable,
+              ...this.formReviews.Validate(fields, this.currentUrl ?? '', this.now()),
+              verificationScope: 'Retained values compared with Agent-reviewed sources and protected pre-upload values; native validity does not prove source semantics or application completeness.',
               pageRevision: this.pageRevision,
               currentUrl: this.currentUrl,
             },
@@ -874,12 +929,20 @@ export class AgentBrowserRuntime implements BrowserAutomationPort {
         this.tabs = new Set(rawTabs.map((tab: any) => String(tab?.tabId ?? tab?.id ?? '')).filter(Boolean));
         return { data: { ...response.data, pageRevision: this.pageRevision, tabs: rawTabs, currentUrl: this.currentUrl }, status: 'succeeded' };
       }
-      if (['BrowserClick', 'BrowserSelect', 'BrowserPressKey', 'BrowserSwitchTab', 'BrowserGoBack'].includes(proposal.toolName)) {
+      const referencesPreserved = proposal.toolName === 'BrowserPressKey' && args.key === 'Enter'
+        && filledInputRevision === this.pageRevision && proposal.pageRevision === this.pageRevision;
+      // Enter 确认输入后可继续操作同一批已观察节点；驱动仍检查文档、真实节点、名称、可见性与命中。
+      // 页面导航会在下一次 Prepare 更新版本，同 URL 重载或节点替换由 EvaluateReference/Locate 拒绝。
+      if (['BrowserClick', 'BrowserSelect', 'BrowserSwitchTab', 'BrowserGoBack'].includes(proposal.toolName)
+        || (proposal.toolName === 'BrowserPressKey' && !referencesPreserved)) {
         this.InvalidateRefs();
       }
+      if (proposal.toolName === 'BrowserFill' && response.data?.filled === true) this.lastFilledInputRevision = this.pageRevision;
       if (proposal.toolName === 'BrowserSwitchTab') await this.RefreshCurrentUrl(signal, deadline);
       this.lastRuntimeError = null;
-      return { data: { ...response.data, pageRevision: this.pageRevision, currentUrl: this.currentUrl }, status: 'succeeded' };
+      return { data: { ...response.data, pageRevision: this.pageRevision, currentUrl: this.currentUrl,
+        ...(proposal.toolName === 'BrowserPressKey' ? { referencesPreserved } : {}),
+      }, status: 'succeeded' };
     } catch (error) {
       const retireForFailure = error instanceof AgentBrowserError
         && (error.code === 'BROWSER_START_FAILED'
@@ -914,6 +977,29 @@ export class AgentBrowserRuntime implements BrowserAutomationPort {
     this.running = true;
     this.ThrowIfBossRisk(response.data);
     return response.data?.result ?? response.data?.value ?? response.data;
+  }
+
+  /** 仅供本地测评控制器调用的固定同步入口，不向 Agent 暴露任意脚本执行权限。 */
+  async FlushLocalEvaluationPage(input: { url: string; signal: AbortSignal }): Promise<void> {
+    const expected = new URL(input.url);
+    if (expected.protocol !== 'http:' || expected.hostname !== '127.0.0.1' || !/^\/runs\/[0-9a-f-]{36}\/$/.test(expected.pathname)) throw new AgentBrowserError('BROWSER_NAVIGATION_DENIED', 'Invalid local evaluation URL.');
+    const deadline = this.now() + 65_000;
+    const current = new URL(await this.RefreshCurrentUrl(input.signal, deadline) ?? 'about:blank');
+    if (current.origin !== expected.origin || current.pathname !== expected.pathname) throw new AgentBrowserError('BROWSER_NAVIGATION_DENIED', 'The active page is not this evaluation run.');
+    const expression = `(async () => {
+      if (location.origin !== ${JSON.stringify(expected.origin)} || location.pathname !== ${JSON.stringify(expected.pathname)}) throw new Error('Benchmark page navigated before synchronization');
+      if (!window.CareerBench || document.documentElement.dataset.ready !== 'true') throw new Error('Benchmark page is not ready');
+      const until = Date.now() + 62000;
+      do {
+        await window.CareerBench.flush();
+        if (document.documentElement.dataset.parserPending === 'false') return { synced: true };
+        await new Promise(resolve => setTimeout(resolve, 200));
+      } while (Date.now() < until);
+      throw new Error('Benchmark parser did not finish');
+    })()`;
+    const response = await this.RunCommand(['eval', '-b', Buffer.from(expression, 'utf8').toString('base64')], { signal: input.signal, deadline });
+    const data = response.data?.result ?? response.data?.value ?? response.data;
+    if (!(data as { synced?: boolean })?.synced) throw new AgentBrowserError('BROWSER_COMMAND_FAILED', 'Benchmark page did not confirm synchronization.');
   }
 
   async GetStatus(probeConnection = false): Promise<{
@@ -952,6 +1038,7 @@ export class AgentBrowserRuntime implements BrowserAutomationPort {
   ResetPageReferences(): void {
     this.InvalidateRefs();
     this.formService.Clear();
+    this.formReviews.Clear();
   }
 
   /** Host 在一次交互任务结束时调用；仅收回任务页，不关闭共享扩展 Bridge。 */
@@ -968,6 +1055,7 @@ export class AgentBrowserRuntime implements BrowserAutomationPort {
     this.lastRuntimeError = null;
     this.refs.clear();
     this.formService.Clear();
+    this.formReviews.Clear();
     this.tabs.clear();
   }
 }

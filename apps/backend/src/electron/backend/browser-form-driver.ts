@@ -6,10 +6,13 @@ import {
   FormFields,
   FormTextSimilarity,
   NormalizeFormLabel,
+  NormalizeFormOption,
   type FormField,
   type FormFillOperation,
+  type FormOptionObservation,
 } from './browser-form-service';
 import { BrowserDateAdapters, BrowserDateAdapterSelectionScript } from './browser-date-adapters';
+import { FeishuSelectEnrichmentScript, FeishuSelectOptionsExpression, FeishuSelectValueScript } from './browser-feishu-form';
 import { MokaDateControlsScript, MokaDateOptionRevealExpression, MokaDatePreparationExpression, MokaFormEnrichmentScript, MokaFormTargetRevealExpression, MokaFormValueScript, MokaOptionEnrichmentScript, MokaSearchOptionsWaitExpression } from './browser-moka-form';
 
 const DynamicPollIntervalMs = 60;
@@ -30,6 +33,7 @@ export const FormSemanticEnrichmentExpression = (() => {
   };
   return `(() => {
     ${BrowserDateAdapterSelectionScript}
+    ${FeishuSelectValueScript}
     const aliases = ${JSON.stringify(aliases)};
     const fieldAliases = ${JSON.stringify(fieldAliases)};
     const sectionAnchors = ${JSON.stringify(sectionAnchors)};
@@ -59,7 +63,7 @@ export const FormSemanticEnrichmentExpression = (() => {
         ['个人信息', ['个人信息', '基本信息', 'personalinformation', 'basicinformation']],
         ['教育经历', ['教育经历', '教育背景', 'educationexperience', 'educationbackground']],
         ['工作经历', ['工作经历', '任职经历', '工作经验', 'workexperience', 'employmentexperience']],
-        ['项目经历', ['项目经历', '项目经验', 'projectexperience']],
+        ['项目经历', ['项目经历', '项目经验', '在校实践', '校园实践', 'projectexperience']],
         ['求职意向', ['求职意向', '职业意向', '求职偏好', 'jobintention', 'jobpreference']],
       ];
       const matches = sections.filter(([, values]) => values.some((candidate) => normalized.includes(normalize(candidate))));
@@ -112,7 +116,11 @@ export const FormSemanticEnrichmentExpression = (() => {
         const value = text(document.querySelector('label[for="' + CSS.escape(element.id) + '"]'));
         if (value) return value.slice(0, 180);
       }
-      return text(element.closest('label')).slice(0, 180);
+      const wrapped = text(element.closest('label'));
+      if (wrapped) return wrapped.slice(0, 180);
+      // ATS 常用相邻标题而非 label[for]；保留原始业务标题，即使尚无规范字段别名。
+      const item = element.closest('.form-item') || element.closest('[class*="formItem"],[class*="form-item"]');
+      return text(item?.querySelector(':scope > [class*="title" i],:scope > label,:scope > [class*="label" i]')).slice(0, 180);
     };
     const canonicalKey = (value) => {
       const matched = canonicalLabel(value);
@@ -269,16 +277,26 @@ export const FormSemanticEnrichmentExpression = (() => {
       const itemLabels = entriesWithin(item).map((entry) => entry.label);
       const surroundingLabels = blockEntries.map((entry) => entry.label);
       const record = resolved?.root ? repeatedRecord(resolved) : undefined;
+      // 北森把一条经历拆成多个 form-part；ux-standard-form 才是名称、日期和描述的共同记录边界。
+      const beisenRecord = matchedAdapters.includes('beisen') ? element.closest('.ux-standard-form') : null;
+      const beisenSection = beisenRecord ? inferredSection(structuralEntriesWithin(beisenRecord)) : '';
+      const beisenPeers = beisenSection ? [...document.querySelectorAll('.ux-standard-form')].filter(root => inferredSection(structuralEntriesWithin(root)) === beisenSection) : [];
       return {
         x: unique([...itemLabels, ...surroundingLabels], 8),
         r: index > 0 ? unique(blockEntries.slice(Math.max(0, index - 4), index).map((entry) => entry.label), 4) : [],
         f: index >= 0 ? unique(blockEntries.slice(index + 1, index + 5).map((entry) => entry.label), 4) : [],
         s: String(resolved?.section || '').replace(/\\s+/g, ' ').trim().slice(0, 180),
         g: String(resolved?.heading || '').replace(/\\s+/g, ' ').trim().slice(0, 180),
-        o: record && record.index >= 0 ? record.index : undefined,
+        o: beisenSection ? beisenPeers.indexOf(beisenRecord) : record && record.index >= 0 ? record.index : undefined,
       };
     };
     const encodedName = (element, fallbackLabel, forceLabel = false, overrides = {}) => {
+      // WeakMap 随文档销毁；同 URL 重载或重复经历重排不能沿用旧的目标身份。
+      const identities = window.__averyFormIdentities ||= { prefix: crypto.randomUUID(), next: 0, nodes: new WeakMap() };
+      if (!identities.nodes.has(element)) identities.nodes.set(element, identities.prefix + ':' + (++identities.next));
+      const recordRoot = matchedAdapters.includes('beisen') ? element.closest('.ux-standard-form')
+        : matchedAdapters.includes('moka') ? element.closest(moka.record) : null;
+      if (recordRoot && !identities.nodes.has(recordRoot)) identities.nodes.set(recordRoot, identities.prefix + ':' + (++identities.next));
       const context = contextOf(element);
       const rawLabel = forceLabel ? fallbackLabel : rawExplicitLabel(element) || context.x[0] || fallbackLabel;
       const rangeEdge = dateAdapterFor(element) === 'feishu' && element.matches(dateAdapters.feishu.rangeEdge);
@@ -286,11 +304,15 @@ export const FormSemanticEnrichmentExpression = (() => {
         ? text(element).replace(/\\s+/g, '')
         : dateAdapterFor(element) === 'beisen' && element.matches(dateAdapters.beisen.field) && ['birthDate', 'startDate', 'endDate', 'availability'].includes(canonicalKey(fallbackLabel))
           ? String(element.querySelector('input')?.value || '') : undefined;
+      const value = String(dateValue ?? feishuSelectedValue(element) ?? (element instanceof HTMLInputElement && ['checkbox', 'radio'].includes(element.type)
+        ? String(element.checked) : 'value' in element ? element.value
+          : element.querySelector('.phoenix-select__content')?.innerText ?? element.getAttribute('title') ?? text(element)));
+      const currentValue = /^(?:请选择|请输入|请填写)$/.test(value.trim()) ? '' : value;
       const filled = element instanceof HTMLInputElement && ['checkbox', 'radio'].includes(element.type)
         ? element.checked
         : element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement
           ? String(element.value || '').trim().length > 0
-          : dateValue === undefined ? undefined : rangeEdge ? /^\\d{4}-\\d{1,2}$/.test(dateValue) : dateValue.trim().length > 0;
+          : rangeEdge ? /^\\d{4}-\\d{1,2}$/.test(currentValue) : currentValue.trim().length > 0;
       const payload = {
         l: String(rawLabel || fallbackLabel || '').replace(/\\s+/g, ' ').trim().slice(0, 180),
         n: String(element.getAttribute('name') || '').slice(0, 120),
@@ -299,6 +321,9 @@ export const FormSemanticEnrichmentExpression = (() => {
         a: String(element.getAttribute('aria-label') || '').slice(0, 180),
         b: String(element.getAttribute('aria-labelledby') || '').slice(0, 120),
         v: filled,
+        j: identities.nodes.get(element),
+        k: recordRoot ? identities.nodes.get(recordRoot) : undefined,
+        u: element.required === true || element.getAttribute('aria-required') === 'true' || Boolean(element.closest('.form-item')?.querySelector('.form-item__required')) ? true : undefined,
         ...context,
         ...overrides,
       };
@@ -313,6 +338,7 @@ export const FormSemanticEnrichmentExpression = (() => {
       if (element.hasAttribute(attribute)) element.setAttribute('data-avery-original-' + suffix, element.getAttribute(attribute) || '');
     };
     ${MokaFormEnrichmentScript}
+    ${FeishuSelectEnrichmentScript}
     const mokaFormOnly = matchedAdapters.length === 1 && matchedAdapters[0] === 'moka';
     let annotated = 0;
     let auxiliary = 0;
@@ -354,7 +380,8 @@ export const FormSemanticEnrichmentExpression = (() => {
         auxiliary += 1;
         continue;
       }
-      const label = canonicalLabel(currentName) || explicitLabel(element) || nearbyLabel(element);
+      const directLabel = rawExplicitLabel(element);
+      const label = directLabel ? canonicalLabel(directLabel) || directLabel : canonicalLabel(currentName) || explicitLabel(element) || nearbyLabel(element);
       if (!label) continue;
       preserve(element, 'aria-label');
       element.setAttribute('aria-label', encodedName(element, label));
@@ -401,6 +428,7 @@ export const FormSemanticEnrichmentExpression = (() => {
       // 日期弹层中的年月选项不是申请表字段；否则每个年份都会触发整张表单的语义推断。
       if (seed.closest(dateAdapters.feishu.popup)) continue;
       if (seed.hasAttribute('data-avery-form-semantic')) continue;
+      if (seed.closest('.atsx-select,.atsx-select-dropdown') || seed.querySelector('.atsx-select')) continue;
       if (seed.closest('nav,header,footer,[role="navigation"]')) {
         preserve(seed, 'aria-label');
         seed.setAttribute('aria-label', '__avery_internal_form_control__');
@@ -426,7 +454,8 @@ export const FormSemanticEnrichmentExpression = (() => {
       // 多个嵌套 seed 可指向同一触发器；不能覆盖第一次备份，否则清理会恢复成编码标签。
       if (trigger.hasAttribute('data-avery-form-semantic')) continue;
       if (decoratedTriggers.has(trigger)) continue;
-      const label = explicitLabel(trigger) || nearbyLabel(trigger);
+      const directLabel = rawExplicitLabel(trigger);
+      const label = directLabel ? canonicalLabel(directLabel) || directLabel : explicitLabel(trigger) || nearbyLabel(trigger);
       if (!label) continue;
       const container = trigger.closest('label,[class*="form-item" i],[class*="formitem" i],[class*="field" i]') || trigger;
       const containerLabels = decoratedContainers.get(container) || new Set();
@@ -611,7 +640,8 @@ export const DateEditorCleanupExpression = `(() => {
 })()`;
 
 /** 将门户式下拉/级联弹层中的真实可见条目临时暴露为 option，供原生 ref 点击。 */
-export const DynamicOptionEnrichmentExpression = `(() => {
+export function DynamicOptionEnrichmentFor(onlyMoka = false): string { return `(() => {
+  const onlyMoka = ${JSON.stringify(onlyMoka)};
   const mokaMenu = ${JSON.stringify(BrowserDateAdapters.moka.menu)};
   const mokaScope = ${JSON.stringify(BrowserDateAdapters.moka.block + ',' + BrowserDateAdapters.moka.menu)};
   const mokaRelated = (element) => Boolean(element.closest(mokaScope) || element.querySelector(mokaScope));
@@ -622,9 +652,10 @@ export const DynamicOptionEnrichmentExpression = `(() => {
       && rect.width > 0 && rect.height > 0;
   };
   const roots = new Set([...document.querySelectorAll('[role="listbox"],[role="menu"],[class*="select-dropdown" i],[class*="dropdown-menu" i],[class*="cascader-menu" i],[class*="picker-panel" i],[class*="popup" i],[class*="popover" i],[class*="area-selector-container" i],[class*="constant-main-selector-container" i],[class*="constant-main-layer-container" i]')]
-    .filter((element) => element instanceof HTMLElement && visible(element) && !mokaRelated(element)));
+    .filter((element) => !onlyMoka && element instanceof HTMLElement && visible(element) && !mokaRelated(element)));
   // 部分招聘站使用哈希类名和无 ARIA 的门户浮层；只把当前可见的定位层纳入候选范围，避免扫描整页正文。
   for (const element of [...document.body.querySelectorAll('*')].slice(0, 5000)) {
+    if (onlyMoka) break;
     if (!(element instanceof HTMLElement) || !visible(element) || mokaRelated(element)) continue;
     const style = getComputedStyle(element);
     if (style.position !== 'absolute' && style.position !== 'fixed') continue;
@@ -633,6 +664,7 @@ export const DynamicOptionEnrichmentExpression = `(() => {
   }
   // React/Vue 的 portal 根节点本身可能是 static；由实际候选节点向上寻找最小可见控件根，不能只依赖定位样式。
   for (const seed of document.querySelectorAll('[class*="area-item-container" i],[class*="area-text-label" i],[class*="list-item-container" i],[class*="item-text-label" i],[role="option"],[role="treeitem"],[class*="menu-item" i],[class*="option" i]')) {
+    if (onlyMoka) break;
     if (!(seed instanceof HTMLElement) || !visible(seed) || mokaRelated(seed)) continue;
     let root = seed.parentElement;
     for (let depth = 0; root?.parentElement && depth < 8; depth += 1, root = root.parentElement) {
@@ -647,6 +679,8 @@ export const DynamicOptionEnrichmentExpression = `(() => {
   for (const root of roots) {
     // Moka 只使用已确认的候选行，不能再用通用扫描覆盖其标签或纳入“添加自定义值”。
     if (root.matches(mokaMenu)) continue;
+    // 表单容器和导航不能冒充弹层，否则会把“首页”“提交”等误当作目标字段候选。
+    if (root.closest('nav,header,footer,[role="navigation"]') || root.querySelector('[data-avery-form-semantic="label"],[data-avery-form-semantic="custom-select"]')) continue;
     // 北森民族等常量选择器采用虚拟列表；目标项未渲染时，后续可通过这个固定搜索入口收窄列表。
     for (const element of root.querySelectorAll('input[placeholder*="搜索"],input[placeholder*="search" i]')) {
       if (!(element instanceof HTMLInputElement) || !visible(element) || element.hasAttribute('data-avery-dynamic-search')) continue;
@@ -726,8 +760,11 @@ export const DynamicOptionEnrichmentExpression = `(() => {
     element.setAttribute('aria-label', confirmation ? '__avery_dynamic_confirmation__' : text.slice(0, 120));
     annotated += 1;
   }
-  return { roots: roots.size, annotated };
-})()`;
+  const observed = [...new Set(candidates.filter(candidate => !confirmations.has(candidate.element)).map(candidate => candidate.text.slice(0,120)))];
+  return { roots: roots.size, annotated, observedOptions:observed.slice(0,40), optionsTruncated:observed.length>40 };
+})()`; }
+
+export const DynamicOptionEnrichmentExpression = DynamicOptionEnrichmentFor();
 
 export const DynamicOptionCleanupExpression = `(() => {
   for (const element of document.querySelectorAll('[data-avery-dynamic-option],[data-avery-dynamic-search]')) {
@@ -740,6 +777,20 @@ export const DynamicOptionCleanupExpression = `(() => {
     for (const attribute of ['data-avery-dynamic-option', 'data-avery-dynamic-search', 'data-avery-option-had-role', 'data-avery-option-role', 'data-avery-option-had-label', 'data-avery-option-label', 'data-avery-option-had-tabindex', 'data-avery-option-tabindex']) element.removeAttribute(attribute);
   }
   return { cleaned: true };
+})()`;
+
+/** 读取已由候选检查器标记的可见项；不能把整页按钮、正文或搜索词当成选项回传。 */
+export const DynamicOptionObservationExpression = `(() => {
+  const labels = [];
+  for (const element of document.querySelectorAll('[data-avery-dynamic-option]')) {
+    const rect = element.getBoundingClientRect(), style = getComputedStyle(element);
+    if (!rect.width || !rect.height || style.visibility === 'hidden' || style.display === 'none') continue;
+    const label = String(element.getAttribute('aria-label') || element.innerText || '').replace(/\\s+/g, ' ').trim();
+    if (!label || label.startsWith('__avery_') || /^(确定|确认|完成|取消|关闭)$/.test(label) || labels.includes(label)) continue;
+    labels.push(label.slice(0, 120));
+    if (labels.length > 40) break;
+  }
+  return { observedOptions: labels.slice(0, 40), optionsTruncated: labels.length > 40 };
 })()`;
 
 /** 只向页面根节点发送取消交互事件；不会点击按钮、提交表单或修改字段值。 */
@@ -762,7 +813,7 @@ export function DynamicOptionMatch(
   const snapshot = String(data?.snapshot ?? '');
   for (const match of snapshot.matchAll(/\[[^\]\r\n]*\bref=(e\d+)\b[^\]\r\n]*\][^\r\n]*\bclickable\b/g)) clickable.add(match[1]);
   const normalizeOption = (value: unknown) => {
-    const normalized = NormalizeFormLabel(value);
+    const normalized = NormalizeFormOption(fieldKey, value);
     if (fieldKey === 'workYears') {
       if (/^(在校学生|在读学生|学生)$/.test(normalized)) return 'student';
       if (/^(刚毕业|应届毕业生|应届生)$/.test(normalized)) return 'graduate';
@@ -782,6 +833,8 @@ export function DynamicOptionMatch(
     const label = String(metadata?.name ?? '').replace(/\s+/g, ' ').trim().slice(0, 120);
     const normalized = normalizeOption(label);
     if (!normalized || normalized.length > 80 || /^(请选择|请输入|确定|取消|关闭)$/.test(normalized)) continue;
+    // 这些枚举只接受确切同义项，不能把“非全日制”或不同周期凭子串相似选中。
+    if (['educationType', 'availability'].includes(fieldKey) && normalized !== desired) continue;
     if (exactOnly && normalized !== desired) continue;
     // 浏览器快照可能沿用标记前的可访问性角色，因此已补为 option 的原生 li 仍会回报 listitem。
     if (!clickable.has(rawRef.replace(/^@/, '')) && !['button', 'option', 'listitem', 'menuitem', 'treeitem', 'radio'].includes(role)) continue;
@@ -890,9 +943,16 @@ export function DynamicSelectionVerificationExpression(operation: FormFillOperat
   const selected = selectedLabels.map(NormalizeFormLabel).filter(Boolean);
   return `(() => {
     ${MokaFormValueScript}
+    ${FeishuSelectValueScript}
     const normalize = (value) => String(value || '').toLowerCase().replace(/[\\s_\\-—–·:：()（）[\\]【】*＊]/g, '');
     const triggers = [...document.querySelectorAll('[data-avery-form-semantic="custom-select"]')]
       .filter((element) => element.getAttribute('data-avery-form-key') === ${JSON.stringify(operation.key)});
+    if (${operation.adapter === 'feishu'}) {
+      const identity = ${JSON.stringify(operation.targetNodeIdentity)};
+      const target = typeof identity === 'string' && identity ? triggers.find(element => window.__averyFormIdentities?.nodes.get(element) === identity) : undefined;
+      const value = target && feishuSelectedValue(target);
+      return {filled: value !== undefined && normalize(value) === normalize(${JSON.stringify(operation.value)})};
+    }
     if (${JSON.stringify(operation.adapter === 'moka' && operation.targetOccurrence !== undefined)}) {
       const candidates = triggers.filter((element) => element.getAttribute('data-avery-form-section') === ${JSON.stringify(operation.concept.split('.')[0])}
         && normalize(element.getAttribute('data-avery-form-label')) === normalize(${JSON.stringify(operation.label)})
@@ -1008,9 +1068,100 @@ export type BrowserFormDriverPort = {
   pageRevision: () => number;
 };
 
+/** 值独立回读，避免长项目描述把 aria-label 特征包截断；只读本次已标记的表单控件。 */
+export const FormRetainedValuesExpression = `(() => {
+  ${MokaFormValueScript}
+  ${FeishuSelectValueScript}
+  const result = [];
+  const identities = window.__averyFormIdentities;
+  if (!identities) return result;
+  for (const element of document.querySelectorAll('[data-avery-form-semantic]')) {
+    const name = element.getAttribute('aria-label') || '';
+    if (!name.startsWith('${EncodedFormFieldPrefix}')) continue;
+    const nodeIdentity = identities.nodes.get(element);
+    if (!nodeIdentity) continue;
+    let value;
+    if (feishuSelectRoot(element)) value = feishuSelectedValue(element);
+    else if (element instanceof HTMLInputElement && ['radio','checkbox'].includes(element.type)) value = String(element.checked);
+    else if ('value' in element) value = String(element.value || '');
+    else if (element.matches(moka.select + ',' + moka.dayField) || element.parentElement?.matches(moka.range)) value = mokaSelectedValue(element);
+    else value = String(element.querySelector('.phoenix-select__content')?.innerText ?? element.querySelector('input')?.value ?? element.innerText ?? '').trim();
+    if (/^(?:请选择|请输入|请填写)$/.test(value.trim())) value = '';
+    result.push({ nodeIdentity, value: value.slice(0, 20000), truncated: value.length > 20000 });
+  }
+  return result;
+})()`;
+
 /** 只处理表单 DOM 和控件状态机，不持有浏览器进程、Agent 提案或用户资料。 */
 export class BrowserFormDriver {
   constructor(private readonly port: BrowserFormDriverPort) {}
+
+  /** 不生成新快照引用，避免为上传建立基线时把刚观察到的 file-input 引用作废。 */
+  async CaptureResumeForm(options: { signal?: AbortSignal; deadline?: number }): Promise<{ fields: FormField[]; url: string }> {
+    const expression = `(() => {
+      try {
+        ${FormSemanticEnrichmentExpression};
+        const values = ${FormRetainedValuesExpression};
+        if (values.some(value=>value.truncated)) return {error:'pre_upload_value_truncated'};
+        const byId = new Map(values.map(value => [value.nodeIdentity, value]));
+        const refs = {};
+        for (const element of document.querySelectorAll('[data-avery-form-semantic]')) {
+          const name = element.getAttribute('aria-label') || '';
+          if (!name.startsWith('${EncodedFormFieldPrefix}')) continue;
+          const identity = window.__averyFormIdentities?.nodes.get(element), retained = byId.get(identity);
+          const custom = element.getAttribute('data-avery-form-semantic') === 'custom-select';
+          const role = custom || element.tagName === 'SELECT' ? 'combobox' : element.type === 'checkbox' ? 'checkbox' : element.type === 'radio' ? 'radio' : 'textbox';
+          refs['e' + (Object.keys(refs).length + 1)] = {name,role,tag:element.tagName.toLowerCase(),type:element.type,
+            ...(retained && !retained.truncated ? {currentValue:retained.value,valueLength:retained.value.length} : {}),
+            ...(element.tagName === 'SELECT' ? {options:[...element.options].map(o=>({label:o.text,value:o.value,selected:o.selected}))} : {})};
+          if (Object.keys(refs).length > 300) return {error:'pre_upload_form_too_large'};
+        }
+        return {refs,url:location.href};
+      } finally { ${FormSemanticCleanupExpression}; }
+    })()`;
+    const response = await this.port.runCommand(['eval','-b',Buffer.from(expression,'utf8').toString('base64')],options);
+    const data = response.data?.result as {refs?:Record<string,unknown>;url?:string} | undefined;
+    if (!data?.refs || typeof data.url !== 'string') throw new AgentBrowserError('BROWSER_RESUME_BASELINE_UNAVAILABLE','Cannot read the form before uploading; no file was uploaded.');
+    return {fields:FormFields(data.refs,this.port.pageRevision()),url:data.url};
+  }
+
+  async StartResumeImport(id: string, options: { signal?: AbortSignal; deadline?: number }): Promise<void> {
+    await this.port.runCommand(['eval','-b',Buffer.from(`(() => {
+      window.__averyResumeImport = {id:${JSON.stringify(id)},startedAt:Date.now(),lastChangedAt:Date.now(),signature:null,sawBusy:false};
+      return {started:true};
+    })()`,'utf8').toString('base64')],options);
+  }
+
+  /** 页面内有界等待，只回传最终状态；安静窗口只能证明观察稳定，不能保证服务器永远不会再次解析。 */
+  async WaitForResumeImport(id: string, options: { signal?: AbortSignal; deadline?: number }): Promise<{parseStatus:'stable'|'pending'|'failed';completionObserved:boolean;readyForFill:boolean;reason:string}> {
+    const timeoutMs = Math.max(0,Math.min(30_000,(options.deadline ?? Date.now()+31_000)-Date.now()-1_000));
+    const expression = `(async () => {
+      const state = window.__averyResumeImport;
+      if (!state || state.id !== ${JSON.stringify(id)}) return {parseStatus:'pending',completionObserved:false,readyForFill:false,reason:'upload_watch_unavailable'};
+      const stopAt = Date.now()+${timeoutMs};
+      const visible = e => {const r=e.getBoundingClientRect(),s=getComputedStyle(e);return r.width>0&&r.height>0&&s.display!=='none'&&s.visibility!=='hidden';};
+      while(Date.now()<stopAt){
+        const text = document.body.innerText.slice(0,80_000);
+        const busy = /正在(?:上传|解析|识别)|(?:简历)?解析中|上传中|parsing\\s+(?:your\\s+)?resume|extracting\\s+resume/i.test(text)
+          || [...document.querySelectorAll('[aria-busy="true"],[role="progressbar"]')].some(visible);
+        if (busy) state.sawBusy=true;
+        const failed = /简历解析失败|解析失败|简历上传失败|上传失败|resume\\s+(?:parsing|upload)\\s+failed/i.test(text);
+        const completion = /解析完成|解析成功|已完成解析|resume\\s+parsed|parsing\\s+completed/i.test(text);
+        const signature = JSON.stringify([...document.querySelectorAll('input,textarea,select,[contenteditable="true"],[class*="sd-Input-display-value-"],.atsx-date-picker-period-month-label')].slice(0,1200)
+          .map(e=>[e.type,e.value??e.textContent,e.checked,e.disabled]));
+        if (signature!==state.signature){state.signature=signature;state.lastChangedAt=Date.now();}
+        if (failed) return {parseStatus:'failed',completionObserved:false,readyForFill:false,reason:'website_reported_failure'};
+        if (!busy && Date.now()-state.startedAt>=3500 && Date.now()-state.lastChangedAt>=1500)
+          return {parseStatus:'stable',completionObserved:completion||state.sawBusy,readyForFill:true,reason:completion?'completion_message':state.sawBusy?'busy_then_quiet':'quiet_window_only'};
+        await new Promise(resolve=>setTimeout(resolve,200));
+      }
+      return {parseStatus:'pending',completionObserved:false,readyForFill:false,reason:'observation_timeout'};
+    })()`;
+    const response = await this.port.runCommand(['eval','-b',Buffer.from(expression,'utf8').toString('base64')],options);
+    const data = response.data?.result as {parseStatus?:string;completionObserved?:boolean;readyForFill?:boolean;reason?:string} | undefined;
+    if (!data || !['stable','pending','failed'].includes(data.parseStatus ?? '')) throw new AgentBrowserError('BROWSER_OUTPUT_INVALID','Resume parsing observation returned an invalid result; do not repeat the upload.');
+    return {parseStatus:data.parseStatus as 'stable'|'pending'|'failed',completionObserved:data.completionObserved===true,readyForFill:data.readyForFill===true,reason:data.reason??'unknown'};
+  }
 
   async InspectForm(
     options: { signal?: AbortSignal; deadline?: number },
@@ -1022,7 +1173,17 @@ export class BrowserFormDriver {
     await this.port.runCommand(['eval', '-b', Buffer.from(FormSemanticEnrichmentExpression, 'utf8').toString('base64')], options);
     if (target?.adapter === 'moka') await this.port.runCommand(['eval', '-b', Buffer.from(MokaFormTargetRevealExpression(target), 'utf8').toString('base64')], options);
     try {
-      return await this.port.runCommand(['snapshot', '-i', '-c', '--urls', '--form'], options);
+      const snapshot = await this.port.runCommand(['snapshot', '-i', '-c', '--urls', '--form'], options);
+      const readback = await this.port.runCommand(['eval', '-b', Buffer.from(FormRetainedValuesExpression, 'utf8').toString('base64')], options);
+      const values = Array.isArray(readback.data?.result) ? readback.data.result as Array<{nodeIdentity:string;value:string;truncated?:boolean}> : [];
+      const byIdentity = new Map(values.map(v => [v.nodeIdentity,v]));
+      const refs = snapshot.data?.refs as Record<string, Record<string, unknown>> | undefined;
+      if (refs) for (const field of FormFields(refs, this.port.pageRevision())) {
+        const value = field.nodeIdentity ? byIdentity.get(field.nodeIdentity) : undefined;
+        const metadata = refs[field.ref.slice(1)] ?? refs[field.ref];
+        if (value && metadata && !value.truncated) metadata.currentValue = value.value;
+      }
+      return snapshot;
     } finally {
       if (!retainSemantics) {
         try { await this.port.runCommand(cleanup, options); } catch { /* 快照结果优先，临时属性会在下次 Inspect 前再次清理。 */ }
@@ -1030,12 +1191,18 @@ export class BrowserFormDriver {
     }
   }
 
-  private async SnapshotDynamicOptions(options: { signal?: AbortSignal; deadline?: number }): Promise<BrowserFormCommandEnvelope> {
+  private async SnapshotDynamicOptions(options: { signal?: AbortSignal; deadline?: number }, operation?: FormFillOperation): Promise<BrowserFormCommandEnvelope> {
     const cleanup = ['eval', '-b', Buffer.from(DynamicOptionCleanupExpression, 'utf8').toString('base64')];
     await this.port.runCommand(cleanup, options);
-    await this.port.runCommand(['eval', '-b', Buffer.from(DynamicOptionEnrichmentExpression, 'utf8').toString('base64')], options);
+    const expression = operation?.adapter === 'feishu' ? FeishuSelectOptionsExpression(operation) : DynamicOptionEnrichmentFor(operation?.adapter === 'moka');
+    const enrichment = await this.port.runCommand(['eval', '-b', Buffer.from(expression, 'utf8').toString('base64')], options);
+    if (operation?.adapter === 'feishu' && enrichment.data?.result?.ready !== true) {
+      throw new AgentBrowserError('BROWSER_FORM_MENU_NOT_READY', 'The Feishu select menu is unavailable or still moving. Observe the field before selecting.');
+    }
     // 个人浏览器的 ref 包含严格语义指纹；标记必须保留到本次点击完成，下次快照会先清理。
-    return this.port.runCommand(['snapshot', '-i', '-c', '--urls'], options);
+    const snapshot = await this.port.runCommand(['snapshot', '-i', '-c', '--urls'], options);
+    if (Array.isArray(enrichment.data?.result?.observedOptions)) snapshot.data = {...snapshot.data,optionObservation:enrichment.data.result};
+    return snapshot;
   }
 
   async DismissTransientOverlay(
@@ -1108,9 +1275,10 @@ export class BrowserFormDriver {
 
   private async WaitForDynamicConfirmation(
     options: { signal?: AbortSignal; deadline?: number },
+    operation?: FormFillOperation,
   ): Promise<{ ref: string; label: string } | undefined> {
     for (let attempt = 0; attempt < 10; attempt += 1) {
-      const snapshot = await this.SnapshotDynamicOptions(options);
+      const snapshot = await this.SnapshotDynamicOptions(options,operation);
       const confirmation = DynamicConfirmationMatch(snapshot.data ?? {});
       if (confirmation) return confirmation;
       if (attempt < 9) await this.port.delay(DynamicPollIntervalMs, options.signal);
@@ -1283,13 +1451,26 @@ export class BrowserFormDriver {
   async ExecuteCustomSelect(
     operation: FormFillOperation,
     options: { signal?: AbortSignal; deadline?: number },
-  ): Promise<{ filled: boolean; reason?: string }> {
+  ): Promise<{ filled: boolean; reason?: string } & Partial<FormOptionObservation>> {
     const formSnapshot = await this.InspectForm(options, true, operation);
     const fields = FormFields(formSnapshot.data?.refs && typeof formSnapshot.data.refs === 'object' ? formSnapshot.data.refs : {}, this.port.pageRevision());
     const target = DynamicFormTarget(fields, operation);
+    if (target?.interaction.adapter === 'feishu') operation = { ...operation, adapter: 'feishu', targetNodeIdentity: target.nodeIdentity };
     const selectedLabels: string[] = [];
     const region = ['nativePlace', 'residence', 'hukou', 'targetProvince', 'targetCity'].includes(operation.key);
     let committed = false;
+    let searchedDynamicList = false;
+    let lastObservation: {observedOptions?:unknown;optionsTruncated?:boolean} | undefined;
+    let optionsBeforeSearch: string[] | undefined;
+    const failure = async (reason: string) => {
+      const response = lastObservation ? undefined : await this.port.runCommand(['eval', '-b', Buffer.from(DynamicOptionObservationExpression, 'utf8').toString('base64')], options);
+      const data = lastObservation ?? response?.data?.result as { observedOptions?: unknown; optionsTruncated?: boolean } | undefined;
+      if (!Array.isArray(data?.observedOptions)) return {filled:false,reason,requestedValue:operation.value,selectedPath:[...selectedLabels],searchAttempted:searchedDynamicList};
+      return { filled: false, reason, requestedValue: operation.value,
+        observedOptions: Array.isArray(data?.observedOptions) ? data.observedOptions.filter((value): value is string => typeof value === 'string').slice(0, 40) : [],
+        optionsTruncated: data?.optionsTruncated === true, observationScope: 'visible_options' as const,
+        selectedPath: [...selectedLabels], searchAttempted: searchedDynamicList, ...(optionsBeforeSearch ? {optionsBeforeSearch} : {}) };
+    };
 
     try {
       if (!target) return { filled: false, reason: 'dynamic_field_not_found' };
@@ -1299,17 +1480,18 @@ export class BrowserFormDriver {
       let selectedAny = false;
       let selectionControlUsed = false;
       let directSelectionCompleted = false;
-      let searchedDynamicList = false;
       // 三层级联可能同时包含“展开文字”和“选择图标”，因此动作上限高于层级上限，但仍是固定小常数。
       for (let action = 0; action < 7; action += 1) {
         let option: ReturnType<typeof DynamicOptionMatch> = undefined;
         let latestOptionSnapshot: BrowserFormCommandEnvelope = { success: true, data: {} };
         for (let attempt = 0; attempt < 10 && !option; attempt += 1) {
-          latestOptionSnapshot = await this.SnapshotDynamicOptions(options);
+          latestOptionSnapshot = await this.SnapshotDynamicOptions(options,operation);
+          lastObservation = latestOptionSnapshot.data?.optionObservation;
           option = DynamicOptionMatch(latestOptionSnapshot.data ?? {}, operation.key, operation.value, visitedActions, operation.adapter === 'moka' && !region);
           if (!option && !searchedDynamicList && operation.adapter === 'moka') {
             const search = DynamicSearchMatch(latestOptionSnapshot.data ?? {});
             if (search) {
+              if (Array.isArray(lastObservation?.observedOptions)) optionsBeforeSearch = lastObservation.observedOptions.filter((value):value is string=>typeof value==='string').slice(0,40);
               await this.port.runCommand(['fill', search.ref, operation.value], options);
               searchedDynamicList = true;
               const timeoutMs = Math.max(0, Math.min(6000, (options.deadline ?? Date.now() + 6000) - Date.now() - 100));
@@ -1329,7 +1511,7 @@ export class BrowserFormDriver {
             }
           }
           if (region && selectedAny) break;
-          return { filled: false, reason: selectedAny ? 'cascade_incomplete' : 'option_not_found' };
+          return await failure(selectedAny ? 'cascade_incomplete' : 'option_not_found');
         }
         try {
           await this.port.runCommand(['click', option.ref], options);
@@ -1337,7 +1519,8 @@ export class BrowserFormDriver {
           // 虚拟列表可能在快照后立即重建候选节点；只在 ref 失效时重新生成一次候选快照，
           // 再按相同语义选择，避免重复执行已完成的级联步骤。
           if (!(error instanceof AgentBrowserError) || error.code !== 'BROWSER_STALE_PAGE_REF') throw error;
-          const refreshedSnapshot = await this.SnapshotDynamicOptions(options);
+          const refreshedSnapshot = await this.SnapshotDynamicOptions(options,operation);
+          lastObservation = refreshedSnapshot.data?.optionObservation;
           const refreshed = DynamicOptionMatch(refreshedSnapshot.data ?? {}, operation.key, operation.value, visitedActions, operation.adapter === 'moka' && !region);
           if (!refreshed) throw error;
           option = refreshed;
@@ -1351,14 +1534,15 @@ export class BrowserFormDriver {
         await this.port.delay(DynamicTransitionDelayMs, options.signal);
       }
       if (!selectionControlUsed && !directSelectionCompleted && !(region && selectedAny)) {
-        return { filled: false, reason: 'cascade_incomplete' };
+        return await failure('cascade_incomplete');
       }
       if (region) {
         // 自动提交型地区控件不需要确认；仍显示旧值时，确认是不可省略的提交步骤。
         committed = await this.VerifyDynamicSelection(operation, selectedLabels, options);
         if (committed) return { filled: true };
         // 北森文字行负责进入下一级；末级仍可能要求点选同名圆点后再确认。
-        const selectionSnapshot = await this.SnapshotDynamicOptions(options);
+        const selectionSnapshot = await this.SnapshotDynamicOptions(options,operation);
+        lastObservation = selectionSnapshot.data?.optionObservation;
         const selection = DynamicOptionMatch(selectionSnapshot.data ?? {}, operation.key, operation.value, visitedActions);
         if (selection?.role === 'radio' && selection.complete) {
           await this.port.runCommand(['click', selection.ref], options);
@@ -1366,16 +1550,17 @@ export class BrowserFormDriver {
           if (!selectedLabels.includes(selection.label)) selectedLabels.push(selection.label);
           await this.port.delay(DynamicTransitionDelayMs, options.signal);
         }
-        const confirmation = await this.WaitForDynamicConfirmation(options);
-        if (!confirmation) return { filled: false, reason: 'confirmation_not_available' };
+        const confirmation = await this.WaitForDynamicConfirmation(options,operation);
+        if (!confirmation) return await failure('confirmation_not_available');
         await this.port.runCommand(['click', confirmation.ref], options);
         await this.port.delay(DynamicConfirmationDelayMs, options.signal);
         committed = await this.VerifyDynamicSelection(operation, selectedLabels, options);
-        return committed ? { filled: true } : { filled: false, reason: 'confirmation_not_committed' };
+        return committed ? { filled: true } : await failure('confirmation_not_committed');
       }
       committed = await this.VerifyDynamicSelection(operation, selectedLabels, options);
       if (!committed) {
-        const selectionSnapshot = await this.SnapshotDynamicOptions(options);
+        const selectionSnapshot = await this.SnapshotDynamicOptions(options,operation);
+        lastObservation = selectionSnapshot.data?.optionObservation;
         const selection = DynamicOptionMatch(selectionSnapshot.data ?? {}, operation.key, operation.value, visitedActions);
         if (selection?.role === 'radio' && selection.complete) {
           await this.port.runCommand(['click', selection.ref], options);
@@ -1383,14 +1568,14 @@ export class BrowserFormDriver {
           if (!selectedLabels.includes(selection.label)) selectedLabels.push(selection.label);
           await this.port.delay(DynamicTransitionDelayMs, options.signal);
         }
-        const confirmation = await this.WaitForDynamicConfirmation(options);
+        const confirmation = await this.WaitForDynamicConfirmation(options,operation);
         if (confirmation) {
           await this.port.runCommand(['click', confirmation.ref], options);
           await this.port.delay(DynamicConfirmationDelayMs, options.signal);
           committed = await this.VerifyDynamicSelection(operation, selectedLabels, options);
         }
       }
-      return committed ? { filled: true } : { filled: false, reason: 'selection_not_committed' };
+      return committed ? { filled: true } : await failure('selection_not_committed');
     } finally {
       try { await this.port.runCommand(['eval', '-b', Buffer.from(DynamicOptionCleanupExpression, 'utf8').toString('base64')], options); } catch { /* 字段结果优先，下次候选快照仍会先清理。 */ }
       try { await this.port.runCommand(['eval', '-b', Buffer.from(FormSemanticCleanupExpression, 'utf8').toString('base64')], options); } catch { /* 下次 Inspect 会再次清理。 */ }

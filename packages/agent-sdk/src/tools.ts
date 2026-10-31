@@ -175,9 +175,11 @@ export interface SkillReadPort {
   }>;
 }
 
-/** CronTask 端口：创建先冻结为待确认提案；读取/更新/删除只操作宿主持久化的任务。 */
+/** CronTask 端口：创建先冻结提案；完全信任可直接提交，其余档位等待用户确认。 */
 export interface CronTaskPort {
   PrepareCreate(input: Record<string, unknown>): Promise<{ confirmationId: string; summary: string; scenarioId: 'default' | 'application' }>;
+  /** 仅供完全信任的交互 Run 提交宿主已冻结的提案；不得接受模型重建的任务或授权。 */
+  CommitCreate(confirmationId: string, signal?: AbortSignal): Promise<{ created: boolean; task?: { id: string } }>;
   Read(input: { cronTaskId?: string; includeRuns?: boolean }): Promise<unknown>;
   Update(input: Record<string, unknown>): Promise<unknown>;
   Delete(cronTaskId: string): Promise<unknown>;
@@ -190,6 +192,7 @@ export interface ApplicationTrackingPort {
   Update(input: Record<string, unknown> & { resumeEvidence: ResumeSnapshot }): Promise<unknown>;
 }
 
+/** 浏览器窄端口只接受原子动作；BrowserRunScript 在工具层编排，不进入提案或驱动白名单。 */
 export type BrowserToolName =
   | 'BrowserNavigate'
   | 'BrowserSnapshot'
@@ -232,6 +235,7 @@ export interface BrowserActionProposal {
   canonicalArguments: Record<string, unknown>;
   summary: string;
   risk: 'low' | 'medium' | 'high';
+  /** 默认强制确认；完全信任模式下上传和按键由工具执行策略豁免，仍须校验资源与任务授权。 */
   forceConfirmation: boolean;
   pageRevision: number;
   url?: string;
@@ -368,6 +372,12 @@ export interface ToolContext {
   scenarioSnapshotId?: string;
   /** 当前 Run 的冻结场景 ID；工具模块在执行入口再次校验。 */
   scenarioId?: string;
+  /** Kernel 注入本轮冻结的工具白名单；脚本内的每一步也必须通过此边界。 */
+  allowedToolNames?: ReadonlySet<string>;
+  /** 脚本内快照依赖绑定到真实的外层 tool result，不能引用未进入 Transcript 的子动作 ID。 */
+  browserSnapshotResultId?: string;
+  /** Kernel 扣减本轮工具预算；嵌套脚本不能绕过场景显式设置的动作总数上限。 */
+  consumeBrowserScriptStep?: () => boolean;
   /** 会话已提交到 Transcript 的 Skill；Kernel 在 followup 消息追加后更新。 */
   loadedSkills?: Map<string, string>;
   /** 当前 Run 已加载的 Skill 资源，用于幂等；值为 `skillId:resourcePath`。 */
@@ -380,4 +390,8 @@ export interface ToolContext {
   browserTaskGrant?: BrowserTaskGrantSnapshot;
   /** 当前 Provider/模型是否接受 image_url；截图工具据此在调用 CLI 前拒绝不兼容模型。 */
   supportsVisionInput?: boolean;
+  /** Kernel 根据实际模型上下文检查工具回执；基线丢失时浏览器快照必须回退全量。 */
+  hasToolResultInContext?: (toolCallId: string) => boolean;
+  /** 压缩后必须重新观察才能执行依赖页面引用的动作，不视摘要中的旧引用为实时结构。 */
+  requiresBrowserSnapshot?: boolean;
 }

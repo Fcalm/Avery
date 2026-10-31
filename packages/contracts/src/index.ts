@@ -40,7 +40,7 @@ export type {
   DesktopAgentBridge, WorkspaceBridge,
 } from './bridge';
 export type {
-  DesktopEvaluationBridge, EvalBrowserAssertion, EvalBrowserAssertionResult, EvalBrowserAssertionType, EvalCaseRun, EvalCaseRunDetail, EvalCaseRunStatus, EvalCaseScore, EvalComparison, EvalDatasetCase, EvalDatasetImportResult,
+  DesktopEvaluationBridge, EvalApplicationBenchmarkReport, EvalBrowserAssertion, EvalBrowserAssertionResult, EvalBrowserAssertionType, EvalCaseRun, EvalCaseRunDetail, EvalCaseRunStatus, EvalCaseScore, EvalComparison, EvalDatasetCase, EvalDatasetImportResult,
   EvalEvent, EvalExpectedResult, EvalDatasetVersion, EvalProject, EvalProjectConfig, EvalProjectInput, EvalPromptCandidate, EvalPromptPreview,
   EvalRequirementResult, EvalRunnerType, EvalRun, EvalRunDetail, EvalRunStatus, EvalRunSummary, EvalTraceNode, EvalTraceNodeType, EvalUserSimulatorStrategy,
 } from './evaluation';

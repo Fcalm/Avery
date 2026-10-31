@@ -6,6 +6,8 @@ const SocketOpen = 1;
 const DefaultTimeoutMs = 60_000;
 const MaxSnapshotElements = 300;
 const MaxSnapshotChars = 50_000;
+const MaxSnapshotValueChars = 500;
+const MaxRememberedNodeRefs = 10_000;
 const MaxReadChars = 50_000;
 const BossChatPhrasePrefix = '发送常用语：';
 const BossChatPhraseTextLimit = 200;
@@ -24,6 +26,8 @@ const BrowserMethods = new Set([
 ]);
 
 const PageMethods = new Set([
+  'Page.getFrameTree',
+  'Page.createIsolatedWorld',
   'Page.navigate',
   'Page.getNavigationHistory',
   'Page.navigateToHistoryEntry',
@@ -58,6 +62,10 @@ type PendingCommand = {
 };
 
 type ElementFingerprint = {
+  /** 节点身份保存在隔离世界中，不能以同路径、同名称的替换节点冒充。 */
+  nodeId: number;
+  contextId: number;
+  documentId: string;
   selector: string;
   tag: string;
   role: string;
@@ -226,6 +234,7 @@ function ReadOwnArrayValues(value: unknown): unknown[] | null {
 }
 
 const SnapshotItemKeys = new Set([
+  'nodeId', 'value', 'valueTruncated',
   'selector', 'tag', 'role', 'type', 'name',
   'rawLabel', 'section', 'fieldName', 'id', 'placeholder', 'ariaLabel', 'ariaLabelledBy',
   'nearbyTexts', 'precedingLabels', 'followingLabels', 'groupHeading', 'recordIndex',
@@ -277,11 +286,13 @@ function NormalizeSnapshotItem(value: Record<string, any>): Record<string, any> 
 
 function IsSnapshotItem(value: unknown): value is Record<string, any> {
   if (!IsPlainDataRecord(value, SnapshotItemKeys)) return false;
+  const nodeId = ReadOwnData(value, 'nodeId');
+  if (!nodeId.present || !Number.isSafeInteger(nodeId.value) || Number(nodeId.value) <= 0) return false;
   const required = ['selector', 'tag', 'role', 'type', 'name'].map((key) => [key, ReadOwnData(value, key)] as const);
   if (required.some(([, field]) => !field.present || typeof field.value !== 'string')) return false;
   const selector = ReadOwnData(value, 'selector');
   if (!selector.present || typeof selector.value !== 'string' || selector.value.length === 0) return false;
-  const stringFields = ['rawLabel', 'section', 'fieldName', 'id', 'placeholder', 'ariaLabel', 'ariaLabelledBy', 'groupHeading', 'autocomplete', 'validationMessage', 'href'];
+  const stringFields = ['rawLabel', 'section', 'fieldName', 'id', 'placeholder', 'ariaLabel', 'ariaLabelledBy', 'groupHeading', 'autocomplete', 'validationMessage', 'href', 'value'];
   if (stringFields.some((field) => {
     const valueField = ReadOwnData(value, field);
     return valueField.present && valueField.value !== undefined && typeof valueField.value !== 'string';
@@ -291,7 +302,7 @@ function IsSnapshotItem(value: unknown): value is Record<string, any> {
     const valueField = ReadOwnData(value, field);
     return valueField.present && valueField.value !== undefined && !IsStringArray(valueField.value);
   })) return false;
-  const booleanFields = ['formExcluded', 'disabled', 'required', 'readOnly', 'valid', 'checked', 'textTruncated'];
+  const booleanFields = ['formExcluded', 'disabled', 'required', 'readOnly', 'valid', 'checked', 'textTruncated', 'valueTruncated'];
   if (booleanFields.some((field) => {
     const valueField = ReadOwnData(value, field);
     return valueField.present && valueField.value !== undefined && typeof valueField.value !== 'boolean';
@@ -353,7 +364,17 @@ function NormalizeTargetInfo(value: CdpTargetInfo): CdpTargetInfo {
   return copy;
 }
 
-const SnapshotExpression = `(() => {
+const SnapshotExpression = (includeFormFields = false) => `(() => {
+  // 独立执行世界中的 WeakMap 只按真实节点分配身份；网页脚本无法篡改此映射。
+  const state = globalThis.__averySnapshotNodes ??= { nextId: 1, ids: new WeakMap(), nodes: new Map() };
+  const observed = new Set();
+  const nodeIdOf = (element) => {
+    let id = state.ids.get(element);
+    if (!id) { id = state.nextId++; state.ids.set(element, id); }
+    state.nodes.set(id, new WeakRef(element));
+    observed.add(id);
+    return id;
+  };
   const normalizedText = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
   const normalize = (value, limit = 180) => normalizedText(value).slice(0, limit);
   // 表单检查器会把固定结构的字段特征包临时写入 aria-label。仅对此内部标记保留完整内容，
@@ -367,6 +388,20 @@ const SnapshotExpression = `(() => {
     const rect = element.getBoundingClientRect();
     return style.display !== 'none' && style.visibility !== 'hidden' && Number(style.opacity || 1) > 0
       && rect.width > 0 && rect.height > 0;
+  };
+  const exposed = (element) => {
+    const width = document.documentElement.clientWidth;
+    const height = document.documentElement.clientHeight;
+    if (!width || !height) return true;
+    const rect = element.getBoundingClientRect();
+    const left = Math.max(1, rect.left + 2), right = Math.min(width - 1, rect.right - 2);
+    const top = Math.max(1, rect.top + 2), bottom = Math.min(height - 1, rect.bottom - 2);
+    // 全页快照保留视口之外的节点供后续滚动；视口内被弹层遮挡的控件不应发布为当前可操作项。
+    if (left >= right || top >= bottom) return true;
+    return [0.25, 0.5, 0.75].some((ratio) => {
+      const hit = document.elementFromPoint(left + (right - left) * ratio, (top + bottom) / 2);
+      return hit === element || (hit && element.contains(hit));
+    });
   };
   const fileInputSurfaceOf = (element) => {
     if (element.tagName !== 'INPUT' || String(element.type || '').toLowerCase() !== 'file') return null;
@@ -497,6 +532,14 @@ const SnapshotExpression = `(() => {
     return current === document.documentElement ? ['html', ...parts].join(' > ') : '';
   };
   const standardCandidates = [...document.querySelectorAll('a[href],button,input,textarea,select,[role],[contenteditable="true"]')];
+  // 部分自定义下拉与日历使用无 role 的列表项/单元格；只采集有明确交互信号的短文本叶控件。
+  const extraCandidates = [...document.querySelectorAll('li,td,[onclick],[tabindex]')].filter((element) => {
+    if (!(element instanceof HTMLElement) || !visible(element)) return false;
+    const text = normalizedText(element.innerText || element.textContent);
+    return text.length > 0 && text.length <= 180
+      && (getComputedStyle(element).cursor === 'pointer' || typeof element.onclick === 'function' || element.tabIndex >= 0)
+      && !element.querySelector('a[href],button,input,textarea,select,[role],[contenteditable="true"]');
+  });
   const bossPhraseCandidates = bossChatPage ? [...document.querySelectorAll(${JSON.stringify(`${BossChatPhrasePanelSelector} *`)})]
     .filter((element) => {
       if (!(element instanceof HTMLElement) || !visible(element)) return false;
@@ -513,10 +556,11 @@ const SnapshotExpression = `(() => {
     ? [...document.querySelectorAll(${JSON.stringify(`${BossChatPhraseControlSelector},${BossChatImageInputSelector}`)}), ...bossPhraseCandidates]
     : [];
   // 聊天动作必须优先进入有限快照，避免长会话页面的普通控件先耗尽元素上限。
-  const candidates = [...new Set([...bossCandidates, ...standardCandidates])];
+  const candidates = [...new Set([...bossCandidates, ...standardCandidates, ...extraCandidates])];
   const items = [];
+  let truncated = false;
   for (const element of candidates) {
-    if (items.length >= ${MaxSnapshotElements}) break;
+    if (items.length >= ${MaxSnapshotElements}) { truncated = true; break; }
     if (!(element instanceof HTMLElement)) continue;
     const tag = element.tagName.toLowerCase();
     const type = normalize(element.getAttribute('type'), 40).toLowerCase();
@@ -524,7 +568,11 @@ const SnapshotExpression = `(() => {
       && element.closest(${JSON.stringify(BossChatImageControlSelector)}) instanceof HTMLElement
       && visible(element.closest(${JSON.stringify(BossChatImageControlSelector)}));
     const hiddenFileInputSurface = type === 'file' ? fileInputSurfaceOf(element) : null;
-    if (!visible(element) && !bossHiddenImageInput && !hiddenFileInputSurface) continue;
+    const controlVisible = visible(element);
+    if (!controlVisible && !bossHiddenImageInput && !hiddenFileInputSurface) continue;
+    // Host 表单规划需保留被固定页头遮挡的字段；实际操作仍逐次执行 Locate 的命中检查。
+    const planningField = ${includeFormFields} && String(element.getAttribute('aria-label') || '').startsWith('__avery_field__');
+    if (controlVisible && !exposed(element) && !planningField) continue;
     if (tag === 'input' && type === 'hidden') continue;
     let href;
     if (element instanceof HTMLAnchorElement && element.href) {
@@ -538,6 +586,7 @@ const SnapshotExpression = `(() => {
       ? normalizedText(element.innerText || element.textContent)
       : '';
     items.push({
+      nodeId: nodeIdOf(element),
       selector: selectorOf(element),
       tag,
       role: roleOf(element),
@@ -562,6 +611,9 @@ const SnapshotExpression = `(() => {
       readOnly: Boolean(element.readOnly),
       autocomplete: normalize(element.getAttribute('autocomplete'), 80),
       valueLength: typeof element.value === 'string' ? element.value.length : undefined,
+      // 密码不进入快照；普通输入值参与 diff，避免等长编辑被误判为无变化。
+      value: type !== 'password' && typeof element.value === 'string' ? element.value.slice(0, ${MaxSnapshotValueChars}) : undefined,
+      valueTruncated: type !== 'password' && typeof element.value === 'string' && element.value.length > ${MaxSnapshotValueChars},
       valid: typeof element.checkValidity === 'function' ? element.checkValidity() : undefined,
       validationMessage: typeof element.validationMessage === 'string' ? normalize(element.validationMessage, 300) : undefined,
       checked: 'checked' in element ? Boolean(element.checked) : undefined,
@@ -571,12 +623,14 @@ const SnapshotExpression = `(() => {
       href,
     });
   }
+  for (const id of state.nodes.keys()) if (!observed.has(id)) state.nodes.delete(id);
   return {
     // A ready document is a valid read-only snapshot even when it has no
     // interactive controls.  Keep readiness in the semantic result so the
     // transport can distinguish that state from a page that is still loading.
     readyState: document.readyState,
     items,
+    truncated,
   };
 })()`;
 
@@ -607,6 +661,9 @@ export class PersonalBrowserCdpRuntime implements PersonalBrowserRuntimePort {
   private taskSessionId: string | null = null;
   private taskTabs = new Map<string, CdpTargetInfo>();
   private refs = new Map<string, ElementFingerprint>();
+  private nodeRefs = new Map<number, string>();
+  private referenceDocument = '';
+  private nextRef = 1;
   private closing = false;
 
   constructor(options: PersonalBrowserCdpRuntimeOptions) {
@@ -1029,13 +1086,59 @@ export class PersonalBrowserCdpRuntime implements PersonalBrowserRuntimePort {
     throw new PersonalBrowserCdpError('BROWSER_COMMAND_TIMEOUT', 'The Avery task document did not become ready in time.', true);
   }
 
-  private async Evaluate(expression: string, options: PersonalBrowserCommandOptions, returnByValue = true, sideEffect = false, awaitPromise = false): Promise<Record<string, any>> {
+  private async Evaluate(expression: string, options: PersonalBrowserCommandOptions, returnByValue = true, sideEffect = false, awaitPromise = false, contextId?: number): Promise<Record<string, any>> {
     await this.AssertTaskTarget(options);
     return this.Send('Runtime.evaluate', {
       expression,
       returnByValue,
+      ...(contextId === undefined ? {} : { contextId }),
       ...(awaitPromise ? { awaitPromise: true } : {}),
     }, this.taskSessionId ?? undefined, options, sideEffect);
+  }
+
+  /** loaderId 标识文档提交；不能只用 URL 或可能在进程切换后复用的 contextId 判断文档身份。 */
+  private async TaskDocument(options: PersonalBrowserCommandOptions): Promise<{ frameId: string; documentId: string }> {
+    await this.AssertTaskTarget(options);
+    const sessionId = this.taskSessionId ?? undefined;
+    const tree = await this.Send('Page.getFrameTree', {}, sessionId, options);
+    const treeField = ReadOwnData(tree, 'frameTree');
+    const frameField = ReadOwnData(treeField.present ? treeField.value : undefined, 'frame');
+    const frame = frameField.present ? frameField.value : undefined;
+    const frameIdField = ReadOwnData(frame, 'id');
+    const loaderIdField = ReadOwnData(frame, 'loaderId');
+    const frameId = frameIdField.present ? frameIdField.value : undefined;
+    const loaderId = loaderIdField.present ? loaderIdField.value : undefined;
+    if (typeof frameId !== 'string' || !frameId || typeof loaderId !== 'string' || !loaderId) {
+      throw new PersonalBrowserCdpError('BROWSER_OUTPUT_INVALID', 'The task page has no main document identity.');
+    }
+    return { frameId, documentId: JSON.stringify([this.taskTargetId, frameId, loaderId]) };
+  }
+
+  /** 仅在任务页的主 frame 创建无额外权限的隔离世界，节点映射不暴露给站点脚本。 */
+  private async SnapshotWorld(options: PersonalBrowserCommandOptions): Promise<{ contextId: number; documentId: string }> {
+    const { frameId, documentId } = await this.TaskDocument(options);
+    const sessionId = this.taskSessionId ?? undefined;
+    const world = await this.Send('Page.createIsolatedWorld', { frameId, worldName: 'avery-snapshot-nodes' }, sessionId, options);
+    const contextField = ReadOwnData(world, 'executionContextId');
+    const contextId = contextField.present ? contextField.value : undefined;
+    if (typeof contextId !== 'number' || !Number.isSafeInteger(contextId) || contextId <= 0) {
+      throw new PersonalBrowserCdpError('BROWSER_OUTPUT_INVALID', 'The task page has no snapshot execution context.');
+    }
+    return { contextId, documentId };
+  }
+
+  /** 已销毁的执行世界等同过期引用；禁止退回 CSS 路径命中新文档或替换节点。 */
+  private async EvaluateReference(expression: string, locator: ElementFingerprint, options: PersonalBrowserCommandOptions, returnByValue = true, sideEffect = false): Promise<Record<string, any>> {
+    if ((await this.TaskDocument(options)).documentId !== locator.documentId) {
+      throw new PersonalBrowserCdpError('BROWSER_STALE_PAGE_REF', 'The referenced document was replaced. Take a new snapshot.');
+    }
+    try { return await this.Evaluate(expression, options, returnByValue, sideEffect, false, locator.contextId); }
+    catch (error) {
+      if (error instanceof Error && /Cannot find context|Execution context.*destroyed|Cannot find.*executionContext/i.test(error.message)) {
+        throw new PersonalBrowserCdpError('BROWSER_STALE_PAGE_REF', 'The referenced document was replaced. Take a new snapshot.');
+      }
+      throw error;
+    }
   }
 
   private Value(result: Record<string, any>): any {
@@ -1085,6 +1188,9 @@ export class PersonalBrowserCdpRuntime implements PersonalBrowserRuntimePort {
     if (itemValues === null || itemValues.some((item: unknown) => !IsSnapshotItem(item))) {
       throw new PersonalBrowserCdpError('BROWSER_OUTPUT_INVALID', 'The browser semantic snapshot has invalid items.');
     }
+    if (new Set(itemValues.map((item) => (item as Record<string, unknown>).nodeId)).size !== itemValues.length) {
+      throw new PersonalBrowserCdpError('BROWSER_OUTPUT_INVALID', 'The browser semantic snapshot has duplicate node identities.');
+    }
     if (itemValues.length > MaxSnapshotElements) {
       throw new PersonalBrowserCdpError('BROWSER_OUTPUT_INVALID', 'The browser semantic snapshot contains too many items.');
     }
@@ -1111,14 +1217,17 @@ export class PersonalBrowserCdpRuntime implements PersonalBrowserRuntimePort {
     return normalized;
   }
 
-  private async Snapshot(options: PersonalBrowserCommandOptions): Promise<Record<string, any>> {
+  private async Snapshot(options: PersonalBrowserCommandOptions, includeFormFields = false): Promise<Record<string, any>> {
     const end = Math.min(options.deadline ?? this.now() + 10_000, this.now() + 10_000);
     // 未提供调用方 deadline 时也必须把同一个十秒边界传给每条 Runtime.evaluate，
     // 否则单条传输默认 60 秒超时会把 loading 轮询变成无界等待。
     const snapshotOptions = { ...options, deadline: end };
     let value: any;
+    let contextId = 0;
+    let documentId = '';
     for (let attempt = 0; attempt < 100 && this.now() < end; attempt += 1) {
-      value = this.SnapshotValue(await this.Evaluate(SnapshotExpression, snapshotOptions));
+      ({ contextId, documentId } = await this.SnapshotWorld(snapshotOptions));
+      value = this.SnapshotValue(await this.Evaluate(SnapshotExpression(includeFormFields), snapshotOptions, true, false, false, contextId));
       // A static document containing only headings/paragraphs has no refs,
       // but BrowserSnapshot must still return its URL/title.  Continue to
       // poll while the document is still loading, even if a partial DOM has
@@ -1140,11 +1249,20 @@ export class PersonalBrowserCdpRuntime implements PersonalBrowserRuntimePort {
       throw new PersonalBrowserCdpError('BROWSER_OUTPUT_INVALID', 'The browser semantic snapshot has no valid task URL.');
     }
     this.refs.clear();
+    const referenceDocument = `${documentId}:${contextId}`;
+    if (this.referenceDocument !== referenceDocument) {
+      this.nodeRefs.clear();
+      this.referenceDocument = referenceDocument;
+    }
     const refs: Record<string, Record<string, unknown>> = {};
     const lines: string[] = [];
-    for (const [index, raw] of value.items.slice(0, MaxSnapshotElements).entries()) {
-      const ref = `e${index + 1}`;
+    for (const raw of value.items.slice(0, MaxSnapshotElements)) {
+      const ref = this.nodeRefs.get(raw.nodeId) ?? `e${this.nextRef++}`;
+      this.nodeRefs.set(raw.nodeId, ref);
       const fingerprint: ElementFingerprint = {
+        nodeId: raw.nodeId,
+        contextId,
+        documentId,
         selector: raw.selector,
         tag: String(raw.tag ?? ''),
         role: String(raw.role ?? ''),
@@ -1174,6 +1292,7 @@ export class PersonalBrowserCdpRuntime implements PersonalBrowserRuntimePort {
         readOnly: raw.readOnly === true,
         ...(typeof raw.autocomplete === 'string' && raw.autocomplete ? { autocomplete: raw.autocomplete } : {}),
         ...(Number.isSafeInteger(raw.valueLength) ? { valueLength: raw.valueLength } : {}),
+        ...(typeof raw.value === 'string' ? { value: raw.value, valueTruncated: raw.valueTruncated === true } : {}),
         ...(typeof raw.valid === 'boolean' ? { valid: raw.valid } : {}),
         ...(typeof raw.validationMessage === 'string' && raw.validationMessage ? { validationMessage: raw.validationMessage } : {}),
         ...(typeof raw.checked === 'boolean' ? { checked: raw.checked } : {}),
@@ -1184,7 +1303,10 @@ export class PersonalBrowserCdpRuntime implements PersonalBrowserRuntimePort {
       const suffix = [fingerprint.type ? `type=${fingerprint.type}` : '', IsTaskWebUrl(raw.href) ? `href=${raw.href}` : ''].filter(Boolean).join(' ');
       lines.push(`- ${fingerprint.role || fingerprint.tag} ${JSON.stringify(fingerprint.name)} [ref=${ref}]${suffix ? ` ${suffix}` : ''}`);
     }
+    // 长期复用的页面只保留有限历史身份；被裁掉的身份重现时分配新编号，绝不复用旧编号。
+    if (this.nodeRefs.size > MaxRememberedNodeRefs) this.nodeRefs = new Map([...this.refs].map(([ref, node]) => [node.nodeId, ref]));
     return {
+      documentId,
       url: snapshotUrl,
       title: String(value.title ?? target?.title ?? ''),
       snapshot: lines.join('\n').slice(0, MaxSnapshotChars),
@@ -1252,20 +1374,20 @@ export class PersonalBrowserCdpRuntime implements PersonalBrowserRuntimePort {
         return element.isContentEditable ? 'textbox' : 'generic';
       };
       let element;
-      try { element = document.querySelector(expected.selector); } catch { return { stale: true }; }
-      if (!(element instanceof HTMLElement)) return { stale: true };
+      element = globalThis.__averySnapshotNodes?.nodes.get(expected.nodeId)?.deref();
+      if (!(element instanceof HTMLElement) || !element.isConnected) return { stale: true };
       const actual = {
         tag: element.tagName.toLowerCase(),
         role: roleOf(element),
         type: normalize(element.getAttribute('type'), 40).toLowerCase(),
         name: nameOf(element),
       };
-      // BrowserInspectForm 在快照后会清理临时字段特征包；这类 ref 依靠唯一 DOM 路径与稳定控件类型重定位。
+      // BrowserInspectForm 会清理临时字段特征包；节点身份仍必须相同，只允许名称标记变化。
       // 普通 Snapshot 仍校验可访问名称，避免页面更新后误操作同路径下的新元素。
       const temporaryFormName = String(expected.name || '').startsWith('__avery_field__');
       if (actual.tag !== expected.tag || actual.type !== expected.type
         || (!temporaryFormName && (actual.role !== expected.role || actual.name !== expected.name))) return { stale: true };
-      // 日期候选已由面板滚动显露；再次居中会滚动页面并触发 ATS 关闭弹层。
+      // 日期候选已由面板滚动显露；再次居中会滚动页面并触发 ATS 关闭弹层，导致点击落在旧坐标。
       const alignment = element.hasAttribute('data-avery-date-editor') ? 'nearest' : 'center';
       element.scrollIntoView({ block: alignment, inline: alignment, behavior: 'instant' });
       const rect = element.getBoundingClientRect();
@@ -1298,7 +1420,7 @@ export class PersonalBrowserCdpRuntime implements PersonalBrowserRuntimePort {
   }
 
   private async Locate(locator: ElementFingerprint, options: PersonalBrowserCommandOptions): Promise<Record<string, any>> {
-    const value = this.Value(await this.Evaluate(this.LocateExpression(locator), options));
+    const value = this.Value(await this.EvaluateReference(this.LocateExpression(locator), locator, options));
     if (!value || value.stale === true || !Number.isFinite(value.x) || !Number.isFinite(value.y)) {
       throw new PersonalBrowserCdpError('BROWSER_STALE_PAGE_REF', 'The browser element changed or is no longer clickable. Take a new snapshot.');
     }
@@ -1325,10 +1447,30 @@ export class PersonalBrowserCdpRuntime implements PersonalBrowserRuntimePort {
 
   private async ClearFocused(options: PersonalBrowserCommandOptions): Promise<void> {
     const sessionId = this.taskSessionId ?? undefined;
-    await this.Send('Input.dispatchKeyEvent', { type: 'rawKeyDown', key: 'a', code: 'KeyA', windowsVirtualKeyCode: 65, nativeVirtualKeyCode: 65, modifiers: 2 }, sessionId, options, true);
-    await this.Send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'a', code: 'KeyA', windowsVirtualKeyCode: 65, nativeVirtualKeyCode: 65, modifiers: 2 }, sessionId, options, true);
-    await this.Send('Input.dispatchKeyEvent', { type: 'rawKeyDown', key: 'Backspace', code: 'Backspace', windowsVirtualKeyCode: 8, nativeVirtualKeyCode: 8 }, sessionId, options, true);
+    // 直接使用 Chromium 编辑命令，避免窗口焦点或系统快捷键解释差异导致 Ctrl+A 未选中旧值。
+    await this.Send('Input.dispatchKeyEvent', { type: 'rawKeyDown', key: 'a', code: 'KeyA', commands: ['selectAll'] }, sessionId, options, true);
+    await this.Send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'a', code: 'KeyA' }, sessionId, options, true);
+    await this.Send('Input.dispatchKeyEvent', { type: 'rawKeyDown', key: 'Backspace', code: 'Backspace', windowsVirtualKeyCode: 8, nativeVirtualKeyCode: 8, commands: ['deleteBackward'] }, sessionId, options, true);
     await this.Send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Backspace', code: 'Backspace', windowsVirtualKeyCode: 8, nativeVirtualKeyCode: 8 }, sessionId, options, true);
+  }
+
+  /** 清空前绑定焦点，插入前确认旧值已清空；被页面阻止时停止，禁止继续追加到旧内容。 */
+  private async AssertFillState(locator: ElementFingerprint, expectedValue: string | undefined, options: PersonalBrowserCommandOptions): Promise<void> {
+    const expression = `(() => {
+      const expected = ${SafeJson(locator)};
+      const expectedFillValue = ${expectedValue === undefined ? 'undefined' : SafeJson(expectedValue)};
+      const element = globalThis.__averySnapshotNodes?.nodes.get(expected.nodeId)?.deref();
+      if (!(element instanceof HTMLElement) || !element.isConnected) return { stale: true };
+      const root = element.getRootNode();
+      const active = root.activeElement;
+      const focused = active === element || (element.isContentEditable && element.contains(active));
+      const value = 'value' in element ? String(element.value) : String(element.textContent || '');
+      return { fillStateValid: focused && !element.disabled && !element.readOnly
+        && (expectedFillValue === undefined || value === expectedFillValue) };
+    })()`;
+    const result = this.Value(await this.EvaluateReference(expression, locator, options));
+    if (result?.stale) throw new PersonalBrowserCdpError('BROWSER_STALE_PAGE_REF', 'The browser input changed. Take a new snapshot.', true);
+    if (result?.fillStateValid !== true) throw new PersonalBrowserCdpError('BROWSER_COMMAND_FAILED', 'The input lost focus or rejected text replacement. Observe the field before continuing.', true);
   }
 
   private async InsertText(text: string, options: PersonalBrowserCommandOptions): Promise<void> {
@@ -1351,8 +1493,8 @@ export class PersonalBrowserCdpRuntime implements PersonalBrowserRuntimePort {
         const expected = ${SafeJson(locator)};
         const requested = ${SafeJson(value)};
         let element;
-        try { element = document.querySelector(expected.selector); } catch { return { stale: true }; }
-        if (!(element instanceof HTMLInputElement) || element.type !== 'date') return { stale: true };
+        element = globalThis.__averySnapshotNodes?.nodes.get(expected.nodeId)?.deref();
+        if (!(element instanceof HTMLInputElement) || !element.isConnected || element.type !== 'date') return { stale: true };
         const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
         if (!setter) return { unsupported: true };
         setter.call(element, requested);
@@ -1360,7 +1502,7 @@ export class PersonalBrowserCdpRuntime implements PersonalBrowserRuntimePort {
         element.dispatchEvent(new Event('change', { bubbles: true }));
         return { filled: element.value === requested, value: element.value };
       })()`;
-      const result = this.Value(await this.Evaluate(expression, options, true, true));
+      const result = this.Value(await this.EvaluateReference(expression, locator, options, true, true));
       if (result?.stale) throw new PersonalBrowserCdpError('BROWSER_STALE_PAGE_REF', 'The browser date input changed. Take a new snapshot.');
       if (result?.unsupported || result?.filled !== true) {
         throw new PersonalBrowserCdpError('BROWSER_ARGUMENT_INVALID', 'The browser rejected the requested date value.');
@@ -1368,8 +1510,11 @@ export class PersonalBrowserCdpRuntime implements PersonalBrowserRuntimePort {
       return { filled: true, textLength: value.length };
     }
     await this.ClickPoint(point as { x: number; y: number }, options);
+    await this.AssertFillState(locator, undefined, options);
     await this.ClearFocused(options);
+    await this.AssertFillState(locator, '', options);
     await this.InsertText(value, options);
+    await this.AssertFillState(locator, value, options);
     return { filled: true, textLength: value.length };
   }
 
@@ -1381,8 +1526,8 @@ export class PersonalBrowserCdpRuntime implements PersonalBrowserRuntimePort {
       const expected = ${SafeJson(locator)};
       const requested = ${SafeJson(value)};
       let element;
-      try { element = document.querySelector(expected.selector); } catch { return { stale: true }; }
-      if (!(element instanceof HTMLSelectElement)) return { unsupported: true };
+      element = globalThis.__averySnapshotNodes?.nodes.get(expected.nodeId)?.deref();
+      if (!(element instanceof HTMLSelectElement) || !element.isConnected) return { unsupported: true };
       const option = [...element.options].find((candidate) => candidate.value === requested || String(candidate.textContent || '').trim() === requested);
       if (!option) return { missing: true };
       element.value = option.value;
@@ -1390,7 +1535,7 @@ export class PersonalBrowserCdpRuntime implements PersonalBrowserRuntimePort {
       element.dispatchEvent(new Event('change', { bubbles: true }));
       return { selected: true };
     })()`;
-    const result = this.Value(await this.Evaluate(expression, options, true, true));
+    const result = this.Value(await this.EvaluateReference(expression, locator, options, true, true));
     if (result?.stale) throw new PersonalBrowserCdpError('BROWSER_STALE_PAGE_REF', 'The select element is unavailable. Take a new snapshot.');
     if (result?.unsupported) throw new PersonalBrowserCdpError('BROWSER_ARGUMENT_INVALID', 'BrowserSelect only supports native select elements; use BrowserClick for custom dropdowns.');
     if (result?.missing) throw new PersonalBrowserCdpError('BROWSER_ARGUMENT_INVALID', 'The requested select option is unavailable.');
@@ -1442,8 +1587,8 @@ export class PersonalBrowserCdpRuntime implements PersonalBrowserRuntimePort {
     const expression = `(() => {
       const expected = ${SafeJson(locator)};
       let element;
-      try { element = document.querySelector(expected.selector); } catch { return null; }
-      if (!(element instanceof HTMLInputElement) || element.type !== 'file') return null;
+      element = globalThis.__averySnapshotNodes?.nodes.get(expected.nodeId)?.deref();
+      if (!(element instanceof HTMLInputElement) || !element.isConnected || element.type !== 'file') return null;
       if (${JSON.stringify(bossHiddenImageInput)}) {
         const onBossChat = (location.hostname === 'zhipin.com' || location.hostname.endsWith('.zhipin.com'))
           && location.pathname === '/web/geek/chat';
@@ -1487,7 +1632,7 @@ export class PersonalBrowserCdpRuntime implements PersonalBrowserRuntimePort {
       }
       return element;
     })()`;
-    const evaluated = await this.Evaluate(expression, options, false);
+    const evaluated = await this.EvaluateReference(expression, locator, options, false);
     const objectId = evaluated.result?.objectId;
     if (typeof objectId !== 'string' || !objectId) throw new PersonalBrowserCdpError('BROWSER_STALE_PAGE_REF', 'The file input is unavailable. Take a new snapshot.');
     try {
@@ -1632,7 +1777,7 @@ export class PersonalBrowserCdpRuntime implements PersonalBrowserRuntimePort {
     if (name === 'open') return { success: true, data: await this.Navigate(args[0], options) };
     await this.EnsureTaskTarget(undefined, options);
     if (name === 'get' && args[0] === 'url') return { success: true, data: { url: (await this.AssertTaskTarget(options)).url } };
-    if (name === 'snapshot') return { success: true, data: await this.Snapshot(options) };
+    if (name === 'snapshot') return { success: true, data: await this.Snapshot(options, args.includes('--form')) };
     if (name === 'eval') {
       if (args.length !== 2 || args[0] !== '-b' || !/^[A-Za-z0-9+/]+={0,2}$/.test(args[1] ?? '')) {
         throw new PersonalBrowserCdpError('BROWSER_ARGUMENT_INVALID', 'The Host browser expression is invalid.');
@@ -1716,6 +1861,8 @@ export class PersonalBrowserCdpRuntime implements PersonalBrowserRuntimePort {
   async Close(): Promise<void> {
     this.closing = true;
     this.refs.clear();
+    this.nodeRefs.clear();
+    this.referenceDocument = '';
     this.taskTargetId = null;
     this.taskSessionId = null;
     this.taskTabs.clear();

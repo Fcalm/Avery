@@ -8,6 +8,7 @@ import type {
 import { AgentDefaultPorts } from './ports';
 import { ApplicationScenario, DefaultScenario } from './prompts';
 import { CreateToolResult, RequireString, type PendingResumeEdit } from './helpers';
+import { BrowserSnapshotPresenter } from './browser-snapshot';
 
 /** 工具定义组装：声明 JSON Schema，参数表统一禁止额外字段。 */
 function CreateDefinition(name: string, description: string, parameters: Record<string, unknown>): RegisteredAgentTool['definition'] {
@@ -174,7 +175,7 @@ function BuildRegistry(): RegisteredAgentTool[] {
       resourceKeys: (input) => [`skill:${String(input?.skillId ?? '').toLowerCase()}`],
     },
     {
-      definition: CreateDefinition('CreateCronTask', 'Prepare a scheduled Agent task from Work. Use only after the user explicitly asks for future or recurring execution. Use scenarioId=application (Work) for job search, browser operations or persistent changes; use default (Chat) only for read-only local questions and summaries. Unattended Work cannot edit resumes or profiles. Creation is saved only after the user confirms the displayed unattended-execution warning. For Work tasks, that confirmation also grants this task personal-browser access for its lifetime; the browser must still be connected and logged in when each browser run starts.', {
+      definition: CreateDefinition('CreateCronTask', 'Create a scheduled Agent task from Work. Use only after the user explicitly asks for future or recurring execution. Use scenarioId=application (Work) for job search, browser operations or persistent changes; use default (Chat) only for read-only local questions and summaries. Unattended Work cannot edit resumes or profiles. Under fully_trusted, creation proceeds without confirmation; other modes require confirmation of the unattended-execution warning. Creating a Work task freezes its task-scoped personal-browser authorization; the browser must still be connected and logged in when each browser run starts.', {
         type: 'object', properties: {
           title: { type: 'string', minLength: 1, maxLength: 200 }, message: { type: 'string', minLength: 1, maxLength: 20000 },
           scenarioId: { type: 'string', enum: ['default', 'application'], description: 'Execution scenario: application means Work, for job search, browser operations and persistent changes; default means Chat, for read-only local questions and summaries. Unattended Work cannot edit resumes or profiles.' },
@@ -224,7 +225,7 @@ function BuildRegistry(): RegisteredAgentTool[] {
           },
         }, required: ['title', 'message', 'scenarioId', 'schedule'], additionalProperties: false,
       }),
-      timeoutMs: 10000, isConcurrencySafe: false, sideEffect: 'local_write', risk: 'high', confirmation: 'always', idempotency: 'required',
+      timeoutMs: 10000, isConcurrencySafe: false, sideEffect: 'local_write', risk: 'high', confirmation: 'scenario_policy', idempotency: 'required',
       resourceKeys: () => ['cron:tasks'],
     },
     {
@@ -243,6 +244,13 @@ function BuildRegistry(): RegisteredAgentTool[] {
     },
   ];
   registry.push(
+    {
+      isConcurrencySafe: false, resourceKeys: () => ['browser:avery-default'],
+      definition: CreateDefinition('BrowserRunScript', 'Execute a bounded JavaScript browser script in Work. Prefer it for already-planned sequential actions, then observe once. Use await page.fill(ref,text), page.press(key), page.click(ref), page.select(ref,value), page.setChecked(ref,bool), page.uploadFile(ref,fileId), page.navigate(url), page.snapshot(options?), page.screenshot(), page.readPage(), page.fillForm(options), page.validateForm(), page.wait({kind,value}), page.switchTab(tabId), page.goBack(). Pass pageRevision from the latest observation or start with page.snapshot(). Supports const/let, arrays, objects, if, for/of and numeric for loops, console.log and return. No Node, imports, functions, eval, DOM, fetch or CDP. Max 30 operations; stop on any failure or required confirmation. Snapshot results are included automatically; print only other needed values. Never replay completed steps. Example: await page.fill("@e1","name"); await page.press("Enter"); await page.fill("@e2","email"); await page.press("Enter"); await page.snapshot();', {
+        type: 'object', properties: { script: { type: 'string', minLength: 1, maxLength: 16000 }, pageRevision: { type: 'integer', minimum: 0 } }, required: ['script'], additionalProperties: false,
+      }),
+      timeoutMs: 120_000, sideEffect: 'external_action', risk: 'high', confirmation: 'scenario_policy', idempotency: 'required',
+    },
     {
       definition: CreateDefinition('ExportResumeFile', 'Use when a company application form requires a resume file upload or BOSS chat requires a resume image, after binding the intended resume with ReadResume. Export it as PDF for company forms or PNG for BOSS chat. The Host returns a fileId; use that exact ID with BrowserUploadFile or ContactBossJobs.imageAssetId. Do not provide resume text or a local path.', { type: 'object', properties: { format: { type: 'string', enum: ['pdf', 'png'], description: 'pdf for company resume upload; png for a BOSS chat image.' } }, required: ['format'], additionalProperties: false }),
       timeoutMs: 120000, isConcurrencySafe: false, sideEffect: 'local_write', risk: 'low', confirmation: 'never', idempotency: 'not_needed',
@@ -357,7 +365,9 @@ function BuildRegistry(): RegisteredAgentTool[] {
     },
     {
       ...BrowserBase,
-      definition: CreateDefinition('BrowserSnapshot', 'Read the current page interactive structure. The result issues element refs and a pageRevision required by later element actions.', EmptyParameters),
+      definition: CreateDefinition('BrowserSnapshot', 'Read the current page interactive structure. Returns mode=full with compact refs on the first observation, or mode=delta (added/updated/removed) or unchanged while its baseline remains in context. Merge deltas into the previous snapshot. Use mode=full to reread everything. Unchanged nodes retain refs; always use the returned current pageRevision for actions.', {
+        type: 'object', properties: { mode: { type: 'string', enum: ['auto', 'full'], description: 'Defaults to auto. Use full when the baseline is missing or the current structure is unclear.' } }, additionalProperties: false,
+      }),
       sideEffect: 'none', risk: 'low', confirmation: 'never', idempotency: 'not_needed',
     },
     {
@@ -382,41 +392,37 @@ function BuildRegistry(): RegisteredAgentTool[] {
     },
     {
       ...BrowserBase,
-      definition: CreateDefinition('BrowserFillForm', 'Inspect and fill the current form from selected profile records and/or the resume already bound by ReadResume. The Host performs inspection, matching, DOM rebinding, and bounded execution internally, including supported ATS date pickers and search dropdowns. Search text alone is not a committed selection; the Host selects real options and verifies retained values. Disabled fields populated by the website are skipped. Continue a partial fill with continuationId; send only short fieldId-to-candidateId resolutions returned by the previous call, or explicit user decisions for missing facts. It cannot upload, accept agreements, submit, or navigate. Call BrowserValidateForm afterwards.', {
+      definition: CreateDefinition('BrowserFillForm', 'Two-phase form filling after resume upload/parsing when a resume attachment is required. First call mode:plan (default) with profileIds and/or useBoundResume:true. It only inspects and returns fields, values, facts and source evidence. Review sources, then execute with continuationId and selections. Select factId, or sourceId + exact quote + contained value + canonical field. Normally fills selected empty fields. After a tracked purpose:resume upload, source_reviewed parser values may be corrected; restore_only pre-upload fields can only retain or restore their original value. restoreFactId is restricted to its original field. Pending parsing blocks writes. Never invent facts, cross records, use DOM indexes, upload, accept agreements, or submit. Replan after execution/structure changes, then BrowserValidateForm. Failed custom selects return observedOptions, requestedValue and selectedPath; assess these before reopening controls. These are visible candidates, not a guaranteed full catalog or new user facts.', {
         type: 'object',
         properties: {
+          mode: { type: 'string', enum: ['plan', 'execute'] },
           profileIds: { type: 'array', minItems: 1, maxItems: 20, uniqueItems: true, items: { type: 'string', minLength: 1, maxLength: 200 } },
           useBoundResume: { type: 'boolean' },
           continuationId: { type: 'string', pattern: '^form-[a-f0-9-]+$', maxLength: 80 },
-          resolutions: {
-            type: 'array', minItems: 1, maxItems: 20,
+          selections: {
+            type: 'array', maxItems: 100,
             items: {
               type: 'object',
               properties: {
-                fieldId: { type: 'string', pattern: '^f[0-9]+$', maxLength: 20 },
-                candidateId: { type: 'string', pattern: '^c[0-9]+$', maxLength: 20 },
+                fieldId: { type: 'string', pattern: '^f[1-9][0-9]*$', maxLength: 20 },
+                factId: { type: 'string', pattern: '^s[1-9][0-9]*$', maxLength: 20 },
+                sourceId: { type: 'string', pattern: '^d[1-9][0-9]*$', maxLength: 20 },
+                quote: { type: 'string', minLength: 1, maxLength: 20000 },
+                value: { type: 'string', minLength: 1, maxLength: 20000 },
+                field: { type: 'string', enum: ['idNumber', 'idType', 'phone', 'email', 'name', 'gender', 'birthDate', 'nationality', 'nativePlace', 'ethnicity', 'residence', 'hukou', 'workYears', 'politicalStatus', 'maritalStatus', 'school', 'major', 'educationType', 'degreeLevel', 'degree', 'company', 'position', 'department', 'companyNature', 'companySize', 'annualSalary', 'workDescription', 'projectName', 'projectRole', 'projectDescription', 'projectResponsibility', 'startDate', 'endDate', 'targetRole', 'targetProvince', 'targetCity', 'targetCategory', 'targetFunction', 'salary', 'availability', 'informationSource', 'workMode', 'jobSeekingType', 'acceptTransfer', 'acceptGlobalAssignment', 'emergencyContactName', 'emergencyContactPhone'] },
               },
-              required: ['fieldId', 'candidateId'], additionalProperties: false,
-            },
-          },
-          decisions: {
-            type: 'array', minItems: 1, maxItems: 30,
-            items: {
-              type: 'object',
-              properties: {
-                field: { type: 'string', enum: ['idNumber', 'idType', 'phone', 'email', 'name', 'gender', 'birthDate', 'nationality', 'nativePlace', 'ethnicity', 'residence', 'hukou', 'workYears', 'politicalStatus', 'maritalStatus', 'school', 'major', 'educationType', 'degreeLevel', 'degree', 'company', 'position', 'department', 'companyNature', 'companySize', 'annualSalary', 'workDescription', 'projectName', 'projectRole', 'projectDescription', 'projectResponsibility', 'startDate', 'endDate', 'targetRole', 'targetProvince', 'targetCity', 'targetCategory', 'targetFunction', 'salary', 'availability', 'informationSource', 'workMode', 'jobSeekingType', 'acceptTransfer', 'acceptGlobalAssignment'] },
-                value: { type: 'string', minLength: 1, maxLength: 2000 },
-                section: { type: 'string', enum: ['personal', 'education', 'work', 'project', 'preference'] },
-                recordIndex: { type: 'integer', minimum: 0, maximum: 99 },
-              },
-              required: ['field', 'value'], additionalProperties: false,
+              required: ['fieldId'],
+              oneOf: [
+                { required: ['factId'], not: { anyOf: [{ required: ['sourceId'] }, { required: ['quote'] }, { required: ['value'] }, { required: ['field'] }] } },
+                { required: ['sourceId', 'quote', 'value', 'field'], not: { required: ['factId'] } },
+              ],
+              additionalProperties: false,
             },
           },
         },
-        anyOf: [
-          { required: ['profileIds'] },
-          { properties: { useBoundResume: { const: true } }, required: ['useBoundResume'] },
-          { required: ['continuationId'] },
+        anyOf: [ { required: ['profileIds'] }, { properties: { useBoundResume: { const: true } }, required: ['useBoundResume'] }, { required: ['continuationId'] } ],
+        allOf: [
+          { if: { properties: { mode: { const: 'execute' } }, required: ['mode'] }, then: { required: ['continuationId', 'selections'] }, else: { not: { required: ['selections'] } } },
         ],
         additionalProperties: false,
       }),
@@ -424,7 +430,7 @@ function BuildRegistry(): RegisteredAgentTool[] {
     },
     {
       ...BrowserBase,
-      definition: CreateDefinition('BrowserValidateForm', 'Reinspect visible form controls after filling and report empty required fields and browser-native validation failures. This is read-only and never submits the form.', EmptyParameters),
+      definition: CreateDefinition('BrowserValidateForm', 'Read actual retained form values and compare them with Agent-reviewed source selections. Month-only sources compare year and month; supported enum synonyms share the filling rules. Returns fieldChecks and businessValid separately from browser-native valid. Unknown values or missing targets are unverified, never success. Never claim all checks matched when businessValid is false or null. Native validity cannot establish source semantics or application completeness. Read-only; never submits.', EmptyParameters),
       sideEffect: 'none', risk: 'low', confirmation: 'never', idempotency: 'not_needed',
     },
     {
@@ -439,17 +445,17 @@ function BuildRegistry(): RegisteredAgentTool[] {
     },
     {
       ...BrowserBase,
-      definition: CreateDefinition('BrowserPressKey', 'Press one allowed browser key. Enter may trigger an external action and therefore requires confirmation.', { type: 'object', properties: { key: { type: 'string', enum: ['Enter', 'Tab', 'Escape', 'Space', 'PageDown', 'PageUp', 'ArrowDown', 'ArrowUp', 'ArrowLeft', 'ArrowRight', 'Home', 'End'] } }, required: ['key'], additionalProperties: false }),
+      definition: CreateDefinition('BrowserPressKey', 'Press one allowed browser key. Under fully_trusted, no confirmation is required, including Enter; other modes follow the browser confirmation policy. Enter may trigger an external action. Enter immediately after a successful BrowserFill may return referencesPreserved:true, allowing the next already-observed input to be filled without another snapshot. Otherwise obtain a fresh snapshot before using refs.', { type: 'object', properties: { key: { type: 'string', enum: ['Enter', 'Tab', 'Escape', 'Space', 'PageDown', 'PageUp', 'ArrowDown', 'ArrowUp', 'ArrowLeft', 'ArrowRight', 'Home', 'End'] } }, required: ['key'], additionalProperties: false }),
       sideEffect: 'external_action', risk: 'medium', confirmation: 'scenario_policy', idempotency: 'required',
     },
     {
       ...BrowserBase,
-      definition: CreateDefinition('BrowserUploadFile', 'Upload a Host-authorized fileId to a file input from the latest BrowserSnapshot. Use either the attachment path exposed in runtime-context or the exact fileId returned by ExportResumeFile; never use a display name or local filesystem path.', { type: 'object', properties: { ...RefParameters.properties, fileId: { type: 'string', maxLength: 1000 } }, required: ['ref', 'pageRevision', 'fileId'], additionalProperties: false }),
-      timeoutMs: 60_000, sideEffect: 'external_action', risk: 'high', confirmation: 'always', idempotency: 'required',
+      definition: CreateDefinition('BrowserUploadFile', 'Upload a Host-authorized fileId to a file input from the latest BrowserSnapshot. For an ATS resume, set purpose:resume BEFORE form filling: the Host records the current form, uploads once and observes parsing/field stability. uploaded:true alone is not parsing completion. If readyForFill:false, use BrowserWait(kind:resume_parse,value:settled), never re-upload just to wait. completionObserved:false means only an observed quiet window. Afterwards request a new FillForm plan to review parser output and protect/restore pre-upload values. Other attachments use purpose:attachment. Use only authorized attachment IDs or the exact fileId returned by ExportResumeFile, never inferred paths. fully_trusted requires no confirmation; other modes follow current policy. File authorization always applies.', { type: 'object', properties: { ...RefParameters.properties, fileId: { type: 'string', maxLength: 1000 }, purpose:{type:'string',enum:['resume','attachment']} }, required: ['ref', 'pageRevision', 'fileId'], additionalProperties: false }),
+      timeoutMs: 60_000, sideEffect: 'external_action', risk: 'high', confirmation: 'scenario_policy', idempotency: 'required',
     },
     {
       ...BrowserBase,
-      definition: CreateDefinition('BrowserWait', 'Wait for one bounded browser condition. For kind=load, value must be load, domcontentloaded, or networkidle. Other kinds use value as the selector, text, or URL pattern. Arbitrary JavaScript conditions are not supported.', { type: 'object', properties: { kind: { type: 'string', enum: ['selector', 'text', 'url', 'load'] }, value: { type: 'string', maxLength: 2000 } }, required: ['kind', 'value'], additionalProperties: false }),
+      definition: CreateDefinition('BrowserWait', 'Wait for one bounded browser condition. kind=resume_parse with value=settled resumes observation of an existing tracked resume upload without uploading again; inspect readyForFill and parseStatus. kind=load accepts load/domcontentloaded/networkidle. Other kinds use a selector, text or URL pattern. Arbitrary JavaScript is unsupported.', { type: 'object', properties: { kind: { type: 'string', enum: ['selector', 'text', 'url', 'load', 'resume_parse'] }, value: { type: 'string', maxLength: 2000 } }, required: ['kind', 'value'], additionalProperties: false }),
       sideEffect: 'none', risk: 'low', confirmation: 'never', idempotency: 'not_needed',
     },
     {
@@ -474,12 +480,14 @@ function BuildRegistry(): RegisteredAgentTool[] {
 
 /** 工具模块：统一执行管道（Schema 校验/一次修复/幂等账本/超时/结构化错误码/统一 disposition）。 */
 export function CreateToolsModule(ports: AgentDefaultPorts): ToolsModule {
+  const browserSnapshots = new BrowserSnapshotPresenter();
   const registry = BuildRegistry();
   const byName = new Map(registry.map((tool) => [tool.definition.function.name, tool]));
   const writeTools = new Set(
     registry.filter((tool) => tool.sideEffect === 'local_write' || tool.sideEffect === 'external_action').map((tool) => tool.definition.function.name),
   );
   const executedToolCalls = new Map<string, Record<string, unknown>>();
+  const scriptCalls = new Map<string, Promise<ToolExecutionResult>>();
   let toolValidators: Map<string, (value: unknown) => boolean> | null = null;
 
   function NormalizeToolName(name: string): string {
@@ -973,11 +981,31 @@ export function CreateToolsModule(ports: AgentDefaultPorts): ToolsModule {
     } });
   }
 
-  /** 冻结创建提案并让宿主展示周期级无人值守授权；确认前不写数据库、不注册 OS 调度。 */
+  /** 完全信任直接提交冻结提案；其他档位等待周期级无人值守确认，确认前不产生调度。 */
   async function CreateCronTask(context: ToolContext, callId: string, args: Record<string, unknown>): Promise<ToolExecutionResult> {
     if (context.unattended) return CreateToolResult(callId, { ok: false, code: 'TOOL_NOT_ALLOWED', message: 'An unattended Cron Run cannot create another CronTask.' });
     const cronTask = context.ports.cronTask;
     if (!cronTask) return CreateToolResult(callId, { ok: false, code: 'RESOURCE_NOT_AUTHORIZED', message: 'CronTask scheduling is unavailable in the current host.' });
+    if (!RequiresConfirmation(context, 'CreateCronTask')) {
+      if (context.signal?.aborted) return CreateToolResult(callId, { ok: false, code: 'CANCELLED', message: 'CronTask creation was cancelled.' });
+      const idempotencyKey = CreateIdempotencyKey(context, 'CreateCronTask', HashArguments(args));
+      const previous = await GetLedger(context).FindByIdempotencyKey(idempotencyKey);
+      if (previous?.status === 'succeeded' && previous.receipt) return CreateToolResult(callId, { ok: true, created: true, task: { id: previous.receipt.resourceIds[0] }, replayed: true }, { receipt: previous.receipt });
+      if (previous?.status === 'status_unknown' || previous?.status === 'started') return CreateToolResult(callId, { ok: false, code: 'STATUS_UNKNOWN', message: 'The previous CronTask creation must be reconciled before retrying.' }, { disposition: 'pause' });
+      const proposal = await cronTask.PrepareCreate(args);
+      const ledgerEntry = await StartLedger(context, 'CreateCronTask', args, idempotencyKey);
+      try {
+        const result = await cronTask.CommitCreate(proposal.confirmationId, context.signal);
+        if (!result.created || !result.task?.id) throw new Error('CronTask creation returned no saved task.');
+        const receipt: ToolReceipt = { receiptId: `receipt-${randomUUID()}`, toolDefinitionId: 'CreateCronTask', resourceIds: [result.task.id], idempotencyKey };
+        await FinishLedger(context, ledgerEntry, 'succeeded', { receipt });
+        return CreateToolResult(callId, { ok: true, ...result }, { receipt });
+      } catch (error) {
+        const code = context.signal?.aborted ? 'STATUS_UNKNOWN' : 'CRON_CREATION_FAILED';
+        await FinishLedger(context, ledgerEntry, code === 'STATUS_UNKNOWN' ? 'status_unknown' : 'failed', { errorCode: code });
+        return CreateToolResult(callId, { ok: false, code, message: error instanceof Error ? error.message : 'CronTask creation failed.' }, code === 'STATUS_UNKNOWN' ? { disposition: 'pause' } : undefined);
+      }
+    }
     const proposal = await cronTask.PrepareCreate(args);
     context.emit({ type: 'cron_task_confirmation', requestId: context.requestId, confirmationId: proposal.confirmationId, cronTask: {
       title: String(args.title ?? ''), message: String(args.message ?? ''), scenarioId: proposal.scenarioId, schedule: args.schedule, summary: proposal.summary,
@@ -1196,6 +1224,7 @@ export function CreateToolsModule(ports: AgentDefaultPorts): ToolsModule {
       const message = error instanceof Error ? error.message : fallbackMessage;
       const siteRisk = code === 'BROWSER_SITE_RISK_DETECTED';
       const visibleRequired = code === 'BROWSER_SITE_VISIBLE_REQUIRED';
+      const extensionRequired = ['BROWSER_EXTENSION_STALE', 'BROWSER_EXTENSION_REQUIRED', 'BROWSER_EXTENSION_DISCONNECTED'].includes(code);
       const personalBrowserRequired = ['BROWSER_EXISTING_BROWSER_UNAVAILABLE', 'BROWSER_EXISTING_BROWSER_PERMISSION_REQUIRED', 'BROWSER_BOSS_TAB_REQUIRED', 'BROWSER_USER_BROWSER_INTERACTIVE_ONLY', 'BROWSER_CRON_ACCESS_REQUIRED', 'BROWSER_CRON_SCOPE_DENIED'].includes(code);
       if (siteRisk && !context.unattended) {
         context.emit({
@@ -1203,10 +1232,16 @@ export function CreateToolsModule(ports: AgentDefaultPorts): ToolsModule {
           browserAction: { toolName, summary: 'BOSS 页面触发验证、限流或账号异常，自动化已停止。请在可见浏览器中核对后再继续。', status: 'user_action_required' },
         });
       }
+      if (extensionRequired && !context.unattended) context.emit({
+        type: 'browser_user_action', requestId: context.requestId,
+        browserAction: { toolName, summary: code === 'BROWSER_EXTENSION_STALE'
+          ? 'Avery Browser 扩展协议未更新。请在 chrome://extensions 或 edge://extensions 重新加载当前使用的扩展，再发送“继续任务”。'
+          : 'Avery Browser 扩展未连接。请在浏览器中启用扩展并确认连接后，再发送“继续任务”。', status: 'user_action_required' },
+      });
       return CreateToolResult(
         callId,
         { ok: false, code, message },
-        siteRisk || visibleRequired || personalBrowserRequired ? { disposition: context.unattended ? 'pause' : 'wait_user_input' } : undefined,
+        siteRisk || visibleRequired || personalBrowserRequired || extensionRequired ? { disposition: context.unattended ? 'pause' : 'wait_user_input' } : undefined,
       );
     };
     if (toolName === 'BrowserScreenshot' && context.supportsVisionInput !== true) {
@@ -1238,14 +1273,13 @@ export function CreateToolsModule(ports: AgentDefaultPorts): ToolsModule {
       }
       prepareArguments = {
         ...args,
-        // 首次调用注入完整来源；续填只携带短句柄和新增的用户决定，来源由 Runtime 的短寿命状态保存。
+        // 首次规划注入授权来源；后续规划和执行仅用短句柄，来源由 Runtime 保存。
         ...(!continuationId ? {
           __formSources: {
             profiles: selectedProfiles,
             ...(args.useBoundResume === true && context.boundResume ? { resume: context.boundResume } : {}),
-            ...(Array.isArray(args.decisions) ? { decisions: args.decisions } : {}),
           },
-        } : Array.isArray(args.decisions) ? { __formDecisions: args.decisions } : {}),
+        } : {}),
       };
     }
     let proposal: BrowserActionProposal;
@@ -1261,14 +1295,18 @@ export function CreateToolsModule(ports: AgentDefaultPorts): ToolsModule {
     }
     if (context.signal?.aborted) return CreateToolResult(callId, { ok: false, code: 'CANCELLED', message: 'Browser action was cancelled before execution.' });
     const meta = GetToolMeta(toolName);
-    const hasExternalEffect = meta?.sideEffect === 'external_action';
-    const requiresConfirmation = hasExternalEffect && !context.unattended && (
+    const hasExternalEffect = meta?.sideEffect === 'external_action' && !(toolName === 'BrowserFillForm' && (args.mode ?? 'plan') === 'plan');
+    // 仅对用户指定的上传和按键免确认；提交、协议等其他动作仍遵守强制确认策略。
+    const trustedWithoutConfirmation = context.confirmationMode === 'fully_trusted' && ['BrowserUploadFile', 'BrowserPressKey'].includes(toolName);
+    const requiresConfirmation = hasExternalEffect && !context.unattended && !trustedWithoutConfirmation && (
       proposal.forceConfirmation
       || meta?.confirmation === 'always'
       || context.confirmationMode === 'always_confirm'
       || (context.confirmationMode === 'allow_low_risk' && proposal.risk !== 'low')
     );
-    const idempotencyKey = CreateIdempotencyKey(context, toolName, proposal.proposalHash);
+    // 同页面连续按相同键是合法序列；按调用身份去重，不能按相同 key/revision 吞掉后续输入确认。
+    const idempotencyKey = CreateIdempotencyKey(context, toolName, toolName === 'BrowserPressKey'
+      ? HashArguments({ proposalHash: proposal.proposalHash, callId }) : proposal.proposalHash);
     if (requiresConfirmation) {
       if (!context.pendingBrowserActions) return CreateToolResult(callId, { ok: false, code: 'BROWSER_CONFIRMATION_UNAVAILABLE', message: 'Browser confirmation storage is unavailable.' }, { disposition: 'pause' });
       const confirmationId = `browser-confirmation-${randomUUID()}`;
@@ -1306,7 +1344,8 @@ export function CreateToolsModule(ports: AgentDefaultPorts): ToolsModule {
         return CreateToolResult(callId, { ok: false, code: 'STATUS_UNKNOWN', data: outcome.data, message: 'The browser action outcome is unknown. Do not retry without user verification.' }, { disposition: 'pause' });
       }
       if (toolName === 'BrowserSnapshot') {
-        const snapshotText = JSON.stringify(outcome.data).slice(0, 100_000);
+        // 风险检查覆盖完整底层快照，不能因输入值或字段上下文较长而漏掉后部的登录/验证码控件。
+        const snapshotText = JSON.stringify(outcome.data);
         if (/captcha|recaptcha|hcaptcha|turnstile|verification code|验证码|人机验证|"type"\s*:\s*"password"/i.test(snapshotText)) {
           context.emit({
             type: 'browser_user_action',
@@ -1347,7 +1386,10 @@ export function CreateToolsModule(ports: AgentDefaultPorts): ToolsModule {
         idempotencyKey,
       } : undefined;
       if (ledgerEntry && receipt) await FinishLedger(context, ledgerEntry, 'succeeded', { receipt });
-      return CreateToolResult(callId, { ok: true, data: outcome.data, ...(receipt ? { receipt } : {}) }, receipt ? { receipt } : undefined);
+      const modelData = toolName === 'BrowserSnapshot'
+        ? browserSnapshots.Present(browser, context, context.browserSnapshotResultId ?? callId, outcome.data, args.mode === 'full' || context.requiresBrowserSnapshot === true)
+        : outcome.data;
+      return CreateToolResult(callId, { ok: true, data: modelData, ...(receipt ? { receipt } : {}) }, receipt ? { receipt } : undefined);
     } catch (error) {
       const code = error && typeof error === 'object' && 'code' in error ? String((error as { code: unknown }).code) : 'BROWSER_COMMAND_FAILED';
       if (ledgerEntry) await FinishLedger(context, ledgerEntry, code === 'CANCELLED' ? 'status_unknown' : 'failed', { errorCode: code });
@@ -1393,13 +1435,13 @@ export function CreateToolsModule(ports: AgentDefaultPorts): ToolsModule {
         },
       } : {}),
     };
-    // 采集取消/超时必须等待在途写入计数完成并释放任务锁，不能race后留下后台写入。
-    if (toolName === 'CollectJobs') {
+    // 采集和脚本取消后等待在途子操作结算，保留已完成计数；不能 race 后遗留后台写入。
+    if (toolName === 'CollectJobs' || toolName === 'BrowserRunScript') {
       const timer = setTimeout(() => executionController.abort(new Error('Tool execution timed out.')), remainingMs);
       try { return await execution(executionContext); }
       catch (error) {
         const value = error as { code?: string; message?: string };
-        return CreateToolResult(callId, { ok: false, code: value.code ?? 'JOB_COLLECTION_FAILED', message: value.message ?? 'Collection failed to settle.' }, { disposition: 'pause' });
+        return CreateToolResult(callId, { ok: false, code: value.code ?? (toolName === 'BrowserRunScript' ? 'BROWSER_SCRIPT_FAILED' : 'JOB_COLLECTION_FAILED'), message: value.message ?? 'Tool failed to settle.' }, { disposition: 'pause' });
       }
       finally { clearTimeout(timer); context.signal?.removeEventListener('abort', abortFromRun); }
     }
@@ -1447,13 +1489,13 @@ export function CreateToolsModule(ports: AgentDefaultPorts): ToolsModule {
     });
   }
 
-  return {
+  const toolModule: ToolsModule = {
     packageName: '@avery/agent-modules-defaults',
     name: 'avery.agent-defaults',
     version: '0.1.0',
     sdkVersion: AgentSdkContractVersion,
     slot: 'tools',
-    capabilities: [`tools:default:${registry.filter((tool) => tool.allowedScenarios?.includes('default')).length}`, `tools:application:${registry.filter((tool) => tool.allowedScenarios?.includes('application')).length}`, 'browser:atomic', 'browser:vision-screenshot', 'browser:fill-batch', 'skills:progressive', 'cron:scheduled', 'applications:tracking', 'jobs:collection', 'jobs:library', 'boss:contact-batch'],
+    capabilities: [`tools:default:${registry.filter((tool) => tool.allowedScenarios?.includes('default')).length}`, `tools:application:${registry.filter((tool) => tool.allowedScenarios?.includes('application')).length}`, 'browser:atomic', 'browser:script', 'browser:vision-screenshot', 'browser:fill-batch', 'skills:progressive', 'cron:scheduled', 'applications:tracking', 'jobs:collection', 'jobs:library', 'boss:contact-batch'],
     /** 返回设计文档 MVP 白名单工具；旧名仅兼容旧快照，不再向新模型暴露。 */
     GetToolDefinitions(scenarioId = 'default') { return registry.filter((tool) => tool.allowedScenarios?.includes(scenarioId)); },
     /** 统一执行管道：Schema 校验与一次修复、写工具幂等账本、按工具超时、结构化错误码、统一 disposition。 */
@@ -1482,6 +1524,21 @@ export function CreateToolsModule(ports: AgentDefaultPorts): ToolsModule {
         const fixed = FixArguments(args, schema ?? {});
         if (JSON.stringify(fixed) !== JSON.stringify(args) && validator(fixed)) args = fixed;
         else return CreateToolResult(call.id, { ok: false, code: 'INVALID_TOOL_ARGUMENTS', message: 'Tool arguments do not match the schema. Please correct the call once.' });
+      }
+      if (toolName === 'BrowserRunScript') {
+        const key = `${context.sessionId}:${call.id}`;
+        const cached = scriptCalls.get(key);
+        if (cached) return cached;
+        const flight = ExecuteWithTimeout(context, call.id, toolName, args, async (executionContext) => {
+          const { ExecuteBrowserScript } = await import('./browser-script-tool.js');
+          return ExecuteBrowserScript({ context: executionContext, callId: call.id, args,
+            execute: (child, childContext) => toolModule.ExecuteToolCall(child, childContext),
+            trace: (payload) => ports.observabilityStore?.AppendTraceEvent?.(context.requestId, 'browser_script_step', payload),
+          });
+        });
+        scriptCalls.set(key, flight);
+        if (scriptCalls.size > 100) scriptCalls.delete(scriptCalls.keys().next().value!);
+        return flight;
       }
       if (writeTools.has(toolName)) {
         const cached = executedToolCalls.get(`${context.sessionId}:${call.id}`);
@@ -1530,4 +1587,5 @@ export function CreateToolsModule(ports: AgentDefaultPorts): ToolsModule {
       return result;
     },
   };
+  return toolModule;
 }

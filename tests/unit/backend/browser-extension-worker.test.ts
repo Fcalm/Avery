@@ -37,7 +37,7 @@ function StartWorker(chrome: any, fetch: (...args: any[]) => any, timeOrigin = D
     ? (callback: (...args: any[]) => void, milliseconds: number, ...args: any[]) => setTimeout(callback, Math.min(milliseconds, 40), ...args)
     : setTimeout;
   const context = createContext({
-    chrome, fetch, URL, AbortController, AbortSignal, setTimeout: timer, clearTimeout,
+    chrome, fetch, URL, URLSearchParams, AbortController, AbortSignal, setTimeout: timer, clearTimeout,
     // Chrome mocks live in the test's host realm; expose the same realm intrinsics
     // so the worker's strict plain-object boundary remains strict in this VM.
     Object, Array,
@@ -53,12 +53,12 @@ async function WaitUntil(predicate: () => boolean, timeoutMs = 1000): Promise<vo
   if (!predicate()) throw new Error('condition not reached before test deadline');
 }
 
-async function CallMessage(listener: MessageListener, message: unknown, timeoutMs = 4000) {
+async function CallMessage(listener: MessageListener, message: unknown, timeoutMs = 4000, sender: unknown = {}) {
   let returnValue: boolean | void;
   const responses: unknown[] = [];
   const response = new Promise<unknown>((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error('message listener did not respond')), timeoutMs);
-    returnValue = listener(message, {}, (value) => {
+    returnValue = listener(message, sender, (value) => {
       responses.push(value);
       if (responses.length === 1) { clearTimeout(timer); resolve(value); }
     });
@@ -67,6 +67,71 @@ async function CallMessage(listener: MessageListener, message: unknown, timeoutM
   await new Promise((done) => setTimeout(done, 0));
   return { returnValue: returnValue!, responses, value };
 }
+
+describe('Avery pairing page cleanup', () => {
+  const token = 'd'.repeat(64);
+  const pairUrl = `http://127.0.0.1:17653/pair#token=${token}&port=17653`;
+
+  function Fixture(options: { failHello?: boolean; currentUrl?: string; pendingUrl?: string } = {}) {
+    let listener: MessageListener | undefined;
+    const removed: number[] = [];
+    const queried: number[] = [];
+    StartWorker({
+      storage: { local: StorageArea({}), session: StorageArea({}) },
+      runtime: {
+        onMessage: { addListener: (value: MessageListener) => { listener = value; } },
+        onStartup: { addListener() {} }, onInstalled: { addListener() {} },
+        getManifest: () => ({ version: '0.2.0' }),
+      },
+      alarms: { create() {}, onAlarm: { addListener() {} } },
+      tabs: {
+        get: async (id: number) => { queried.push(id); return { id, url: options.currentUrl ?? pairUrl, pendingUrl: options.pendingUrl }; },
+        remove: async (id: number) => { removed.push(id); },
+      },
+      debugger: {},
+    }, async (url: string) => new URL(url).pathname === '/bridge/hello'
+      ? { ok: !options.failHello, status: options.failHello ? 503 : 200, json: async () => ({ ok: true }) }
+      : { ok: false, status: 409, json: async () => ({ code: 'BROWSER_EXTENSION_STALE' }) });
+    return {
+      removed, queried,
+      pair: (sender: unknown = { tab: { id: 42 }, frameId: 0, url: pairUrl }) => CallMessage(listener!, { type: 'avery_pair', token, port: 17653 }, 4000, sender),
+    };
+  }
+
+  it('握手成功后关闭发起配对的顶层标签页', async () => {
+    const fixture = Fixture();
+    expect((await fixture.pair()).value).toEqual({ ok: true });
+    expect(fixture.queried).toEqual([42]);
+    expect(fixture.removed).toEqual([42]);
+  });
+
+  it('握手失败时保留页面且不尝试关闭标签页', async () => {
+    const fixture = Fixture({ failHello: true });
+    expect((await fixture.pair()).value).toMatchObject({ ok: false });
+    expect(fixture.queried).toEqual([]);
+    expect(fixture.removed).toEqual([]);
+  });
+
+  it.each([
+    { currentUrl: 'https://example.com/user-page' },
+    { pendingUrl: 'https://example.com/user-page' },
+  ])('用户已经导航或正在导航时保留标签页：%j', async (options) => {
+    const fixture = Fixture(options);
+    expect((await fixture.pair()).value).toEqual({ ok: true });
+    expect(fixture.removed).toEqual([]);
+  });
+
+  it.each([
+    { tab: { id: 42 }, frameId: 1, url: pairUrl },
+    { tab: { id: 42 }, frameId: 0, url: 'https://example.com/pair' },
+    { tab: { id: 42 }, frameId: 0, url: pairUrl.replace(token, 'e'.repeat(64)) },
+  ])('不关闭子框架或与本次配对不符的页面：%j', async (sender) => {
+    const fixture = Fixture();
+    expect((await fixture.pair(sender)).value).toEqual({ ok: true });
+    expect(fixture.queried).toEqual([]);
+    expect(fixture.removed).toEqual([]);
+  });
+});
 
 function AbortableWait(signal?: AbortSignal): Promise<never> {
   return new Promise((_, reject) => {
@@ -112,11 +177,11 @@ describe('Avery browser extension worker', () => {
     await expect(CallMessage(onMessage!, { type: 'avery_pair', token: 'a'.repeat(64), port: 17653 })).resolves.toMatchObject({ value: { ok: true } });
     await WaitUntil(() => requests.some((request) => request.path === '/bridge/hello'));
     const hello = requests.find((request) => request.path === '/bridge/hello');
-    expect(hello?.body).toMatchObject({ version: '0.2.0', protocolRevision: 'avery-browser-extension-bridge-v1' });
+    expect(hello?.body).toMatchObject({ version: '0.2.0', protocolRevision: 'avery-browser-extension-bridge-v2' });
     expect(hello?.body.workerInstanceId).toEqual(expect.any(String));
     await WaitUntil(() => requests.some((request) => request.path === '/bridge/poll'));
     const poll = requests.find((request) => request.path === '/bridge/poll');
-    expect(poll?.body).toMatchObject({ version: '0.2.0', protocolRevision: 'avery-browser-extension-bridge-v1', workerInstanceId: hello?.body.workerInstanceId });
+    expect(poll?.body).toMatchObject({ version: '0.2.0', protocolRevision: 'avery-browser-extension-bridge-v2', workerInstanceId: hello?.body.workerInstanceId });
   });
 
   it('TargetInfo only consumes own raw tab identity data and ignores unrelated Chrome fields', () => {
@@ -522,8 +587,8 @@ describe('Avery browser extension worker', () => {
     expect(Object.keys(storage).some((key) => key.startsWith('averyTaskTabs.'))).toBe(false);
     await new Promise((done) => setTimeout(done, 0));
     expect(results).toEqual(expect.arrayContaining([
-      expect.objectContaining({ id: 'old-close', ok: true, data: { closed: true, status: 'confirmed', browserTaskId: 'old-task', closedTabs: 1, unknownTabs: 0 }, version: '0.2.0', protocolRevision: 'avery-browser-extension-bridge-v1', workerInstanceId: expect.any(String) }),
-      expect.objectContaining({ id: 'new-create', ok: true, data: { id: 2, result: { targetId: '20' } }, version: '0.2.0', protocolRevision: 'avery-browser-extension-bridge-v1', workerInstanceId: expect.any(String) }),
+      expect.objectContaining({ id: 'old-close', ok: true, data: { closed: true, status: 'confirmed', browserTaskId: 'old-task', closedTabs: 1, unknownTabs: 0 }, version: '0.2.0', protocolRevision: 'avery-browser-extension-bridge-v2', workerInstanceId: expect.any(String) }),
+      expect.objectContaining({ id: 'new-create', ok: true, data: { id: 2, result: { targetId: '20' } }, version: '0.2.0', protocolRevision: 'avery-browser-extension-bridge-v2', workerInstanceId: expect.any(String) }),
     ]));
   });
 
@@ -587,8 +652,8 @@ describe('Avery browser extension worker', () => {
     }
     expect(events).toEqual(['remove:10']);
     expect(results).toEqual(expect.arrayContaining([
-      expect.objectContaining({ id: 'first-close', ok: true, data: { closed: true, status: 'confirmed', browserTaskId: 'close-task', closedTabs: 1, unknownTabs: 0 }, version: '0.2.0', protocolRevision: 'avery-browser-extension-bridge-v1', workerInstanceId: expect.any(String) }),
-      expect.objectContaining({ id: 'late-create', ok: false, error: { code: 'BROWSER_COMMAND_TIMEOUT', message: 'Browser command expired before execution.', statusUnknown: false }, version: '0.2.0', protocolRevision: 'avery-browser-extension-bridge-v1', workerInstanceId: expect.any(String) }),
+      expect.objectContaining({ id: 'first-close', ok: true, data: { closed: true, status: 'confirmed', browserTaskId: 'close-task', closedTabs: 1, unknownTabs: 0 }, version: '0.2.0', protocolRevision: 'avery-browser-extension-bridge-v2', workerInstanceId: expect.any(String) }),
+      expect.objectContaining({ id: 'late-create', ok: false, error: { code: 'BROWSER_COMMAND_TIMEOUT', message: 'Browser command expired before execution.', statusUnknown: false }, version: '0.2.0', protocolRevision: 'avery-browser-extension-bridge-v2', workerInstanceId: expect.any(String) }),
     ]));
   });
 

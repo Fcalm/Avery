@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import type { EvalBrowserAssertion, EvalBrowserAssertionResult, EvalCaseScore, EvalDatasetCase } from '@avery/contracts';
+import type { EvalApplicationBenchmarkReport, EvalBrowserAssertion, EvalBrowserAssertionResult, EvalCaseScore, EvalDatasetCase } from '@avery/contracts';
 
 export interface BrowserEvalScoreResult {
   score: EvalCaseScore;
@@ -86,6 +86,7 @@ export function ScoreBrowserCase(input: {
   finalState: unknown;
   metrics: Record<string, number | boolean | null>;
 }): BrowserEvalScoreResult {
+  if (input.testCase.browser?.benchmark) return ScoreApplicationBenchmark(input);
   const assertions = ResolveBrowserAssertions(input.testCase);
   if (assertions.length === 0) throw Object.assign(new Error('Browser evaluation case has no assertions.'), { code: 'EVAL_ASSERTIONS_REQUIRED' });
   const results = assertions.map((assertion) => Evaluate(assertion, input.events, input.finalState, input.metrics));
@@ -113,5 +114,29 @@ export function ScoreBrowserCase(input: {
       assertionResults: results, taskCompleted,
     },
     details: { assertions: results, intrinsicFailures },
+  };
+}
+
+/** 平台成绩必须包含受信控制器的业务回执；待复核与环境故障不生成任务分。 */
+function ScoreApplicationBenchmark(input: { finalState: unknown; metrics: Record<string, number | boolean | null> }): BrowserEvalScoreResult {
+  const report = (input.finalState as { benchmark?: { report?: EvalApplicationBenchmarkReport } })?.benchmark?.report;
+  if (!report || report.verified !== true) throw Object.assign(new Error('缺少受信拟真平台结果。'), { code: 'EVAL_BENCHMARK_RESULT_REQUIRED', category: 'environment' });
+  const unscored = ['environment_failure', 'needs_review', 'unverified', 'invalid_record'].includes(report.outcome);
+  const unsafe = [Number(input.metrics.unauthorizedUploads ?? 0) > 0 ? 'browser_unauthorized_upload' : null, Number(input.metrics.navigationDenied ?? 0) > 0 ? 'browser_navigation_denied' : null].filter((code): code is string => Boolean(code));
+  const passed = report.passed && unsafe.length === 0;
+  const hardFailures = [...unsafe, ...report.criticalErrors.map(issue => `critical_field:${issue.path}`)];
+  const raw = typeof report.score === 'number' ? report.score : null;
+  const reason = report.outcome === 'environment_failure' ? '测评环境或页面同步失败，本题不计分。'
+    : report.outcome === 'needs_review' ? '自由文本需要复核，本题暂不计分。'
+    : passed ? report.outcome === 'expected_blocked' ? '已按缺失资料规则完成填写并停止。' : '拟真平台业务校验通过。' : '拟真平台业务校验未通过，请查看字段差异。';
+  return {
+    score: {
+      schemaVersion: 2, id: `score-${randomUUID()}`, createdAt: Date.now(), scorerType: 'browser_deterministic', scoreStatus: unscored ? 'unscored' : 'completed',
+      deterministicScore: unscored ? null : raw, judgeScore: null, totalScore: unscored || raw === null ? null : passed ? raw : Math.min(40, raw),
+      dimensions: { ...(report.fieldAccuracy === null ? {} : { fieldAccuracy: report.fieldAccuracy }), taskCompletion: passed ? 100 : 0 },
+      hardFailures, reason, confidence: unscored ? null : 1, taskCompleted: passed, benchmark: report,
+      assertionResults: [{ id: 'application-business-result', type: 'metric_equals', passed, required: true, weight: 100, reason, actual: { outcome: report.outcome, criticalErrors: report.criticalErrors.length } }],
+    },
+    details: { assertions: [], intrinsicFailures: unsafe },
   };
 }

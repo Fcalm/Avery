@@ -64,6 +64,7 @@ export class BossContactService implements BossContactPort {
   async Prepare(input: Parameters<BossContactPort['Prepare']>[0]): Promise<BrowserActionProposal> {
     const status = await this.input.getBrowserStatus();
     if (!status?.running || !['chrome', 'edge'].includes(status.engine)) throw new BossContactError('BOSS_BROWSER_UNAVAILABLE', 'A logged-in authorized personal browser is required.');
+    if (!Number.isSafeInteger(status.pageRevision) || status.pageRevision < 0) throw new BossContactError('BOSS_BROWSER_UNAVAILABLE', 'The authorized browser page revision is unavailable.');
     const view = await this.input.loadViewModel(); const jobs = Array.isArray(view?.jobs) ? view.jobs : [];
     const frozen: FrozenItem[] = input.items.map((item) => {
       const job = jobs.find((candidate: any) => candidate.id === item.jobId);
@@ -97,7 +98,8 @@ export class BossContactService implements BossContactPort {
       summary,
       risk: 'high',
       forceConfirmation: Boolean(input.imageAssetId),
-      pageRevision: 0,
+      // 批处理也绑定准备时的真实页面版本；不能使用 0 触发宿主的必然过期判定。
+      pageRevision: status.pageRevision,
       resourceIds: frozen.map((item) => `jobs:${item.jobId}`),
     };
   }

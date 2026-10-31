@@ -51,7 +51,8 @@ function CreateTestRuntime(options: Record<string, any>): AgentBrowserRuntime {
     CloseTask: vi.fn(async () => ({ status: 'confirmed', browserTaskId: 'test-task', closedTabs: 1, unknownTabs: 0 })),
     Close: vi.fn(async () => { connected = false; }),
   } as unknown as BrowserExtensionBridge;
-  return new AgentBrowserRuntime({
+  const values = new Map<string, string>();
+  const runtime = new AgentBrowserRuntime({
     runtimeRoot: options.runtimeRoot,
     resolveUploadFile: options.resolveUploadFile,
     browserExtensionBridge: bridge,
@@ -59,10 +60,31 @@ function CreateTestRuntime(options: Record<string, any>): AgentBrowserRuntime {
     ...(options.normalizeNavigationUrl ? { normalizeNavigationUrl: options.normalizeNavigationUrl } : {}),
     ...(options.delay ? { delay: options.delay } : {}),
     ...(options.recordLog ? { recordLog: options.recordLog } : {}),
-    createExtensionRuntime: options.createExtensionRuntime ?? (() => PersonalRuntimeStub({ run: async (command, execution) => options.runBrowserCommand
-        ? options.runBrowserCommand({ args: command, stdin: execution?.stdin, deadline: execution?.deadline })
-        : { success: true, data: {} } })),
+    createExtensionRuntime: options.createExtensionRuntime ?? (() => PersonalRuntimeStub({ run: async (command, execution) => {
+      const response = options.runBrowserCommand
+        ? await options.runBrowserCommand({ args: command, stdin: execution?.stdin, deadline: execution?.deadline })
+        : { success: true, data: {} };
+      // 夹具在成功写入后保留真实值；只有页面夹具报告已保留时才回读，不能仅因动作成功就通过。
+      if (command[0] === 'batch') {
+        const rows = JSON.parse(execution?.stdin ?? '[]') as string[][];
+        rows.forEach((row, i) => { if (response.data?.results?.[i]?.success === true) values.set(row[1].replace(/^@/, ''), row[2] ?? 'true'); });
+      }
+      if (command[0] === 'snapshot') for (const [ref, raw] of Object.entries(response.data?.refs ?? {})) {
+        const field = raw as Record<string, unknown>;
+        if (field.currentValue === undefined && (Number(field.valueLength) > 0 || (field.options as Array<{selected?:boolean}> | undefined)?.some(o => o.selected)) && values.has(ref)) field.currentValue = values.get(ref);
+      }
+      return response;
+    } })),
   });
+  const prepare = runtime.Prepare.bind(runtime);
+  // 以下既有控件状态机测试用可见候选模拟 Agent 审阅；显式 mode 的协议测试不经过此辅助路径。
+  runtime.Prepare = async input => {
+    if (input.toolName !== 'BrowserFillForm' || input.arguments.mode !== undefined || input.arguments.planId) return prepare(input);
+    const preview = await runtime.Execute({ proposal: await prepare({...input, arguments:{...input.arguments, mode:'plan'}}) });
+    const data = preview.data as {continuationId:string; fields:Array<{fieldId:string;suggestedFactId?:string}>};
+    return prepare({toolName:'BrowserFillForm', arguments:{mode:'execute',continuationId:data.continuationId,selections:data.fields.flatMap(f=>f.suggestedFactId?[{fieldId:f.fieldId,factId:f.suggestedFactId}]:[])}});
+  };
+  return runtime;
 }
 
 afterEach(async () => {
@@ -72,6 +94,114 @@ afterEach(async () => {
 });
 
 describe('AgentBrowserRuntime', () => {
+  it('测评同步只允许指定的本地轮次页面，不向调用方接受任意表达式', async () => {
+    const runtimeRoot = await mkdtemp(join(tmpdir(), 'avery-eval-flush-')); temporaryRoots.push(runtimeRoot);
+    const url = 'http://127.0.0.1:43210/runs/00000000-0000-4000-8000-000000000000/';
+    let currentUrl = url;
+    const expressions: string[] = [];
+    const runtime = CreateTestRuntime({ runtimeRoot, resolveUploadFile: vi.fn(), runBrowserCommand: async ({ args }: { args: string[] }) => {
+      if (args[0] === 'get') return { success: true, data: { url: currentUrl } };
+      if (args[0] === 'eval') { expressions.push(Buffer.from(args[2], 'base64').toString('utf8')); return { success: true, data: { result: { synced: true } } }; }
+      return { success: true, data: {} };
+    } });
+    try {
+      await runtime.FlushLocalEvaluationPage({ url, signal: new AbortController().signal });
+      expect(expressions).toHaveLength(1); expect(expressions[0]).toContain('CareerBench.flush');
+      currentUrl = 'https://example.com/';
+      await expect(runtime.FlushLocalEvaluationPage({ url, signal: new AbortController().signal })).rejects.toMatchObject({ code: 'BROWSER_NAVIGATION_DENIED' });
+      await expect(runtime.FlushLocalEvaluationPage({ url: 'http://127.0.0.1:43210/api/runs', signal: new AbortController().signal })).rejects.toMatchObject({ code: 'BROWSER_NAVIGATION_DENIED' });
+      expect(expressions).toHaveLength(1);
+    } finally { await runtime.Close(); }
+  });
+  it('规划不写入，执行只填显式选择；原生校验通过但回读错值仍报告业务失败', async () => {
+    const runtimeRoot=await mkdtemp(join(tmpdir(),'avery-reviewed-form-'));temporaryRoots.push(runtimeRoot);
+    let written=false;
+    const commands: string[][]=[];
+    const runtime=CreateTestRuntime({runtimeRoot,resolveUploadFile:vi.fn(),runBrowserCommand:async({args}: {args:string[]})=>{
+      commands.push(args);
+      if(args[0]==='get')return {success:true,data:{url:'https://example.com/form'}};
+      if(args[0]==='snapshot')return {success:true,data:{refs:{e1:{role:'textbox',name:'姓名',required:true,valid:true,valueLength:written?4:0,currentValue:written?'项目经历':''}}}};
+      if(args[0]==='batch')written=true;
+      return {success:true,data:args[0]==='batch'?{results:[{success:true}]}:{}};
+    }});
+    const preview=await runtime.Execute({proposal:await runtime.Prepare({toolName:'BrowserFillForm',arguments:{mode:'plan',__formSources:{resume:{id:'r',name:'简历',content:'**张三** | test@example.com\n\n## 项目经历'}}}})});
+    expect(commands.some(c=>c[0]==='batch')).toBe(false);
+    const p=preview.data as {continuationId:string;facts:Array<{factId:string;field:string}>};
+    const execution=await runtime.Execute({proposal:await runtime.Prepare({toolName:'BrowserFillForm',arguments:{mode:'execute',continuationId:p.continuationId,selections:[{fieldId:'f1',factId:p.facts.find(f=>f.field==='name')!.factId}]}})});
+    expect(execution).toMatchObject({data:{filledCount:0,skipped:[{reason:'postcondition_failed'}]}});
+    const validation=await runtime.Execute({proposal:await runtime.Prepare({toolName:'BrowserValidateForm',arguments:{}})});
+    expect(validation).toMatchObject({data:{valid:true,businessValid:false,fieldChecks:[{expected:'张三',actual:'项目经历',status:'mismatch'}]}});
+    await runtime.Close();
+  });
+  it('逐框填写并 Enter 可复用已观察引用，只在整批完成后获取核对快照', async () => {
+    const runtimeRoot = await mkdtemp(join(tmpdir(), 'avery-input-enter-sequence-'));
+    temporaryRoots.push(runtimeRoot);
+    let snapshotCount = 0;
+    const actions: string[][] = [];
+    const personal = PersonalRuntimeStub({ run: async (command) => {
+      if (command[0] === 'get') return { success: true, data: { url: 'https://example.com/form' } };
+      if (command[0] === 'snapshot') {
+        snapshotCount += 1;
+        return { success: true, data: { refs: { e1: { tag: 'input', role: 'textbox', name: '姓名' }, e2: { tag: 'input', role: 'textbox', name: '邮箱' }, e3: { tag: 'input', role: 'textbox', name: '学校' } } } };
+      }
+      if (command[0] === 'fill' || command[0] === 'press') actions.push(command);
+      return { success: true, data: command[0] === 'fill' ? { filled: true } : {} };
+    } });
+    const runtime = CreateTestRuntime({ runtimeRoot, resolveUploadFile: vi.fn(), createExtensionRuntime: () => personal });
+    const execute = async (toolName: Parameters<AgentBrowserRuntime['Prepare']>[0]['toolName'], args: Record<string, unknown> = {}) => runtime.Execute({ proposal: await runtime.Prepare({ toolName, arguments: args }) });
+    try {
+      // 对比原流程：三个输入框各自观察一次，加上初始快照，共四次结构读取。
+      let baseline = await execute('BrowserSnapshot');
+      for (const [ref, text] of [['@e1', '测试姓名'], ['@e2', 'test@example.com'], ['@e3', '测试学校']]) {
+        await execute('BrowserFill', { ref, pageRevision: (baseline.data as { pageRevision: number }).pageRevision, text });
+        await execute('BrowserPressKey', { key: 'Enter' });
+        baseline = await execute('BrowserSnapshot');
+      }
+      expect(snapshotCount).toBe(4);
+      snapshotCount = 0;
+      actions.length = 0;
+      const initial = await execute('BrowserSnapshot');
+      const pageRevision = (initial.data as { pageRevision: number }).pageRevision;
+      for (const [ref, text] of [['@e1', '测试姓名'], ['@e2', 'test@example.com'], ['@e3', '测试学校']]) {
+        await execute('BrowserFill', { ref, pageRevision, text });
+        await expect(execute('BrowserPressKey', { key: 'Enter' })).resolves.toMatchObject({ data: { pageRevision, referencesPreserved: true } });
+      }
+      expect(snapshotCount).toBe(1);
+      await execute('BrowserSnapshot');
+      expect(snapshotCount).toBe(2);
+      expect(actions.map((command) => command[0])).toEqual(['fill', 'press', 'fill', 'press', 'fill', 'press']);
+      // 不是紧接填写的独立 Enter 仍清空引用，不能将所有按键都当作输入确认。
+      await expect(execute('BrowserPressKey', { key: 'Enter' })).resolves.toMatchObject({ data: { referencesPreserved: false } });
+      await expect(execute('BrowserFill', { ref: '@e1', pageRevision, text: '旧引用' })).rejects.toMatchObject({ code: 'BROWSER_STALE_PAGE_REF' });
+    } finally { await runtime.Close(); }
+  });
+  it.each(['other-key', 'intermediate-read', 'failed-fill', 'changed-url'] as const)('输入确认引用保留不适用于 %s', async (scenario) => {
+    const runtimeRoot = await mkdtemp(join(tmpdir(), 'avery-input-enter-boundary-'));
+    temporaryRoots.push(runtimeRoot);
+    let url = 'https://example.com/form';
+    let failFill = false;
+    const personal = PersonalRuntimeStub({ run: async (command) => {
+      if (command[0] === 'get') return { success: true, data: { url } };
+      if (command[0] === 'snapshot') return { success: true, data: { refs: { e1: { tag: 'input', role: 'textbox', name: '姓名' } } } };
+      if (command[0] === 'fill' && failFill) throw new PersonalBrowserCdpError('BROWSER_STALE_PAGE_REF', 'The input was replaced.');
+      return { success: true, data: command[0] === 'fill' ? { filled: true } : {} };
+    } });
+    const runtime = CreateTestRuntime({ runtimeRoot, resolveUploadFile: vi.fn(), createExtensionRuntime: () => personal });
+    const execute = async (toolName: Parameters<AgentBrowserRuntime['Prepare']>[0]['toolName'], args: Record<string, unknown> = {}) => runtime.Execute({ proposal: await runtime.Prepare({ toolName, arguments: args }) });
+    try {
+      const initial = await execute('BrowserSnapshot');
+      const pageRevision = (initial.data as { pageRevision: number }).pageRevision;
+      await execute('BrowserFill', { ref: '@e1', pageRevision, text: '测试姓名' });
+      if (scenario === 'intermediate-read') await execute('BrowserReadPage');
+      if (scenario === 'failed-fill') {
+        failFill = true;
+        await expect(execute('BrowserFill', { ref: '@e1', pageRevision, text: '失败的填写' })).rejects.toMatchObject({ code: 'BROWSER_STALE_PAGE_REF' });
+      }
+      if (scenario === 'changed-url') url = 'https://example.com/next-step';
+      await expect(execute('BrowserPressKey', { key: scenario === 'other-key' ? 'Tab' : 'Enter' })).resolves.toMatchObject({ data: { referencesPreserved: false } });
+      await expect(execute('BrowserFill', { ref: '@e1', pageRevision, text: '过期引用' })).rejects.toMatchObject({ code: 'BROWSER_STALE_PAGE_REF' });
+    } finally { await runtime.Close(); }
+  });
   it('只通过扩展 Bridge 探测和执行任务，关闭任务不关闭共享 Bridge', async () => {
     const runtimeRoot = await mkdtemp(join(tmpdir(), 'avery-extension-only-runtime-'));
     temporaryRoots.push(runtimeRoot);
@@ -284,18 +414,18 @@ describe('AgentBrowserRuntime', () => {
     await expect(NormalizePublicBrowserUrl(url, vi.fn() as never)).rejects.toMatchObject({ code: 'BROWSER_NAVIGATION_DENIED' });
   });
 
-  it('个人浏览器保留 Moka 申请页的 hash 路由，同时拒绝危险协议与内嵌凭据', async () => {
-    const url = 'https://app.mokahr.com/campus-recruitment/company/123?locale=zh-CN#/job/job-id/apply';
-    await expect(NormalizePersonalBrowserUrl(url)).resolves.toBe(url);
-    await expect(NormalizePersonalBrowserUrl('javascript:alert(1)')).rejects.toMatchObject({ code: 'BROWSER_NAVIGATION_DENIED' });
-    await expect(NormalizePersonalBrowserUrl('https://user:password@app.mokahr.com/#/job/a/apply')).rejects.toMatchObject({ code: 'BROWSER_NAVIGATION_DENIED' });
-  });
-
   it('DNS 任一结果落入私网时拒绝，公开地址被规范化', async () => {
     const mixedLookup = vi.fn(async () => [{ address: '93.184.216.34' }, { address: '192.168.1.2' }]);
     await expect(NormalizePublicBrowserUrl('https://example.test/jobs#top', mixedLookup as never)).rejects.toMatchObject({ code: 'BROWSER_NAVIGATION_DENIED' });
     const publicLookup = vi.fn(async () => [{ address: '93.184.216.34' }]);
     await expect(NormalizePublicBrowserUrl('example.test/jobs#top', publicLookup as never)).resolves.toBe('https://example.test/jobs');
+  });
+
+  it('个人浏览器保留 Moka 申请页的 hash 路由，同时拒绝危险协议与内嵌凭据', async () => {
+    const url = 'https://app.mokahr.com/campus-recruitment/company/123?locale=zh-CN#/job/job-id/apply';
+    await expect(NormalizePersonalBrowserUrl(url)).resolves.toBe(url);
+    await expect(NormalizePersonalBrowserUrl('javascript:alert(1)')).rejects.toMatchObject({ code: 'BROWSER_NAVIGATION_DENIED' });
+    await expect(NormalizePersonalBrowserUrl('https://user:password@app.mokahr.com/#/job/a/apply')).rejects.toMatchObject({ code: 'BROWSER_NAVIGATION_DENIED' });
   });
 
   it('构造期导航策略可收窄到测试 origin，默认策略仍拒绝本地地址', async () => {
@@ -393,7 +523,7 @@ describe('AgentBrowserRuntime', () => {
     expect(JSON.stringify(proposal)).not.toContain(email);
     expect(JSON.stringify(proposal)).not.toContain(idNumber);
     expect(JSON.stringify(proposal)).not.toContain(phone);
-    expect(proposal.canonicalArguments).toMatchObject({ profileIds: ['profile-1', 'education-1', 'project-1'], planId: expect.any(String), planHash: expect.any(String) });
+    expect(proposal.canonicalArguments).toMatchObject({ mode: 'execute', continuationId: expect.any(String), planId: expect.any(String), planHash: expect.any(String) });
     const outcome = await runtime.Execute({ proposal });
 
     const batchCalls = calls.filter((call) => call.args.includes('batch'));
@@ -412,10 +542,6 @@ describe('AgentBrowserRuntime', () => {
       pageRevision: expect.any(Number),
       currentUrl: 'https://93.184.216.34/application',
     } });
-    expect(JSON.stringify(outcome)).not.toContain(name);
-    expect(JSON.stringify(outcome)).not.toContain(email);
-    expect(JSON.stringify(outcome)).not.toContain(idNumber);
-    expect(JSON.stringify(outcome)).not.toContain(phone);
 
     await expect(runtime.Prepare({ toolName: 'BrowserFillForm', arguments: { profileIds: ['profile-1'] } })).rejects.toMatchObject({ code: 'BROWSER_FORM_SOURCE_REQUIRED' });
     await expect(runtime.Prepare({ toolName: 'BrowserFillForm', arguments: { pageRevision: pageRevision - 1, profileIds: ['profile-1'], __formSources: { profiles: [] } } })).rejects.toMatchObject({ code: 'BROWSER_STALE_PAGE_REF' });
@@ -465,7 +591,7 @@ describe('AgentBrowserRuntime', () => {
       },
     }) });
     expect(JSON.parse(batchInputs[0])).toEqual([['fill', '@e2', '测试大学']]);
-    expect(outcome).toMatchObject({ data: { filled: [{ fieldId: 'field-e2', concept: 'education.school', strategy: 'semantic' }], ambiguous: [], unmatched: [] } });
+    expect(outcome).toMatchObject({ data: { filled: [{ fieldId: 'field-e2', concept: 'education.school', strategy: 'agent' }], ambiguous: [], unmatched: [] } });
     await runtime.Close();
   });
 
@@ -502,8 +628,8 @@ describe('AgentBrowserRuntime', () => {
 
     expect(JSON.parse(batchInputs[0])).toEqual([['fill', '@e3', '测试大学']]);
     expect(outcome).toMatchObject({ data: {
-      filled: [{ fieldId: 'field-e3', strategy: 'exact' }],
-      unmatched: [{ fieldId: 'field-e2' }],
+      filled: [{ fieldId: 'field-e3', strategy: 'agent' }],
+      unmatched: [],
     } });
     await runtime.Close();
   });
@@ -535,21 +661,21 @@ describe('AgentBrowserRuntime', () => {
 
     await runtime.Execute({ proposal: await runtime.Prepare({ toolName: 'BrowserNavigate', arguments: { url: 'https://93.184.216.34/application' } }) });
     const first = await runtime.Execute({ proposal: await runtime.Prepare({ toolName: 'BrowserFillForm', arguments: {
-      profileIds: ['project-1'], __formSources: sources,
+      mode:'plan', profileIds: ['project-1'], __formSources: sources,
     } }) });
-    const unresolved = (first.data as any).ambiguous[0] as { fieldId: string; candidates: Array<{ candidateId: string; concept: string }> };
-    const candidates = unresolved.candidates;
+    const candidates = (first.data as any).facts as Array<{factId:string;concept:string}>;
+    const unresolved = (first.data as any).fields[0] as {fieldId:string};
     const responsibility = candidates.find((candidate) => candidate.concept === 'project.responsibility');
     expect(responsibility).toBeDefined();
     expect(batchInputs).toHaveLength(0);
     await expect(runtime.Prepare({ toolName: 'BrowserFillForm', arguments: {
       continuationId: (first.data as any).continuationId,
-      resolutions: [{ fieldId: 'f999', candidateId: 'c999' }],
-    } })).rejects.toMatchObject({ code: 'BROWSER_ARGUMENT_INVALID' });
+      mode:'execute', selections: [{ fieldId: 'f999', factId: 's999' }],
+    } })).rejects.toMatchObject({ code: 'BROWSER_FORM_REVIEW_INVALID' });
 
     const second = await runtime.Execute({ proposal: await runtime.Prepare({ toolName: 'BrowserFillForm', arguments: {
       continuationId: (first.data as any).continuationId,
-      resolutions: [{ fieldId: unresolved.fieldId, candidateId: responsibility!.candidateId }],
+      mode:'execute', selections: [{ fieldId: unresolved.fieldId, factId: responsibility!.factId }],
     } }) });
     expect(JSON.parse(batchInputs[0])).toEqual([['fill', '@e4', '负责字段匹配']]);
     expect(second).toMatchObject({ data: { filled: [{ fieldId: 'field-e4', concept: 'project.responsibility', strategy: 'agent' }] } });
@@ -609,7 +735,7 @@ describe('AgentBrowserRuntime', () => {
     });
     expect(calls.filter((call) => call.args.includes('snapshot'))).toHaveLength(2);
     const enrichmentCalls = calls.filter((call) => call.args.includes('eval'));
-    expect(enrichmentCalls).toHaveLength(6);
+    expect(enrichmentCalls).toHaveLength(8);
     const expressions = enrichmentCalls.map((call) => EvalExpression(call.args, call.stdin));
     const inspectTransport = enrichmentCalls.find((call) => EvalExpression(call.args, call.stdin) === FormSemanticEnrichmentExpression);
     expect(inspectTransport?.args.slice(0, 2)).toEqual(['eval', '-b']);
@@ -696,7 +822,7 @@ describe('AgentBrowserRuntime', () => {
     expect(evalExpressions.some((expression) => expression.includes("|| getComputedStyle(element).cursor === 'pointer'"))).toBe(true);
     for (const expression of evalExpressions) expect(() => new Function(expression)).not.toThrow();
     expect(outcome).toMatchObject({ status: 'succeeded', data: { filledCount: 1, missingFields: [] } });
-    expect(JSON.stringify(outcome)).not.toContain('广东佛山');
+    expect(outcome).toMatchObject({ data: { filled: [{expected:'广东佛山'}] } });
     await runtime.Close();
   });
 
@@ -1254,14 +1380,14 @@ describe('AgentBrowserRuntime', () => {
       toolName: 'BrowserFillForm',
       arguments: {
         pageRevision: (inspection.data as any).pageRevision,
-        profileIds: ['profile-empty'],
+        mode:'plan', profileIds: ['profile-empty'],
         __formSources: { profiles: [{ id: 'profile-empty', category: 'application', title: '空档案', content: '[个人信息]' }] },
       },
     }) });
 
     expect(clicks).toEqual([]);
     expect(outcome).toMatchObject({ status: 'succeeded', data: {
-      filledCount: 0,
+      phase:'plan',executed:false,
       missingFields: [{ key: 'politicalStatus', label: '政治面貌', control: 'select', required: true }],
     } });
     await runtime.Close();

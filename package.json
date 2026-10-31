@@ -29,6 +29,7 @@
     "pack:win": "npm run build && npm run build:markitdown-sidecar && node node_modules/electron-builder/out/cli/cli.js --win"
   },
   "dependencies": {
+    "@avery/application-benchmark": "2.0.0",
     "@napi-rs/canvas": "0.1.80",
     "@avery/agent-core": "0.1.0",
     "@avery/agent-module-host": "0.1.0",

@@ -31,7 +31,8 @@ export const MokaFormEnrichmentScript = `
     preserve(element, 'aria-label');
     if (custom) { preserve(element, 'role'); element.setAttribute('role', 'combobox'); }
     element.setAttribute('aria-label', encodedName(element, label, true, {
-      ...mokaContext(element), v: custom ? Boolean(mokaSelectedValue(element)) : String(element.value || '').trim().length > 0, t: 'moka',
+      ...mokaContext(element), v: custom ? Boolean(mokaSelectedValue(element)) : String(element.value || '').trim().length > 0,
+      t: 'moka',
       d: Boolean(element.disabled || element.getAttribute('aria-disabled') === 'true' || element.querySelector('input:disabled,select:disabled')),
     }));
     element.setAttribute('data-avery-form-semantic', custom ? 'custom-select' : 'label');

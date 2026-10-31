@@ -155,6 +155,12 @@ function CreateRegionExtensionBridge(options: { dropOptionEvents?: boolean; drop
         result = { frameId: `frame-${target.targetId}` };
         break;
       }
+      case 'Page.getFrameTree': {
+        const target = targets.find((item) => item.attached)!;
+        result = { frameTree: { frame: { id: `frame-${target.targetId}`, loaderId: target.url } } };
+        break;
+      }
+      case 'Page.createIsolatedWorld': result = { executionContextId: 1 }; break;
       case 'Runtime.evaluate': {
         const target = targets.find((item) => item.attached);
         if (!target) throw Object.assign(new Error('No attached task target.'), { code: 'BROWSER_TAB_NOT_FOUND' });
@@ -174,7 +180,8 @@ function CreateRegionExtensionBridge(options: { dropOptionEvents?: boolean; drop
             items.push({ selector: '#city-options > button:nth-of-type(1)', tag: 'button', role: 'option', type: '', name: '佛山市', id: '', disabled: false, required: false, readOnly: false });
             items.push({ selector: '#city-options > button:nth-of-type(2)', tag: 'button', role: 'option', type: '', name: '广州市', id: '', disabled: false, required: false, readOnly: false });
           }
-          result = { result: { type: 'object', value: { url: target.url, title: target.title, readyState: target.readyState, truncated: false, items } } };
+          const identities = ['#province', '#city', '#province-options', '#province-options > button:nth-of-type(1)', '#province-options > button:nth-of-type(2)', '#city-options', '#city-options > button:nth-of-type(1)', '#city-options > button:nth-of-type(2)'];
+          result = { result: { type: 'object', value: { url: target.url, title: target.title, readyState: target.readyState, truncated: false, items: items.map((item) => ({ ...item, nodeId: identities.indexOf(String(item.selector)) + 1 })) } } };
         } else if (expression.includes('document.readyState')) {
           result = { result: { type: 'object', value: { url: target.url, readyState: target.readyState } } };
         } else if (expression.includes('__pb03RegionState')) {
@@ -298,6 +305,7 @@ function CreateRegionProvider(url: string, runtime: AgentBrowserRuntime, mode: R
   let provinceOptionEventCursor = 0;
   let cityOptionEventCursor = 0;
   const observation: Record<string, any> = { providerTurns: 0, snapshots: [], actions: [], regionTimeline: [] };
+  let observedRefs: Record<string, unknown> = {};
   const provider = {
     packageName: 'avery.pb03-region-test', name: 'pb03-region-scripted', version: '0.2.0', sdkVersion: '0.1.0', slot: 'model-provider' as const, capabilities: ['model:scripted-test'],
     Configure: vi.fn(), TestConnection: vi.fn(), GetBalance: vi.fn(), GetModels: vi.fn(), GetStatus: vi.fn(async () => ({ configured: true, provider: 'Test', model: 'pb03-region' })),
@@ -311,6 +319,11 @@ function CreateRegionProvider(url: string, runtime: AgentBrowserRuntime, mode: R
       };
       const snapshot = () => {
         const value = result();
+        if (value.data?.mode === 'delta') {
+          for (const ref of value.data.removed ?? []) delete observedRefs[ref];
+          Object.assign(observedRefs, value.data.added, value.data.updated);
+        } else if (value.data?.mode !== 'unchanged') observedRefs = { ...(value.data?.refs ?? {}) };
+        value.data = { ...value.data, refs: { ...observedRefs } };
         observation.snapshots.push(value);
         return value;
       };

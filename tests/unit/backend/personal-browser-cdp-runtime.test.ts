@@ -15,6 +15,11 @@ type ResponseVariant = 'unknown-envelope' | 'unknown-runtime-remote';
 class TranscriptSocket {
   readyState = 0;
   targetClosed = false;
+  snapshotItems?: Array<Record<string, unknown>>;
+  contextId = 1;
+  fillStateValid = true;
+  fillStateChecks = 0;
+  failFillStateAt?: number;
   readonly sent: Array<{ id: number; method: string; params: Record<string, any>; sessionId?: string }> = [];
   readonly sentOptions: PersonalBrowserCommandOptions[] = [];
   private readonly listeners = new Map<string, Listener[]>();
@@ -76,9 +81,15 @@ class TranscriptSocket {
     if (message.method === 'Target.createTarget') { this.targetClosed = false; return { targetId: 'task' }; }
     if (message.method === 'Target.attachToTarget') return { sessionId: 'task-session' };
     if (message.method === 'Target.getTargetInfo') return { targetInfo: { targetId: 'task', type: 'page', url: this.anchorUrl } };
+    if (message.method === 'Page.getFrameTree') return { frameTree: { frame: { id: 'main-frame', loaderId: `loader-${this.contextId}` } } };
+    if (message.method === 'Page.createIsolatedWorld') return { executionContextId: this.contextId };
     if (message.method === 'Runtime.evaluate') {
       const expression = String(message.params.expression ?? '');
       if (expression.includes('__host_test__')) return { result: { type: 'object', value: { ok: true } } };
+      if (expression.includes('const expectedFillValue =')) {
+        this.fillStateChecks += 1;
+        return { result: { type: 'object', value: { fillStateValid: this.fillStateValid && this.fillStateChecks !== this.failFillStateAt } } };
+      }
       // SnapshotExpression itself now reports readyState, so recognize the
       // candidate collector before the small readiness probe.
       if (expression.includes('const candidates =')) {
@@ -99,7 +110,7 @@ class TranscriptSocket {
         url: this.anchorUrl,
         title: this.chatControls ? '聊天' : '岗位列表',
         readyState: this.snapshotVariant === 'loading' ? 'loading' : 'complete',
-        items: this.plainPage ? [] : this.semanticMarker ? [
+        items: (this.snapshotItems ?? (this.plainPage ? [] : this.semanticMarker ? [
           { selector: '#semantic', tag: 'input', role: 'textbox', type: this.semanticMarker === '出生日期' ? 'date' : 'text', name: this.semanticMarker, ariaLabel: this.semanticMarker },
         ] : this.chatControls ? [
           { selector: '.btn-dict', tag: 'div', role: 'button', type: '', name: '常用语' },
@@ -112,7 +123,7 @@ class TranscriptSocket {
             nearbyTexts: ['职位关键词'], precedingLabels: ['工作城市'], followingLabels: ['职位类别'], groupHeading: '求职意向', recordIndex: 0,
           },
           { selector: '#submit', tag: 'button', role: 'button', type: '', name: '搜索' },
-        ],
+        ])).map((item, index) => ({ ...item, nodeId: item.nodeId ?? index + 1 })),
       } } };
       }
       if (expression.includes('readyState: document.readyState')) return { result: { type: 'object', value: { url: this.anchorUrl, readyState: 'complete' } } };
@@ -207,6 +218,35 @@ afterEach(async () => {
 });
 
 describe('PersonalBrowserCdpRuntime', () => {
+  it('P0：插入与重排不改变已有节点编号，换文档后不复用旧编号', async () => {
+    const socket = new TranscriptSocket();
+    const runtime = new PersonalBrowserCdpRuntime({ endpoint: 'ws://127.0.0.1:9222/devtools/browser/test-id', webSocketFactory: () => socket, delay: async () => undefined });
+    const node = (nodeId: number, name: string) => ({ nodeId, selector: '#same-path', tag: 'button', role: 'button', type: '', name });
+    socket.snapshotItems = [node(10, 'A'), node(20, 'B')];
+    expect((await runtime.Run(['snapshot'])).data.refs).toMatchObject({ e1: { name: 'A' }, e2: { name: 'B' } });
+    socket.snapshotItems = [node(30, '新增'), node(20, 'B'), node(10, 'A')];
+    expect((await runtime.Run(['snapshot'])).data.refs).toMatchObject({ e1: { name: 'A' }, e2: { name: 'B' }, e3: { name: '新增' } });
+    socket.contextId = 2;
+    socket.snapshotItems = [node(10, 'A')];
+    const replaced = await runtime.Run(['snapshot']);
+    expect(replaced.data.refs).not.toHaveProperty('e1');
+    expect(replaced.data.refs).toMatchObject({ e4: { name: 'A' } });
+    await runtime.Close();
+  });
+
+  it('P0：原节点被同名同路径节点替换后拒绝旧引用，不回退选择器', () => {
+    const runtime = new PersonalBrowserCdpRuntime({ endpoint: 'ws://127.0.0.1:9222/devtools/browser/test-id' });
+    const locator = { nodeId: 1, contextId: 1, selector: '#same', tag: 'button', role: 'button', type: '', name: '继续' };
+    const expression = (runtime as any).LocateExpression(locator);
+    const original = { isConnected: false };
+    class Element {}
+    Object.setPrototypeOf(original, Element.prototype);
+    const evaluate = new Function('globalThis', 'HTMLElement', `const location = { hostname: 'example.com', pathname: '/' }; return ${expression}`);
+    expect(evaluate({ __averySnapshotNodes: { nodes: new Map([[1, new WeakRef(original)]]) } }, Element)).toEqual({ stale: true });
+    expect(evaluate({ __averySnapshotNodes: { nodes: new Map() } }, Element)).toEqual({ stale: true });
+    expect(expression).not.toContain('document.querySelector(expected.selector)');
+  });
+
   it('只用允许的原始 CDP 方法完成任务页、Snapshot、输入、点击和截图', async () => {
     let socket!: TranscriptSocket;
     const runtime = new PersonalBrowserCdpRuntime({
@@ -275,6 +315,41 @@ describe('PersonalBrowserCdpRuntime', () => {
     });
     expect(socket.sent.filter((message) => message.sessionId).every((message) => message.sessionId === 'task-session')).toBe(true);
     await runtime.Close();
+  });
+
+  it.each([1, 2, 3])('替换输入第 %i 次检查失效时拒绝成功回执，未清空旧值绝不插入', async (failureAt) => {
+    let socket!: TranscriptSocket;
+    const runtime = new PersonalBrowserCdpRuntime({
+      endpoint: 'ws://127.0.0.1:9222/devtools/browser/test-id',
+      webSocketFactory: () => { socket = new TranscriptSocket(); return socket; },
+      delay: async () => undefined,
+    });
+    try {
+      await runtime.Run(['snapshot']);
+      socket.failFillStateAt = failureAt;
+      await expect(runtime.Run(['fill', '@e1', 'replacement'])).rejects.toMatchObject({ code: 'BROWSER_COMMAND_FAILED' });
+      expect(socket.sent.some(message => message.method === 'Input.insertText')).toBe(failureAt === 3);
+      const commands = socket.sent.filter(message => message.method === 'Input.dispatchKeyEvent').flatMap(message => message.params.commands ?? []);
+      expect(commands).toEqual(failureAt === 1 ? [] : ['selectAll', 'deleteBackward']);
+    } finally { await runtime.Close(); }
+  });
+
+  it('Enter 后同 URL 文档重载仍拒绝旧输入引用，不能向新文档继续写入', async () => {
+    let socket!: TranscriptSocket;
+    const runtime = new PersonalBrowserCdpRuntime({
+      endpoint: 'ws://127.0.0.1:9222/devtools/browser/test-id',
+      webSocketFactory: () => { socket = new TranscriptSocket('https://example.com/form'); return socket; },
+      delay: async () => undefined,
+    });
+    try {
+      await runtime.Run(['snapshot']);
+      await runtime.Run(['fill', '@e1', '测试内容']);
+      await runtime.Run(['press', 'Enter']);
+      const inputEvents = socket.sent.filter((message) => message.method === 'Input.insertText').length;
+      socket.contextId = 2;
+      await expect(runtime.Run(['fill', '@e1', '不应写入'])).rejects.toMatchObject({ code: 'BROWSER_STALE_PAGE_REF' });
+      expect(socket.sent.filter((message) => message.method === 'Input.insertText')).toHaveLength(inputEvents);
+    } finally { await runtime.Close(); }
   });
 
   it('原生日期输入使用 value setter 写入并校验，不把 ISO 日期当作键盘文本', async () => {
@@ -393,6 +468,7 @@ describe('PersonalBrowserCdpRuntime', () => {
   it('Snapshot validators require plain own data fields and reject prototype/accessor pollution', async () => {
     const runtime = new PersonalBrowserCdpRuntime({ endpoint: 'ws://127.0.0.1:9222/devtools/browser/test-id' });
     const validItem = {
+      nodeId: 1,
       selector: '#name', tag: 'input', role: 'textbox', type: 'text', name: 'Name',
       options: [{ label: 'A', value: 'a', selected: true }],
     };
@@ -599,6 +675,7 @@ describe('PersonalBrowserCdpRuntime', () => {
     });
     await runtime.Run(['snapshot']);
     (runtime as any).refs.set('e99', {
+      nodeId: 99, contextId: 1, documentId: JSON.stringify(['task', 'main-frame', 'loader-1']),
       selector: 'html > body:nth-of-type(1) > div:nth-of-type(1) > input:nth-of-type(1)',
       tag: 'input', role: 'filechooser', type: 'file', name: '上传简历',
     });

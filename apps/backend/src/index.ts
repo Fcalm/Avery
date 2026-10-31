@@ -164,7 +164,7 @@ async function Bootstrap(): Promise<void> {
     ...Facade(['CreateConversation', 'RenameConversation', 'SetConversationPinned', 'SetConversationArchived', 'AppendConversationMessages', 'CompleteConversationMessage', 'RemoveConversationMessage']),
     DeleteConversation: async (conversationId: string) => {
       const result = await guardedBusiness.DeleteConversation(conversationId);
-      agent.DeleteSessionResources(conversationId);
+      await agent.DeleteSessionResources(conversationId);
       return result;
     },
   };

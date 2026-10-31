@@ -47,6 +47,8 @@ export interface EvalDatasetCase {
   expected: EvalExpectedResult;
   tags: string[];
   browser?: {
+    /** 拟真网申平台案例；未配置时沿用原招聘 Fixture。 */
+    benchmark?: { scenarioId: string; goal: 'fill' | 'preview' | 'submit' };
     fixtureVersion?: string;
     seed?: number;
     difficulty?: 'basic' | 'intermediate' | 'advanced';
@@ -69,7 +71,7 @@ export interface EvalProjectConfig {
   userSimulator: EvalUserSimulatorStrategy;
   maxModelTurns: number;
   repeatCount: number;
-  fixtureBranch?: 'clean' | 'realistic-dom';
+  fixtureBranch?: 'clean' | 'realistic-dom' | 'career-portal';
 }
 
 export interface EvalProject {
@@ -166,6 +168,8 @@ export interface EvalBrowserAssertionResult {
 }
 
 export interface EvalCaseScore {
+  /** 平台提供的确定性业务结果；环境失败与待复核不计任务分。 */
+  benchmark?: EvalApplicationBenchmarkReport;
   schemaVersion: 1 | 2;
   id: string;
   createdAt: number;
@@ -183,6 +187,17 @@ export interface EvalCaseScore {
   judgeStatus?: 'completed' | 'corrected' | 'failed';
   judgeCorrectionCount?: number;
   taskCompleted?: boolean;
+}
+
+export interface EvalApplicationBenchmarkReport {
+  verified: boolean;
+  passed: boolean;
+  outcome: string;
+  score: number | null;
+  fieldAccuracy: number | null;
+  criticalErrors: Array<{ path: string; code: string }>;
+  issues: Array<{ path: string; code: string; expected?: unknown; actual?: unknown }>;
+  completion?: { filled: boolean; formValid: boolean; previewed: boolean; submitted: boolean; expectedBlocked: boolean };
 }
 
 export type EvalTraceNodeType = 'user' | 'model' | 'tool_call' | 'tool_result' | 'confirmation' | 'page_state' | 'fixture_state' | 'error' | 'event';

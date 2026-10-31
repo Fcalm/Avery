@@ -25,6 +25,9 @@ export type FormField = {
   readOnly?: boolean;
   autocomplete?: string;
   filled?: boolean;
+  /** Inspect 的真实保留值；缺失时不能用“非空”代替值核验。 */
+  currentValue?: string;
+  nodeIdentity?: string;
   valid?: boolean;
   validationMessage?: string;
   options?: Array<{ label: string; value: string; selected?: boolean }>;
@@ -42,6 +45,7 @@ export type FormField = {
   context: {
     section?: FormSection;
     recordIndex?: number;
+    recordIdentity?: string;
     groupHeading?: string;
     precedingLabels: string[];
     followingLabels: string[];
@@ -62,6 +66,13 @@ export type FormField = {
 };
 
 export type FormFillOperation = {
+  targetSection?: string;
+  targetLabel?: string;
+  targetNodeIdentity?: string;
+  targetConcept?: string;
+  targetRecordIdentity?: string;
+  sourceRecordKey?: string;
+  expectedValue?: string;
   adapter?: BrowserDateAdapterId;
   kind: 'fill' | 'select' | 'check' | 'custom_select' | 'custom_date';
   ref: string;
@@ -82,16 +93,30 @@ export type FormFillOperation = {
 export type MissingFormField = { key: string; concept: string; fieldId: string; label: string; control: FormField['control']; required: boolean };
 export type FormMatchCandidate = { sourcePath: string; concept: string; score: number; evidence: string[]; label?: string; equivalentSourcePaths?: string[] };
 export type FormFillPlan = {
+  review?: Record<string, unknown>;
   pageRevision: number;
   createdAt: number;
   continuationId?: string;
   publicAmbiguous?: Array<Record<string, unknown>>;
   operations: FormFillOperation[];
-  skipped: Array<{ fieldId?: string; label: string; reason: string }>;
+  /** 已经与来源一致的审阅项只核验，不重复写入。 */
+  verifiedOperations?: FormFillOperation[];
+  skipped: Array<{ fieldId?: string; label: string; reason: string } & Partial<FormOptionObservation>>;
   missingFields: MissingFormField[];
   ambiguous: Array<{ fieldId: string; label: string; candidates: FormMatchCandidate[] }>;
   unmatched: Array<{ fieldId: string; label: string; required: boolean; context: string[] }>;
   sourceTitles: string[];
+};
+
+/** 只包含本次弹层实际观察到的候选，不代表完整目录，也不授权生成新的用户事实。 */
+export type FormOptionObservation = {
+  requestedValue: string;
+  observedOptions: string[];
+  optionsTruncated: boolean;
+  observationScope: 'visible_options';
+  selectedPath: string[];
+  searchAttempted: boolean;
+  optionsBeforeSearch?: string[];
 };
 export type FormFact = {
   key: string;
@@ -146,19 +171,22 @@ function ResolveFieldKey(input: {
     if (key) return { key, confidence: 1, exact: true };
   }
   let best: { key?: string; confidence: number } = { confidence: 0 };
+  // 有明确业务标题时，附近的学校/工作字段只能提供区块背景，不能替换字段本身。
+  const ownLabel = NormalizeFormLabel(input.explicitTexts[0]);
+  const descriptiveLabel = Boolean(ownLabel && !/^(?:请输入|请选择|请填写|pleaseenter|pleaseselect)$/.test(ownLabel));
   for (const [key, aliases] of FormFieldAliases) {
     const definition = DefinitionForKey(key, input.section);
     const section = CanonicalFormSection(input.section);
     const sectionCompatible = !section || !definition || section === definition.section;
     if (!sectionCompatible) continue;
-    for (const text of [...input.explicitTexts, ...input.contextualTexts]) {
+    for (const text of descriptiveLabel ? input.explicitTexts : [...input.explicitTexts, ...input.contextualTexts]) {
       for (const alias of aliases) {
         const score = FormTextSimilarity(text, alias);
         if (score > best.confidence) best = { key, confidence: score };
       }
     }
   }
-  return { ...best, exact: false };
+  return descriptiveLabel && best.confidence < 0.85 ? { confidence: 0, exact: false } : { ...best, exact: false };
 }
 
 function FieldInteraction(
@@ -168,6 +196,9 @@ function FieldInteraction(
   options: FormField['options'],
   metadata: Record<string, unknown>,
 ): FormField['interaction'] {
+  if (metadata.adapter === 'feishu' && control === 'select') return {
+    adapter: 'feishu', kind: 'select', editable: false, requiresCommit: true,
+  };
   if (metadata.adapter === 'moka' && control === 'select') return {
     adapter: 'moka', kind: ['date', 'yearMonth'].includes(definition?.valueType ?? '') ? 'datePicker' : 'select', editable: false, requiresCommit: true,
   };
@@ -205,6 +236,10 @@ function DecodeFormFieldContext(value: unknown): Record<string, unknown> {
       ...(Array.isArray(parsed.f) ? { followingLabels: parsed.f } : {}),
       ...(Number.isSafeInteger(parsed.o) ? { recordIndex: parsed.o } : {}),
       ...(typeof parsed.v === 'boolean' ? { filledState: parsed.v } : {}),
+      ...(typeof parsed.q === 'string' ? { currentValue: parsed.q } : {}),
+      ...(typeof parsed.j === 'string' ? { nodeIdentity: parsed.j } : {}),
+      ...(typeof parsed.u === 'boolean' ? { required: parsed.u } : {}),
+      ...(typeof parsed.k === 'string' ? { recordIdentity: parsed.k } : {}),
       ...(parsed.d === true ? { disabled: true } : {}),
       ...(typeof parsed.t === 'string' && Object.hasOwn(BrowserDateAdapters, parsed.t) ? { adapter: parsed.t } : {}),
     };
@@ -229,6 +264,7 @@ export function FormFields(refs: Record<string, unknown>, pageRevision = 0): For
     // 辅助搜索框即使从父节点继承了已选文字，也不能再次成为独立申请字段。
     if (originalMetadata.name === '__avery_internal_form_control__' || originalMetadata.ariaLabel === '__avery_internal_form_control__') continue;
     const decodedContext = DecodeFormFieldContext(originalMetadata.name);
+    if (typeof originalMetadata.name === 'string' && originalMetadata.name.startsWith(EncodedFormFieldPrefix) && !Object.keys(decodedContext).length) continue;
     const metadata = { ...originalMetadata, ...decodedContext };
     const role = String(metadata.role ?? '').toLowerCase();
     const tag = String(metadata.tag ?? '').toLowerCase();
@@ -284,6 +320,7 @@ export function FormFields(refs: Record<string, unknown>, pageRevision = 0): For
     const context = {
       ...(section ? { section } : {}),
       ...(Number.isSafeInteger(metadata.recordIndex) && Number(metadata.recordIndex) >= 0 ? { recordIndex: Number(metadata.recordIndex) } : {}),
+      ...(typeof metadata.recordIdentity === 'string' ? { recordIdentity: metadata.recordIdentity } : {}),
       ...(typeof metadata.groupHeading === 'string' && metadata.groupHeading ? { groupHeading: metadata.groupHeading.slice(0, 180) } : {}),
       precedingLabels: StringList(metadata.precedingLabels, 4),
       followingLabels: StringList(metadata.followingLabels, 4),
@@ -310,6 +347,8 @@ export function FormFields(refs: Record<string, unknown>, pageRevision = 0): For
       ...(typeof metadata.readOnly === 'boolean' ? { readOnly: metadata.readOnly } : {}),
       ...(typeof metadata.autocomplete === 'string' && metadata.autocomplete ? { autocomplete: metadata.autocomplete.slice(0, 80) } : {}),
       ...(filled === undefined ? {} : { filled }),
+      ...(typeof metadata.currentValue === 'string' ? { currentValue: metadata.currentValue.slice(0, 20000) } : {}),
+      ...(typeof metadata.nodeIdentity === 'string' ? { nodeIdentity: metadata.nodeIdentity } : {}),
       ...(typeof metadata.valid === 'boolean' ? { valid: metadata.valid } : {}),
       ...(typeof metadata.validationMessage === 'string' && metadata.validationMessage ? { validationMessage: metadata.validationMessage.slice(0, 300) } : {}),
       ...(options?.length ? { options } : {}),
@@ -331,7 +370,43 @@ export function NormalizeFormLabel(value: unknown): string {
   return String(value ?? '').toLowerCase().replace(/[\s_\-—–·:：()（）[\]【】]/g, '');
 }
 
+/** 仅归并字段内含义明确的枚举别名；非全日制、不同到岗周期不会因子串相似而合并。 */
+export function NormalizeFormOption(key: string, value: unknown): string {
+  const normalized = NormalizeFormLabel(value);
+  const groups = key === 'educationType'
+    ? [['统招全日制', '全国普通高等院校全日制']]
+    : key === 'availability'
+      ? [['1周内', '一周内', '一星期内'], ['1个月内', '一个月内'], ['3个月内', '三个月内'], ['3个月以上', '三个月以上']]
+      : [];
+  return groups.find(group => group.includes(normalized))?.[0] ?? normalized;
+}
+
+/** 解析完整的日期值而非任意文本前缀；来源没有日精度时，由调用方按年月比较。 */
+export function ParseFormDateValue(value: string): { year: number; month: number; day?: number } | undefined {
+  const match = value.trim().match(/^(\d{4})[-/.年](\d{1,2})(?:[-/.月](\d{1,2})日?|月)?$/);
+  if (!match) return undefined;
+  const year = Number(match[1]), month = Number(match[2]), day = match[3] ? Number(match[3]) : undefined;
+  if (year < 1900 || year > 2200 || month < 1 || month > 12
+    || (day !== undefined && (day < 1 || day > new Date(Date.UTC(year, month, 0)).getUTCDate()))) return undefined;
+  return { year, month, ...(day === undefined ? {} : { day }) };
+}
+
+/** 填写、选项匹配和业务回读共用规则：普通正文等值，年月来源按年月，枚举仅接受有限同义值。 */
+export function FormValuesMatch(key: string, expected: string, actual: string): boolean {
+  const plain = (value: string) => value.normalize('NFKC').replace(/\*\*|__/g, '').replace(/\s+/g, ' ').trim();
+  if (plain(expected) === plain(actual)) return true;
+  if (['birthDate', 'startDate', 'endDate', 'availability'].includes(key)) {
+    const source = ParseFormDateValue(expected), retained = ParseFormDateValue(actual);
+    if (source && retained) return source.year === retained.year && source.month === retained.month
+      && (source.day === undefined || source.day === retained.day);
+  }
+  return ['educationType', 'availability'].includes(key)
+    && NormalizeFormOption(key, expected) === NormalizeFormOption(key, actual);
+}
+
 export const FormFieldAliases: Array<[string, string[]]> = [
+  ['emergencyContactName', ['紧急联系人', '紧急联系人姓名', 'emergencycontactname']],
+  ['emergencyContactPhone', ['紧急联系电话', '紧急联系人电话', '紧急联系人手机', 'emergencycontactphone']],
   ['idNumber', ['证件号码', '证件号', '身份证号', '身份证号码', 'idnumber', 'identitynumber']],
   ['idType', ['证件类型', '证件种类', 'idtype']],
   ['phone', ['手机号', '手机号码', '联系电话', '电话', 'phone', 'mobile', 'tel']],
@@ -351,7 +426,7 @@ export const FormFieldAliases: Array<[string, string[]]> = [
   ['major', ['专业', '专业名称', '最近毕业专业', 'major']],
   ['educationType', ['学历类型', '学习形式', '教育类型', 'educationtype', 'studytype']],
   ['degreeLevel', ['学历', '最高学历', 'educationlevel', 'degreelevel']],
-  ['degree', ['学位', 'degree']],
+  ['degree', ['学位', '最高学位', 'degree']],
   ['company', ['公司', '公司名称', '单位名称', '工作单位', 'company', 'employer']],
   ['position', ['职位', '职位名称', '岗位名称', '职务', 'position', 'jobtitle']],
   ['department', ['部门', '部门名称', 'department']],
@@ -359,9 +434,9 @@ export const FormFieldAliases: Array<[string, string[]]> = [
   ['companySize', ['企业规模', '公司规模', 'companysize']],
   ['annualSalary', ['职位年薪', '年薪', 'annualsalary']],
   ['workDescription', ['工作内容', '工作描述', '工作职责', '职责描述', 'workdescription']],
-  ['projectName', ['项目名称', '项目名', 'projectname']],
+  ['projectName', ['项目名称', '项目名', '实践名称', 'projectname']],
   ['projectRole', ['项目角色', '担任角色', 'projectrole']],
-  ['projectDescription', ['项目描述', '项目内容', 'projectdescription']],
+  ['projectDescription', ['项目描述', '项目内容', '实践描述', 'projectdescription']],
   ['projectResponsibility', ['项目职责', '项目中职责', '项目负责内容', '项目责任', 'projectresponsibility', 'projectresponsibilities']],
   ['startDate', ['开始时间', '起始时间', '入学时间', '入职时间', 'startdate']],
   ['endDate', ['结束时间', '毕业时间', '离职时间', 'enddate']],
@@ -387,6 +462,8 @@ type FormFieldDefinition = {
 };
 
 const FormFieldDefinitions: Record<string, FormFieldDefinition> = {
+  emergencyContactName: { concept: 'personal.emergencyContactName', section: 'personal', valueType: 'text' },
+  emergencyContactPhone: { concept: 'personal.emergencyContactPhone', section: 'personal', valueType: 'phone' },
   idNumber: { concept: 'personal.idNumber', section: 'personal', valueType: 'text' },
   idType: { concept: 'personal.idType', section: 'personal', valueType: 'enum' },
   phone: { concept: 'personal.phone', section: 'personal', valueType: 'phone', reusable: true },
@@ -455,7 +532,7 @@ function AliasesForKey(key: string): string[] {
 /**
  * 隔离浏览器的可访问性快照只返回控件自身名称。部分 ATS 将标签渲染为相邻 div，
  * 因而这里用固定、不可由模型修改的页面脚本补齐 aria-label，再由任务页快照生成原生 ref。
- * 脚本只写入辅助语义和非空布尔状态，不回传字段值，也不触发输入、点击或提交事件。
+ * 语义标记不改变业务值；当前值通过独立只读回读供计划审阅和来源核验，不触发输入、点击或提交。
  */
 
 export function CanonicalFormField(value: unknown): string | undefined {
@@ -475,7 +552,7 @@ function CanonicalFormSection(value: unknown): FormSection | undefined {
   if (/个人|基本信息|personal|basicinfo/.test(section)) return 'personal';
   if (/教育|education|school/.test(section)) return 'education';
   if (/工作|任职|work|employment/.test(section)) return 'work';
-  if (/项目|project/.test(section)) return 'project';
+  if (/项目|在校实践|校园实践|project/.test(section)) return 'project';
   if (/求职|意向|jobintention|preference/.test(section)) return 'preference';
   return undefined;
 }
@@ -527,7 +604,8 @@ function ExtractLabelledFacts(
   return facts;
 }
 
-function BuildFormFacts(sources: Record<string, unknown>): { facts: FormFact[]; sourceTitles: string[] } {
+/** 将 Host 已授权的档案和简历转为有来源标识的候选事实；无明确依据时保持缺失。 */
+export function BuildFormFacts(sources: Record<string, unknown>): { facts: FormFact[]; sourceTitles: string[] } {
   const profiles = Array.isArray(sources.profiles) ? sources.profiles.filter((profile) => profile && typeof profile === 'object') as Array<Record<string, unknown>> : [];
   const resume = sources.resume && typeof sources.resume === 'object' ? sources.resume as Record<string, unknown> : undefined;
   const decisions = Array.isArray(sources.decisions)
@@ -571,9 +649,16 @@ function BuildFormFacts(sources: Record<string, unknown>): { facts: FormFact[]; 
     const sourcePrefix = `resume.${resumeId}`;
     sourceTitles.push(title);
     facts.push(...ExtractLabelledFacts(content, title, sourcePrefix));
-    const email = content.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i)?.[0];
-    const phone = content.match(/(?<!\d)(?:\+?86[- ]?)?1[3-9]\d{9}(?!\d)/)?.[0];
-    const name = content.match(/^#{1,2}\s+([^\r\n|｜]{1,30})/m)?.[1]?.trim();
+    // 无标签的联系方式仅从简历开头身份区域提取，不能把紧急联系人号码当成本人号码。
+    const header = content.split(/^#{1,6}\s+(?:教育|工作|项目|技能|核心|education|work|project|skills)/im, 1)[0]
+      .split(/\r?\n/).slice(0, 6).filter(line => !/紧急|emergency/i.test(line)).join('\n');
+    const email = header.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i)?.[0];
+    const phone = header.match(/(?<!\d)(?:\+?86[- ]?)?1[3-9]\d{9}(?!\d)/)?.[0];
+    // 只有简历开头的身份行可以提供姓名；任意 Markdown 章节标题不是姓名来源。
+    const firstLine = content.trimStart().split(/\r?\n/, 1)[0].replace(/^#{1,6}\s+/, '').replace(/\*\*|__/g, '');
+    const identity = firstLine.split(/[|｜]/, 1)[0].trim();
+    const name = !CanonicalFormSection(identity) && !/简历|resume|curriculum\s+vitae/i.test(identity)
+      && /^(?:\p{Script=Han}{2,12}|[\p{L}][\p{L} .'-]{1,59})$/u.test(identity) ? identity : undefined;
     for (const [key, value] of [['email', email], ['phone', phone], ['name', name]] as const) {
       const definition = DefinitionForKey(key, 'personal');
       if (!value || !definition || facts.some((fact) => fact.key === key && fact.value === value)) continue;
@@ -868,7 +953,7 @@ export function CreateFormFillPlan(fields: FormField[], sources: Record<string, 
     const strategy: MatchStrategy = forcedSourcePath ? 'agent' : first.exact ? 'exact' : 'semantic';
     if (field.control === 'select') {
       if (!field.options?.length) {
-        const kind = ['birthDate', 'startDate', 'endDate', 'availability'].includes(key) ? 'custom_date' : 'custom_select';
+        const kind = ['birthDate', 'startDate', 'endDate', 'availability'].includes(key) && ParseFormDateValue(fact.value) ? 'custom_date' : 'custom_select';
         const targetOccurrence = kind === 'custom_date' || field.interaction.adapter === 'moka' ? fields.filter((candidate) => candidate.control === 'select'
           && !candidate.options?.length && candidate.semantic.concept === field.semantic.concept
           && NormalizeFormLabel(candidate.label) === NormalizeFormLabel(field.label)).indexOf(field) : undefined;
@@ -1121,6 +1206,15 @@ export class BrowserFormService {
   DeletePlan(planId: string): void { this.plans.delete(planId); }
 
   ClearPlans(): void { this.plans.clear(); }
+
+  /** 已审阅计划与普通计划共享私有 proposal 存储，外部不能传入操作指令或 ref。 */
+  StoreReviewedPlan(plan: FormFillPlan): BrowserFormPreparation {
+    const planId = randomUUID();
+    const planHash = createHash('sha256').update(JSON.stringify(plan)).digest('hex');
+    while (this.plans.size >= 20) this.plans.delete(this.plans.keys().next().value as string);
+    this.plans.set(planId, plan);
+    return { plan, planId, planHash, continuationId: plan.continuationId! };
+  }
 
   Clear(): void {
     this.plans.clear();

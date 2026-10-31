@@ -14,7 +14,7 @@ const PairConfigKeyPrefix = 'averyBridge.';
 const PairConfigSchemaVersion = 1;
 // 该指纹独立于 manifest version；Chrome 可能继续运行同版本的旧 Service Worker。
 // 任何 Bridge 请求都携带它，Backend 缺失或不匹配时会拒绝整条连接。
-const BrowserExtensionProtocolRevision = 'avery-browser-extension-bridge-v1';
+const BrowserExtensionProtocolRevision = 'avery-browser-extension-bridge-v2';
 
 // This value identifies the in-memory Service Worker generation.  A manifest
 // version is not sufficient here: Chrome can keep an old worker alive while a
@@ -30,6 +30,8 @@ function NewWorkerInstanceId() {
 
 const workerInstanceId = NewWorkerInstanceId();
 const AllowedCdpMethods = new Set([
+  'Page.getFrameTree',
+  'Page.createIsolatedWorld',
   'Target.getTargets',
   'Target.createTarget',
   'Target.attachToTarget',
@@ -1073,7 +1075,25 @@ function ValidBridgeConfig(value) {
     && Number.isSafeInteger(value.port) && value.port > 0 && value.port <= 65535;
 }
 
-chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+/** 配对成功后只关闭发起配对的顶层页面；重新读取 URL，避免误关已被用户导航的标签页。 */
+async function ClosePairedTab(sender, config) {
+  const tabId = sender?.tab?.id;
+  if (!Number.isSafeInteger(tabId) || sender.frameId !== 0) return;
+  const isPairPage = (value) => {
+    try {
+      const url = new URL(value);
+      const params = new URLSearchParams(url.hash.slice(1));
+      return url.protocol === 'http:' && url.hostname === '127.0.0.1'
+        && Number(url.port || 80) === config.port && url.pathname === '/pair'
+        && params.get('token') === config.token && Number(params.get('port')) === config.port;
+    } catch { return false; }
+  };
+  if (!isPairPage(sender.url)) return;
+  const tab = await chrome.tabs.get(tabId);
+  if (isPairPage(tab.pendingUrl || tab.url)) await chrome.tabs.remove(tabId);
+}
+
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.type !== 'avery_pair') return false;
   let responded = false;
   const respond = (value) => {
@@ -1124,7 +1144,11 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     StartPoll();
     return { ok: true };
   })();
-  void work.then(respond, (error) => respond({ ok: false, message: String(error?.message || 'connection failed').slice(0, 300) }));
+  void work.then((result) => {
+    respond(result);
+    // 关闭失败不改变已完成的连接结果，页面仍展示成功状态供用户手动关闭。
+    void ClosePairedTab(sender, config).catch(() => undefined);
+  }, (error) => respond({ ok: false, message: String(error?.message || 'connection failed').slice(0, 300) }));
   return true;
 });
 

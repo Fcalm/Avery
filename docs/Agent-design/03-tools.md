@@ -103,7 +103,7 @@ interface AgentToolDefinition<TInput, TOutput> {
 - 填写申请表、上传投递材料、操作登录态或提交申请。
 - `SearchJobs`、`ReadUrl`、Shell、任意 HTTP、任意 Header、任意浏览器或脚本执行。
 - 项目文件写入、未授权路径访问和敏感文件读取。
-- 未经 `CreateCronTask` 周期级确认的后台搜索、定时执行、URL 提取、跨来源聚合和自动写入岗位库。
+- 未经 `CreateCronTask` 周期级授权的后台搜索、定时执行、URL 提取、跨来源聚合和自动写入岗位库；完全信任在创建时直接冻结授权，其他档位须先确认。
 
 白名单存在不等于本轮必须把全部工具发给模型。Host 可以根据当前意图进一步收窄，但不得加入 0.2.0 注册表之外的工具。执行入口必须再次按冻结快照校验，不能只依赖“没有把定义发给模型”。
 
@@ -133,7 +133,7 @@ interface AgentToolDefinition<TInput, TOutput> {
     'CreateCronTask', 'ReadCronTask', 'UpdateCronTask', 'DeleteCronTask',
     'ExportResumeFile', 'CollectJobs', 'ReadJobs', 'ContactBossJobs', 'ReadApplicationStatus', 'SaveJob', 'UpdateApplicationStatus',
     'BrowserNavigate', 'BrowserSnapshot', 'BrowserScreenshot', 'BrowserReadPage', 'BrowserClick',
-    'BrowserFill', 'BrowserFillForm', 'BrowserValidateForm', 'BrowserSelect', 'BrowserSetChecked', 'BrowserPressKey',
+    'BrowserRunScript', 'BrowserFill', 'BrowserFillForm', 'BrowserValidateForm', 'BrowserSelect', 'BrowserSetChecked', 'BrowserPressKey',
     'BrowserUploadFile', 'BrowserWait', 'BrowserSwitchTab', 'BrowserGoBack'
   ]
 }
@@ -169,13 +169,13 @@ interface AgentToolDefinition<TInput, TOutput> {
 
 ### 4.4 CronTask 定时任务
 
-四个 CronTask 工具在工作场景开放，聊天仅开放 `ReadCronTask`。创建任务时，只读本地问答可选择 `scenarioId=default`，浏览器或业务写入任务选择 `application`；后台工作禁止编辑简历和档案。`CreateCronTask` 只冻结提案并展示一次周期级无人值守确认；确认前不写数据库、不注册系统任务。确认后每次 occurrence 创建独立会话，以真实 `user` 消息执行，并使用 `fully_trusted + unattended`，但仍受冻结场景、Schema、资源授权、网络边界与 Tool Ledger 约束。
+四个 CronTask 工具在工作场景开放，聊天仅开放 `ReadCronTask`。创建任务时，只读本地问答可选择 `scenarioId=default`，浏览器或业务写入任务选择 `application`；后台工作禁止编辑简历和档案。`CreateCronTask` 先冻结提案：`fully_trusted` 直接提交并返回真实任务 ID 与 Tool Ledger 回执；其他档位展示一次周期级无人值守确认，确认前不写数据库、不注册系统任务。两条路径均冻结授权并注册系统调度，注册失败时撤销新建任务。创建后每次 occurrence 创建独立会话，以真实 `user` 消息执行，并使用 `fully_trusted + unattended`，但仍受冻结场景、Schema、资源授权、网络边界与 Tool Ledger 约束。
 
-投递 CronTask 的创建确认同时生成个人浏览器任务授权，并持久绑定到真实 `cronTaskId`；授权冻结任务用途、导航、填表、上传、外部发送和持久资源范围。单次任务完成、周期任务结束、任务删除或用户手动撤销后不再使用。后台 Run 通过 Browser Bridge 连接或正常启动用户配置的 Chrome/Edge，由扩展创建任务标签页，不在执行时等待标签页或远程调试授权；扩展离线、浏览器启动失败、未登录或需要人工处理时暂停并保留待接管会话。旧版本任务默认不获得新版授权。
+投递 CronTask 在创建时生成个人浏览器任务授权，并持久绑定到真实 `cronTaskId`；完全信任直接冻结，其他档位确认后冻结。授权冻结任务用途、导航、填表、上传、外部发送和持久资源范围。单次任务完成、周期任务结束、任务删除或用户手动撤销后不再使用。后台 Run 通过 Browser Bridge 连接或正常启动用户配置的 Chrome/Edge，由扩展创建任务标签页，不在执行时等待标签页或远程调试授权；扩展离线、浏览器启动失败、未登录或需要人工处理时暂停并保留待接管会话。旧版本任务默认不获得新版授权。
 
 支持 `once`、`daily` 和带 `daysOfWeek` 的 `weekly` 调度；重复时间按 IANA 时区的本地日历计算。关机或休眠导致多次逾期时只补最近一次，其余写为 `missed`。系统只维护一个 `Avery Cron Runner` 唤醒任务，业务数据库保存全部计划与运行历史。无人值守 Run 不暴露四个 CronTask 工具，防止递归调度。
-创建确认会明示系统可在计划时间唤醒或后台启动应用。Windows 唤醒允许电池供电时启动，且切换到电池后不中止已开始的 Run。
-第一版 CronTask 不继承交互 Run 的临时附件。纯岗位搜索和网页 JD 阅读可以创建不绑定简历的投递 CronTask；若创建前已通过 `ReadResume({resumeId})` 建立绑定，创建确认会冻结该简历授权。后台 Run 仍须先调用 `ReadResume` 读取授权范围内的索引和正文，不能靠任务参数自动注入。没有冻结简历授权时，任何实际需要简历内容或投递状态写入的步骤必须转为 `needsAttention`；页面强制上传本地文件时同样必须接管，不得绕过 Run 级文件授权。
+其他档位的创建确认会明示系统可在计划时间唤醒或后台启动应用；完全信任不弹出确认。Windows 唤醒允许电池供电时启动，且切换到电池后不中止已开始的 Run。
+第一版 CronTask 不继承交互 Run 的临时附件。纯岗位搜索和网页 JD 阅读可以创建不绑定简历的投递 CronTask；若创建前已通过 `ReadResume({resumeId})` 建立绑定，创建时会冻结该简历授权。后台 Run 仍须先调用 `ReadResume` 读取授权范围内的索引和正文，不能靠任务参数自动注入。没有冻结简历授权时，任何实际需要简历内容或投递状态写入的步骤必须转为 `needsAttention`；页面强制上传本地文件时同样必须接管，不得绕过 Run 级文件授权。
 
 ## 5. MVP 工具定义
 
@@ -297,30 +297,66 @@ ReadUrl
 | 工具 | 职责 | 执行映射 |
 | --- | --- | --- |
 | `BrowserNavigate` | 在当前标签页导航到指定 URL | 扩展创建任务标签页或导航当前任务标签页，记录最终 URL |
-| `BrowserSnapshot` | 获取当前页面结构、可交互元素及稳定引用 | 固定页面操作模块执行语义扫描并返回截断信息 |
+| `BrowserSnapshot` | 获取当前页面结构、可交互元素及稳定引用；支持自动增量与强制全量 | 内部完整扫描，模型接收精简全量、增量或无变化回执，始终携带当前页面版本；见 [快照契约](./21-browser-snapshot-delta.md) |
 | `BrowserScreenshot` | 截取当前视口并仅向支持视觉输入的模型注入下一轮；不接受输出路径、不生成元素引用 | 扩展截取任务标签页，Host 读取后立即删除临时内容 |
 | `BrowserReadPage` | 读取当前页面的正文内容 | 固定页面操作模块返回限长正文、标题和 URL |
 | `BrowserClick` | 点击指定页面元素 | 重新校验 ref、可见性和命中目标后点击 |
 | `BrowserFill` | 清空并填写指定输入框 | 固定页面操作模块聚焦、填写并触发页面输入事件 |
-| `BrowserFillForm` | 选择投递档案和/或已绑定简历，由 Host 内部检查当前表单，经精确校验、上下文语义评分和全局冲突消解后填写文本框、原生下拉、日期选择器、自定义下拉、最多三级级联菜单或普通单选项；通过 `continuationId` 续填，并用短 `fieldId + candidateId` 处理歧义 | Host 保存短寿命来源和续填状态；动态控件每批最多执行两个并重新绑定 DOM，单字段失败进入 `skipped` 而不中断其余字段；结果返回摘要、`remainingCount`、`done`、`ambiguous`、`unmatched` 与 `missingFields` |
-| `BrowserValidateForm` | 填写后重新检查必填项和浏览器原生校验结果；不触发提交 | 复用受控页面快照，仅返回字段引用、标签和问题，不回显字段值 |
+| `BrowserFillForm` | `mode:plan`（默认）只读返回字段、当前值、所属区块和记录、资料事实及原文；Agent 审阅后通过 `mode:execute + continuationId + selections` 显式匹配，再由 Host 批量填写 | 填写被选择的空字段及受控上传后允许修正的解析值；来源引用、原文提取、类型、区块、文档身份与计划重放均校验。执行后或结构变化需重新规划；不上传、不签名、不接受协议、不提交 |
+| `BrowserValidateForm` | 只读检查必填项、原生有效性，并回读已审阅字段与预期来源比较 | 分别返回原生 `valid`、选定字段的 `businessValid` 和 `fieldChecks`（预期、实际、来源、区块和记录）；无法回读为 `unverified`，不视为通过，不触发提交 |
 | `BrowserSelect` | 选择指定下拉选项 | 固定页面操作模块处理原生下拉和已识别的自定义选项 |
 | `BrowserSetChecked` | 设置复选框或单选项的选中状态 | 检查当前状态后在任务页面执行点击 |
 | `BrowserPressKey` | 在当前页面按下指定按键 | 扩展只执行既有按键枚举 |
+| `BrowserRunScript` | 使用受限 JavaScript 顺序编排最多 30 个浏览器动作 | 每一步通过冻结工具白名单、既有 Schema、授权、确认与账本；失败即停 |
 | `BrowserUploadFile` | 将 Host 授权的文件上传到指定网页控件 | Bridge 校验并读取资源，扩展绑定到目标上传控件 |
 | `BrowserWait` | 等待元素、页面状态或 URL 变化 | 固定页面操作模块有界轮询 URL、文本、元素或 DOM 稳定 |
 | `BrowserSwitchTab` | 切换到指定浏览器标签页 | 只允许当前浏览器任务已登记标签页 |
 | `BrowserGoBack` | 返回当前标签页的上一历史页面 | 在任务标签页执行历史返回并推进 revision |
 
-`BrowserFillForm → 按 continuationId 续填 → BrowserValidateForm` 构成低成本填表闭环。Inspect 是 FillForm 的 Host 内部步骤，不再作为 Agent 工具暴露；字段特征仅在 Host 的短寿命计划中使用，不进入模型上下文。首次调用只选择资料来源，后续调用只携带 `continuationId`、可选的短 `fieldId + candidateId` 决议，以及用户明确提供的规范字段 `decisions`。页面版本、DOM 引用、来源路径、类型兼容和不可复用来源冲突全部由 Host 保存并校验。稳定文本控件使用 Host 生成的 Batch；日期编辑器、自定义下拉和最多三级级联由 Host 每批最多执行两个，批次间重新检查页面并重绑定字段。表单批次超时只终止当前写操作，不把可见浏览器直接判定为崩溃并关闭。任何路径都不接受模型提供的 selector、CLI 参数、脚本或资料正文，也不执行上传、协议、导航和提交。
+企业网申 Skill 按 `BrowserFillForm(plan) → Agent 来源匹配 → BrowserFillForm(execute) → BrowserValidateForm → 定点修正 → BrowserValidateForm` 执行。规划不写入，Agent 在首次填写前核对值及来源和重复记录边界。验证分别返回原生 `valid` 与来源对照 `businessValid/fieldChecks`；缺失回读不能视为通过。人工修正仅针对剩余问题，成功 Fill 后的 Enter 可按 `referencesPreserved` 复用观察引用，不逐框获取快照。
+
+交互式 `fully_trusted` 下，`BrowserUploadFile` 与 `BrowserPressKey`（包括 Enter）直接执行，不要求确认。其他档位的上传和 Enter 仍需确认，其余按键沿用风险档位策略。上传始终检查 Run 文件授权、页面引用与提案；其他工具的提交、发送、协议等强制确认不变，无人值守任务仍受冻结的 BrowserTaskGrant 限制。
+
+ATS 需要简历附件时先以 BrowserUploadFile 的 purpose:resume 上传授权文件。Host 在实际执行上传前读取字段基线，并有界观察解析状态和字段稳定性。uploaded:true 仅确认文件交给网页；readyForFill:false 时使用 BrowserWait(kind:resume_parse,value:settled) 继续等待原上传，不重复上传。completionObserved:false 表示只观察到安静窗口。随后规划返回 origin、correctionPolicy、必要的 beforeUploadValue 和 restoreFactId：解析产生的值可对照来源修正，上传前非空值只能保留或恢复，恢复事实仅限原字段。重复记录重建且归属不明确时返回 unresolvedProtectedFields，不按序号恢复。确认等待期间字段变化会拒绝旧计划。
+
+自定义下拉失败回传 requestedValue、observedOptions、selectedPath、searchAttempted、搜索前的 optionsBeforeSearch 与 optionsTruncated；候选来自当前可见弹层，有界去重，不保证完整目录，也不产生新用户事实。Agent 应先判断候选冲突，证据不全时再观察。
+
+首次调用选择授权档案与已绑定简历，Host 返回短寿命的 `continuationId`。执行的 `selections` 选择 `fieldId + factId`，或用 `fieldId + sourceId + quote + value + field` 提取自由格式简历事实。原文必须确实存在于授权来源，写入值必须包含在原文中；Agent 提取保留原始资料来源，不记为用户补充。未选字段不写入。未跟踪上传时保留原有非空字段；受控上传后依照 correctionPolicy 修正解析值或恢复上传前值。字段身份使用文档内节点标识并校验完整结构；原生选择与单选每批最多一个，日期及自定义下拉复用 ATS 驱动。执行计划不可重放，后续调用先 `mode:plan` 再匹配。验证回读值与已审阅预期对照，并交由 Agent 检查来源语义和记录对应；原生校验通过不代表业务正确。
+
+续填规划返回 `sourceContentUnchanged:true` 时沿用先前来源正文和 ID，不重复发送整份简历；上下文缺失时用授权来源 ID 重新开始规划。已执行记录的来源绑定跨批次保留，未执行或取消的提案不建立绑定。`done` 仅表示本批选定字段执行结束，不表示整张申请表填写完整。
+
+同一教育事实可复用于最高学历、毕业时间等汇总及对应经历，也可用于同一记录的重复展示；不同经历的来源隔离仍校验。匹配失败返回具体字段 ID 与标题。年月来源按年月核验，来源提供完整日期时仍保留日精度；学习形式、到岗时间的有限同义值在选项匹配和回读中共用规则。相对到岗时间走下拉选择，明确日历日期走日期控件。`businessValid` 为 false 或 null 时不得报告全部字段匹配成功。
 
 ATS 日期适配器统一登记在 `browser-date-adapters.ts`，目前包含飞书、北森与 Moka。域名提供平台线索，实际组件结构决定适配器；企业自定义域名同样可识别。混合页面按目标最近的组件选择，未命中组件时保留通用日期处理，每次表单检查及日期面板观察重新识别。个人浏览器导航保留 URL hash，支持 Moka 的申请页路由。
 
 飞书 ATS 年月范围控件分别识别开始、结束日期，使用当前经历的字段定位。填写时先显露年月列表中的目标选项，保留点击命中与遮挡检查；日期选项仅作必要滚动。北森 Phoenix 日期控件沿用年、月、日面板的交互。验证只读取目标端点或日期输入框的真实值，不使用相邻字段或日历候选文本判断成功。已有日期保留，目标字段丢失时停止该字段操作。
 
-Moka 的字段标题、所属区块及重复记录序号来自申请表组件。就读时间拆分为开始、结束两端，各自选择年、月；出生日期的年月面板支持跨十年选年，选月即提交，验证忽略网站附加的年龄。学校、专业等搜索下拉只接受真实候选，搜索后有界等待目标候选出现，不把搜索词或“添加自定义值”视为成功；验证读取已选显示值。辅助搜索框、国家区号、证件类型不冒充业务文本框，禁用的联动摘要不参与填写，未知标题不从周围文字猜测字段。页面值保留不代表服务端草稿已保存。
+飞书 Select 每个控件只暴露一个业务目标，内部搜索框不作为独立字段。规划、上传前基线和校验统一读取已选显示值，不读取搜索词。选择仅使用当前字段关联的真实菜单，等待弹层动效和位置稳定后点击候选行；菜单不稳定或关联失效时停止，不改点相邻选项。
+
+Moka 的字段标题、所属区块及重复记录序号来自申请表组件。就读时间拆分为开始、结束两端，各自选择年、月；出生日期的年月面板支持跨十年选年，选月即提交，验证忽略网站附加的年龄。学校、专业等搜索下拉只接受真实候选，搜索后有界等待目标候选出现，不把搜索词或“添加自定义值”视为成功；验证读取已选显示值。辅助搜索框、国家区号、证件类型不冒充业务文本框，禁用的联动摘要不参与填写，未知标题不从周围文字猜测字段。内部表单规划可保留被固定页头遮挡的已标记字段，真正点击仍检查可见性与命中。页面值保留不代表服务端草稿已保存。
 
 档案库提供 `application`（投递档案）模板，使用 `[个人信息]`、`[教育经历N]`、`[工作经历N]`、`[项目经历N]` 与 `[求职意向]` 分区和 `字段名：字段值` 格式。自动匹配只复制非空的明确值；模板与简历冲突、缺失或无法识别时跳过，不调用隐藏模型、不推测硬事实。密码、验证码、文件上传、协议和最终提交仍由各自工具处理；这不妨碍它们在已经冻结对应授权的无人值守任务中自动执行。
+
+### 5.4.1 浏览器脚本
+
+`BrowserRunScript({ script, pageRevision? })` 仅在工作场景开放。使用最新观察的版本，或先在脚本内调用 `page.snapshot()`。支持 `const/let`、JSON 数组与对象、属性读取、`if`、`for/of`、数值 `for`、`await`、`console.log` 和 `return`；不支持函数、任意对象方法、模块、Node、文件、网络、DOM、eval 或原始 CDP。
+
+```js
+// 输入框引用和值均来自本轮已观察页面与授权资料。
+for (const field of [{ ref: "@e1", text: "已授权值A" }, { ref: "@e2", text: "已授权值B" }]) {
+  await page.fill(field.ref, field.text);
+  await page.press("Enter");
+}
+await page.snapshot();
+```
+
+页面方法包括 `navigate(url)`、`snapshot(options?)`、`screenshot()`、`readPage()`、`fill(ref,text)`、`click(ref)`、`press(key)`、`select(ref,value)`、`setChecked(ref,checked)`、`uploadFile(ref,fileId,options?)`、`fillForm(options)`、`validateForm()`、`wait({kind,value})`、`switchTab(tabId)`、`goBack()`，参数和能力沿用对应原子工具。需要简历附件时先上传并观察解析，再使用 FillForm 两阶段规划与执行，验证后集中修正。上传可传 {purpose:"resume"}，解析未就绪则脚本停止后续写入。
+
+脚本最多 16000 字符、30 步、120 秒；循环、数据增长和输出均有预算，子动作计入场景显式设置的工具总数限制。每一步实时进入对话轨迹，Trace 不保存完整脚本或填写正文。所有快照自动随外层工具结果返回，保留全量与增量依赖；其他需要模型阅读的数据用 `console.log` 或 `return` 输出。不要重复打印快照。
+
+失败、状态未知、确认或用户接管立即停止后续步骤。确认只执行被冻结的单个动作，不续跑脚本；恢复结果保留已完成步骤，Agent 重新观察后只规划剩余工作。相同外层调用不重放，连续相同按键有独立步骤身份。点击、选择或导航使引用失效后，必须先重新观察再使用元素引用。脚本完成只证明动作序列执行完毕，不证明网站已经保存或提交成功。
+
+已有会话的冻结工具集不自动扩展；新建工作会话或 `/reload` 后使用脚本工具。
 
 ### 5.5 Todo
 
@@ -389,6 +425,10 @@ inProgress → completed | cancelled
 `AskUserQuestion` 是结构化等待入口。工具返回统一 wait disposition，Loop 持久化问题后进入 `waiting_user_input`，而不是继续请求模型或保持悬空 Promise。
 
 用户答案经 `RespondToInteraction` 按问题 ID 提交，完整校验后作为原工具调用的最终结果追加，后端恢复原 Run。确认卡也走该入口，审批决定与实际工具执行结果分开记录，不模拟用户发送确认消息。
+
+拒绝浏览器操作只校验交互归属与冻结提案绑定，不要求当前页面仍存在、版本不变或提案未过期；结果记录为 `USER_REJECTED`，不执行原操作，也不重复请求同一确认。批准仍完整校验页面版本、任务归属与有效期。BOSS 批处理提案使用准备时的真实页面版本。
+
+交互结果已保存但续轮初始化失败时，补齐原工具调用的唯一结果并结束旧 Run，保留错误原因，不再展示已处理的确认卡。重启后遇到同类旧检查点，新消息先恢复已保存结果，再开始新 Run；不得重放原外部动作。
 
 ## 6. 与当前工具的迁移关系
 
@@ -516,8 +556,8 @@ interface ToolEnvelope<T> {
 - 模型可见工具名全部符合 PascalCase 规则且跨 Provider 可接受。
 - 默认场景按意图进一步收窄工具，不暴露任何投递或浏览器能力。
 - 0.2.0 默认场景不注册、不展示也不执行 `SearchJobs`、`ReadUrl`。
-- 聊天暴露冻结的11个只读或交互工具；工作暴露冻结的40个工具，包含简历与档案编辑；两者都不包含 `SearchJobs` 或 `ReadUrl`。
-- CronTask 创建确认前数据库与 OS 调度均无新增记录；无人值守 Run 即使恢复旧快照也不能调用 CronTask 工具。
+- 聊天暴露冻结的11个只读或交互工具；工作暴露冻结的41个工具，包含简历与档案编辑、浏览器脚本；两者都不包含 `SearchJobs` 或 `ReadUrl`。
+- CronTask 在完全信任下直接创建并返回真实回执，其他档位确认前数据库与 OS 调度均无新增记录；无人值守 Run 即使恢复旧快照也不能调用 CronTask 工具。
 - 多次逾期只执行最近 occurrence；既有 Run 活跃、浏览器长期占用、登录或验证码接管均写入明确的 `missed`/`needsAttention` 原因。
 - 投递 Agent 在浏览器执行前读取投递状态，并只在有效回执后更新 `applied`。
 - `Read`、`Glob`、`Grep` 可以访问授权虚拟挂载，但不能路径逃逸、读取非法 UTF-8 或敏感文件。
@@ -531,6 +571,20 @@ interface ToolEnvelope<T> {
 - 并行读结果顺序稳定；写屏障后读取到新 revision。
 - 超时写入会对账，不产生第二次提交。
 - 重启后相同幂等键返回原 receipt。
+
+## 手动压缩控制工具
+
+浏览器扩展未连接或协议陈旧时，交互式 Run 发出接管提示并等待用户启用／重新加载扩展；无人值守 Run 暂停，不让模型反复重试。取消中的工具调用必须结算协议回执；无可靠回执时明确结果未知，外部动作不能自动重放。
+
+浏览器接管投影为 `paused`，真实问答／审批保持 `waiting`；两者均不显示运行动画，计时停在 `pausedAt`。接管原因保存到 `statusMessage`，显示在折叠过程之外，重新进入会话仍可见。
+
+每个工作 Run 只读当前扩展握手状态；上一轮浏览器中断且仍持有授权任务页时，在第一次模型请求前执行一次全量 `BrowserSnapshot`。真实观察以临时 `browserObservation` 注入，不伪造模型调用或持久化为用户事实。没有可恢复任务页时明确标为尚未观察，不读取其他个人标签页；结果未知的写操作仍不得自动重放。
+
+`/compact [instructions]` 使用独立控制请求，只暴露 `CompactContext({ compressionInstructions: string })`；参数长度为 1–6000 字符，不允许额外字段。该工具不加入聊天／工作场景的普通业务工具快照，不改变权限或业务数据。
+
+Agent 结合历史翻译并补充用户重点后，提示词要求一次调用；沿用当前模型、思考开关和强度，保持 `tool_choice: auto`。程序仅接受唯一有效调用，拒绝零次、多次或错误参数；摘要模型不直接接收原始命令后缀。自动压缩复用同一压缩引擎，不额外发起翻译请求。
+
+压缩后首次 `BrowserSnapshot` 返回全量；重新观察前，引用页面元素的写入、点击等动作返回 `BROWSER_SNAPSHOT_CONTEXT_LOST`。原有页面版本、确认和权限检查继续有效。
 
 ## 14. 总结
 

@@ -33,13 +33,13 @@ describe('PB-03 attach-only browser preflight', () => {
         statusReads += 1;
         return statusReads < 3
           ? { state: 'offline', connected: false, handshakeReceived: false }
-          : { state: 'online', connected: true, handshakeReceived: true, handshakeSource: 'poll', actualVersion: '0.2.0', actualProtocolRevision: 'avery-browser-extension-bridge-v1' };
+          : { state: 'online', connected: true, handshakeReceived: true, handshakeSource: 'poll', actualVersion: '0.2.0', actualProtocolRevision: 'avery-browser-extension-bridge-v2' };
       }),
       Request: vi.fn(),
       Launch: vi.fn(),
     };
     const result = await WaitForPb03Handshake({ bridge, intervalMs: 100, timeoutMs: 1_000, sleep: async () => undefined });
-    expect(result).toMatchObject({ ready: true, status: 'ready', handshakeReceived: true, source: 'poll', actualVersion: '0.2.0', actualProtocolRevision: 'avery-browser-extension-bridge-v1', attempts: 3 });
+    expect(result).toMatchObject({ ready: true, status: 'ready', handshakeReceived: true, source: 'poll', actualVersion: '0.2.0', actualProtocolRevision: 'avery-browser-extension-bridge-v2', attempts: 3 });
     expect(bridge.Start).toHaveBeenCalledTimes(1);
     expect(bridge.Request).not.toHaveBeenCalled();
     expect(bridge.Launch).not.toHaveBeenCalled();
@@ -49,6 +49,8 @@ describe('PB-03 attach-only browser preflight', () => {
     const stale = await WaitForPb03Handshake({
       bridge: { Status: () => ({ state: 'stale', connected: false, handshakeReceived: false, actualVersion: '0.1.0', actualProtocolRevision: 'old' }) },
       timeoutMs: 20_000,
+      // 验证立即返回分支，不让实时时钟跨毫秒造成 waitedMs=0 的偶发失败。
+      now: () => 1_000,
       sleep: async () => undefined,
     });
     expect(stale).toMatchObject({ ready: false, status: 'stale', waitedMs: 0, attempts: 1, lastState: 'stale' });

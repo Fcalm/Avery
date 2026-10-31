@@ -127,7 +127,7 @@ function CreateMockExtensionBridge(bridgeOptions: { emptySnapshotTargetId?: stri
           }
           result = { result: { type: 'object', value: {
             url: target.url, title: target.title, readyState: target.readyState, truncated: false,
-            items: bridgeOptions.snapshotItems ?? [{ selector: '#fixture-name', tag: 'input', role: 'textbox', type: 'text', name: 'fixture name', ariaLabel: '姓名' }],
+            items: (bridgeOptions.snapshotItems ?? [{ selector: '#fixture-name', tag: 'input', role: 'textbox', type: 'text', name: 'fixture name', ariaLabel: '姓名' }]).map((item, index) => ({ ...item, nodeId: index + 1 })),
           } } };
         } else if (expression.includes('const expected =') && expression.includes('readyState')) {
           result = { result: { type: 'object', value: { matched: true, fingerprint: 'fixture-ready', readyState: target.readyState } } };
@@ -142,6 +142,12 @@ function CreateMockExtensionBridge(bridgeOptions: { emptySnapshotTargetId?: stri
         }
         break;
       }
+      case 'Page.getFrameTree': {
+        const target = targets.find((item) => item.active) ?? targets.find((item) => item.attached)!;
+        result = { frameTree: { frame: { id: `frame-${target.targetId}`, loaderId: target.url } } };
+        break;
+      }
+      case 'Page.createIsolatedWorld': result = { executionContextId: 1 }; break;
       case 'Input.dispatchMouseEvent':
       case 'Input.dispatchKeyEvent':
       case 'Input.insertText':

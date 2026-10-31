@@ -67,8 +67,8 @@ describe('AgentSkillRegistry', () => {
     expect(snapshot.skills.map((skill) => skill.manifest.id)).toEqual(['boss-deliver-workflow', 'company-career-form', 'job-application', 'job-discovery', 'resume-tailoring']);
     expect(registry.CreateIndexMessage(snapshot).content).toContain('boss-deliver-workflow');
     expect(registry.Load(snapshot, 'application', { skillId: 'boss-deliver-workflow' }).message.content).toContain('# Boss直聘 Delivery Workflow');
-    expect(registry.CreateIndexMessage(snapshot).content).toContain('BrowserFillForm and BrowserValidateForm');
-    expect(registry.Load(snapshot, 'application', { skillId: 'company-career-form' }).message.content).toContain('BrowserFillForm → continue until done → BrowserValidateForm');
+    expect(registry.CreateIndexMessage(snapshot).content).toContain('match authorized sources before writing');
+    expect(registry.Load(snapshot, 'application', { skillId: 'company-career-form' }).message.content).toContain('BrowserFillForm(plan) → Agent source matching → BrowserFillForm(execute)');
     expect(registry.Load(snapshot, 'application', { skillId: 'resume-tailoring' }).message.content).toContain('# Resume tailoring');
     const chat = await registry.BuildSnapshot('chat-session', 1, 'default');
     expect(() => registry.Load(chat, 'default', { skillId: 'boss-deliver-workflow' })).toThrow(/not available/i);

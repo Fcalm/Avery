@@ -26,7 +26,7 @@ function CreateHarness(initialGreetingEnabled = true) {
     EvaluateTrustedPage: vi.fn(async () => ({ url: state === 'modal' ? job.url : 'https://www.zhipin.com/web/geek/chat', body: `示例科技 产品经理`, ownTexts: state === 'sent' ? ['自定义消息'] : [], ownImages: 0, initialGreetingTexts: state === 'modal' && initialGreetingEnabled ? ['这是完整的第一条常用语'] : [], quickPhrases: ['这是完整的第一条常用语'], canContinue: state === 'modal' || state === 'continued' })),
   };
   const saveJob = vi.fn(async () => ({ jobId: job.id, jobRevision: 4 }));
-  const service = new BossContactService({ browser, loadViewModel: () => ({ jobs: [job], applications: [] }), saveJob, resolveAsset: () => null, readResume: () => ({ id: 'resume-1', revision: 2 }), getBrowserStatus: async () => ({ running: true, engine: 'chrome' }), createBatch: vi.fn(), checkpointBatch: vi.fn(), finishBatch: vi.fn() });
+  const service = new BossContactService({ browser, loadViewModel: () => ({ jobs: [job], applications: [] }), saveJob, resolveAsset: () => null, readResume: () => ({ id: 'resume-1', revision: 2 }), getBrowserStatus: async () => ({ running: true, engine: 'chrome', pageRevision: 17 }), createBatch: vi.fn(), checkpointBatch: vi.fn(), finishBatch: vi.fn() });
   return { service, browser, saveJob };
 }
 
@@ -34,6 +34,7 @@ describe('BossContactService', () => {
   it('冻结岗位库 URL，并以“立即沟通”的已发送回执认定首条常用语送达', async () => {
     const { service, browser, saveJob } = CreateHarness();
     const proposal = await service.Prepare({ sessionId: 'session-1', items: [{ jobId: 'job-1', message: { mode: 'first_quick_phrase' } }], authorizedAssetIds: [], resume: { id: 'resume-1', name: '产品简历', revision: 2 } });
+    expect(proposal.pageRevision).toBe(17);
     const outcome = await service.Execute({ proposal, deadline: Date.now() + 20_000 });
 
     expect(outcome.data).toMatchObject({ ok: true, status: 'completed', summary: { requested: 1, contacted: 1 } });

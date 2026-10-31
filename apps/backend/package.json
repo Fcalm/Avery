@@ -10,6 +10,7 @@
     "test": "npm run build --workspace @avery/contracts && npm run build --workspace @avery/agent-sdk && npm run build --workspace @avery/agent-core && npm run build --workspace @avery/agent-module-host && npm run build --workspace @avery/agent-modules-defaults && npm run build --workspace @avery/backend && node --test test/*.test.cjs"
   },
   "dependencies": {
+    "@avery/application-benchmark": "2.0.0",
     "@avery/agent-core": "0.1.0",
     "@avery/agent-module-host": "0.1.0",
     "@avery/agent-modules-defaults": "0.1.0",

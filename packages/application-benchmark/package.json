@@ -1,0 +1,11 @@
+{
+  "name": "@avery/application-benchmark", "version": "2.0.0", "private": true, "type": "commonjs", "main": "client.cjs", "types": "client.d.cts",
+  "exports": { ".": { "types": "./client.d.cts", "default": "./client.cjs" }, "./server": { "types": "./server.d.cts", "default": "./serve.cjs" }, "./scenarios": { "types": "./scenarios.d.cts", "default": "./scenarios.cjs" } },
+  "scripts": {
+    "start": "node serve.cjs",
+    "check": "node scripts/check.cjs",
+    "check:types": "node scripts/check-types.cjs",
+    "test": "node --test tests/*.test.cjs",
+    "evaluate": "node evaluate.cjs"
+  }
+}

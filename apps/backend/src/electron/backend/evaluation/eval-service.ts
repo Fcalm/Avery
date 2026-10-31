@@ -15,6 +15,7 @@ import { BrowserEvalRunner } from './browser-eval-runner';
 import { BrowserExtensionBridge } from '../browser-extension-bridge';
 import { ResolveBrowserAssertions, ScoreBrowserCase } from './browser-eval-scorer';
 import { NormalizeEvalTrace } from './eval-trace';
+import { BuildApplicationBenchmarkDataset, ValidateApplicationBenchmarkCase, ApplicationBenchmarkVersion } from './career-portal-fixture';
 
 const Id = z.string().min(1).max(200).regex(/^[A-Za-z0-9._-]+$/);
 const CurrentBrowserFixtureVersion = '2';
@@ -33,7 +34,7 @@ const ConfigSchema = z.object({
   userSimulator: z.enum(['approve_valid', 'reject_submit_once', 'scripted']),
   maxModelTurns: z.number().int().min(1).max(100),
   repeatCount: z.number().int().min(1).max(10),
-  fixtureBranch: z.enum(['clean', 'realistic-dom']).optional(),
+  fixtureBranch: z.enum(['clean', 'realistic-dom', 'career-portal']).optional(),
 }).strict();
 const ProjectInputSchema = z.object({
   id: Id.optional(),
@@ -64,6 +65,7 @@ const DatasetCaseSchema = z.object({
   }).strict(),
   tags: z.array(z.string().max(100)).max(100).default([]),
   browser: z.object({
+    benchmark: z.object({ scenarioId: z.string().min(1).max(100), goal: z.enum(['fill', 'preview', 'submit']) }).strict().optional(),
     fixtureVersion: z.string().max(100).optional(), seed: z.number().int().optional(),
     difficulty: z.enum(['basic', 'intermediate', 'advanced']).optional(),
     initialState: z.record(z.string(), z.unknown()).optional(),
@@ -107,9 +109,10 @@ export function ParseEvalDataset(jsonl: string): EvalDatasetCase[] {
 }
 
 function BrowserCaseValidationErrors(cases: EvalDatasetCase[]): string[] {
-  const missing = cases.filter((testCase) => ResolveBrowserAssertions(testCase).length === 0).map((testCase) => testCase.id);
-  const incompatible = cases.filter((testCase) => testCase.browser?.fixtureVersion && testCase.browser.fixtureVersion !== CurrentBrowserFixtureVersion).map((testCase) => testCase.id);
+  const missing = cases.filter((testCase) => !testCase.browser?.benchmark && ResolveBrowserAssertions(testCase).length === 0).map((testCase) => testCase.id);
+  const incompatible = cases.filter((testCase) => testCase.browser?.fixtureVersion && testCase.browser.fixtureVersion !== (testCase.browser.benchmark ? ApplicationBenchmarkVersion : CurrentBrowserFixtureVersion)).map((testCase) => testCase.id);
   return [
+    ...cases.flatMap(ValidateApplicationBenchmarkCase),
     ...(missing.length ? [`以下浏览器案例缺少 Assertions 或 expected.expectedState：${missing.join('、')}`] : []),
     ...(incompatible.length ? [`以下浏览器案例的 Fixture 版本不受支持（当前为 ${CurrentBrowserFixtureVersion}）：${incompatible.join('、')}`] : []),
   ];
@@ -247,7 +250,12 @@ export class EvalService {
     const parsed = ProjectInputSchema.parse(input);
     ValidateProjectConfig(parsed.config, parsed.runnerType);
     const now = Date.now();
-    return this.PublicProject(await this.store.CreateEvalProjectRecord({ ...parsed, id: parsed.id ?? `eval-${randomUUID()}`, createdAt: now, updatedAt: now }));
+    const created = await this.store.CreateEvalProjectRecord({ ...parsed, id: parsed.id ?? `eval-${randomUUID()}`, createdAt: now, updatedAt: now });
+    if (parsed.runnerType === 'browser' && parsed.config.fixtureBranch === 'career-portal') {
+      await this.ImportDataset(created.id, BuildApplicationBenchmarkDataset(), '', created.revision);
+      return this.ReadProject(created.id);
+    }
+    return this.PublicProject(created);
   }
 
   async UpdateProject(id: string, input: EvalProjectInput, expectedRevision: number): Promise<EvalProject> {
@@ -352,6 +360,7 @@ export class EvalService {
       try {
         const cases = ParseEvalDataset(await this.artifacts.ReadDataset(record.id, record.datasetVersion));
         errors.push(...BrowserCaseValidationErrors(cases));
+        if (cases.some(testCase => Boolean(testCase.browser?.benchmark) !== (record.config.fixtureBranch === 'career-portal'))) errors.push('拟真平台案例必须使用网申填写测评环境，不能混用旧招聘 Fixture。');
       } catch (error) {
         errors.push(error instanceof Error ? error.message : '浏览器测试集无法读取。');
       }
@@ -380,7 +389,7 @@ export class EvalService {
       schemaVersion: 1, createdAt: Date.now(), projectId: project.id, projectRevision: project.revision,
       runnerType: project.runnerType, config: { ...runConfig, candidates }, rubric: project.rubric, judgePrompt: project.judgePrompt ?? '', judgeStrictJson: project.judgeStrictJson === true,
       datasetVersion: project.datasetVersion, cases, toolDefinitions: definitions, toolsetHash,
-      versions: { snapshot: 2, promptRunner: 2, browserRunner: 2, scorer: project.runnerType === 'browser' ? 'browser-deterministic-2' : 'prompt-judge-3', assertions: 1, trace: 1, application: '0.1.0' },
+      versions: { snapshot: 2, promptRunner: 2, browserRunner: 3, scorer: project.runnerType === 'browser' ? 'browser-deterministic-3' : 'prompt-judge-3', assertions: 1, trace: 1, application: '0.1.0', ...(runConfig.fixtureBranch === 'career-portal' ? { benchmark: ApplicationBenchmarkVersion } : {}) },
       environment: { repeatCount: runConfig.repeatCount, maxConcurrency: project.runnerType === 'browser' ? 1 : 2 },
     };
   }
@@ -388,7 +397,7 @@ export class EvalService {
   /** 旧测评项目不会随全局 Provider 设置迁移；Run 创建时冻结实际可用的 Provider/模型，避免跨供应商发送旧模型名。 */
   private async ResolveRunConfig(project: any): Promise<any> {
     const stored = await this.credentialPort?.Load?.();
-    const activeProvider = stored?.provider === 'Z.AI' ? 'Z.AI' : stored?.provider === 'DeepSeek' ? 'DeepSeek' : null;
+    const activeProvider = ['DeepSeek', 'Z.AI', 'MIMO', '自定义'].includes(stored?.provider) ? stored.provider : null;
     const activeModel = typeof stored?.model === 'string' && stored.model.trim() ? stored.model.trim() : null;
     if (!activeProvider || !activeModel || activeProvider === project.config.executionProvider) return project.config;
     return {
@@ -523,7 +532,7 @@ export class EvalService {
               await this.store.UpsertEvalCaseRunRecord({ id: caseRunId, runId, candidateId: candidate.id, candidateName: candidate.name, caseId: testCase.id, repeatIndex, status: 'running', createdAt, metrics: {} });
               this.EmitEvent({ type: 'case_status', runId, caseRunId, message: `${candidate.name} · ${testCase.id} 正在执行` });
               try {
-                const caseRoot = join(this.userDataPath, 'evaluation-data', 'runtime', runId, caseRunId);
+                const caseRoot = join(this.artifacts.dataRoot, 'runtime', runId, caseRunId);
                 await mkdir(caseRoot, { recursive: true });
                 const startedAt = Date.now();
                 const commonInput = {
@@ -556,9 +565,9 @@ export class EvalService {
                   taskCompleted: run.runnerType === 'browser'
                     ? scoreResult.score.taskCompleted === true
                     : typeof result.metrics.taskCompleted === 'boolean' ? result.metrics.taskCompleted : Boolean(result.finalResponse),
-                  promptTokens: Number(result.metrics.promptTokens ?? 0) + Number(judgeUsage?.promptTokens ?? 0),
-                  completionTokens: Number(result.metrics.completionTokens ?? 0) + Number(judgeUsage?.completionTokens ?? 0),
-                  totalTokens: Number(result.metrics.totalTokens ?? 0) + Number(judgeUsage?.totalTokens ?? 0),
+                  promptTokens: result.metrics.promptTokens == null && !judgeUsage ? null : Number(result.metrics.promptTokens ?? 0) + Number(judgeUsage?.promptTokens ?? 0),
+                  completionTokens: result.metrics.completionTokens == null && !judgeUsage ? null : Number(result.metrics.completionTokens ?? 0) + Number(judgeUsage?.completionTokens ?? 0),
+                  totalTokens: result.metrics.totalTokens == null && !judgeUsage ? null : Number(result.metrics.totalTokens ?? 0) + Number(judgeUsage?.totalTokens ?? 0),
                   durationMs: Date.now() - startedAt,
                 };
                 const record = await this.store.UpsertEvalCaseRunRecord({
@@ -585,7 +594,7 @@ export class EvalService {
                 const status = controller.signal.aborted ? 'cancelled' : 'failed';
                 const record = await this.store.UpsertEvalCaseRunRecord({
                   id: caseRunId, runId, candidateId: candidate.id, candidateName: candidate.name, caseId: testCase.id, repeatIndex,
-                  status, finalResponse: '', metrics: {}, error: { code, message: error instanceof Error ? error.message : 'Evaluation case failed.' },
+                  status, finalResponse: '', metrics: { environmentFailure: (error as { category?: unknown })?.category === 'environment' }, error: { code, message: error instanceof Error ? error.message : 'Evaluation case failed.' },
                   createdAt, completedAt: Date.now(),
                 });
                 if (controller.signal.aborted) throw error;
@@ -628,7 +637,7 @@ export class EvalService {
   private Summarize(caseRuns: EvalCaseRun[], startedAt: number): EvalRunSummary {
     const completed = caseRuns.filter((item) => item.status === 'completed');
     const scores = completed.map((item) => item.score?.totalScore).filter((value): value is number => typeof value === 'number');
-    const attempted = caseRuns.filter((item) => item.status === 'completed' || item.status === 'failed');
+    const attempted = caseRuns.filter((item) => (item.status === 'completed' || item.status === 'failed') && item.metrics.environmentFailure !== true && item.score?.benchmark?.outcome !== 'needs_review');
     const numberMetric = (key: string) => caseRuns.reduce((sum, item) => sum + (typeof item.metrics[key] === 'number' ? item.metrics[key] as number : 0), 0);
     const promptTokens = numberMetric('promptTokens'); const completionTokens = numberMetric('completionTokens');
     return {

@@ -1,0 +1,12 @@
+{
+  "personal.name": "林知夏", "personal.gender": "女", "personal.phone": "13800138000", "personal.email": "lin.zhixia@example.com", "personal.birthday": "2003-08-16", "personal.nationality": "中国大陆", "personal.province": "浙江省", "personal.city": "杭州市",
+  "intention.kind": "实习", "intention.city": "杭州", "intention.arrival": "2 周内", "intention.source": "学校就业网", "intention.days": "4 天", "intention.duration": "6 个月及以上",
+  "education.0.school": "南昌大学", "education.0.major": "工商管理", "education.0.degree": "本科", "education.0.mode": "全日制", "education.0.start": "2022-09", "education.0.end": "2026-06", "education.0.gpa": "3.7", "education.0.gpaScale": "4", "education.0.ranking": "前 10%",
+  "education.1.school": "浙江大学", "education.1.major": "信息管理与信息系统", "education.1.degree": "硕士研究生", "education.1.mode": "全日制", "education.1.start": "2026-09", "education.1.end": "2029-06",
+  "work.0.company": "杭州云序科技有限公司", "work.0.position": "产品实习生", "work.0.department": "产品部", "work.0.type": "实习", "work.0.start": "2025-07", "work.0.end": "2025-12",
+  "work.1.company": "序光信息技术有限公司", "work.1.position": "AI 产品实习生", "work.1.type": "实习", "work.1.start": "2026-07", "work.1.current": true,
+  "projects.0.name": "校园闲置物品交换平台", "projects.0.role": "产品负责人", "projects.0.start": "2024-10", "projects.0.end": "2025-04", "projects.0.url": "https://example.com/campus",
+  "projects.1.name": "智能求职助手", "projects.1.role": "产品设计", "projects.1.start": "2026-02", "projects.1.current": true,
+  "additional.skills": ["需求分析", "用户研究", "SQL", "Figma", "AI 应用"], "additional.english": "CET-6", "additional.englishScore": "512", "additional.portfolio": "https://example.com/zhixia", "additional.adjustment": "接受",
+  "noWork": false, "truth": true, "privacy": true, "files.resume.name": "lin-zhixia-resume.pdf"
+}

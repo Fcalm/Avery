@@ -13,7 +13,7 @@ const ExtensionOnlineWindowMs = 35_000;
  * 判断 Chrome 当前运行的 Service Worker 是否已经重载，因此连接必须携带这
  * 个稳定值；任何缺失或不匹配都按陈旧 Worker 处理。
  */
-export const BrowserExtensionProtocolRevision = 'avery-browser-extension-bridge-v1';
+export const BrowserExtensionProtocolRevision = 'avery-browser-extension-bridge-v2';
 /** 与 apps/browser-extension/manifest.json 保持一致；旧 Worker 必须按 stale 处理。 */
 export const BrowserExtensionManifestVersion = '0.2.0';
 type BrowserExtensionConnectionState = 'offline' | 'stale' | 'online';

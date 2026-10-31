@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <title>填写申请 · 序光科技招聘</title>
+  <link rel="icon" href="mark.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="styles.css">
+  <script src="engine.js" defer></script>
+  <script src="runtime-client.js" defer></script>
+  <script src="sync-state.js" defer></script>
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <header class="site-header"><div class="header-inner">
+    <a class="brand" href="#" aria-label="序光科技招聘首页"><img src="mark.svg" width="32" height="32" alt=""><strong>序光科技</strong><span>CAREERS</span></a>
+    <nav aria-label="招聘导航"><button type="button" data-info="关于序光">关于序光</button><button type="button" data-info="在这里工作">在这里工作</button><span class="nav-current">招聘职位</span></nav>
+    <span class="user-entry"><span class="user-avatar">候</span>候选人中心</span>
+  </div></header>
+  <main class="page-shell">
+    <div class="breadcrumb"><button type="button" data-info="职位列表">招聘职位</button><span>›</span><span>AI 产品经理</span><span>›</span><b>填写申请</b></div>
+    <section class="job-banner" aria-label="申请职位">
+      <div><span class="eyebrow">MAKE SOMETHING MATTER.</span><h1>申请 AI 产品经理<span class="job-code">J10934</span></h1><p>产品与体验 <i></i> 杭州 / 广州 <i></i> 校园招聘 / 实习</p></div>
+      <div class="banner-seal"><span class="seal-mark">↗</span><span>和好的想法<br>一起发生</span></div>
+    </section>
+    <div class="workspace">
+      <aside class="section-nav" aria-label="申请内容目录"><div class="nav-title">申请资料</div><ol id="section-links"></ol><div class="nav-tip">带 <span class="required">*</span> 为必填项<br>请与附件简历保持一致</div></aside>
+      <div class="form-column">
+        <div class="form-intro"><div><span class="step-index">01</span><b>填写申请资料</b><span class="step-line"></span><span class="step-index muted">02</span><span>预览与确认</span></div><span id="save-state" role="status">尚未保存</span></div>
+        <div id="error-summary" class="error-summary" role="alert" hidden></div>
+        <form id="application-form" novalidate>
+          <section id="intention" class="form-section"><header class="section-heading"><h2><span>01</span>投递意向</h2><span class="section-hint">请确认你的求职偏好</span></header><div id="intention-fields" class="field-grid"></div></section>
+          <section id="resume" class="form-section"><header class="section-heading"><h2><span>02</span>附件简历</h2><span class="required-label">必填</span></header>
+            <div id="resume-drop" class="upload-zone"><span class="upload-symbol" aria-hidden="true">↥</span><h3>拖拽简历到这里，或 <label for="resume-file">选择文件</label></h3><p>支持 PDF、DOC、DOCX，单个文件不超过 10 MB</p><input id="resume-file" type="file" accept=".pdf,.doc,.docx" aria-label="上传附件简历"><span class="upload-note">附件会保存在本机；请继续填写下方在线简历。</span></div>
+            <div id="resume-file-card" class="attachment-card" hidden></div><p id="parser-state" class="field-hint" role="status" hidden></p><div class="field-error" id="resume-error"></div>
+          </section>
+          <section id="personal" class="form-section"><header class="section-heading"><h2><span>03</span>个人信息</h2><span class="section-hint">让我们认识你</span></header><div id="personal-fields" class="field-grid"></div></section>
+          <section id="education" class="form-section"><header class="section-heading"><h2><span>04</span>教育经历</h2><span class="section-hint">请完整填写每一段教育经历</span></header><div id="education-entries"></div><button type="button" class="add-entry" data-add="education">＋ 添加教育经历</button></section>
+          <section id="work" class="form-section"><header class="section-heading"><h2><span>05</span>工作 / 实习经历</h2><span class="section-hint">实习、全职经历均可填写</span></header><label class="check-row no-experience"><input type="checkbox" id="no-work">我暂无工作或实习经历</label><div id="work-entries"></div><button type="button" class="add-entry" data-add="work">＋ 添加工作 / 实习经历</button></section>
+          <section id="projects" class="form-section"><header class="section-heading"><h2><span>06</span>项目经历</h2><span class="section-hint">课程项目、个人项目也可以</span></header><div id="projects-entries"></div><button type="button" class="add-entry" data-add="projects">＋ 添加项目经历</button></section>
+          <section id="additional" class="form-section"><header class="section-heading"><h2><span>07</span>补充信息</h2><span class="section-hint">更多关于你的闪光点</span></header><div id="additional-fields" class="field-grid"></div><div class="field"><label for="portfolio-file">作品集附件 <span class="optional">选填</span></label><input id="portfolio-file" type="file" accept=".pdf,.zip" aria-label="上传作品集附件"><p class="field-hint">支持 PDF、ZIP，最大 20 MB；也可以填写上方作品链接。</p><div id="portfolio-file-card"></div></div></section>
+          <section class="declaration"><label class="check-row"><input type="checkbox" id="truth">我承诺以上信息及所提供材料真实、准确、完整。</label><label class="check-row"><input type="checkbox" id="privacy">我已阅读并同意<button type="button" class="inline-link" id="privacy-link">《候选人隐私声明》</button>，同意将信息用于本次招聘。</label><div id="declaration-error" class="field-error"></div></section>
+        </form>
+        <footer class="page-footer">序光科技招聘 · 本地模拟站点 <span>所有资料仅保存在本机，不会发送到真实招聘平台。</span><button type="button" id="console-open">测评控制台</button></footer>
+      </div>
+      <aside class="job-aside"><div class="position-card"><span class="small-overline">你正在申请</span><h3>AI 产品经理</h3><span class="job-tag">产品与体验</span><dl><dt>工作地点</dt><dd>杭州 / 广州</dd><dt>招聘类型</dt><dd>校园招聘 / 实习</dd><dt>学历要求</dt><dd>本科及以上</dd></dl><button type="button" class="text-button" id="job-details">查看职位详情 ↗</button></div><div class="completion-card"><div><b>资料完整度</b><strong id="completion-value">0%</strong></div><progress id="completion-progress" max="100" value="0" aria-label="资料完整度"></progress><p id="completion-hint">完善资料，让好的机会找到你。</p></div><div class="help-card"><span>需要帮助？</span><button type="button" data-info="投递常见问题">投递常见问题 ↗</button><p>每位候选人可申请 1 个职位。<br>提交前，你随时可以修改资料。</p></div></aside>
+    </div>
+  </main>
+  <div class="action-bar"><div class="action-inner"><span class="local-status"><span></span>本地离线环境</span><div><button type="button" class="button secondary" id="save-draft">保存草稿</button><button type="button" class="button primary" id="preview-submit">预览并提交 <span>→</span></button></div></div></div>
+  <dialog id="modal" aria-labelledby="modal-title"><div class="modal-head"><h2 id="modal-title"></h2><button type="button" class="icon-button" id="modal-close" aria-label="关闭弹窗">×</button></div><div class="modal-body" id="modal-content"></div><div class="modal-actions" id="modal-actions"></div></dialog>
+  <div id="toast" class="toast" role="status" hidden></div>
+</body></html>

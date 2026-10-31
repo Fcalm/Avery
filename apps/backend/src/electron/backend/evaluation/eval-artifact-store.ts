@@ -30,7 +30,7 @@ export class EvalArtifactStore {
   readonly dataRoot: string;
 
   constructor(userDataPath: string) {
-    this.dataRoot = resolve(userDataPath, 'evaluation-data');
+    this.dataRoot = process.env.AVERY_EVALUATION_DATA_ROOT ? resolve(process.env.AVERY_EVALUATION_DATA_ROOT) : resolve(userDataPath, 'evaluation-data');
     this.root = resolve(this.dataRoot, 'runs');
   }
 

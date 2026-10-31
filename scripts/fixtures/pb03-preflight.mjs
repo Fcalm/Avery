@@ -85,7 +85,7 @@ function HandshakeStatus(status, expectedVersion, expectedProtocolRevision) {
 export async function WaitForPb03Handshake({
   bridge,
   expectedVersion = '0.2.0',
-  expectedProtocolRevision = 'avery-browser-extension-bridge-v1',
+  expectedProtocolRevision = 'avery-browser-extension-bridge-v2',
   timeoutMs = 20_000,
   intervalMs = 100,
   signal,
