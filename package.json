@@ -89,6 +89,7 @@
       "!**/docs/**",
       "!**/doc/**",
       "!**/tests/**",
+      "!**/test/**",
       "!**/examples/**",
       "package.json",
       "LICENSE"
