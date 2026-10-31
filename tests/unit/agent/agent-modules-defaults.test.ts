@@ -262,13 +262,13 @@ describe('agent-modules-defaults', () => {
     }
   });
 
-  it('聊天只读11个工具，工作完整41个工具，两者注册表与场景白名单一致', () => {
+  it('聊天只读11个工具，工作完整39个工具，两者注册表与场景白名单一致', () => {
     const tools = CreateToolsModule(CreatePorts()).GetToolDefinitions();
     const names = tools.map((tool) => tool.definition.function.name);
 
     expect(new Set(names)).toEqual(new Set(DefaultScenario.toolNames));
     expect(names).toHaveLength(11);
-    expect(names).not.toContain('DeleteTodo');
+    expect(names).not.toContain('WriteTodo');
     expect(tools.every((tool) => tool.sideEffect === 'none')).toBe(true);
     expect(DefaultScenario.name).toBe('聊天');
     expect(ApplicationScenario.name).toBe('工作');
@@ -279,8 +279,9 @@ describe('agent-modules-defaults', () => {
     expect(ApplicationScenarioPlaceholder.enabled).toBe(true);
     const applicationNames = CreateToolsModule(CreatePorts()).GetToolDefinitions('application').map((tool) => tool.definition.function.name);
     expect(new Set(applicationNames)).toEqual(new Set(ApplicationScenario.toolNames));
-    expect(applicationNames).toHaveLength(41);
-    expect(applicationNames).toContain('DeleteTodo');
+    expect(applicationNames).toHaveLength(39);
+    expect(applicationNames).toContain('WriteTodo');
+    for (const name of ['CreateTodo', 'UpdateTodo', 'DeleteTodo']) expect(applicationNames).not.toContain(name);
     expect(CreateToolsModule(CreatePorts()).GetToolDefinitions('application').find((tool) => tool.definition.function.name === 'ExportResumeFile')?.definition.function.description)
       .toMatch(/^Use when a company application form requires a resume file upload or BOSS chat requires a resume image/);
     expect(applicationNames).toEqual(expect.arrayContaining(['CreateCronTask', 'ReadCronTask', 'UpdateCronTask', 'DeleteCronTask', 'ExportResumeFile', 'CollectJobs', 'ContactBossJobs', 'ReadApplicationStatus', 'SaveJob', 'UpdateApplicationStatus']));
@@ -891,22 +892,112 @@ describe('agent-modules-defaults', () => {
     expect(replay.receipt?.idempotencyKey).toBeTruthy();
   });
 
-  it('DeleteTodo 删除当前 Run 条目、通知界面并支持幂等重放', async () => {
+  it('WriteTodo 全量覆盖并按新顺序同步界面，未保留条目被删除，空描述清空字段', async () => {
     const context = CreateToolContext();
-    context.tasks.set('todo-1', { id: 'todo-1', title: '过期步骤', description: '不再属于当前范围', status: 'pending' });
     const tools = CreateToolsModule(CreatePorts());
-    const first = await tools.ExecuteToolCall({
-      id: 'delete-todo-1', type: 'function', function: { name: 'DeleteTodo', arguments: '{"todoId":"todo-1"}' },
+    const write = (id: string, todos: unknown[]) => tools.ExecuteToolCall({
+      id, type: 'function', function: { name: 'WriteTodo', arguments: JSON.stringify({ todos }) },
     }, context);
-    const replay = await tools.ExecuteToolCall({
-      id: 'delete-todo-replay', type: 'function', function: { name: 'DeleteTodo', arguments: '{"todoId":"todo-1"}' },
-    }, context);
+    const first = await write('todo-create', [
+      { title: '读取资料', description: '原描述', status: 'pending' },
+      { title: '过期步骤', status: 'pending' },
+    ]);
+    const original = [...context.tasks.values()];
+    expect(JSON.parse(first.content)).toMatchObject({ ok: true, tasks: [
+      { title: '读取资料', description: '原描述', status: 'pending' },
+      { title: '过期步骤', description: '', status: 'pending' },
+    ] });
+    vi.mocked(context.emit).mockClear();
+    const next = await write('todo-replace', [
+      { title: '填写表单', status: 'inProgress' },
+      { title: '读取资料', description: '', status: 'completed' },
+    ]);
+    expect(JSON.parse(next.content)).toMatchObject({ ok: true, tasks: [
+      { title: '填写表单', description: '', status: 'inProgress' },
+      { title: '读取资料', description: '', status: 'completed' },
+    ] });
+    expect([...context.tasks.values()].map((task) => task.title)).toEqual(['填写表单', '读取资料']);
+    expect(vi.mocked(context.emit).mock.calls.map(([event]) => event.type)).toEqual(['task_deleted', 'task_deleted', 'task_created', 'task_created']);
+    for (const task of original) expect(context.emit).toHaveBeenCalledWith({ type: 'task_deleted', sessionId: context.sessionId, task });
+    expect(context.persistSessionState).toHaveBeenCalledTimes(2);
+    expect(next.receipt?.toolDefinitionId).toBe('WriteTodo');
+    const read = await tools.ExecuteToolCall({ id: 'todo-read', type: 'function', function: { name: 'ReadTodo', arguments: '{}' } }, context);
+    expect(JSON.parse(read.content)).toMatchObject({ tasks: JSON.parse(next.content).tasks, counts: { pending: 0, inProgress: 1, completed: 1, cancelled: 0 } });
+  });
 
-    expect(JSON.parse(first.content)).toMatchObject({ ok: true, deletedTodoId: 'todo-1', tasks: [] });
-    expect(JSON.parse(replay.content)).toMatchObject({ ok: true, replayed: true, deletedTodoId: 'todo-1', tasks: [] });
-    expect(context.tasks.has('todo-1')).toBe(false);
+  it('WriteTodo 空数组清空并可跨模块重放同一次调用，不重复持久化或通知', async () => {
+    const context = CreateToolContext();
+    context.tasks.set('todo-1', { id: 'todo-1', title: '过期步骤', description: '', status: 'pending' });
+    const call = { id: 'clear-todos', type: 'function' as const, function: { name: 'WriteTodo', arguments: '{"todos":[]}' } };
+    const first = await CreateToolsModule(CreatePorts()).ExecuteToolCall(call, context);
+    const replay = await CreateToolsModule(CreatePorts()).ExecuteToolCall(call, context);
+    expect(JSON.parse(first.content)).toEqual({ ok: true, tasks: [] });
+    expect(JSON.parse(replay.content)).toEqual({ ok: true, replayed: true, tasks: [] });
+    expect(replay.receipt).toEqual(first.receipt);
+    expect(context.tasks.size).toBe(0);
     expect(context.persistSessionState).toHaveBeenCalledOnce();
-    expect(context.emit).toHaveBeenCalledWith(expect.objectContaining({ type: 'task_deleted', task: expect.objectContaining({ id: 'todo-1' }) }));
+    expect(context.emit).toHaveBeenCalledOnce();
+    expect(context.emit).toHaveBeenCalledWith(expect.objectContaining({ type: 'task_deleted' }));
+  });
+
+  it('WriteTodo 允许不同调用 A → B → A，以及清空后新增再清空', async () => {
+    const context = CreateToolContext();
+    for (const [index, title] of ['A', 'B', 'A', '', 'C', ''].entries()) {
+      const result = await CreateToolsModule(CreatePorts()).ExecuteToolCall({
+        id: `todo-sequence-${index}`, type: 'function', function: { name: 'WriteTodo', arguments: JSON.stringify({ todos: title ? [{ title, status: 'pending' }] : [] }) },
+      }, context);
+      expect(JSON.parse(result.content).ok).toBe(true);
+      expect([...context.tasks.values()].map((task) => task.title)).toEqual(title ? [title] : []);
+    }
+    expect(context.persistSessionState).toHaveBeenCalledTimes(6);
+  });
+
+  it.each([
+    {}, { todos: null }, { todos: '' },
+    { todos: [{ title: '缺少状态' }] },
+    { todos: [{ title: '非法状态', status: 'blocked' }] },
+    { todos: [{ title: '   ', status: 'pending' }] },
+    { todos: [{ title: 'a'.repeat(301), status: 'pending' }] },
+    { todos: [{ title: '超长描述', description: 'a'.repeat(2001), status: 'pending' }] },
+    { todos: [{ title: '合法', status: 'pending' }, { title: '', status: 'pending' }] },
+    { todos: Array.from({ length: 21 }, () => ({ title: '超限', status: 'pending' })) },
+  ])('WriteTodo 拒绝无效整批参数且不改动已有清单 %#', async (args) => {
+    const context = CreateToolContext();
+    const original = { id: 'keep', title: '保留', description: '原内容', status: 'pending' };
+    context.tasks.set(original.id, original);
+    const result = await CreateToolsModule(CreatePorts()).ExecuteToolCall({
+      id: 'invalid-todos', type: 'function', function: { name: 'WriteTodo', arguments: JSON.stringify(args) },
+    }, context);
+    expect(JSON.parse(result.content)).toMatchObject({ ok: false, code: 'INVALID_TOOL_ARGUMENTS' });
+    expect([...context.tasks.values()]).toEqual([original]);
+    expect(context.persistSessionState).not.toHaveBeenCalled();
+    expect(context.emit).not.toHaveBeenCalled();
+    expect(context.ledger!.Start).not.toHaveBeenCalled();
+  });
+
+  it.each(['always_confirm', 'allow_low_risk', 'fully_trusted'] as const)('WriteTodo 在工作 %s 中不要求确认，支持20项及全部状态', async (confirmationMode) => {
+    const context = CreateToolContext({ confirmationMode });
+    const statuses = ['pending', 'inProgress', 'completed', 'cancelled'];
+    const result = await CreateToolsModule(CreatePorts()).ExecuteToolCall({
+      id: 'todo-limit', type: 'function', function: { name: 'WriteTodo', arguments: JSON.stringify({ todos: Array.from({ length: 20 }, (_, index) => ({ title: `步骤${index}`, status: statuses[index % 4] })) }) },
+    }, context);
+    expect(JSON.parse(result.content).ok).toBe(true);
+    expect(context.tasks.size).toBe(20);
+    expect(context.emit).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'question_requested' }));
+  });
+
+  it.each(['default', 'missing-ledger'] as const)('WriteTodo 不绕过权限或账本门禁：%s', async (mode) => {
+    const context = CreateToolContext(mode === 'default' ? { scenarioId: 'default' } : { ledger: undefined });
+    const result = await CreateToolsModule(CreatePorts()).ExecuteToolCall({ id: 'todo-denied', type: 'function', function: { name: 'WriteTodo', arguments: '{"todos":[]}' } }, context);
+    expect(JSON.parse(result.content)).toMatchObject({ ok: false, code: mode === 'default' ? 'TOOL_NOT_ALLOWED' : 'PERSISTENT_LEDGER_REQUIRED' });
+    expect(context.persistSessionState).not.toHaveBeenCalled();
+  });
+
+  it.each(['CreateTodo', 'UpdateTodo', 'DeleteTodo', 'TaskCreate', 'TaskUpdate'])('旧 Todo 写工具 %s 不会被当作全量覆盖误执行', async (name) => {
+    const context = CreateToolContext();
+    const result = await CreateToolsModule(CreatePorts()).ExecuteToolCall({ id: 'old-todo', type: 'function', function: { name, arguments: '{"todos":[]}' } }, context);
+    expect(JSON.parse(result.content)).toMatchObject({ ok: false, code: 'TOOL_NOT_ALLOWED' });
+    expect(context.persistSessionState).not.toHaveBeenCalled();
   });
 
   it.each(['always_confirm', 'allow_low_risk'] as const)('CreateCronTask 在 %s 下只生成待确认提案', async (confirmationMode) => {

@@ -20,8 +20,6 @@ const EmptyParameters = { type: 'object', properties: {}, additionalProperties: 
 /** 旧工具名 → 新工具名兼容映射；新 Run 不再向模型暴露旧名，旧快照重放时仍可安全执行。 */
 const ToolAliases: Record<string, string> = {
   EditResume: 'UpdateResume',
-  TaskCreate: 'CreateTodo',
-  TaskUpdate: 'UpdateTodo',
   TaskList: 'ReadTodo',
   TaskGet: 'ReadTodo',
 };
@@ -118,34 +116,14 @@ function BuildRegistry(): RegisteredAgentTool[] {
       resourceKeys: () => ['run:interaction'],
     },
     {
-      definition: CreateDefinition('CreateTodo', 'Create todos for the current Run. Use only when the user goal, expected deliverable, and necessary scope are already clear; ask first when key ambiguity exists, and do not create todos for a simple single-step task.', { type: 'object', properties: { todos: { type: 'array', minItems: 1, maxItems: 10, items: { type: 'object', properties: { title: { type: 'string' }, description: { type: 'string' } }, required: ['title'], additionalProperties: false } } }, required: ['todos'], additionalProperties: false }),
+      definition: CreateDefinition('WriteTodo', 'Replace the entire todo list for the current Run. Include every item to keep, with its current status; omitted items are deleted. Pass todos: [] to clear the list; an empty description clears that field. Use only for a clear multi-step task; ask first if the goal or scope is ambiguous. Do not use for a simple single-step task.', { type: 'object', properties: { todos: { type: 'array', maxItems: 20, items: { type: 'object', properties: { title: { type: 'string', minLength: 1, maxLength: 300, pattern: '\\S' }, description: { type: 'string', maxLength: 2000 }, status: { type: 'string', enum: ['pending', 'inProgress', 'completed', 'cancelled'] } }, required: ['title', 'status'], additionalProperties: false } } }, required: ['todos'], additionalProperties: false }),
       timeoutMs: 10000,
       isConcurrencySafe: false,
       sideEffect: 'local_write',
       risk: 'low',
-      confirmation: 'scenario_policy',
+      confirmation: 'never',
       idempotency: 'required',
       resourceKeys: () => ['run:todos'],
-    },
-    {
-      definition: CreateDefinition('UpdateTodo', 'Update a todo in the current Run.', { type: 'object', properties: { todoId: { type: 'string' }, status: { type: 'string', enum: ['pending', 'inProgress', 'in_progress', 'completed', 'cancelled'] }, title: { type: 'string' }, description: { type: 'string' } }, required: ['todoId'], additionalProperties: false }),
-      timeoutMs: 10000,
-      isConcurrencySafe: false,
-      sideEffect: 'local_write',
-      risk: 'low',
-      confirmation: 'scenario_policy',
-      idempotency: 'required',
-      resourceKeys: (input) => [`run:todos:${String(input?.todoId ?? '')}`],
-    },
-    {
-      definition: CreateDefinition('DeleteTodo', 'Delete a todo from the current Run when it is no longer part of the task. Use UpdateTodo with cancelled when the item should remain visible as part of the execution record.', { type: 'object', properties: { todoId: { type: 'string', minLength: 1, maxLength: 200 } }, required: ['todoId'], additionalProperties: false }),
-      timeoutMs: 10000,
-      isConcurrencySafe: false,
-      sideEffect: 'local_write',
-      risk: 'low',
-      confirmation: 'scenario_policy',
-      idempotency: 'required',
-      resourceKeys: (input) => [`run:todos:${String(input?.todoId ?? '')}`],
     },
     {
       definition: CreateDefinition('ReadTodo', 'Read the full todo list of the current Run.', EmptyParameters),
@@ -901,73 +879,30 @@ export function CreateToolsModule(ports: AgentDefaultPorts): ToolsModule {
     return CreateToolResult(callId, { ok: true, awaitingUser: true, confirmationId: interactionId, message: 'The questions are shown. Execution will resume with the user answers as this tool call result.' }, { disposition: 'wait_user_input' });
   }
 
-  /** 创建当前 Run 的 Todo；初始状态为 pending，单次 1–10 条，Run 上限 20 条；写操作计入业务幂等账本。 */
-  async function CreateTodo(context: ToolContext, callId: string, args: Record<string, unknown>): Promise<ToolExecutionResult> {
-    if (!Array.isArray(args.todos) || args.todos.length < 1 || args.todos.length > 10) throw new Error('CreateTodo requires one to ten todos.');
-    if (context.tasks.size + args.todos.length > 20) throw new Error('This Run already has 20 todos; update or cancel existing todos before creating more.');
-    const normalizedTodos = args.todos.map((item) => {
-      const record = item as Record<string, unknown>;
-      return {
-        title: RequireString(record?.title, 'todo.title', 300),
-        description: typeof record?.description === 'string' ? record.description.slice(0, 2000) : '',
-      };
-    });
-    const idempotencyKey = CreateIdempotencyKey(context, 'CreateTodo', HashArguments(args));
+  /** 全量替换 Run 清单；先验证整批再改状态，空数组清空，沿用事件协议同步界面。 */
+  async function WriteTodo(context: ToolContext, callId: string, args: Record<string, unknown>): Promise<ToolExecutionResult> {
+    const todos = (args.todos as Array<{ title: string; description?: string; status: string }>).map((item) => ({
+      id: `todo-${randomUUID()}`,
+      title: RequireString(item.title, 'todo.title', 300),
+      description: item.description ?? '',
+      status: item.status,
+    }));
+    // 同一次调用重放不得重复写入；不同调用允许 A → B → A，不能只按清单内容去重。
+    const idempotencyKey = CreateIdempotencyKey(context, 'WriteTodo', HashArguments({ callId, args }));
     const ledger = GetLedger(context);
     const previous = await ledger.FindByIdempotencyKey(idempotencyKey);
-    if (previous?.status === 'succeeded') return CreateToolResult(callId, { ok: true, replayed: true, todos: [...context.tasks.values()] });
-    const ledgerEntry = await StartLedger(context, 'CreateTodo', args, idempotencyKey);
-    const created = normalizedTodos.map((item) => {
-      const todo = { id: `todo-${randomUUID()}`, title: item.title, description: item.description, status: 'pending' };
-      context.tasks.set(todo.id, todo);
-      context.emit({ type: 'task_created', sessionId: context.sessionId, task: todo });
-      return todo;
-    });
+    if (previous?.status === 'succeeded') return CreateToolResult(callId, { ok: true, replayed: true, tasks: [...context.tasks.values()] }, { receipt: previous.receipt });
+    const ledgerEntry = await StartLedger(context, 'WriteTodo', args, idempotencyKey);
+    const removed = [...context.tasks.values()];
+    context.tasks.clear();
+    for (const todo of todos) context.tasks.set(todo.id, todo);
     context.persistSessionState();
-    const receipt: ToolReceipt = { receiptId: `receipt-${randomUUID()}`, toolDefinitionId: 'CreateTodo', resourceIds: ['run:todos'], idempotencyKey };
+    // 先删后增保证前端顺序与传入完整清单一致；条目 ID 为宿主内部标识，不要求模型维护。
+    for (const task of removed) context.emit({ type: 'task_deleted', sessionId: context.sessionId, task });
+    for (const task of todos) context.emit({ type: 'task_created', sessionId: context.sessionId, task });
+    const receipt: ToolReceipt = { receiptId: `receipt-${randomUUID()}`, toolDefinitionId: 'WriteTodo', resourceIds: ['run:todos'], idempotencyKey };
     await FinishLedger(context, ledgerEntry, 'succeeded', { receipt });
-    return CreateToolResult(callId, { ok: true, todos: created, tasks: [...context.tasks.values()] }, { receipt });
-  }
-
-  /** 更新当前 Run 的 Todo；completed/cancelled 为终态，不允许 blocked；写操作计入业务幂等账本。 */
-  async function UpdateTodo(context: ToolContext, callId: string, args: Record<string, unknown>): Promise<ToolExecutionResult> {
-    const task = context.tasks.get(args.todoId as string);
-    if (!task) throw new Error('Todo not found in this Run.');
-    if (args.status && !['pending', 'inProgress', 'in_progress', 'completed', 'cancelled'].includes(args.status as string)) throw new Error('Todo status is invalid; blocked is not allowed.');
-    const nextTitle = typeof args.title === 'string' ? RequireString(args.title, 'title', 300) : task.title;
-    const nextDescription = typeof args.description === 'string' ? args.description.slice(0, 2000) : task.description;
-    const nextStatus = args.status ? (args.status === 'in_progress' ? 'inProgress' : args.status as string) : task.status;
-    const idempotencyKey = CreateIdempotencyKey(context, 'UpdateTodo', HashArguments(args));
-    const ledger = GetLedger(context);
-    const previous = await ledger.FindByIdempotencyKey(idempotencyKey);
-    if (previous?.status === 'succeeded') return CreateToolResult(callId, { ok: true, replayed: true, todo: task, tasks: [...context.tasks.values()] });
-    const ledgerEntry = await StartLedger(context, 'UpdateTodo', args, idempotencyKey);
-    task.title = nextTitle;
-    task.description = nextDescription;
-    task.status = nextStatus;
-    context.persistSessionState();
-    context.emit({ type: 'task_updated', sessionId: context.sessionId, task });
-    const receipt: ToolReceipt = { receiptId: `receipt-${randomUUID()}`, toolDefinitionId: 'UpdateTodo', resourceIds: ['run:todos'], idempotencyKey };
-    await FinishLedger(context, ledgerEntry, 'succeeded', { receipt });
-    return CreateToolResult(callId, { ok: true, todo: task, tasks: [...context.tasks.values()] }, { receipt });
-  }
-
-  /** 删除当前 Run 中已不再需要的 Todo；与 cancelled 区分，删除后不再出现在执行记录中。 */
-  async function DeleteTodo(context: ToolContext, callId: string, args: Record<string, unknown>): Promise<ToolExecutionResult> {
-    const todoId = RequireString(args.todoId, 'todoId', 200);
-    const idempotencyKey = CreateIdempotencyKey(context, 'DeleteTodo', HashArguments({ todoId }));
-    const ledger = GetLedger(context);
-    const previous = await ledger.FindByIdempotencyKey(idempotencyKey);
-    if (previous?.status === 'succeeded') return CreateToolResult(callId, { ok: true, replayed: true, deletedTodoId: todoId, tasks: [...context.tasks.values()] }, { receipt: previous.receipt });
-    const task = context.tasks.get(todoId);
-    if (!task) throw new Error('Todo not found in this Run.');
-    const ledgerEntry = await StartLedger(context, 'DeleteTodo', { todoId }, idempotencyKey);
-    context.tasks.delete(todoId);
-    context.persistSessionState();
-    context.emit({ type: 'task_deleted', sessionId: context.sessionId, task });
-    const receipt: ToolReceipt = { receiptId: `receipt-${randomUUID()}`, toolDefinitionId: 'DeleteTodo', resourceIds: ['run:todos'], idempotencyKey };
-    await FinishLedger(context, ledgerEntry, 'succeeded', { receipt });
-    return CreateToolResult(callId, { ok: true, deletedTodo: task, deletedTodoId: todoId, tasks: [...context.tasks.values()] }, { receipt });
+    return CreateToolResult(callId, { ok: true, tasks: todos }, { receipt });
   }
 
   /** 读取当前 Run 的完整 Todo 列表。 */
@@ -1225,7 +1160,7 @@ export function CreateToolsModule(ports: AgentDefaultPorts): ToolsModule {
       const siteRisk = code === 'BROWSER_SITE_RISK_DETECTED';
       const visibleRequired = code === 'BROWSER_SITE_VISIBLE_REQUIRED';
       const extensionRequired = ['BROWSER_EXTENSION_STALE', 'BROWSER_EXTENSION_REQUIRED', 'BROWSER_EXTENSION_DISCONNECTED'].includes(code);
-      const personalBrowserRequired = ['BROWSER_EXISTING_BROWSER_UNAVAILABLE', 'BROWSER_EXISTING_BROWSER_PERMISSION_REQUIRED', 'BROWSER_BOSS_TAB_REQUIRED', 'BROWSER_USER_BROWSER_INTERACTIVE_ONLY', 'BROWSER_CRON_ACCESS_REQUIRED', 'BROWSER_CRON_SCOPE_DENIED'].includes(code);
+      const personalBrowserRequired = ['BROWSER_EGO_UNAVAILABLE', 'BROWSER_TASK_RETIRED', 'BROWSER_EXISTING_BROWSER_UNAVAILABLE', 'BROWSER_EXISTING_BROWSER_PERMISSION_REQUIRED', 'BROWSER_BOSS_TAB_REQUIRED', 'BROWSER_USER_BROWSER_INTERACTIVE_ONLY', 'BROWSER_CRON_ACCESS_REQUIRED', 'BROWSER_CRON_SCOPE_DENIED'].includes(code);
       if (siteRisk && !context.unattended) {
         context.emit({
           type: 'browser_user_action', requestId: context.requestId,
@@ -1559,9 +1494,7 @@ export function CreateToolsModule(ports: AgentDefaultPorts): ToolsModule {
           case 'UpdateResume': return await UpdateResume(executionContext, call.id, args);
           case 'UpdateProfile': return await UpdateProfile(executionContext, call.id, args);
           case 'AskUserQuestion': return AskUserQuestion(executionContext, call.id, args);
-          case 'CreateTodo': return CreateTodo(executionContext, call.id, args);
-          case 'UpdateTodo': return UpdateTodo(executionContext, call.id, args);
-          case 'DeleteTodo': return DeleteTodo(executionContext, call.id, args);
+          case 'WriteTodo': return WriteTodo(executionContext, call.id, args);
           case 'ReadTodo': return ReadTodo(executionContext, call.id);
           case 'LoadSkill': return await LoadSkill(executionContext, call.id, args);
           case 'CreateCronTask': return await CreateCronTask(executionContext, call.id, args);

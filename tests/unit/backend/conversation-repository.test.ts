@@ -125,7 +125,7 @@ describe('会话过程持久化', () => {
     const call = (index: number, name: string, args: Record<string, unknown>): ModelCompletion => ({ content: '', toolCalls: [{ id: `roundtrip-${index}`, type: 'function', function: { name, arguments: JSON.stringify(args) } }] });
     const completions = [
       call(0, 'ReadResume', { resumeId: resume.id }),
-      call(1, 'CreateTodo', { todos: [{ title: '调整第一条核心能力', description: '保留其他内容' }] }),
+      call(1, 'WriteTodo', { todos: [{ title: '调整第一条核心能力', description: '保留其他内容', status: 'pending' }] }),
       call(2, 'UpdateResume', { resumeId: resume.id, content, reason: '用户要求局部修改' }),
       { content: '第一条核心能力已保存，其他部分保持原样。', toolCalls: [] },
     ];

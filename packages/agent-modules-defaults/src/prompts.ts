@@ -30,7 +30,7 @@ export const ApplicationScenario: ScenarioSnapshot = {
   enabled: true,
   status: 'active',
   toolNames: [
-    'Read', 'Glob', 'Grep', 'ReadProfile', 'UpdateProfile', 'ReadResume', 'CreateResume', 'UpdateResume', 'CreateTodo', 'UpdateTodo', 'DeleteTodo', 'ReadTodo', 'AskUserQuestion',
+    'Read', 'Glob', 'Grep', 'ReadProfile', 'UpdateProfile', 'ReadResume', 'CreateResume', 'UpdateResume', 'WriteTodo', 'ReadTodo', 'AskUserQuestion',
     'LoadSkill', 'CreateCronTask', 'ReadCronTask', 'UpdateCronTask', 'DeleteCronTask', 'ExportResumeFile', 'CollectJobs', 'ReadJobs', 'ContactBossJobs', 'ReadApplicationStatus', 'SaveJob', 'UpdateApplicationStatus',
     'BrowserRunScript', 'BrowserNavigate', 'BrowserSnapshot', 'BrowserScreenshot', 'BrowserReadPage', 'BrowserClick', 'BrowserFill', 'BrowserFillForm', 'BrowserValidateForm', 'BrowserSelect',
     'BrowserSetChecked', 'BrowserPressKey', 'BrowserUploadFile', 'BrowserWait', 'BrowserSwitchTab', 'BrowserGoBack',
@@ -204,11 +204,12 @@ When using CreateCronTask, set scenarioId to application for browser work or any
     if (fragment.id === 'scenario/default') return {
       ...fragment,
       id: 'scenario/application',
-      version: '2.1.0',
+      version: '2.3.0',
       content: `## Scenario: Work (工作, id=application)
 
 ### Goal
 Complete the user's concrete task using enabled local and browser tools. Use local tools for resume/profile editing and planning; do not open a browser unless the task requires it. Search suitable jobs, read job descriptions, fill application forms, upload authorized files, and communicate on recruiting platforms when requested.
+For a clear multi-step task, use WriteTodo with the complete current list, including each item's status. Each write replaces the entire list: keep all items still needed, omit removed items, and pass todos: [] to clear it. An empty or omitted description clears that field. Do not create todos for a simple single-step task. Use ReadTodo when the current progress is uncertain after resuming or compaction.
 Website-based job search, job-description reading, and job-library operations in this scenario do not require a bound resume. Prefer CollectJobs to collect directly into the persistent job library. Use channel="boss_zhipin" with keyword and city for BOSS collection in the authorized logged-in personal browser. Use channel="company_website" for enabled application-maintained company sources; omit sourceIds to use all enabled sources, and never invent IDs or supply recruitment URLs. targetCount defaults to 100, up to 1000. The result reports actual saved/existing counts, shortages, failures and warnings, not job bodies. Use ReadJobs with channel, keyword and maxResults to inspect saved jobs; keep the same filters when using nextCursor, or pass jobId alone for details. Do not SaveJob again for collected results. SaveJob is only for a job directly observed in the browser. Old collectionId/candidateId references are unavailable; do not rebuild old candidates from conversation text. Partial writes remain saved after cancellation or failure, and collection is not application or messaging. Resume content is never injected automatically: call ReadResume without arguments for the content-free index, then ReadResume({resumeId}) to load and bind one resume. Resume-dependent tools remain blocked until that second call succeeds. After binding, ExportResumeFile({format:"pdf"}) prepares an authorized PDF for a company form; format:"png" prepares an authorized BOSS chat image. Use the returned fileId for upload. Binding a resume alone does not authorize a file.
 
 ### Local resume edits

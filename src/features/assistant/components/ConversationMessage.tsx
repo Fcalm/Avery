@@ -12,7 +12,7 @@ const ToolNames: Record<string, string> = {
   ReadResume: '读取简历', ReadProfile: '读取档案', ReadJobs: '查询岗位', SearchJobs: '搜索岗位',
   CreateResume: '创建简历', UpdateResume: '更新简历', UpdateProfile: '更新档案', SaveJob: '保存岗位',
   UpdateApplicationStatus: '更新投递记录', ExportResumeFile: '导出简历', AskUserQuestion: '询问用户',
-  CreateTodo: '创建待办', UpdateTodo: '更新待办', DeleteTodo: '删除待办', ReadTodo: '读取待办',
+  WriteTodo: '写入待办', CreateTodo: '创建待办', UpdateTodo: '更新待办', DeleteTodo: '删除待办', ReadTodo: '读取待办',
   CreateCronTask: '创建定时任务', ReadCronTask: '读取定时任务', UpdateCronTask: '更新定时任务',
   BrowserNavigate: '打开网页', BrowserSnapshot: '读取页面', BrowserFillForm: '填写表单',
   BrowserClick: '点击页面', BrowserUploadFile: '上传资料', BrowserValidateForm: '核对表单',

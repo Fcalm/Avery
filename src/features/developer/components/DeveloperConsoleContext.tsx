@@ -59,8 +59,8 @@ function CreateDefaultInput(name: string, mode: 'prompt' | 'browser' | 'career-p
         { id: 'candidate-b', name: '候选 B · 改写系统提示词', promptOverrides: {} },
       ],
       toolNames: runnerType === 'prompt'
-        ? ['Read', 'Glob', 'Grep', 'ReadProfile', 'ReadResume', 'CreateTodo', 'UpdateTodo', 'ReadTodo', 'AskUserQuestion']
-        : ['Read', 'Glob', 'Grep', 'ReadProfile', 'ReadResume', 'LoadSkill', 'CreateTodo', 'UpdateTodo', 'ReadTodo', 'AskUserQuestion', 'BrowserRunScript', 'BrowserNavigate', 'BrowserSnapshot', 'BrowserReadPage', 'BrowserClick', 'BrowserFill', 'BrowserFillForm', 'BrowserValidateForm', 'BrowserSelect', 'BrowserSetChecked', 'BrowserPressKey', 'BrowserUploadFile', 'BrowserWait', 'BrowserSwitchTab', 'BrowserGoBack'],
+        ? ['Read', 'Glob', 'Grep', 'ReadProfile', 'ReadResume', 'WriteTodo', 'ReadTodo', 'AskUserQuestion']
+        : ['Read', 'Glob', 'Grep', 'ReadProfile', 'ReadResume', 'LoadSkill', 'WriteTodo', 'ReadTodo', 'AskUserQuestion', 'BrowserRunScript', 'BrowserNavigate', 'BrowserSnapshot', 'BrowserReadPage', 'BrowserClick', 'BrowserFill', 'BrowserFillForm', 'BrowserValidateForm', 'BrowserSelect', 'BrowserSetChecked', 'BrowserPressKey', 'BrowserUploadFile', 'BrowserWait', 'BrowserSwitchTab', 'BrowserGoBack'],
       userSimulator: 'approve_valid', maxModelTurns: runnerType === 'prompt' ? 30 : 100, repeatCount: 1,
       ...(runnerType === 'browser' ? { fixtureBranch: mode === 'career-portal' ? 'career-portal' as const : 'realistic-dom' as const } : {}),
     },

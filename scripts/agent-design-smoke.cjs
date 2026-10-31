@@ -67,9 +67,11 @@ async function main() {
   // 1. 工具白名单按设计更名，旧名不再暴露给新模型。
   assert(names.includes('UpdateResume'), 'UpdateResume should be registered');
   assert(!names.includes('EditResume'), 'EditResume should be removed from new registry');
-  assert(names.includes('CreateTodo'), 'CreateTodo should be registered');
+  const workNames = modules.tools.GetToolDefinitions('application').map((tool) => tool.definition.function.name);
+  assert(workNames.includes('WriteTodo'), 'WriteTodo should be registered in Work');
+  assert(!workNames.some((name) => ['CreateTodo', 'UpdateTodo', 'DeleteTodo'].includes(name)), 'Old Todo write tools should be removed');
   assert(!names.includes('TaskCreate'), 'TaskCreate should be removed from new registry');
-  assert(names.includes('ReadTodo') && names.includes('UpdateTodo'), 'Todo tools should be registered');
+  assert(names.includes('ReadTodo'), 'ReadTodo should remain available');
   assert(names.includes('SearchJobs') && names.includes('ReadUrl'), 'Job discovery tools should be registered');
 
   // 2. AskUserQuestion 返回统一 wait_user_input disposition。
