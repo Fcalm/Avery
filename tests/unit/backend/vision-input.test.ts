@@ -14,7 +14,9 @@ describe('vision input', () => {
   it('只为声明支持视觉的官方模型启用图片输入', () => {
     expect(SupportsVisionInput('DeepSeek', 'deepseek-v4-flash-vision-exp')).toBe(true);
     expect(SupportsVisionInput('Z.AI', 'glm-5.3-flash')).toBe(true);
-    expect(SupportsVisionInput('DeepSeek', 'deepseek-v4-flash')).toBe(false);
+    expect(SupportsVisionInput('DeepSeek', 'deepseek-v4-flash')).toBe(true);
+    expect(SupportsVisionInput('DeepSeek', 'deepseek-flash')).toBe(true);
+    expect(SupportsVisionInput('DeepSeek', 'deepseek-v4-pro')).toBe(false);
     expect(SupportsVisionInput('自定义', 'glm-5.3-flash')).toBe(false);
     // MiMo 官方声明 v2.6 全系与 mimo-v2.5 支持图片输入；mimo-v2.5-pro 与语音系模型不支持
     expect(SupportsVisionInput('MIMO', 'mimo-v2.6-flash')).toBe(true);

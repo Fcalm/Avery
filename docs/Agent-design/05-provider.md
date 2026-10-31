@@ -86,12 +86,22 @@ interface ModelCapabilities {
 
 ### 3.1 上下文限制解析
 
-- 自动模式的运行时限制为 `min(256_000, model.contextLimit)`；模型上限不足 256K 时使用其最大值。
-- DeepSeek `/models` 只返回模型 ID，不提供上下文元数据，因此官方已知模型的上限由 Adapter 版本化维护；当前 V4 Flash、V4 Pro 与视觉实验模型均按官方 1M 上限登记。
-- Z.AI `glm-5.3-flash` 按官方 1M 上限登记；自动模式仍取 256K，自定义模式最高可配到 1M。
-- API 设置允许用户开启自定义上下文限制。自定义值必须在 128000–1000000 内（可写 128000、128K 或 1M），且不得超过已知模型上限；旧版本保存的区间外取值在读取时保留，用户下次编辑时按新区间提示修正；未知的自定义 Provider 无法自动发现上限，由用户配置承担能力声明职责。
-- 旧 DeepSeek 64K 属于历史默认值，迁移到自动 256K；旧自定义 Provider 的既有值继续按用户自定义处理。
-- Kernel、压缩器、Usage 展示只能消费 Provider 解析后的单一 `contextLimit`，不得各自重复推断。
+- 后端 `ModelConfigurationService` 统一解析目录推荐值与个人覆盖；Kernel、压缩器、Usage、设置页和 Provider 消费同一生效上下文窗口。
+- 目录按实际 API 根地址和完整模型 ID 匹配；官方服务使用固定官方端点，自定义服务不因模型同名而继承其他端点的能力。仅已知官方服务规范化 `/v1` 别名。
+- 自动模式使用目录声明的窗口，产品当前最高采用 1M；未匹配目录时使用 256K，并明确标记为未知来源。目录声明不代表真实 API 已验证。
+- 手工编辑窗口保持 128000–1000000 的界面范围；目录自动给出的更小窗口可直接保留。历史有效小窗口作为个人覆盖迁移，不被默认值覆盖。
+- Run 创建时冻结生效能力；在途请求及其恢复继续使用原快照，目录或个人配置更新只影响后续新 Run。
+
+### 3.2 模型能力配置
+
+- `GetModelConfiguration` 返回目录推荐值、生效值、个人覆盖和单模型 revision；`SaveModelConfiguration` 严格校验字段并按 revision 原子保存。模型能力配置不包含 API Key。
+- 设置页编辑模型 ID 时自动解析能力；图片、PDF 声明、上下文、最大输出和思考配置均保存到后端。恢复自动匹配清除个人覆盖，重新继承当前目录。
+- 图片附件与 `BrowserScreenshot` 使用 Run 内同一图片能力；Provider 在发请求前检查图片和工具能力，并使用生效输出上限。当前 GLM 接入仍固定开启思考，不接受关闭覆盖。
+- PDF 目录标记作为模型能力声明保存；现有 PDF 仍通过文档解析读取，本次不新增原生 PDF 透传。目录匹配不自动执行付费能力探测。
+- 个人覆盖保存在 userData 下的 `model-configurations.json`；公开目录缓存使用独立的 `model-directory-cache.json`，不进入业务工作空间。个人配置损坏时保留原文并报错，不静默清空。
+- 随应用携带公开事实快照，启动和新 Run 不等待网络。目录后台刷新间隔为一天，也支持设置页显式更新；失败沿用已有缓存和内置快照，不改写个人覆盖。
+- 公开目录来源为 [Models.dev](https://github.com/anomalyco/models.dev)，备用数据源为 [OpenCode 的 Models.dev 快照](https://github.com/anomalyco/opencode/blob/dev/packages/core/src/models-dev/snapshot.txt)。目录请求只发往固定公开地址，不携带供应商凭据。
+- 旧前端缓存仅迁移正向图片/PDF 标记和非默认数值；默认 `false` 不作为显式关闭覆盖。已有后端个人覆盖优先。
 
 ## 4. 供应商范围
 

@@ -26,6 +26,9 @@ export class AgentRunService {
 
   /** 返回所有已配置 Provider 的脱敏模型目录。 */
   GetProviderCatalog(): any { return this.agent.GetProviderCatalog(); }
+  /** 模型能力读取和保存复用 Host 的严格 Schema 与 revision 校验。 */
+  GetModelConfiguration(input: unknown): ReturnType<DesktopAgentBridge['GetModelConfiguration']> { return this.agent.GetModelConfiguration(input); }
+  SaveModelConfiguration(input: unknown): ReturnType<DesktopAgentBridge['SaveModelConfiguration']> { return this.agent.SaveModelConfiguration(input); }
 
   /** 提交一轮受限的流式对话回合。 */
   Send(request: any): any { return this.agent.Send(request); }

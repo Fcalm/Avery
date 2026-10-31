@@ -20,6 +20,7 @@ export interface KernelCheckpoint {
 
 /** Kernel 单轮运行输入：全部业务态（历史、任务、交互）经参数与上下文注入，Kernel 自身不持持久化。 */
 export interface KernelRunInput {
+  modelConfiguration?: import('./model-capabilities').ResolvedModelConfiguration;
   requestId: string;
   sessionId: string;
   /** 本次请求使用的模型。 */

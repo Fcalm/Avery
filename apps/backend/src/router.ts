@@ -22,6 +22,7 @@ export const MaxCommandPayloadBytes = 10 * 1024 * 1024;
 
 /** 只读命令通道集合：工作空间迁移期间仍放行，保证 UI 能读到当前数据。 */
 export const ReadOnlyChannels = new Set<string>([
+  'agent:get-model-configuration',
   'agent:get-provider-usage',
   'workspace:status', 'workspace:get-view-model', 'workspace:get-settings',
   'workspace:jobs-query',
@@ -56,6 +57,8 @@ export const MethodRoutes: Record<string, MethodRoute> = {
   'agent:get-provider-usage': { service: 'agent', method: 'GetProviderUsage' },
   'agent:get-models': { service: 'agent', method: 'GetModels' },
   'agent:get-provider-catalog': { service: 'agent', method: 'GetProviderCatalog' },
+  'agent:get-model-configuration': { service: 'agent', method: 'GetModelConfiguration' },
+  'agent:save-model-configuration': { service: 'agent', method: 'SaveModelConfiguration' },
   'agent:send': { service: 'agent', method: 'Send' },
   'agent:respond-interaction': { service: 'agent', method: 'RespondToInteraction' },
   'agent:cancel': { service: 'agent', method: 'Cancel' },

@@ -1,4 +1,4 @@
-import { AgentSdkContractVersion } from '@avery/agent-sdk';
+import { AgentSdkContractVersion, NormalizeModelEndpoint, ResolveBundledModelCapabilities } from '@avery/agent-sdk';
 import type { AgentMessage, ModelCompletion, ModelDelta, ModelProviderModule, ModelUsage, ReasoningEffort, RegisteredAgentTool } from '@avery/agent-sdk';
 import { AgentDefaultPorts, ProviderConfig } from './ports';
 import { RequireString } from './helpers';
@@ -16,26 +16,30 @@ export const GlmFlashModel = 'glm-5.3-flash';
 const DefaultDeepSeekModels = ['deepseek-v4-flash', 'deepseek-v4-pro', 'deepseek-v4-flash-vision-exp'];
 const DeepSeekMaximumRequestBytes = 48 * 1024 * 1024;
 export const DefaultContextLimit = 256_000;
+
+/** 仅提取供应商结构化错误消息，保留状态码并脱敏凭据；不把请求体或 HTML 错页显示给用户。 */
+async function ProviderRequestError(response: Response, label: string, apiKey: string): Promise<Error> {
+  let detail = '';
+  try {
+    const body = await response.json() as { error?: { message?: unknown }; message?: unknown };
+    const message = body?.error?.message ?? body?.message;
+    if (typeof message === 'string') {
+      detail = (apiKey ? message.replaceAll(apiKey, '[REDACTED]') : message)
+        .replace(/Bearer\s+[^\s,;"']+/gi, 'Bearer [REDACTED]')
+        .replace(/\bsk-[A-Za-z0-9_-]+\b/g, '[REDACTED_API_KEY]')
+        .replace(/[\r\n]+/g, ' ').slice(0, 600);
+    }
+  } catch { /* 无结构化消息时保留状态码，不转发原始响应正文。 */ }
+  return new Error(`${label} (${response.status}).${detail ? ` ${detail}` : ''}`);
+}
 /** 自定义上下文限制的允许区间：与模型配置弹窗一致，用户新填写的值必须落在区间内。 */
 const MinimumConfigurableContextLimit = 128_000;
 const MaximumConfigurableContextLimit = 1_000_000;
-/** DeepSeek /models 不返回上下文元数据，已知官方模型能力必须由 Provider 维护。 */
-const DeepSeekModelContextLimits: Readonly<Record<string, number>> = {
-  'deepseek-v4-flash': 1_000_000,
-  'deepseek-v4-pro': 1_000_000,
-  'deepseek-v4-flash-vision-exp': 1_000_000,
-};
-const ZaiModelContextLimits: Readonly<Record<string, number>> = { [GlmFlashModel]: 1_000_000 };
 /** MiMo 官方 API 根地址（OpenAI 兼容）；对话补全请求发往 {baseUrl}/chat/completions。 */
 export const DefaultMimoBaseUrl = 'https://api.xiaomimimo.com/v1';
 export const DefaultMimoModel = 'mimo-v2.6-flash';
 /** MiMo 官方对话模型固定列表：既是模型列表同步失败时的兜底，也是新装默认值；v2.5 系列已公告退役计划，不作为初值。 */
 const DefaultMimoModels = ['mimo-v2.6-flash', 'mimo-v2.6-pro', 'mimo-v2.6-pro-ultraspeed'];
-/** MiMo 官方文档只对 v2.5 系列标注 1M 上下文；v2.6 系列未标注数字，不虚构上限，由通用可配置区间兜底。 */
-const MimoModelContextLimits: Readonly<Record<string, number>> = {
-  'mimo-v2.5': 1_000_000,
-  'mimo-v2.5-pro': 1_000_000,
-};
 
 export type ContextLimitMode = 'default' | 'custom';
 
@@ -70,10 +74,7 @@ function ResolveProviderModel(provider: SupportedProvider, value: unknown): stri
 }
 
 function ResolveModelMaximum(provider: SupportedProvider, model: string): number | undefined {
-  if (provider === 'DeepSeek') return DeepSeekModelContextLimits[model];
-  if (provider === 'Z.AI') return ZaiModelContextLimits[model];
-  if (provider === 'MIMO') return MimoModelContextLimits[model];
-  return undefined;
+  return ResolveBundledModelCapabilities(provider, model)?.contextWindow;
 }
 
 /**
@@ -88,7 +89,9 @@ export function ResolveContextLimit(input: { mode: ContextLimitMode; value?: unk
   const matched = raw.match(/^(\d+)\s*([kKmM])?$/);
   const unit = matched?.[2]?.toLowerCase() ?? '';
   const limit = matched ? Number(matched[1]) * (unit === 'k' ? 1_000 : unit === 'm' ? 1_000_000 : 1) : Number.NaN;
-  const outOfRange = limit < MinimumConfigurableContextLimit || limit > MaximumConfigurableContextLimit;
+  // 已知模型或显式模型覆盖允许更小的窗口；未知模型的新手工输入继续遵守既有界面区间。
+  const minimumLimit = Math.min(MinimumConfigurableContextLimit, input.modelMaximum ?? MinimumConfigurableContextLimit);
+  const outOfRange = limit < minimumLimit || limit > MaximumConfigurableContextLimit;
   if (!Number.isSafeInteger(limit) || (outOfRange && input.allowStoredValue !== true)) {
     throw new Error('上下文限制需为 128000–1000000，可填写 128000、128K 或 1M。');
   }
@@ -204,7 +207,7 @@ function SerializeCompletionBody(value: unknown, enforceDeepSeekLimit: boolean):
   return body;
 }
 
-/** Base64 字节数不是视觉 token 数；按官方单图最高 384 token 估算，避免图片误触发文本压缩。 */
+/** 本地预算采用偏保守的中英文密度，不冒充真实 tokenizer；图片正文不按 Base64 文本计数。 */
 function EstimateProviderTokens(value: unknown): number {
   let inlineImageCount = 0;
   const serialized = JSON.stringify(value, (_key, item) => {
@@ -214,7 +217,9 @@ function EstimateProviderTokens(value: unknown): number {
     }
     return item;
   }) ?? '';
-  return Math.ceil(serialized.length / 4) + inlineImageCount * 384;
+  let units = 0;
+  for (const character of serialized) units += /[\u3400-\u9fff\uf900-\ufaff]/.test(character) ? 1 : 0.25;
+  return Math.ceil(units) + inlineImageCount * 384;
 }
 
 /** 默认模型 Provider 模块：配置、连通性、请求级模型解析、流式补全、摘要与规模估算；API Key 经宿主端口存取。 */
@@ -320,7 +325,7 @@ export function CreateProviderModule(ports: AgentDefaultPorts): ModelProviderMod
       const contextLimit = ResolveContextLimit({
         mode: contextLimitMode,
         value: cfg.contextLength,
-        modelMaximum: ResolveModelMaximum(provider, model),
+        modelMaximum: ports.resolveModelConfiguration?.(provider, model, baseUrl).values.contextWindow ?? ResolveModelMaximum(provider, model),
       });
       const compressionThreshold = ParseCompressionThreshold(cfg.compressionThreshold);
       await ports.saveConfig({ ...next, contextLimit, contextLimitMode, compressionThreshold });
@@ -471,11 +476,24 @@ export function CreateProviderModule(ports: AgentDefaultPorts): ModelProviderMod
     /** 调用兼容 OpenAI Chat Completions 的流式接口并转发思考与正文增量；畸形 SSE 直接失败，不静默忽略。 */
     async StreamCompletion(request) {
       await EnsureConfig();
-      const selected = ConfigFor(request.provider);
+      const configured = ConfigFor(request.provider);
+      const modelConfiguration = request.modelConfiguration ?? ports.resolveModelConfiguration?.(request.provider, request.model, configured.baseUrl);
+      if (modelConfiguration && (modelConfiguration.model !== request.model || modelConfiguration.provider !== request.provider
+        || NormalizeModelEndpoint(modelConfiguration.baseUrl) !== NormalizeModelEndpoint(configured.baseUrl))) throw new Error('本轮模型接口配置已改变，请开始新一轮任务。');
+      const selected = { ...configured, thinkingEnabled: modelConfiguration?.values.thinking ?? configured.thinkingEnabled };
+      if (modelConfiguration?.values.inputImage === false && request.history.some((message) => message.providerContent?.some((block) => block.type === 'image_url'))) throw new Error('当前生效模型配置不支持图片输入。');
+      if (modelConfiguration?.values.toolCall === false && request.tools.length) throw new Error('当前生效模型配置不支持工具调用。');
+      let maxTokens = request.maxTokens === undefined ? modelConfiguration?.values.maxOutput : Math.min(request.maxTokens, modelConfiguration?.values.maxOutput ?? request.maxTokens);
       const requestModel = ResolveProviderModel(NormalizeProvider(selected.provider), request.model);
       if (requestModel !== request.model) throw new Error(`The requested model is not available for ${selected.provider}.`);
       const systemContent = RequireString(request.instructions?.compiled, 'compiled instructions', 200000);
       const providerMessages = [{ role: 'system', content: systemContent }, ...request.history.map(ToProviderMessage)];
+      // 配置给出输出硬上限；单次调用还须给真实输入和协议留空间，不能把最大输出与输入直接相加撑爆窗口。
+      if (modelConfiguration && maxTokens) {
+        const available = Math.floor(modelConfiguration.values.contextWindow - EstimateProviderTokens({ messages: providerMessages, tools: request.tools }) - Math.min(1024, modelConfiguration.values.contextWindow * 0.1));
+        if (available <= 0) throw new Error('模型输入已超过当前生效上下文预算。');
+        maxTokens = Math.min(maxTokens, available);
+      }
       const thinking = selected.provider === 'Z.AI'
         ? { thinking: { type: 'enabled', clear_thinking: false }, reasoning_effort: ResolveDeepSeekReasoningEffort(request.reasoningEffort), temperature: 1, top_p: 0.95, tool_stream: true }
         : selected.provider === 'DeepSeek'
@@ -493,7 +511,7 @@ export function CreateProviderModule(ports: AgentDefaultPorts): ModelProviderMod
         // 自定义通道的端点能力未知，仅保留提示词侧的 JSON 样例约束，避免不支持的端点报 400。
         ...((selected.provider === 'DeepSeek' || selected.provider === 'Z.AI' || selected.provider === 'MIMO') && request.responseFormat ? { response_format: request.responseFormat } : {}),
         // 输出上限字段名随 Provider 不同：MiMo 官方参数是 max_completion_tokens（含推理 token），其余通道用 max_tokens。
-        ...(request.maxTokens ? (selected.provider === 'MIMO' ? { max_completion_tokens: request.maxTokens } : { max_tokens: request.maxTokens }) : {}),
+        ...(maxTokens ? (selected.provider === 'MIMO' ? { max_completion_tokens: maxTokens } : { max_tokens: maxTokens }) : {}),
         messages: providerMessages, tools: request.tools.map((tool) => tool.definition), tool_choice: 'auto',
       }, selected.provider === 'DeepSeek');
       request.onRequest?.({ kind: 'completion', model: requestModel, messages: providerMessages, toolCount: request.tools.length });
@@ -503,7 +521,8 @@ export function CreateProviderModule(ports: AgentDefaultPorts): ModelProviderMod
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${selected.apiKey}` },
         body,
       });
-      if (!response.ok || !response.body) throw new Error(`Model request failed (${response.status}).`);
+      if (!response.ok) throw await ProviderRequestError(response, 'Model request failed', selected.apiKey);
+      if (!response.body) throw new Error(`Model request failed (${response.status}).`);
       const decoder = new TextDecoder();
       const toolCalls: Array<{ id: string; type: 'function'; function: { name: string; arguments: string } }> = [];
       let content = '';
@@ -567,24 +586,46 @@ export function CreateProviderModule(ports: AgentDefaultPorts): ModelProviderMod
       return { content, reasoningContent, toolCalls: completedCalls, ...(usage ? { usage } : {}) };
     },
     /** 通过不带工具的非流式模型调用生成可替换历史的应用摘要。 */
-    async CreateSummary(provider, model, messages, onRequest) {
+    async CreateSummary(provider, model, messages, onRequest, options = {}) {
       await EnsureConfig();
-      const selected = ConfigFor(provider);
+      const configured = ConfigFor(provider);
+      const modelConfiguration = options.modelConfiguration ?? ports.resolveModelConfiguration?.(provider, model, configured.baseUrl);
+      if (modelConfiguration && (modelConfiguration.model !== model || modelConfiguration.provider !== provider
+        || NormalizeModelEndpoint(modelConfiguration.baseUrl) !== NormalizeModelEndpoint(configured.baseUrl))) throw new Error('本轮模型接口配置已改变，请开始新一轮任务。');
+      const selected = { ...configured, thinkingEnabled: modelConfiguration?.values.thinking ?? configured.thinkingEnabled,
+        contextLimit: modelConfiguration?.values.contextWindow ?? configured.contextLimit };
+      let maxOutput = Math.min(8192, modelConfiguration?.values.maxOutput ?? 8192);
       const requestModel = ResolveProviderModel(NormalizeProvider(selected.provider), model);
       if (requestModel !== model) throw new Error(`The requested model is not available for ${selected.provider}.`);
-      const providerMessages = [{ role: 'system', content: SummaryPrompt }, ...messages.map(ToProviderMessage)];
+      // 历史仅作带来源的数据，不重放旧工具协议或隐藏推理；原始 compact 命令不属于该历史。
+      const providerMessages = [{ role: 'system', content: SummaryPrompt }, { role: 'user', content: JSON.stringify({
+        compressionInstructions: options.compressionInstructions ?? '围绕当前目标、未完成事项和后续工作保留重点，简化重复过程。',
+        protectedState: options.protectedState,
+        history: messages.map((message) => ({ role: message.role, content: message.content, toolCalls: message.tool_calls, toolCallId: message.tool_call_id, source: message.metadata?.kind })),
+        recentContext: options.recentContext?.map((message) => ({ role: message.role, content: message.content })),
+      }) }];
       const providerOptions = selected.provider === 'Z.AI'
-        ? { thinking: { type: 'enabled', clear_thinking: false }, reasoning_effort: 'high', temperature: 1, top_p: 0.95 }
-        : {};
-      const body = JSON.stringify({ model: requestModel, stream: false, messages: providerMessages, ...providerOptions });
+        ? { thinking: { type: 'enabled', clear_thinking: false }, reasoning_effort: ResolveDeepSeekReasoningEffort(options.reasoningEffort ?? 'medium'), temperature: 1, top_p: 0.95 }
+        : selected.provider === 'DeepSeek'
+          ? selected.thinkingEnabled
+            ? { thinking: { type: 'enabled' }, reasoning_effort: ResolveDeepSeekReasoningEffort(options.reasoningEffort ?? 'medium') }
+            : { thinking: { type: 'disabled' } }
+          : selected.provider === 'MIMO' ? { thinking: { type: selected.thinkingEnabled ? 'enabled' : 'disabled' } } : {};
+      if (modelConfiguration) maxOutput = Math.min(maxOutput, Math.max(1, Math.floor(selected.contextLimit - EstimateProviderTokens(providerMessages) - Math.min(1024, selected.contextLimit * 0.1))));
+      const body = SerializeCompletionBody({ model: requestModel, stream: false, messages: providerMessages, ...providerOptions,
+        ...(selected.provider === 'MIMO' ? { max_completion_tokens: maxOutput } : { max_tokens: maxOutput }),
+      }, selected.provider === 'DeepSeek');
+      if (EstimateProviderTokens(providerMessages) >= selected.contextLimit - Math.min(8192, selected.contextLimit * 0.1)) throw new Error('Summary input exceeds the model budget.');
       onRequest?.({ kind: 'summary', model: requestModel, messages: providerMessages, toolCount: 0 });
       const response = await providerFetch(`${selected.baseUrl}/chat/completions`, {
         method: 'POST',
+        signal: options.signal ? AbortSignal.any([options.signal, AbortSignal.timeout(120000)]) : AbortSignal.timeout(120000),
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${selected.apiKey}` },
         body,
       });
-      if (!response.ok) throw new Error(`Summary request failed (${response.status}).`);
-      const json = (await response.json()) as { choices?: Array<{ message?: { content?: unknown } }>; usage?: unknown };
+      if (!response.ok) throw await ProviderRequestError(response, 'Summary request failed', selected.apiKey);
+      const json = (await response.json()) as { choices?: Array<{ message?: { content?: unknown }; finish_reason?: string }>; usage?: unknown };
+      if (json.choices?.[0]?.finish_reason === 'length') throw new Error('Summary output was truncated.');
       const content = json?.choices?.[0]?.message?.content;
       const usage = NormalizeModelUsage(json?.usage);
       return { content: RequireString(content, 'summary', 16000), ...(usage ? { usage } : {}) };
@@ -592,7 +633,11 @@ export function CreateProviderModule(ports: AgentDefaultPorts): ModelProviderMod
     /** 估算 Provider 请求输入规模；仅用于触发阈值与界面提示，不用于计费。 */
     EstimateTokens(value) { return EstimateProviderTokens(value); },
     /** 返回上下文长度上限与压缩阈值百分比。 */
-    GetRuntimeLimits(providerValue) { const selected = ConfigFor(providerValue); return { contextLimit: selected.contextLimit, threshold: selected.compressionThreshold }; },
+    GetRuntimeLimits(providerValue, model) {
+      const selected = ConfigFor(providerValue);
+      const resolved = ports.resolveModelConfiguration?.(selected.provider, model ?? selected.model, selected.baseUrl);
+      return { contextLimit: resolved?.values.contextWindow ?? selected.contextLimit, threshold: selected.compressionThreshold };
+    },
     /** 返回当前 BaseUrl，供连通性等只读展示（不含密钥）。 */
     BaseUrl(providerValue) { return ConfigFor(providerValue).baseUrl; },
   };

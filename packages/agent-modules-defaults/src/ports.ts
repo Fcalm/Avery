@@ -33,6 +33,8 @@ export interface ObservabilityStorePort {
 
 /** 官方默认模块所需的宿主窄端口集合：密钥、文件资源边界与观测存储均由宿主持有并注入。 */
 export interface AgentDefaultPorts {
+  /** 宿主提供唯一生效能力；不得由默认模块另存白名单或访问模型目录网络。 */
+  resolveModelConfiguration?: (provider: string, model: string, baseUrl: string) => import('@avery/agent-sdk').ResolvedModelConfiguration;
   /** 惰性读取已保存的模型配置（宿主经 CredentialPort）；无配置返回 null。 */
   getConfig(): Promise<ProviderConfigStore | null>;
   /** 保存模型配置（宿主移交 safeStorage 加密落盘）。 */

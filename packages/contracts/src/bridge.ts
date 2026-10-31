@@ -169,13 +169,17 @@ export interface AgentTraceEvent {
 export interface DesktopAgentBridge {
   Configure: (config: AgentConfiguration) => Promise<{ configured: boolean }>;
   TestConnection: (config: AgentConfiguration) => Promise<{ connected: boolean }>;
+  /** 读取或显式刷新目录后的模型能力；返回脱敏生效值和个人覆盖，未知模型不推断视觉能力。 */
+  GetModelConfiguration: (input: import('./model-configuration').GetModelConfigurationInput) => Promise<import('./model-configuration').ResolvedModelConfiguration>;
+  /** 原子保存单模型个人覆盖；revision 冲突时拒绝覆盖其他窗口的更新。 */
+  SaveModelConfiguration: (input: import('./model-configuration').SaveModelConfigurationInput) => Promise<import('./model-configuration').ResolvedModelConfiguration>;
   GetBalance: () => Promise<{ available: boolean; balances: Array<{ currency: string; totalBalance: string }> }>;
   /** 读取全部已配置供应商的账户用量；凭据仅在后端使用。 */
   GetProviderUsage: () => Promise<import('@avery/agent-sdk').ProviderUsageSnapshot>;
   /** 读取指定 Provider 凭据可访问的模型列表（DeepSeek / MiMo 走官方 GET /models 同步）；provider 回执用于确认结果来源，凭据不会离开主进程。缺省查询 DeepSeek。 */
-  GetModels: (provider?: 'DeepSeek' | 'Z.AI' | 'MIMO' | '自定义') => Promise<{ provider: 'DeepSeek' | 'Z.AI' | 'MIMO' | '自定义'; models: string[] }>;
+  GetModels: (provider?: 'DeepSeek' | 'Z.AI' | 'MIMO' | '自定义') => Promise<{ provider: 'DeepSeek' | 'Z.AI' | 'MIMO' | '自定义'; models: string[]; modelConfigurations?: import('./model-configuration').ResolvedModelConfiguration[] }>;
   /** 返回所有已配置 Provider 及其可选模型，不暴露 API Key。 */
-  GetProviderCatalog: () => Promise<{ providers: Array<{ provider: 'DeepSeek' | 'Z.AI' | 'MIMO' | '自定义'; configured: boolean; model: string; models: string[]; baseUrl: string; contextLimit: number; contextLimitMode: 'default' | 'custom'; compressionThreshold: number; thinkingEnabled: boolean }> }>;
+  GetProviderCatalog: () => Promise<{ providers: Array<{ provider: 'DeepSeek' | 'Z.AI' | 'MIMO' | '自定义'; configured: boolean; model: string; models: string[]; baseUrl: string; contextLimit: number; contextLimitMode: 'default' | 'custom'; compressionThreshold: number; thinkingEnabled: boolean; modelConfigurations?: import('./model-configuration').ResolvedModelConfiguration[] }> }>;
   Send: (request: AgentSendRequest) => Promise<{ accepted: boolean }>;
   /** 结构化审批/答案提交；宿主负责原 Run 的结果落盘和恢复，不产生合成用户消息。 */
   RespondToInteraction: (response: import('./agent-interaction').AgentInteractionResponse) => Promise<{ accepted: boolean; requestId: string; replayed?: boolean }>;
@@ -281,7 +285,7 @@ export interface WorkspaceBridge {
 /** Bridge 方法清单：preload 暴露的方法名唯一来源，供一致性冒烟校验与契约生成使用。 */
 export const BridgeNamespaces = {
   agent: [
-    'Configure', 'TestConnection', 'GetBalance', 'GetProviderUsage', 'GetModels', 'GetProviderCatalog', 'Send', 'Cancel', 'RespondToInteraction', 'UpdateConfirmationMode', 'UpdateReasoningEffort', 'ConfirmResumeEdit', 'ConfirmCronTask',
+    'Configure', 'TestConnection', 'GetBalance', 'GetProviderUsage', 'GetModels', 'GetProviderCatalog', 'GetModelConfiguration', 'SaveModelConfiguration', 'Send', 'Cancel', 'RespondToInteraction', 'UpdateConfirmationMode', 'UpdateReasoningEffort', 'ConfirmResumeEdit', 'ConfirmCronTask',
     'ConfirmBrowserAction', 'GetBrowserRuntimeStatus', 'GetCronBrowserAccess', 'RevokeCronBrowserAccess',
     'AcquireResumeEditLock', 'ReleaseResumeEditLock', 'GetStatus',
     'GetObservability', 'GetTraceEvents', 'DeleteTraces', 'SetTraceRetention', 'ClearObservability',

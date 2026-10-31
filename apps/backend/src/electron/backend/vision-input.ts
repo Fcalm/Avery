@@ -1,6 +1,6 @@
 import { open, readFile } from 'node:fs/promises';
 import * as path from 'node:path';
-import type { AgentMessage } from '@avery/agent-sdk';
+import { ResolveBundledModelCapabilities, type AgentMessage } from '@avery/agent-sdk';
 
 export const DeepSeekVisionModel = 'deepseek-v4-flash-vision-exp';
 export const GlmVisionModel = 'glm-5.3-flash';
@@ -58,14 +58,9 @@ async function ReadImage(uri: string, displayName: string, resolveAttachment: (u
   };
 }
 
-/** MiMo 官方声明支持图片输入的对话模型（mimo-v2.5-pro 不支持），其余 MiMo 模型只收文本。 */
-const MimoVisionModels = ['mimo-v2.6-flash', 'mimo-v2.6-pro', 'mimo-v2.6-pro-ultraspeed', 'mimo-v2.5'];
-
-/** 仅官方声明支持视觉内容的 Provider/模型组合才接收图片块。 */
+/** 独立调用方从同一随应用目录读取能力；Host 正式 Run 使用叠加用户覆盖后的快照。 */
 export function SupportsVisionInput(provider: unknown, model: unknown): boolean {
-  return (provider === 'DeepSeek' && model === DeepSeekVisionModel)
-    || (provider === 'Z.AI' && model === GlmVisionModel)
-    || (provider === 'MIMO' && typeof model === 'string' && MimoVisionModels.includes(model));
+  return ResolveBundledModelCapabilities(provider, model)?.inputImage === true;
 }
 
 /** 将本轮附件转换为官方 OpenAI 兼容的 text + image_url 块，同时只保留可持久化的虚拟 URI 引用。 */

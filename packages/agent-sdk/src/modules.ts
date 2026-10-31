@@ -75,7 +75,7 @@ export interface ModelProviderModule extends ModuleManifest {
   CreateSummary(provider: string, model: string, messages: AgentMessage[], onRequest?: (snapshot: ProviderRequestSnapshot) => void): Promise<ModelSummary>;
   EstimateTokens(value: unknown): number;
   /** 返回上下文长度上限与压缩阈值百分比；供 Kernel 与宿主读取。 */
-  GetRuntimeLimits(provider?: string): { contextLimit: number; threshold: number };
+  GetRuntimeLimits(provider?: string, model?: string): { contextLimit: number; threshold: number };
   /** 返回当前 BaseUrl，供连通性等只读展示（不含密钥）。 */
   BaseUrl(provider?: string): string;
 }

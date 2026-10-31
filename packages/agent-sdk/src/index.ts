@@ -22,3 +22,5 @@ export type {
   SkillManifest, SkillSnapshot, TaskItem, ToolCallFragment, ToolDisposition, ToolExecutionResult, ToolLedgerEntry, ToolReceipt, TraceEntry,
   TraceEventEntry, TurnGroup,
 } from './types';
+export * from './model-capabilities';
+export { BundledModelDirectory } from './model-capabilities-snapshot';
