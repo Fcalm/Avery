@@ -1613,7 +1613,7 @@ button[aria-haspopup]:focus-visible {
 }
 .application-profile-field > span { white-space: nowrap; }
 .profile-template-tip { margin: 0; color: var(--color-text-secondary); font-size: var(--text-meta); line-height: 18px; }
-.profile-field-optional { display: inline; margin-right: 2px; color: var(--danger); font-style: normal; font-weight: 500; }
+.profile-field-required { display: inline; margin-right: 2px; color: var(--danger); font-style: normal; font-weight: 500; }
 .application-profile-field.is-multiline {
   grid-column: 1 / -1;
   align-items: start;

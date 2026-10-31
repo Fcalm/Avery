@@ -113,12 +113,35 @@ function IsProfileDateValue(value: string): boolean {
   return /^\d{4}[-.]\d{1,2}(?:[-.]\d{1,2})?$/.test(value.trim());
 }
 
+/** 校验与表单共用字段定位，必填缺失和日期格式错误都返回到对应控件。 */
+function GetProfileFieldId(category: ProfileCategory, sectionIndex: number, fieldIndex: number): string {
+  return `profile-${category}-${sectionIndex}-${fieldIndex}`;
+}
+
+function GetProfileDraftErrors(draft: Partial<ProfileItem>): Record<string, string> {
+  const errors: Record<string, string> = {};
+  if (!draft.title?.trim()) errors['profile-title'] = '请填写标题';
+  const category = draft.category;
+  if (!category) return errors;
+  ProfileTemplateSections[category].forEach((section, sectionIndex) => {
+    section.fields.forEach((field, fieldIndex) => {
+      const value = GetProfileField(draft.content ?? '', section.title, field.label);
+      const fieldId = GetProfileFieldId(category, sectionIndex, fieldIndex);
+      if (field.required && !value) errors[fieldId] = `请填写${field.label}`;
+      else if (field.date && value && !IsProfileDateValue(value)) errors[fieldId] = `请使用 ${DatePlaceholder} 格式`;
+    });
+  });
+  return errors;
+}
+
 export {
   ChangeProfileDraftCategory,
   CreateProfileDraft,
   DatePlaceholder,
   DefaultProfileTitles,
   GetProfileField,
+  GetProfileFieldId,
+  GetProfileDraftErrors,
   IsProfileDateValue,
   ProfileTemplateForCategory,
   ProfileTemplateSections,

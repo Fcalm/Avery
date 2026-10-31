@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 import {
   ChangeProfileDraftCategory,
   CreateProfileDraft,
+  GetProfileDraftErrors,
   GetProfileField,
+  GetProfileFieldId,
   IsProfileDateValue,
   ProfileTemplateForCategory,
   ProfileTemplateSections,
@@ -72,5 +74,51 @@ describe('档案草稿模板', () => {
     expect(IsProfileDateValue('2026.09.08')).toBe(true);
     expect(IsProfileDateValue('2026/09')).toBe(false);
     expect(IsProfileDateValue('202609')).toBe(false);
+  });
+
+  it('所有分类的空模板均报告每个缺失必填项，空白输入不能通过校验', () => {
+    for (const category of Object.keys(ProfileTemplateSections) as Array<keyof typeof ProfileTemplateSections>) {
+      const draft = CreateProfileDraft(category);
+      const errors = GetProfileDraftErrors(draft);
+      const required = ProfileTemplateSections[category].flatMap((section, sectionIndex) => section.fields
+        .flatMap((field, fieldIndex) => field.required ? [GetProfileFieldId(category, sectionIndex, fieldIndex)] : []));
+      expect(Object.keys(errors)).toEqual(required);
+      expect(GetProfileDraftErrors({ ...draft, title: ' \t ' })['profile-title']).toBe('请填写标题');
+      const firstSection = ProfileTemplateSections[category][0];
+      const firstRequired = firstSection.fields.findIndex((field) => field.required);
+      const content = UpdateProfileField(draft.content!, firstSection.title, firstSection.fields[firstRequired].label, ' \t ');
+      expect(GetProfileDraftErrors({ ...draft, content })[GetProfileFieldId(category, 0, firstRequired)]).toBeTruthy();
+    }
+  });
+
+  it('只填写必填项即可保存，各分类空选填项不阻拦，包含下拉和多行字段', () => {
+    for (const category of Object.keys(ProfileTemplateSections) as Array<keyof typeof ProfileTemplateSections>) {
+      const draft = CreateProfileDraft(category);
+      let content = draft.content!;
+      for (const section of ProfileTemplateSections[category]) {
+        for (const field of section.fields.filter((field) => field.required)) {
+          content = UpdateProfileField(content, section.title, field.label, field.date ? '2026-10' : field.options?.[0] ?? '已填写');
+        }
+      }
+      expect(GetProfileDraftErrors({ ...draft, content })).toEqual({});
+    }
+  });
+
+  it('日期格式错误关联到具体控件，修正后仅移除该字段的错误', () => {
+    const draft = CreateProfileDraft('work');
+    const content = UpdateProfileField(draft.content!, '工作经历', '开始时间', '2026/10');
+    const errors = GetProfileDraftErrors({ ...draft, content });
+    expect(errors[GetProfileFieldId('work', 0, 1)]).toContain('格式');
+    const corrected = GetProfileDraftErrors({ ...draft, content: UpdateProfileField(content, '工作经历', '开始时间', '2026.10') });
+    const { [GetProfileFieldId('work', 0, 1)]: _dateError, ...remaining } = errors;
+    expect(corrected).toEqual(remaining);
+  });
+
+  it('选填日期留空允许，但已填的错误日期仍需修正', () => {
+    const draft = CreateProfileDraft('skill_certificate');
+    const content = UpdateProfileField(draft.content!, '技能/证书', '技能/证书名称', '测试证书');
+    expect(GetProfileDraftErrors({ ...draft, content })).toEqual({});
+    const invalid = UpdateProfileField(content, '技能/证书', '获得时间', '202610');
+    expect(Object.keys(GetProfileDraftErrors({ ...draft, content: invalid }))).toEqual([GetProfileFieldId('skill_certificate', 0, 2)]);
   });
 });

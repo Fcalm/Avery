@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { AppShell } from './AppShell';
 import { UiStoreProvider, useUiStore } from './UiStore';
 import { useWorkspaceData } from '../features/workspace/api/useWorkspaceData';
@@ -181,15 +182,15 @@ function AppContent() {
   </>;
 }
 
-/** 通知常驻于路由分支之外，确保首次引导和启动错误页也能呈现操作反馈。 */
+/** 通知挂到 body，脱离根容器的隔离层级，确保不会被同样挂在 body 的抽屉遮罩覆盖。 */
 function AppNotice() {
   const { notice, HideNotice } = useUiStore();
   if (!notice) return null;
-  return <div key={notice.id} className={`app-toast${notice.action ? ' has-action' : ''}`} role="status" aria-live="polite">
+  return createPortal(<div key={notice.id} className={`app-toast${notice.action ? ' has-action' : ''}`} role="status" aria-live="polite">
       <Icon name={notice.tone === 'error' ? 'error' : notice.tone === 'pending' ? 'loading' : 'check-circle'} size={14} />
       <span>{notice.message}</span>
       {notice.action && <button className="app-toast-act" type="button" onClick={() => { HideNotice(); notice.action?.run(); }}>{notice.action.label}</button>}
-    </div>;
+    </div>, document.body);
 }
 
 export { App };
