@@ -1,0 +1,30 @@
+/* 更新提醒独立于导航栏，位于抽屉之上、模态确认与 Toast 之下。 */
+.app-update-position { position: fixed; right: 20px; bottom: 20px; z-index: 65; max-width: calc(100vw - 40px); }
+.app-update-notice, .app-update-compact {
+  border: 1px solid var(--border); border-radius: var(--r-card); background: var(--raised);
+  box-shadow: 0 8px 32px rgba(24, 24, 27, .14), 0 2px 8px rgba(24, 24, 27, .06);
+  animation: appUpdateIn .22s var(--ease) both;
+}
+.app-update-notice { width: 300px; max-width: calc(100vw - 40px); padding: 16px; font-size: 12px; }
+.app-update-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.app-update-title { display: flex; align-items: center; min-width: 0; gap: 8px; color: var(--text); }
+.app-update-title > i { flex: none; color: var(--accent); }
+.app-update-heading strong { flex: none; font-size: 13px; font-weight: 600; }
+.app-update-heading .icon-btn { flex: none; }
+.app-update-version { min-width: 0; color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.app-update-notice p { margin: 10px 0 0; color: var(--text-2); overflow-wrap: anywhere; }
+.app-update-notice progress { display: block; width: 100%; height: 5px; margin-top: 14px; accent-color: var(--accent); }
+.app-update-action {
+  display: flex; align-items: center; justify-content: center; gap: 7px; width: 100%; min-height: 34px;
+  margin-top: 14px; padding: 6px 12px; border: 1px solid var(--border-2); border-radius: var(--r-control);
+  color: var(--text); background: var(--raised); font: inherit; font-weight: 500;
+  transition: background-color .16s var(--ease), border-color .16s var(--ease);
+}
+.app-update-action:hover:not(:disabled) { border-color: var(--text-3); background: var(--surface-2); }
+.app-update-action:disabled { opacity: .5; cursor: wait; }
+.app-update-compact { display: flex; align-items: center; gap: 8px; min-height: 38px; padding: 8px 12px; color: var(--text-2); font-size: 12px; text-align: left; }
+.app-update-compact > i:first-child { color: var(--accent); }
+.app-update-compact:hover { background: var(--surface); }
+[data-theme="dark"] :is(.app-update-notice, .app-update-compact) { box-shadow: 0 8px 32px rgba(0, 0, 0, .32), 0 2px 8px rgba(0, 0, 0, .16); }
+@keyframes appUpdateIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+@media (prefers-reduced-motion: reduce) { .app-update-notice, .app-update-compact { animation: none; } }

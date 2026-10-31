@@ -9,6 +9,7 @@
   },
   "dependencies": {
     "@avery/backend": "0.1.0",
-    "@avery/contracts": "0.1.0"
+    "@avery/contracts": "0.1.0",
+    "electron-updater": "6.8.11"
   }
 }

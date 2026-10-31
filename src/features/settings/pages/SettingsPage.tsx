@@ -932,7 +932,7 @@ function SettingsPage({ onNavigateDeveloper, tab, requestedTab, tabRequestVersio
         <RenderGeneralSwitch label="任务完成通知" description="长任务跑完后弹一条系统通知，切到别的窗口也不会错过。" checked={settings.notifyOnComplete ?? true} onToggle={() => ApplySettings({ notifyOnComplete: !(settings.notifyOnComplete ?? true) })} />
         <RenderGeneralSwitch label="完成时播放提示音" description="通知出现时带一声轻提示。关掉上面的通知，这一项也不再生效。" checked={settings.notifySound ?? true} disabled={!(settings.notifyOnComplete ?? true)} onToggle={() => ApplySettings({ notifySound: !(settings.notifySound ?? true) })} />
         <div className="gn-cap">更新</div>
-        <RenderGeneralSwitch label="自动下载更新" description="检测到新版本就在后台下载，下次启动时装上。" checked={settings.autoUpdate ?? true} onToggle={() => ApplySettings({ autoUpdate: !(settings.autoUpdate ?? true) })} />
+        <RenderGeneralSwitch label="自动下载更新" description="发现新版本后在后台下载，由你确认重启安装。" checked={settings.autoUpdate ?? true} onToggle={() => ApplySettings({ autoUpdate: !(settings.autoUpdate ?? true) })} />
         <div className="gn-row">
           <div className="gn-txt"><span className="gn-t">当前版本</span><span className="gn-d">Avery {__APP_VERSION__}</span></div>
           <div className="gn-ctl"><button className="quiet-btn" type="button" onClick={CheckForUpdatesNotice}><Icon name="refresh" size={14} />检查更新</button></div>

@@ -9,6 +9,10 @@ import { MigrateLegacyUserData } from './brand-migration';
 import { CreateTrayImage } from './tray-image';
 import { IsMimoLoginNavigation, MimoAccountService } from './mimo-account';
 import { CreateMimoSessionStore } from './mimo-session-store';
+import { RegisterBrowserExtensionSetup } from './browser-extension-setup';
+import { ResolveEgoExtensionExecutable } from './ego-browser-setup';
+import { AppUpdateService } from './app-updates';
+import { RegisterAppUpdateControls } from './app-update-ipc';
 
 const smokeStartedAt = Date.now();
 /** 测试环境必须与正式安装版分组，避免 Windows 复用已卸载版本的快捷方式和图标。 */
@@ -24,6 +28,7 @@ const consoleErrors: string[] = [];
 let tray: Tray | undefined;
 let forceCloseAfterTrayDecision = false;
 let quitting = false;
+let appUpdates: AppUpdateService | undefined;
 /** 还原（普通）尺寸：默认 1440×960，工作区更小时留出边距，保证还原后窗口确实变小。 */
 function ResolveWindowRestoreSize() {
   const workArea = screen.getPrimaryDisplay().workAreaSize;
@@ -448,6 +453,9 @@ async function runInstalledVisualScenario(outputDirectory: string): Promise<Reco
     const userDataPath = app.getPath('userData');
     if (process.env.AVERY_DESKTOP_SMOKE !== '1') await MigrateLegacyUserData(userDataPath);
     const workspacePath = join(userDataPath, 'Avery Workspace');
+    // ego lite 与其他浏览器共用扩展通道；异步定位应用，无需 CLI 或原生任务空间。
+    const egoExecutable = await ResolveEgoExtensionExecutable();
+    const externalBrowserPaths = { ...resolveExternalBrowserPaths(), ...(egoExecutable ? { ego: egoExecutable } : {}) };
     // 冒烟实例使用独立数据目录，也不能读写用户机器上的真实计划任务。
     const adapters = CreateDesktopAdapters({ getWindow: () => mainWindow, userDataPath, executablePath: process.execPath, enableSystemCron: app.isPackaged && process.env.AVERY_DESKTOP_SMOKE !== '1' });
     backendHost = CreateBackendHost({
@@ -455,19 +463,46 @@ async function runInstalledVisualScenario(outputDirectory: string): Promise<Reco
         userDataPath,
         defaultWorkspacePath: workspacePath,
         workspacePath,
-        externalBrowserPaths: resolveExternalBrowserPaths(),
+        externalBrowserPaths,
       },
       desktopCapabilities: adapters,
     });
-    RegisterGateway({ backendHost, webContentsGetter: () => mainWindow, notificationIconPath: resolveAppIconPath() || undefined });
+    appUpdates = new AppUpdateService({
+      supported: app.isPackaged && process.platform === 'win32' && !cronRunnerLaunch && process.env.AVERY_DESKTOP_SMOKE !== '1',
+      currentVersion: app.getVersion(),
+      loadUpdater: async () => {
+        // 延迟加载依赖；仅使用固定公开仓库，不从 Renderer 或网页接收更新源。
+        const { autoUpdater } = require('electron-updater') as typeof import('electron-updater');
+        autoUpdater.setFeedURL({ provider: 'github', owner: 'Fcalm', repo: 'Avery' });
+        return autoUpdater;
+      },
+      readAutoDownload: async () => {
+        const result = await backendHost!.Command('workspace:get-settings', undefined) as { ok: boolean; data?: { autoUpdate?: boolean } };
+        if (!result.ok || !result.data) throw new Error('Update preferences are unavailable.');
+        return result.data.autoUpdate !== false;
+      },
+      publish: state => {
+        if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()) mainWindow.webContents.send('app-update:state', state);
+      },
+      log: error => console.error('[app-update]', error),
+    });
+    RegisterAppUpdateControls({ service: appUpdates, webContentsGetter: () => mainWindow });
+    RegisterGateway({ backendHost, webContentsGetter: () => mainWindow, notificationIconPath: resolveAppIconPath() || undefined,
+      onSettingsChanged: () => appUpdates!.PreferencesChanged() });
     RegisterWindowControls({ webContentsGetter: () => mainWindow, frameSize: () => nativeClientSize });
     const mimoAccount = new MimoAccountService({ getParent: () => mainWindow, sessionStore: CreateMimoSessionStore(userDataPath), ...(process.env.AVERY_MIMO_DIAGNOSTICS === '1' ? { onDiagnostic: (detail: import('./mimo-account').MimoAccountDiagnostic) => console.error('[mimo-account]', JSON.stringify(detail)) } : {}) });
     RegisterGeneralControls({ webContentsGetter: () => mainWindow, workspacePath, mimoAccount });
+    RegisterBrowserExtensionSetup({
+      webContentsGetter: () => mainWindow,
+      browserPaths: externalBrowserPaths,
+      extensionDirectory: app.isPackaged ? join(process.resourcesPath, 'browser-extension') : join(app.getAppPath(), 'apps', 'browser-extension'),
+    });
     Menu.setApplicationMenu(null);
     if (!cronRunnerLaunch) {
       // 普通应用在首个窗口创建前注册托盘；后台 CronRunner 和自动化冒烟实例不暴露托盘。
       if (process.env.AVERY_DESKTOP_SMOKE !== '1') EnsureTray(resolveAppIconPath());
       createWindow();
+      appUpdates.Start();
     }
     else void runDueCronTasksWhenReady(true).catch((error) => { console.error('CronTask runner failed:', error); app.exit(1); });
     if (process.env.AVERY_DESKTOP_SMOKE !== '1') return;
@@ -504,5 +539,5 @@ async function runInstalledVisualScenario(outputDirectory: string): Promise<Reco
   app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
   app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
   // before-quit 先于窗口关闭事件：托盘「退出」触发的关闭必须放行，不再被托盘决策拦截。
-  app.on('before-quit', () => { quitting = true; DestroyTray(); backendHost?.Shutdown(); });
+  app.on('before-quit', () => { quitting = true; appUpdates?.Stop(); DestroyTray(); backendHost?.Shutdown(); });
 }

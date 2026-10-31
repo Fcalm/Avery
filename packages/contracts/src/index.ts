@@ -48,3 +48,4 @@ export type {
 export { AgentInteractionResponseSchema } from './agent-interaction';
 export type { AgentInteractionResponse } from './agent-interaction';
 export * from './model-configuration';
+export * from './app-update';

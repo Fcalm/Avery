@@ -25,8 +25,8 @@
     "audit:system-baseline": "node scripts/audit-evaluation-system-baseline.mjs",
     "smoke:evaluation-ui": "node scripts/smoke-evaluation-ui.mjs",
     "build:markitdown-sidecar": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-markitdown-sidecar.ps1",
-    "pack:dir": "npm run build && npm run build:markitdown-sidecar && node node_modules/electron-builder/out/cli/cli.js --dir",
-    "pack:win": "npm run build && npm run build:markitdown-sidecar && node node_modules/electron-builder/out/cli/cli.js --win"
+    "pack:dir": "npm run build && npm run build:markitdown-sidecar && node node_modules/electron-builder/out/cli/cli.js --dir --publish never",
+    "pack:win": "npm run build && npm run build:markitdown-sidecar && node node_modules/electron-builder/out/cli/cli.js --win --publish never"
   },
   "dependencies": {
     "@avery/application-benchmark": "2.0.0",
@@ -67,6 +67,7 @@
     "icon": "build/icon.ico",
     "asar": true,
     "npmRebuild": false,
+    "publish": [{ "provider": "github", "owner": "Fcalm", "repo": "Avery" }],
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,

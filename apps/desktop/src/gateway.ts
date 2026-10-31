@@ -38,7 +38,7 @@ export function ValidateSender(event: IpcMainInvokeEvent, getWindow: () => Brows
 }
 
 /** 所有命令先通过来源、频率、大小和写信封校验，再进入 Backend Utility Process。 */
-export function RegisterGateway({ backendHost, webContentsGetter, notificationIconPath, ipcMainApi = ipcMain }: { backendHost: BackendHostPort; webContentsGetter: () => BrowserWindow | undefined; notificationIconPath?: string; ipcMainApi?: IpcMainPort }): void {
+export function RegisterGateway({ backendHost, webContentsGetter, notificationIconPath, onSettingsChanged, ipcMainApi = ipcMain }: { backendHost: BackendHostPort; webContentsGetter: () => BrowserWindow | undefined; notificationIconPath?: string; onSettingsChanged?: () => Promise<void>; ipcMainApi?: IpcMainPort }): void {
   const limiter = CreateGatewayLimiter();
   for (const channel of [...Object.keys(MethodRoutes), ...FunctionRouteChannels]) {
     ipcMainApi.handle(channel, async (event, ...args: unknown[]): Promise<ResultEnvelope> => {
@@ -58,7 +58,12 @@ export function RegisterGateway({ backendHost, webContentsGetter, notificationIc
       }
       try {
         const result = await backendHost.Command(channel, idempotencyKey, ...commandArgs);
-        if (result && typeof result === 'object' && typeof (result as { ok?: unknown }).ok === 'boolean') return result as ResultEnvelope;
+        if (result && typeof result === 'object' && typeof (result as { ok?: unknown }).ok === 'boolean') {
+          if ((result as ResultEnvelope).ok && channel === 'workspace:save-settings') {
+            void onSettingsChanged?.().catch(error => console.error('[app-update] preferences', error));
+          }
+          return result as ResultEnvelope;
+        }
         return { ok: false, error: { code: 'INTERNAL_ERROR', message: 'Backend returned an invalid result.', retryable: true } };
       } catch (error) {
         return { ok: false, error: { code: 'INTERNAL_ERROR', message: error instanceof Error ? error.message : 'Backend is unavailable.', retryable: true, details: { backendState: backendHost.state() } } };

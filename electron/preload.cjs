@@ -134,6 +134,18 @@ const evaluationBridge = {
 electron_1.contextBridge.exposeInMainWorld('averyAgent', agentBridge);
 electron_1.contextBridge.exposeInMainWorld('averyWorkspace', workspaceBridge);
 electron_1.contextBridge.exposeInMainWorld('averyEvaluation', evaluationBridge);
+const updateBridge = {
+    GetState: () => invoke('app-update:read'),
+    Check: () => invoke('app-update:check'),
+    Download: () => invoke('app-update:download'),
+    Install: () => invoke('app-update:install'),
+    OnStateChange: listener => {
+        const handler = (_event, state) => listener(state);
+        electron_1.ipcRenderer.on('app-update:state', handler);
+        return () => electron_1.ipcRenderer.removeListener('app-update:state', handler);
+    },
+};
+electron_1.contextBridge.exposeInMainWorld('averyUpdates', updateBridge);
 electron_1.contextBridge.exposeInMainWorld('averyWindow', {
     /** 仅查询/订阅宿主客户区尺寸，Renderer 不直接访问窗口或屏幕 API。 */
     GetFrameSize: () => invoke('window:get-frame-size'),
@@ -152,6 +164,8 @@ electron_1.contextBridge.exposeInMainWorld('averyWindow', {
     /** 固定服务商链接；主进程校验来源，不开放任意外部导航。 */
     OpenDeepSeekApiKeys: () => invoke('app:open-deepseek-api-keys'),
     OpenProviderDashboard: (provider) => invoke('app:open-provider-dashboard', provider),
+    /** 只传浏览器枚举；安装页、扩展目录及启动方式由 Main 决定。 */
+    OpenBrowserExtensionSetup: (engine) => invoke('app:open-browser-extension-setup', engine),
     ReadMimoAccountUsage: () => invoke('app:mimo-account-usage'),
     OpenMimoAccountLogin: () => invoke('app:mimo-account-login'),
     DisconnectMimoAccount: () => invoke('app:mimo-account-disconnect'),

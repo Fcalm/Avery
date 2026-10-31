@@ -15,6 +15,7 @@ import { ListEvalRuns } from '../features/developer/api/evaluationQueries';
 import { DeveloperSidebar } from '../features/developer/components/DeveloperSidebar';
 import { useDeveloperConsole } from '../features/developer/components/DeveloperConsoleContext';
 import { SettingsTabs, type SettingTab } from '../features/settings/pages/SettingsPage';
+import { AppUpdateNotice } from '../features/updates/AppUpdateNotice';
 
 const MinContentWidth = 800;
 const UserMenuWidth = 332;
@@ -620,6 +621,7 @@ function AppShell({ page, onNavigate, onRestartOnboarding, settingsTab, onReques
       </main>
     </div>
 
+    <AppUpdateNotice />
     {/* 会话行菜单固定定位渲染，避免被侧栏滚动裁剪；置顶项按当前状态切换文案 */}
     {rowMenu && (() => {
       const target = conversations.find((item) => item.id === rowMenu.conversationId);

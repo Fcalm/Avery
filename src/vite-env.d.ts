@@ -15,6 +15,7 @@ interface DesktopWindowBridge {
   GetWorkspaceDirectory: () => Promise<string>;
   OpenDeepSeekApiKeys: () => Promise<ResultEnvelope<boolean>>;
   OpenProviderDashboard: (provider: string) => Promise<ResultEnvelope<boolean>>;
+  OpenBrowserExtensionSetup: (engine: import('@avery/contracts').ExtensionBrowserEngine) => Promise<ResultEnvelope<import('@avery/contracts').BrowserExtensionSetup>>;
   /** MiMo 控制台 Cookie 只在主进程的隔离会话中使用，桥接仅返回脱敏状态。 */
   ReadMimoAccountUsage: () => Promise<ResultEnvelope<import('@avery/contracts').ProviderAccountUsage>>;
   OpenMimoAccountLogin: () => Promise<ResultEnvelope<{ authorized: boolean }>>;
@@ -31,6 +32,7 @@ declare global {
     averyAgent?: DesktopAgentBridge;
     averyWorkspace?: WorkspaceBridge;
     averyEvaluation?: DesktopEvaluationBridge;
+    averyUpdates?: import('@avery/contracts').DesktopUpdateBridge;
     averyWindow?: DesktopWindowBridge;
   }
 }

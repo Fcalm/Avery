@@ -4,6 +4,7 @@
 .ph-target::before { content: "\e47c"; }
 .ph-codesandbox-logo::before { content: "\ea06"; }
 .ph-infinity::before { content: "\e634"; }
+.ph-bell-simple-ringing::before { content: "\e5ea"; }
 @font-face {
   font-family: "Phosphor";
   src: url("/fonts/phosphor/Phosphor-Regular.woff2") format("woff2");

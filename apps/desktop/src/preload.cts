@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
-import type { DesktopAgentBridge, DesktopEvaluationBridge, WorkspaceBridge, WriteCommandOptions, ResultEnvelope } from '@avery/contracts';
+import type { DesktopAgentBridge, DesktopEvaluationBridge, DesktopUpdateBridge, WorkspaceBridge, WriteCommandOptions, ResultEnvelope } from '@avery/contracts';
 
 type Invoke = (channel: string, ...args: unknown[]) => Promise<unknown>;
 const invoke: Invoke = (channel, ...args) => ipcRenderer.invoke(channel, ...args);
@@ -142,6 +142,18 @@ const evaluationBridge: DesktopEvaluationBridge = {
 contextBridge.exposeInMainWorld('averyAgent', agentBridge);
 contextBridge.exposeInMainWorld('averyWorkspace', workspaceBridge);
 contextBridge.exposeInMainWorld('averyEvaluation', evaluationBridge);
+const updateBridge: DesktopUpdateBridge = {
+  GetState: () => invoke('app-update:read') as ReturnType<DesktopUpdateBridge['GetState']>,
+  Check: () => invoke('app-update:check') as ReturnType<DesktopUpdateBridge['Check']>,
+  Download: () => invoke('app-update:download') as ReturnType<DesktopUpdateBridge['Download']>,
+  Install: () => invoke('app-update:install') as ReturnType<DesktopUpdateBridge['Install']>,
+  OnStateChange: listener => {
+    const handler = (_event: Electron.IpcRendererEvent, state: Parameters<typeof listener>[0]) => listener(state);
+    ipcRenderer.on('app-update:state', handler);
+    return () => ipcRenderer.removeListener('app-update:state', handler);
+  },
+};
+contextBridge.exposeInMainWorld('averyUpdates', updateBridge);
 contextBridge.exposeInMainWorld('averyWindow', {
   /** 仅查询/订阅宿主客户区尺寸，Renderer 不直接访问窗口或屏幕 API。 */
   GetFrameSize: () => invoke('window:get-frame-size') as Promise<{ width: number; height: number; unit: 'physical' | 'css' }>,
@@ -160,6 +172,8 @@ contextBridge.exposeInMainWorld('averyWindow', {
   /** 固定服务商链接；主进程校验来源，不开放任意外部导航。 */
   OpenDeepSeekApiKeys: () => invoke('app:open-deepseek-api-keys') as Promise<ResultEnvelope<boolean>>,
   OpenProviderDashboard: (provider: string) => invoke('app:open-provider-dashboard', provider) as Promise<ResultEnvelope<boolean>>,
+  /** 只传浏览器枚举；安装页、扩展目录及启动方式由 Main 决定。 */
+  OpenBrowserExtensionSetup: (engine: import('@avery/contracts').ExtensionBrowserEngine) => invoke('app:open-browser-extension-setup', engine) as Promise<ResultEnvelope<import('@avery/contracts').BrowserExtensionSetup>>,
   ReadMimoAccountUsage: () => invoke('app:mimo-account-usage') as Promise<ResultEnvelope<import('@avery/contracts').ProviderAccountUsage>>,
   OpenMimoAccountLogin: () => invoke('app:mimo-account-login') as Promise<ResultEnvelope<{ authorized: boolean }>>,
   DisconnectMimoAccount: () => invoke('app:mimo-account-disconnect') as Promise<ResultEnvelope<boolean>>,
@@ -168,5 +182,3 @@ contextBridge.exposeInMainWorld('averyWindow', {
   OpenWorkspaceDirectory: () => invoke('app:open-workspace-directory') as Promise<boolean>,
   SetLoginItemSettings: (openAtLogin: boolean) => invoke('app:set-login-item', openAtLogin) as Promise<boolean>,
 });
-  /** 只传浏览器枚举；安装页、扩展目录及启动方式由 Main 决定。 */
-  OpenBrowserExtensionSetup: (engine: import('@avery/contracts').ExtensionBrowserEngine) => invoke('app:open-browser-extension-setup', engine) as Promise<ResultEnvelope<import('@avery/contracts').BrowserExtensionSetup>>,
