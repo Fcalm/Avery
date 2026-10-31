@@ -31,6 +31,9 @@
 - [脚本化岗位采集方案](./18-scripted-job-collection-design.md)：定义 `CollectJobs`、会话级临时候选缓存、引用式 `SaveJob`、多平台采集适配结构和清理边界。
 - [BOSS 批量打招呼工具方案](./19-boss-contact-tool-design.md)：定义 `ContactBossJobs`、首条常用语与图片发送、BOSS 页面状态机、紧凑批次确认、防重、检查点和恢复规则。
 - [岗位库筛选与批量采集开发规划](./20-job-library-collection-development-plan.md)：按岗位筛选、界面采集直接入库、Agent采集与按需读取顺序实施；包含企业来源名单、自定义入口、数据规则、验收标准及进度。
+- [浏览器快照与增量观察](./21-browser-snapshot-delta.md)：稳定节点引用、精简和增量输出契约，以及 P0、P1 验证顺序。
+- [上下文压缩](./22-context-compaction-plan.md)：预算保留、完整工具批次、浏览器恢复及 `/compact` 意图翻译。
+- [网申填写测评](./23-application-benchmark.md)：开发者工具中的拟真平台入口、内置场景、业务成绩、产物目录和验证命令。
 
 对应产品与总体架构依据：
 
@@ -146,8 +149,8 @@ Infrastructure → Backend-owned narrow ports
 | --- | --- | --- |
 | 岗位网络范围 | 0.2.0 无网络；0.3.0 仅用户明确 URL；未来发现未承诺 | [ADR-AGENT-001](../architecture/decisions/ADR-AGENT-001-versioned-job-network-scope.md) |
 | 场景快照 | Session 冻结稳定 Prompt/Context/Tool 前缀；Run 冻结动态数据范围与 Provider 选择 | [ADR-AGENT-002](../architecture/decisions/ADR-AGENT-002-immutable-run-snapshot.md) |
-| 默认压缩阈值 | 输入预算的 70%，场景只可降低 | [ADR-AGENT-003](../architecture/decisions/ADR-AGENT-003-context-budget-and-compaction.md) |
-| 最近原文轮次 | 至少 5 个完整用户轮次及完整工具组 | [ADR-AGENT-003](../architecture/decisions/ADR-AGENT-003-context-budget-and-compaction.md) |
+| 压缩阈值 | 沿用 Provider 保存的设置，每次业务模型调用前检查 | [ADR-AGENT-003](../architecture/decisions/ADR-AGENT-003-context-budget-and-compaction.md) |
+| 最近原文 | 按预算保留；支持同一用户轮次内压缩完整工具批次 | [ADR-AGENT-003](../architecture/decisions/ADR-AGENT-003-context-budget-and-compaction.md) |
 | 单 Run 模型子轮 | 默认场景 30；投递场景 100；最后一轮禁止新工具调用 | [ADR-AGENT-003](../architecture/decisions/ADR-AGENT-003-context-budget-and-compaction.md) |
 | Schema 与确认 | 受限 JSON Schema 2020-12；等待不持锁，确认时重加锁校验 revision | [ADR-AGENT-004](../architecture/decisions/ADR-AGENT-004-tool-safety-and-correction.md) |
 | 纠正重试 | 同错误指纹最多 1 次；Provider 瞬时错误仅输出前有界退避 | [ADR-AGENT-004](../architecture/decisions/ADR-AGENT-004-tool-safety-and-correction.md) |
