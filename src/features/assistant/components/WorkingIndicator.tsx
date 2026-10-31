@@ -5,7 +5,7 @@ const CYCLE_DURATION_MS = 7200;
 const Ease = (value: number) => value * value * (3 - 2 * value);
 const Lerp = (start: number, end: number, progress: number) => start + (end - start) * progress;
 
-/** 沿用原型的跳跃、聚环、旋转、展开轨迹；等待确认只改变提示，不中断播放。 */
+/** 实际运行期间播放跳跃、聚环、旋转、展开轨迹；等待和暂停由对话组件改用静态提示。 */
 export function WorkingIndicator({ waiting, label }: { waiting?: boolean; label: string }) {
   const artworkRef = useRef<SVGSVGElement>(null);
 

@@ -3,7 +3,7 @@ import type { CSSProperties, ImgHTMLAttributes, SVGProps } from 'react';
 /** 图标字重：对应 Phosphor 的 Regular / Light / Fill 三套本地字体。 */
 type IconWeight = 'regular' | 'light' | 'fill';
 
-type IconName = 'assistant' | 'jobs' | 'applications' | 'resumes' | 'profiles' | 'developer' | 'plus' | 'resume' | 'resume-panel' | 'browser' | 'panel-expand' | 'panel-shrink' | 'brand' | 'more' | 'settings' | 'developer-mode' | 'balance' | 'logout' | 'sidebar-expand' | 'sidebar-collapse' | 'chevron-down' | 'chevron-up' | 'chevron-right' | 'send' | 'edit' | 'delete' | 'archive' | 'heart' | 'map-pin' | 'arrow-right' | 'arrow-left' | 'loading' | 'error' | 'warning' | 'recovery' | 'refresh' | 'close' | 'stop' | 'music' | 'user-check' | 'user-x' | 'deepseek' | 'window-minimize' | 'window-restore' | 'window-maximize' | 'trace' | 'logs' | 'search' | 'moon' | 'sun' | 'check' | 'check-circle' | 'pin' | 'account' | 'workspace' | 'sliders' | 'paperclip' | 'brain' | 'gauge' | 'folder-simple' | 'folder-open' | 'shield-check' | 'pencil-simple' | 'robot' | 'lightning' | 'briefcase' | 'clock' | 'copy' | 'info' | 'cpu' | 'list-bullets' | 'sparkle' | 'user' | 'wrench' | 'download-simple' | 'upload-simple' | 'eye' | 'eye-slash' | 'lock-simple' | 'plugs-connected' | 'trash-simple' | 'flask' | 'database' | 'scales' | 'selection' | 'play' | 'hash' | 'warning-circle' | 'seal-check' | 'lock-key' | 'list-checks' | 'code' | 'zai' | 'mimo' | 'clipboard-text' | 'target' | 'codesandbox-logo';
+type IconName = 'assistant' | 'jobs' | 'applications' | 'resumes' | 'profiles' | 'developer' | 'plus' | 'resume' | 'resume-panel' | 'browser' | 'panel-expand' | 'panel-shrink' | 'brand' | 'more' | 'settings' | 'developer-mode' | 'balance' | 'logout' | 'sidebar-expand' | 'sidebar-collapse' | 'chevron-down' | 'chevron-up' | 'chevron-right' | 'send' | 'edit' | 'delete' | 'archive' | 'heart' | 'map-pin' | 'arrow-right' | 'arrow-left' | 'arrow-up' | 'loading' | 'error' | 'warning' | 'recovery' | 'refresh' | 'close' | 'stop' | 'music' | 'user-check' | 'user-x' | 'deepseek' | 'window-minimize' | 'window-restore' | 'window-maximize' | 'trace' | 'logs' | 'search' | 'moon' | 'sun' | 'check' | 'check-circle' | 'pin' | 'account' | 'workspace' | 'sliders' | 'paperclip' | 'brain' | 'gauge' | 'folder-simple' | 'folder-open' | 'shield-check' | 'pencil-simple' | 'robot' | 'lightning' | 'briefcase' | 'clock' | 'copy' | 'info' | 'cpu' | 'list-bullets' | 'sparkle' | 'user' | 'wrench' | 'download-simple' | 'upload-simple' | 'eye' | 'eye-slash' | 'lock-simple' | 'plugs-connected' | 'trash-simple' | 'flask' | 'database' | 'scales' | 'selection' | 'play' | 'hash' | 'warning-circle' | 'seal-check' | 'lock-key' | 'list-checks' | 'code' | 'zai' | 'mimo' | 'clipboard-text' | 'target' | 'codesandbox-logo' | 'infinity';
 
 /**
  * IconName 到 Phosphor 字形的映射。深松绿设计系统的图标统一来自
@@ -14,6 +14,8 @@ const glyphs: Record<Exclude<IconName, 'window-restore'>, string> = {
   assistant: 'chats-circle', jobs: 'stack', applications: 'kanban', resumes: 'file-text', profiles: 'identification-card', developer: 'code', plus: 'plus', resume: 'file-text', 'resume-panel': 'file-text', browser: 'globe', 'panel-expand': 'arrows-out-simple', 'panel-shrink': 'arrows-in-simple', brand: 'sparkle', more: 'dots-three', settings: 'gear-six', 'developer-mode': 'code', balance: 'coins', logout: 'sign-out', 'sidebar-expand': 'sidebar-simple', 'sidebar-collapse': 'sidebar-simple', 'chevron-down': 'caret-down', 'chevron-up': 'caret-up', 'chevron-right': 'caret-right', send: 'paper-plane-right', edit: 'pencil-simple', delete: 'trash', archive: 'archive', heart: 'heart', 'map-pin': 'map-pin', 'arrow-right': 'arrow-right', loading: 'circle-notch', error: 'warning', warning: 'warning', recovery: 'arrows-counter-clockwise', refresh: 'arrows-clockwise', close: 'x', stop: 'stop', music: 'microphone', 'user-check': 'user-check', // Phosphor 无 user-x，语义最接近的是授权盾牌
   'user-x': 'shield-check', deepseek: 'deepseek', 'window-minimize': 'minus', 'window-maximize': 'corners-out', trace: 'tree-structure', logs: 'list-dashes', search: 'magnifying-glass', moon: 'moon', sun: 'sun', check: 'check', 'check-circle': 'check-circle', pin: 'push-pin', account: 'user-circle', workspace: 'folder-open', sliders: 'sliders-horizontal',
   'arrow-left': 'arrow-left',
+  'arrow-up': 'arrow-up',
+  infinity: 'infinity',
   'clipboard-text': 'clipboard-text', target: 'target', 'codesandbox-logo': 'codesandbox-logo',
   paperclip: 'paperclip', brain: 'brain', gauge: 'gauge', 'folder-simple': 'folder-simple', 'folder-open': 'folder-open',
   'shield-check': 'shield-check', 'pencil-simple': 'pencil-simple', robot: 'robot', lightning: 'lightning', briefcase: 'briefcase',
@@ -64,4 +66,11 @@ function Icon({ name, size = 20, weight = 'regular', className = '', style, ...p
   return <i className={`ph${weightClass} ph-${glyphs[name]} ${className}`} style={{ fontSize: size, width: size, height: size, ...style } as CSSProperties} aria-hidden="true" {...props} />;
 }
 
-export { Icon, type IconName, type IconWeight };
+/** 用正文字号的中文中心定位图标；空的基线盒不会把图标字体的度量带入文本排版。 */
+function CjkTextIcon({ name, size, className = '' }: { name: IconName; size: number; className?: string }) {
+  return <span className={`cjk-text-icon ${className}`} style={{ '--cjk-icon-size': `${size}px` } as CSSProperties} aria-hidden="true">
+    <Icon name={name} size={size} style={{ fontSize: 'var(--cjk-icon-size)', width: 'var(--cjk-icon-size)', height: 'var(--cjk-icon-size)' }} />
+  </span>;
+}
+
+export { Icon, CjkTextIcon, type IconName, type IconWeight };

@@ -47,7 +47,8 @@ const DefaultBrowserDataset = JSON.stringify({
   },
 });
 
-function CreateDefaultInput(name: string, runnerType: 'prompt' | 'browser'): EvalProjectInput {
+function CreateDefaultInput(name: string, mode: 'prompt' | 'browser' | 'career-portal'): EvalProjectInput {
+  const runnerType = mode === 'prompt' ? 'prompt' : 'browser';
   return {
     name, runnerType, rubric: runnerType === 'prompt' ? DefaultRubric : '', judgePrompt: runnerType === 'prompt' ? DefaultJudgePrompt : '',
     config: {
@@ -59,9 +60,9 @@ function CreateDefaultInput(name: string, runnerType: 'prompt' | 'browser'): Eva
       ],
       toolNames: runnerType === 'prompt'
         ? ['Read', 'Glob', 'Grep', 'ReadProfile', 'ReadResume', 'CreateTodo', 'UpdateTodo', 'ReadTodo', 'AskUserQuestion']
-        : ['Read', 'Glob', 'Grep', 'ReadProfile', 'ReadResume', 'CreateTodo', 'UpdateTodo', 'ReadTodo', 'AskUserQuestion', 'BrowserNavigate', 'BrowserSnapshot', 'BrowserReadPage', 'BrowserClick', 'BrowserFill', 'BrowserSelect', 'BrowserSetChecked', 'BrowserPressKey', 'BrowserUploadFile', 'BrowserWait', 'BrowserSwitchTab', 'BrowserGoBack'],
+        : ['Read', 'Glob', 'Grep', 'ReadProfile', 'ReadResume', 'LoadSkill', 'CreateTodo', 'UpdateTodo', 'ReadTodo', 'AskUserQuestion', 'BrowserRunScript', 'BrowserNavigate', 'BrowserSnapshot', 'BrowserReadPage', 'BrowserClick', 'BrowserFill', 'BrowserFillForm', 'BrowserValidateForm', 'BrowserSelect', 'BrowserSetChecked', 'BrowserPressKey', 'BrowserUploadFile', 'BrowserWait', 'BrowserSwitchTab', 'BrowserGoBack'],
       userSimulator: 'approve_valid', maxModelTurns: runnerType === 'prompt' ? 30 : 100, repeatCount: 1,
-      ...(runnerType === 'browser' ? { fixtureBranch: 'realistic-dom' as const } : {}),
+      ...(runnerType === 'browser' ? { fixtureBranch: mode === 'career-portal' ? 'career-portal' as const : 'realistic-dom' as const } : {}),
     },
   };
 }
@@ -100,7 +101,7 @@ function DeveloperConsoleProvider({ active, children }: { active: boolean; child
   const [busy, setBusy] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
   const [createName, setCreateName] = useState('Prompt A/B 测评');
-  const [createRunner, setCreateRunner] = useState<'prompt' | 'browser'>('prompt');
+  const [createRunner, setCreateRunner] = useState<'prompt' | 'browser' | 'career-portal'>('prompt');
   const [deleteProjectId, setDeleteProjectId] = useState<string | null>(null);
 
   const Refresh = useCallback(async () => {
@@ -137,7 +138,7 @@ function DeveloperConsoleProvider({ active, children }: { active: boolean; child
       setCreateOpen(false);
       setSelectedProjectId(created.id);
       await Refresh();
-      ShowNotice('评测已创建，先导入测试集');
+      ShowNotice(createRunner === 'career-portal' ? '网申填写测评已创建，已载入 8 个只填写场景' : '评测已创建，先导入测试集');
     });
   }
 
@@ -161,7 +162,7 @@ function DeveloperConsoleProvider({ active, children }: { active: boolean; child
     {children}
     <Modal open={createOpen} title="新建评测" onClose={() => setCreateOpen(false)} footer={<><DialogButton onClick={() => setCreateOpen(false)}>取消</DialogButton><DialogButton tone="accent" disabled={busy} onClick={() => void CreateProject()}>创建</DialogButton></>}>
       <FormField label="评测名称"><input value={createName} onChange={(event) => setCreateName(event.target.value)} /></FormField>
-      <FormField label="评测方式" hint="浏览器测评使用本地 Fixture 站点与确定性断言评分，不需要评判模型。"><Select value={createRunner} ariaLabel="评测方式" onChange={(value) => setCreateRunner(value as 'prompt' | 'browser')} options={[{ value: 'prompt', label: 'Prompt 测评 · 由评判模型打分' }, { value: 'browser', label: '拟真浏览器测评' }]} /></FormField>
+      <FormField label="评测方式"><Select value={createRunner} ariaLabel="评测方式" onChange={(value) => setCreateRunner(value as 'prompt' | 'browser' | 'career-portal')} options={[{ value: 'prompt', label: 'Prompt 测评 · 由评判模型打分' }, { value: 'browser', label: '拟真浏览器测评' }, { value: 'career-portal', label: '网申填写测评 · 拟真平台' }]} /></FormField>
     </Modal>
     <Modal open={Boolean(deleteProjectId)} title="删除评测" onClose={() => setDeleteProjectId(null)} footer={<><DialogButton onClick={() => setDeleteProjectId(null)}>取消</DialogButton><DialogButton tone="danger" disabled={busy} onClick={() => void DeleteProject()}>确认删除</DialogButton></>}>
       将删除评测配置与全部测试集版本文件；历史运行记录和不可变快照会保留。此操作无法撤销。

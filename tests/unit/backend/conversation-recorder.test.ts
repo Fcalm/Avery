@@ -3,6 +3,19 @@ import type { AgentStreamEvent, ConversationPresentation } from '../../../packag
 import { ConversationRecorder } from '../../../apps/backend/src/electron/backend/conversation-recorder';
 
 describe('会话过程持久化屏障', () => {
+  it('浏览器接管原因持久保留在等待状态，不能只剩通用等待提示', async () => {
+    const snapshots: ConversationPresentation[] = [];
+    const recorder = new ConversationRecorder('browser-wait', 'session1', async (_id, snapshot) => { snapshots.push(snapshot); return { saved: true }; }, () => {});
+    recorder.Accept({ type: 'browser_user_action', browserAction: { toolName: 'BrowserNavigate', summary: '扩展协议未更新，请在 Chrome 扩展页重新加载 Avery Browser，再继续任务。', status: 'user_action_required' } });
+    recorder.Accept({ type: 'waiting_user_input', message: '等待用户回答问题' });
+    await recorder.Flush();
+    expect(snapshots.at(-1)).toMatchObject({ status: 'paused', statusMessage: expect.stringContaining('重新加载 Avery Browser'), pausedAt: expect.any(Number) });
+    const restored = new ConversationRecorder('browser-wait', 'session1', async (_id, snapshot) => { snapshots.push(snapshot); return { saved: true }; }, () => {}, snapshots.at(-1));
+    restored.Accept({ type: 'run_resumed' }); await restored.Flush();
+    expect(snapshots.at(-1)?.status).toBe('running');
+    expect(snapshots.at(-1)?.statusMessage).toBeUndefined();
+    expect(snapshots.at(-1)?.pausedAt).toBeUndefined();
+  });
   it('只有保存成功后才发布展示快照，文本和终态顺序一致', async () => {
     const saved: ConversationPresentation[] = [], emitted: AgentStreamEvent[] = [];
     const recorder = new ConversationRecorder('request1', 'session1', async (sessionId, snapshot) => { expect(sessionId).toBe('session1'); saved.push(snapshot); return { saved: true }; }, (event) => emitted.push(event));

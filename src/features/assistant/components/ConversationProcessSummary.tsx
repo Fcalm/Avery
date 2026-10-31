@@ -13,7 +13,7 @@ function FormatDuration(milliseconds: number, active: boolean): string {
 
 /** 计时仅刷新入口，避免每秒重绘长思考及工具详情；终态使用落盘时间。 */
 export function ConversationProcessSummary({ presentation, messageCreatedAt, messageUpdatedAt }: { presentation: ConversationPresentation; messageCreatedAt?: number; messageUpdatedAt?: number }) {
-  const active = presentation.status === 'running' || presentation.status === 'waiting' || presentation.status === 'paused';
+  const active = presentation.status === 'running';
   const [now, setNow] = useState(Date.now);
   useEffect(() => {
     if (!active) return;
@@ -24,9 +24,9 @@ export function ConversationProcessSummary({ presentation, messageCreatedAt, mes
 
   // 工具时间不包含前后思考和生成正文，不能代表整轮用时；旧记录以消息落盘时间估算。
   const startedAt = presentation.startedAt ?? messageCreatedAt;
-  const completedAt = presentation.completedAt ?? messageUpdatedAt;
+  const completedAt = presentation.completedAt ?? presentation.pausedAt ?? messageUpdatedAt;
   const end = active ? now : completedAt;
-  const approximate = presentation.startedAt === undefined || (!active && presentation.completedAt === undefined);
+  const approximate = presentation.startedAt === undefined || (!active && presentation.completedAt === undefined && presentation.pausedAt === undefined);
   const hasDuration = startedAt !== undefined && end !== undefined && Number.isFinite(startedAt) && Number.isFinite(end) && end >= startedAt;
   const label = hasDuration ? `用时${approximate ? '约' : ''} ${FormatDuration(end - startedAt, active)}` : '用时未记录';
 

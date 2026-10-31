@@ -3,6 +3,7 @@
 .ph-clipboard-text::before { content: "\e198"; }
 .ph-target::before { content: "\e47c"; }
 .ph-codesandbox-logo::before { content: "\ea06"; }
+.ph-infinity::before { content: "\e634"; }
 @font-face {
   font-family: "Phosphor";
   src: url("/fonts/phosphor/Phosphor-Regular.woff2") format("woff2");
@@ -88,6 +89,7 @@
 .ph-list-dashes::before { content: "\e2f4"; }
 .ph-archive::before { content: "\e00c"; }
 .ph-arrow-left::before { content: "\e058"; }
+.ph-arrow-up::before { content: "\e08e"; }
 .ph-check-circle::before { content: "\e184"; }
 .ph-folder-open::before { content: "\e256"; }
 .ph-sliders-horizontal::before { content: "\e434"; }

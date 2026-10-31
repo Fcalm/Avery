@@ -8,6 +8,7 @@ import { ConversationProcessSummary } from './ConversationProcessSummary';
 import { GroupConversationProcess } from '../conversationProcessGroups';
 
 const ToolNames: Record<string, string> = {
+  CompactContext: '压缩上下文',
   ReadResume: '读取简历', ReadProfile: '读取档案', ReadJobs: '查询岗位', SearchJobs: '搜索岗位',
   CreateResume: '创建简历', UpdateResume: '更新简历', UpdateProfile: '更新档案', SaveJob: '保存岗位',
   UpdateApplicationStatus: '更新投递记录', ExportResumeFile: '导出简历', AskUserQuestion: '询问用户',
@@ -29,7 +30,7 @@ const ToolTimeFormat = new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minut
 export const ResourceHref = (resource: ConversationResource) => 'avery://' + resource.kind + '/' + encodeURIComponent(resource.id) + (resource.revision ? '?revision=' + resource.revision : '');
 
 /** 整轮过程默认收起；中间正文随一级卡片展示，连续思考与工具另归入二级折叠卡片。 */
-export function ConversationMessage({ message, onOpenResource, authorizedResources = [] }: { message: ChatMessageDto; onOpenResource: (resource: ConversationResource) => void; authorizedResources?: ConversationResource[] }) {
+export function ConversationMessage({ message, onOpenResource, authorizedResources = [], working = false }: { message: ChatMessageDto; onOpenResource: (resource: ConversationResource) => void; authorizedResources?: ConversationResource[]; working?: boolean }) {
   const presentation = message.presentation;
   const completed = presentation?.status === 'completed';
   const processActive = presentation?.status === 'running' || presentation?.status === 'waiting' || presentation?.status === 'paused';
@@ -37,6 +38,7 @@ export function ConversationMessage({ message, onOpenResource, authorizedResourc
   // 新一轮和任务结束恢复默认折叠；运行与等待之间切换时保留用户的展开选择。
   useEffect(() => { setProcessOpen(false); }, [presentation?.requestId, processActive]);
   if (!presentation) return <>
+    {working && <WorkingIndicator label="正在整理结果" />}
     {message.thinkingContent && <details className="thinking-block"><summary>思考内容</summary><div className="thinking-content conversation-event-scroll" tabIndex={0} role="region" aria-label="思考详情"><MarkdownText content={message.thinkingContent} /></div></details>}
     <MarkdownText content={message.content} />
   </>;
@@ -84,7 +86,8 @@ export function ConversationMessage({ message, onOpenResource, authorizedResourc
   const workingLabel = lastPart?.type === 'tool' ? ToolNames[lastPart.name] ?? '正在执行工具' : lastPart?.type === 'reasoning' ? '正在梳理与分析' : '正在整理结果';
   return <div className="conversation-response">
     {/* 动画独立于折叠过程，按整轮状态持续显示，生成最终报告期间也不提前隐藏。 */}
-    {processActive && <WorkingIndicator waiting={status !== 'running'} label={status === 'waiting' ? '等待你的确认或回答' : status === 'paused' ? '任务已暂停' : workingLabel} />}
+    {status === 'running' && <WorkingIndicator label={workingLabel} />}
+    {(status === 'waiting' || status === 'paused') && <p className="conversation-run-note" role="status">{presentation.statusMessage ?? (status === 'waiting' ? '等待你的确认或回答，处理过程已保留。' : '任务已暂停，处理过程已保留。')}</p>}
     {(blocks.length > 0 || processActive) && <details className="conversation-process" open={processOpen} onToggle={(event) => setProcessOpen(event.currentTarget.open)}>
       <ConversationProcessSummary presentation={presentation} messageCreatedAt={message.createdAt} messageUpdatedAt={message.updatedAt} />
       <div className="conversation-process-body conversation-process-timeline">{blocks.map((block) => {

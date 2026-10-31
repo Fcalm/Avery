@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ApplyModelCatalogToProviders, ApplyModelRuntime, CreateCatalogModel, CreateDefaultModelCatalog, FindCatalogModel, FindCatalogProvider, FormatContextWindow, IsSyncedModelsTrusted, IsValidContextWindow, IsValidMaxOutput, LoadModelCatalog, MergeBackendProviders, MergeProviderModels, ModelCatalogStorageKey, SaveModelCatalog, SubscribeModelCatalog, type ModelCatalog } from '../../../src/features/settings/api/modelCatalog';
+import { ApplyModelCatalogToProviders, ApplyModelRuntime, CreateCatalogModel, CreateDefaultModelCatalog, FindCatalogModel, FindCatalogProvider, FormatContextWindow, IsSyncedModelsTrusted, IsValidContextWindow, IsValidMaxOutput, LegacyModelOverrides, LoadModelCatalog, MergeBackendProviders, MergeModelConfigurations, MergeProviderModels, ModelCatalogStorageKey, SaveModelCatalog, SubscribeModelCatalog, type ModelCatalog } from '../../../src/features/settings/api/modelCatalog';
+import type { ResolvedModelConfiguration } from '../../../packages/agent-sdk/src/index';
 
 /** 应用内缓存以 localStorage 为唯一后端；用内存实现替换，避免测试依赖真实浏览器环境。 */
 function StubStorage() {
@@ -22,6 +23,20 @@ const BackendSnapshots = [
 afterEach(() => { vi.unstubAllGlobals(); });
 
 describe('模型目录的应用内缓存', () => {
+  it('旧缓存默认 false 不会变成关闭视觉的覆盖，只迁移显式值', () => {
+    expect(LegacyModelOverrides(CreateCatalogModel('new'))).toEqual({});
+    expect(LegacyModelOverrides(CreateCatalogModel('manual', { inputImage: true, inputPdf: true, contextWindow: 128000, maxOutput: 4096, thinking: false }))).toEqual({ inputImage: true, inputPdf: true, contextWindow: 128000, maxOutput: 4096, thinking: false });
+  });
+  it('后端生效能力覆盖旧标签缓存，旧 Provider 状态不能再次覆盖它', () => {
+    const catalog = CreateDefaultModelCatalog();
+    const values = { contextWindow: 1000000, maxOutput: 128000, inputImage: true, inputPdf: false, thinking: false, toolCall: true };
+    const configuration: ResolvedModelConfiguration = { provider: 'DeepSeek', model: 'deepseek-v4-flash', baseUrl: 'https://api.deepseek.com', values, inherited: values, overrides: {}, source: 'directory', revision: 0, verified: false };
+    const merged = MergeModelConfigurations(catalog, 'DeepSeek', [configuration]);
+    expect(FindCatalogModel(merged, 'DeepSeek', configuration.model)).toMatchObject(values);
+    const next = ApplyModelRuntime(merged, 'DeepSeek', configuration.model, { contextWindow: 256000, thinking: true });
+    expect(FindCatalogModel(next, 'DeepSeek', configuration.model)).toMatchObject(values);
+    expect(LegacyModelOverrides(FindCatalogModel(next, 'DeepSeek', configuration.model)!)).toEqual({});
+  });
   it('没有缓存或缓存不可解析时回退默认目录，官方三家默认启用', () => {
     const entries = StubStorage();
     const defaults = LoadModelCatalog();

@@ -1,6 +1,6 @@
 import type { IconName } from '../../shared/components/Icon';
 
-export type ComposerMode = 'plan' | 'goal';
+export type ComposerMode = 'goal';
 export interface ComposerCommand {
   id: string;
   kind: 'command' | 'skill';
@@ -8,7 +8,7 @@ export interface ComposerCommand {
   label: string;
   description: string;
   icon: IconName;
-  action: 'reload' | 'placeholder' | 'skill';
+  action: 'reload' | 'compact' | 'placeholder' | 'skill';
   mode?: ComposerMode;
   skillId?: string;
   keywords?: string;
@@ -17,7 +17,7 @@ export interface ComposerCommand {
 /** 面板与键盘行为只消费命令定义；后续命令在此注册，不在渲染循环中增加分支。 */
 export const ComposerCommands: readonly ComposerCommand[] = [
   { id: 'reload', kind: 'command', token: '/reload', label: '重载上下文', description: '更新当前会话的上下文配置', icon: 'refresh', action: 'reload', keywords: '重载 刷新 上下文' },
-  { id: 'plan', kind: 'command', token: '/plan', label: '计划模式', description: '先梳理目标，再制定执行步骤', icon: 'clipboard-text', action: 'placeholder', mode: 'plan', keywords: '计划 模式' },
+  { id: 'compact', kind: 'command', token: '/compact', label: '压缩上下文', description: '可在命令后填写希望保留的重点', icon: 'infinity', action: 'compact', keywords: '压缩 精简 上下文 compact compress' },
   { id: 'goal', kind: 'command', token: '/goal', label: '目标模式', description: '围绕明确目标，持续推进任务', icon: 'target', action: 'placeholder', mode: 'goal', keywords: '目标 模式' },
 ];
 const SkillLabels: Record<string, [string, string]> = {
@@ -40,6 +40,16 @@ export function CreateSkillCommands(skills: Array<{ id: string; name: string; de
 }
 
 export interface SlashContext { value: string; end: number; query: string; }
+/** 命令作为独立标签显示；只消费一个分隔空格，保留用户后缀中的缩进和换行。 */
+export function SplitCompactCommandDraft(value: string): { prefix: string; text: string } {
+  const match = /^\/compact(?=\s|$)[ \t]?/.exec(value);
+  return match ? { prefix: match[0], text: value.slice(match[0].length) } : { prefix: '', text: value };
+}
+/** 只识别句首完整命令，后缀允许换行；空字符串表示默认重点，null 表示普通消息。 */
+export function ParseCompactCommand(value: string): string | null {
+  const match = /^\/compact(?:\s+([\s\S]*))?$/.exec(value);
+  return match ? (match[1] ?? '').trim() : null;
+}
 /** 只读取整段正文句首至折叠光标之间的半角命令，光标后的草稿不参与搜索。 */
 export function ParseSlashContext(value: string, start: number, end: number): SlashContext | null {
   if (start !== end) return null;

@@ -2,6 +2,10 @@ import { describe, expect, it } from 'vitest';
 import { CalculateTokenSharePercent, CreateSessionTokenUsage, CreateSessionUsagePresentation } from '../../../src/features/assistant/usagePresentation';
 
 describe('会话真实 Usage 展示', () => {
+  it('手动压缩后的进度等待下次业务请求，不用摘要请求大小冒充剩余上下文', () => {
+    expect(CreateSessionUsagePresentation({ source: 'actual', inputTokens: 50000, contextLimit: 64000, compressionThreshold: 80,
+      reportedRequestCount: 3, unreportedRequestCount: 0, contextPending: true })).toEqual({ progress: 0, title: '上下文已压缩，等待下次请求确认进度' });
+  });
   it('输入框和轨迹按同一会话累计账本计算命中输入占总 token 比例', () => {
     // 两次请求分别为 60/120 与 10/80；会话比例应按 token 加权为 70/200，而非平均请求百分比。
     const usage = CreateSessionTokenUsage({ source: 'actual', promptTokens: 110, completionTokens: 90, totalTokens: 200, cachedInputTokens: 70 });

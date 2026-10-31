@@ -15,8 +15,9 @@ import { useSettings } from '../../../features/settings/api/settingsQueries';
 import { ApplyModelCatalogToProviders, LoadModelCatalog, SubscribeModelCatalog } from '../../../features/settings/api/modelCatalog';
 import { DocSidePanel } from '../components/DocSidePanel';
 import { UserMessage } from '../components/UserMessage';
+import { ParseCompactCommand } from '../composerCommands';
 import {
-  AcquireResumeEditLock, BindProjectEnvironment, CancelAgentRequest, RespondToAgentInteraction, GetAgentObservability, GetAgentTraceEvents, GetProviderCatalog, GetSessionAssistantState, ImportAttachmentFile,
+  AcquireResumeEditLock, BindProjectEnvironment, CancelAgentRequest, CompactAgentSession, RespondToAgentInteraction, GetAgentObservability, GetAgentTraceEvents, GetProviderCatalog, GetSessionAssistantState, ImportAttachmentFile,
   ReleaseResumeEditLock, ReloadAgentSession, SelectAgentProjectDirectory, SendAgentRequest, SubscribeAgentStream, UpdateAgentConfirmationMode, UpdateAgentReasoningEffort,
 } from '../../../features/assistant/api/agentQueries';
 import { Button, DialogButton, Modal, Select } from '../../../shared/components/UI';
@@ -67,6 +68,7 @@ function FormatTokenCount(value: number) {
 }
 
 type SessionUsageView = {
+  contextPending?: boolean;
   percent: number; threshold: number; compressionCount: number; tokens: number; limit: number;
   source: 'actual' | 'unavailable' | 'legacy_estimate' | 'loading'; promptTokens: number; completionTokens: number; totalTokens: number; cachedInputTokens: number; reportedRequestCount: number; unreportedRequestCount: number;
 };
@@ -180,6 +182,9 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
   const [composer, setComposer] = useState('');
   const [isComposerComposing, setIsComposerComposing] = useState(false);
   const [isReloadingContext, setIsReloadingContext] = useState(false);
+  const [compacting, setCompacting] = useState<{ requestId: string; sessionId: string } | null>(null);
+  const compactingRef = useRef(false);
+  const compactCancelRef = useRef(false);
   const [reloadCommandTrigger, setReloadCommandTrigger] = useState(0);
   const [selectedSkill, setSelectedSkill, setSelectedSkillForSession] = useSessionValue<ComposerCommand | null>(activeConversationId, null);
   const [composerMode, setComposerMode, setComposerModeForSession] = useSessionValue<ComposerMode | null>(activeConversationId, null);
@@ -239,6 +244,7 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
   const removeMessageRef = useRef(removeMessage);
   const patchConversationsRef = useRef(patchConversations);
   const activeConversationRef = useRef(activeConversationId);
+  const assistantViewRef = useRef(assistantView);
   const conversationsRef = useRef(conversations);
   const nextDraftScenarioRef = useRef<'default' | 'application' | null>(null);
   const sessionLoadVersionRef = useRef(0);
@@ -249,6 +255,7 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
   removeMessageRef.current = removeMessage;
   patchConversationsRef.current = patchConversations;
   activeConversationRef.current = activeConversationId;
+  assistantViewRef.current = assistantView;
   conversationsRef.current = conversations;
 
   /**
@@ -294,6 +301,7 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
   const conversationResources = useMemo(() => conversation?.messages.flatMap((message) => message.presentation?.parts.flatMap((part) => part.type === 'resource' ? [part.resource] : []) ?? []) ?? [], [conversation]);
   const resume = resumes.find((item) => item.id === currentResumeId);
   const usagePresentation = CreateSessionUsagePresentation({
+    contextPending: usage.contextPending,
     inputTokens: usage.tokens,
     contextLimit: usage.limit,
     compressionThreshold: usage.threshold,
@@ -477,6 +485,7 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
       const next = await GetSessionAssistantState(sessionId);
       if (version !== sessionLoadVersionRef.current || activeConversationRef.current !== sessionId) return;
       setUsage({
+        contextPending: next.usage.contextPending,
         percent: Math.min(100, Math.round((next.usage.inputTokens / Math.max(1, next.usage.contextLimit)) * 100)),
         threshold: next.usage.compressionThreshold,
         compressionCount: next.usage.compressionCount,
@@ -601,6 +610,7 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
       }));
       if (snapshot.status === 'running') SetSessionRun(owner, snapshot.requestId);
       else SetSessionRun(owner, undefined, snapshot.requestId);
+      if (assistantViewRef.current === 'trace' && (snapshot.status !== 'running' || snapshot.parts.at(-1)?.type === 'tool')) void RefreshConversationTrace();
       return;
     }
     if (owner && ['resume_confirmation', 'browser_confirmation', 'cron_task_confirmation', 'question_requested'].includes(event.type)) { ApplyPendingEvent({ ...event, sessionId: owner }); return; }
@@ -659,14 +669,15 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
       setPendingBrowserActionForSession(owner, (current) => current?.requestId === event.requestId ? null : current);
       setPendingCronTaskForSession(owner, (current) => current?.requestId === event.requestId ? null : current);
     }
-    if (event.type === 'paused') ShowNotice('Agent 运行已暂停');
+    if (event.type === 'paused') ShowNotice(event.message ?? 'Agent 运行已暂停');
     if (event.type === 'run_released') {
       if (event.cleanupOutcomes?.some((outcome) => outcome.status === 'status_unknown')) ShowNotice('浏览器任务页面清理状态未知；后续任务会使用新的隔离页面。');
       else if (event.cleanupOutcomes?.some((outcome) => outcome.status === 'failed')) ShowNotice('浏览器任务页面清理失败；后续任务会使用新的隔离页面。');
     }
-  }), [ShowNotice, currentResumeId, SetSessionRun, UpdateSessionTasks, RefreshSessionAssistantState, RefreshWorkspacePreservingMessages, ApplyPendingEvent, setPendingBrowserActionForSession, setCurrentResumeId]);
+  }), [ShowNotice, currentResumeId, SetSessionRun, UpdateSessionTasks, RefreshSessionAssistantState, RefreshWorkspacePreservingMessages, RefreshConversationTrace, ApplyPendingEvent, setPendingBrowserActionForSession, setCurrentResumeId]);
 
   async function HandleReloadContext(): Promise<boolean> {
+    if (compactingRef.current) return false;
     const owner = activeConversationId;
     if (!owner) { ShowNotice('请先发送一条消息建立会话，再重载会话上下文'); return false; }
     if (activeRequestsRef.current.has(owner)) { ShowNotice('Agent 正在处理，请等待本轮结束后再试'); return false; }
@@ -681,8 +692,55 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
   }
 
   async function HandleSend() {
-    if (isComposerComposing || isReloadingContext) return;
+    if (isComposerComposing || isReloadingContext || compactingRef.current) return;
     const text = composer.trim();
+    const compactFocus = ParseCompactCommand(composer);
+    if (compactFocus !== null) {
+      const owner = activeConversationId;
+      if (!owner) { ShowNotice('请先发送消息建立会话，再压缩上下文。'); return; }
+      if (attachments.length || selectedSkill || composerMode) { ShowNotice('压缩命令不处理附件、技能或模式标签，请先移除；草稿已保留。'); return; }
+      if (activeRequestsRef.current.has(owner)) { ShowNotice('请先结束、确认或取消当前任务，再压缩上下文。'); return; }
+      const requestId = crypto.randomUUID();
+      compactCancelRef.current = false;
+      compactingRef.current = true; setCompacting({ requestId, sessionId: owner });
+      const commandMessage: ChatMessage = { id: `message-${requestId}`, role: 'user', content: composer, createdAt: Date.now() };
+      const reply: ChatMessage = { id: `reply-${requestId}`, role: 'assistant', content: '', thinkingContent: '', createdAt: Date.now() };
+      let recorded = false;
+      try {
+        // 仅增加用户可见的命令与过程记录；模型业务历史仍由专用压缩接口管理。
+        await queryClient.cancelQueries({ queryKey: WORKSPACE_QUERY_KEY });
+        await appendMessages.mutateAsync({ conversationId: owner, messages: [commandMessage, reply] });
+        recorded = true;
+        patchConversations((current) => current.map((item) => item.id !== owner ? item : { ...item, updatedAt: Date.now(), messages: [...item.messages.filter((message) => message.id !== commandMessage.id && message.id !== reply.id), commandMessage, reply] }));
+        SetSessionRun(owner, requestId);
+        // 命令已作为消息提交，此时消费草稿；等待压缩完成才清空会造成重复发送的错觉。
+        if (activeConversationRef.current === owner) {
+          setComposer((current) => current === composer ? '' : current);
+          setScrollToBottomRequest((current) => current + 1);
+        }
+        // 停止可能发生在消息保存期间；不能在保存返回后再启动已取消的请求。
+        if (compactCancelRef.current) throw new Error('已取消上下文压缩，原上下文已保留。');
+        const result = await CompactAgentSession({ requestId, sessionId: owner, instructions: compactFocus, provider, model, reasoningEffort });
+        if (result.compacted) {
+          await RefreshSessionAssistantState(owner);
+          ShowNotice('上下文已压缩，原始记录已保留。');
+        } else ShowNotice('当前没有可进一步压缩的历史。');
+      } catch (error) {
+        const message = error instanceof Error ? error.message : '压缩失败，请稍后重试。';
+        if (recorded && !conversationsRef.current.find((item) => item.id === owner)?.messages.find((item) => item.id === reply.id)?.presentation) {
+          // IPC 启动前被拒绝时没有后端投影，仍保留这次失败的可见回执。
+          try { await completeMessage.mutateAsync({ conversationId: owner, messageId: reply.id, content: message, thinkingContent: '' }); }
+          catch { /* mutation 已提示存储错误；释放压缩状态，不能把存储失败误当成再次执行的理由。 */ }
+        }
+        ShowNotice(message);
+      }
+      finally {
+        SetSessionRun(owner, undefined, requestId);
+        try { if (recorded) await RefreshWorkspacePreservingMessages(); }
+        finally { compactingRef.current = false; setCompacting(null); }
+      }
+      return;
+    }
     if (activeConversationId && activeRequestsRef.current.has(activeConversationId)) { ShowNotice('已有任务正在执行，请等待本轮结束或回到原会话停止任务。'); return; }
     if (/^\/reload(?:-session)?\s*$/.test(composer)) { setReloadCommandTrigger((revision) => revision + 1); return; }
     if (attachments.some((attachment) => attachment.status === 'uploading')) {
@@ -779,7 +837,7 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
   }
 
   const visibleRequestId = activeConversationId ? runsBySession[activeConversationId] : undefined;
-  function HandleStop() { if (visibleRequestId) void CancelAgentRequest(visibleRequestId); }
+  function HandleStop() { if (compacting) compactCancelRef.current = true; const id = compacting?.requestId ?? visibleRequestId; if (id) void CancelAgentRequest(id); }
 
   function OpenConversationResource(resource: ConversationResource) {
     if (!activeConversationId) return;
@@ -793,6 +851,7 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
 
   /** 权限切换同时更新在途 Run；完全信任由警告弹窗的显式确认入口调用。 */
   async function ApplyConfirmationMode(next: ConfirmationMode) {
+    if (compactingRef.current) return;
     setPermission(next);
     setShowPermission(false);
     PersistConversationComposerState(activeConversationId, { confirmationMode: next });
@@ -806,6 +865,7 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
   }
 
   function HandleSelectModel(nextProvider: SupportedProvider, nextModel: string) {
+    if (compactingRef.current) return;
     const nextEffortOptions = GetReasoningEffortOptions(nextModel);
     const nextReasoningEffort = nextEffortOptions.includes(reasoningEffort) ? reasoningEffort : GetDefaultReasoningEffort(nextEffortOptions);
     setProvider(nextProvider);
@@ -816,6 +876,7 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
   }
 
   function HandleSelectReasoningEffort(nextEffort: ReasoningEffort) {
+    if (compactingRef.current) return;
     setReasoningEffort(nextEffort);
     // 拖动滑块时保持弹层展开，允许连续比较不同档位；点击外部或主按钮才关闭。
     PersistConversationComposerState(activeConversationId, { reasoningEffort: nextEffort });
@@ -1021,20 +1082,20 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
   const cacheSharePercent = sessionTokenUsage ? CalculateTokenSharePercent(sessionTokenUsage.cachedInputTokens, sessionTokenUsage.totalTokens) : null;
   return <div className={`assistant-layout ${isComposerCompact ? 'is-composer-compact' : ''}`} style={{ '--assistant-main-min-width': `${ASSISTANT_MAIN_MIN_WIDTH}px` } as CSSProperties}>
     {assistantView === 'trace' ? <section className="assistant-main assistant-trace" aria-label="当前对话轨迹"><ConversationTrace traces={(observability?.traces ?? []).filter((trace) => trace.sessionId === activeConversationId)} sessionTokenUsage={sessionTokenUsage} title={conversation?.title ?? '新对话'} onSelectTrace={GetAgentTraceEvents} /></section> : <section className={`assistant-main ${isNewThread ? 'is-new-thread' : ''}`}>
-      {conversation?.messages.length ? <div key={conversation.id} ref={messageListRef} className="message-list"><div className="message-thread">{conversation.messages.map((message) => <article key={message.id} className={`chat-message ${message.role}`}>{message.role === 'assistant' ? <ConversationMessage message={message} authorizedResources={conversationResources} onOpenResource={OpenConversationResource} /> : message.role === 'user' ? <UserMessage message={message} /> : <MarkdownText content={message.content} />}</article>)}</div></div> : <EmptyAssistant name={settings.nickname} />}
+      {conversation?.messages.length ? <div key={conversation.id} ref={messageListRef} className="message-list"><div className="message-thread">{conversation.messages.map((message) => <article key={message.id} className={`chat-message ${message.role}`}>{message.role === 'assistant' ? <ConversationMessage message={message} working={compacting?.sessionId === conversation.id && message.id === `reply-${compacting.requestId}`} authorizedResources={conversationResources} onOpenResource={OpenConversationResource} /> : message.role === 'user' ? <UserMessage message={message} /> : <MarkdownText content={message.content} />}</article>)}</div></div> : <EmptyAssistant name={settings.nickname} />}
       <div className="composer-dock">
         {!isEmptyConversation && <ConversationScrollToBottom key={conversation.id} scrollContainerRef={messageListRef} onScrollToBottom={() => setScrollToBottomRequest((current) => current + 1)} />}
         {shouldShowTodo && <div className="task-dock"><div className="task-summary"><span className={`task-status-icon ${GetTodoPresentation(activeTodo?.status ?? 'pending').className}`} aria-hidden="true">{GetTodoPresentation(activeTodo?.status ?? 'pending').symbol}</span><span className="task-summary-copy">{activeTodo?.title ?? '正在处理任务'}</span><span className={`task-summary-status ${GetTodoPresentation(activeTodo?.status ?? 'pending').className}`}>{GetTodoPresentation(activeTodo?.status ?? 'pending').label}</span></div><div className="task-card" aria-label="Todo 列表"><div className="task-card-heading">Todo · {agentTodos.length} 项</div><div className="task-list">{agentTodos.map((todo) => { const presentation = GetTodoPresentation(todo.status); return <div key={todo.id} className={`task-list-item ${presentation.className}`}><span className="task-status-icon" aria-hidden="true">{presentation.symbol}</span><span className="task-list-title">{todo.title}</span><span className="task-list-status">{presentation.label}</span></div>; })}</div></div></div>}
         {pendingQuestions ? <QuestionComposer questions={pendingQuestions.questions} answers={questionAnswers} otherAnswers={otherAnswers} questionIndex={pendingQuestionIndex} onAnswer={(questionId, answer) => setQuestionAnswers((current) => ({ ...current, [questionId]: answer }))} onOtherAnswer={(questionId, answer) => setOtherAnswers((current) => ({ ...current, [questionId]: answer }))} onPrevious={() => setPendingQuestionIndex((current) => Math.max(0, current - 1))} onCancel={CancelPendingQuestions} onContinue={ContinuePendingQuestions} /> : pendingEdit ? <ConfirmationComposer title="确认 Agent 修改简历" description={pendingEdit.reason} preview={pendingEdit.content} confirmLabel="确认并保存" onCancel={() => void HandlePendingEdit(false)} onConfirm={() => void HandlePendingEdit(true)} /> : pendingCronTask ? <ConfirmationComposer title="确认创建无人值守定时任务" description={`${pendingCronTask.summary}\n任务消息：${pendingCronTask.message}`} preview={JSON.stringify(pendingCronTask.schedule, null, 2)} confirmLabel="确认整个周期" onCancel={() => void HandlePendingCronTask(false)} onConfirm={() => void HandlePendingCronTask(true)} /> : pendingBrowserAction ? <ConfirmationComposer title="确认浏览器外部动作" description={`${pendingBrowserAction.summary ?? pendingBrowserAction.toolName}${pendingBrowserAction.url ? `\n目标网站：${pendingBrowserAction.url}` : ''}\n风险级别：${pendingBrowserAction.risk === 'high' ? '高风险' : pendingBrowserAction.risk === 'medium' ? '中风险' : '低风险'}`} confirmLabel="确认执行" onCancel={() => void HandlePendingBrowserAction(false)} onConfirm={() => void HandlePendingBrowserAction(true)} /> : <div className="composer-col">
           {attachments.length > 0 && <div className="ctx">{attachments.map((attachment) => <span className="ctx-item" key={attachment.id} aria-busy={attachment.status === 'uploading'}>{AttachmentUploadStatus(attachment)}<span className="ctx-name">{attachment.name}</span><button className="ctx-x" type="button" aria-label={`移除 ${attachment.name}`} onClick={() => RemoveAttachment(attachment.id)}><Icon name="close" size={11} /></button></span>)}</div>}
           <div ref={composerRef} className="composer">
-            <ComposerInput key={activeConversationId ?? '__draft__'} inputRef={composerInputRef} value={composer} onChange={setComposer} sessionId={activeConversationId} scenarioId={scenarioId} busy={Boolean(visibleRequestId) || isReloadingContext} skill={selectedSkill} mode={composerMode} onSkillChange={setSelectedSkill} onModeChange={setComposerMode} onSend={() => void HandleSend()} onReload={HandleReloadContext} reloadTrigger={reloadCommandTrigger} onCompositionChange={setIsComposerComposing} placeholder={scenarioId === 'application' ? '让 Avery 编辑简历、采集岗位或完成浏览器任务…' : '聊聊你的问题，或让 Avery 分析资料、提供建议…'} />
+            <ComposerInput key={activeConversationId ?? '__draft__'} inputRef={composerInputRef} value={composer} onChange={setComposer} sessionId={activeConversationId} scenarioId={scenarioId} busy={Boolean(visibleRequestId) || isReloadingContext || Boolean(compacting)} skill={selectedSkill} mode={composerMode} onSkillChange={setSelectedSkill} onModeChange={setComposerMode} onSend={() => void HandleSend()} onReload={HandleReloadContext} reloadTrigger={reloadCommandTrigger} onCompositionChange={setIsComposerComposing} placeholder={scenarioId === 'application' ? '让 Avery 编辑简历、采集岗位或完成浏览器任务…' : '聊聊你的问题，或让 Avery 分析资料、提供建议…'} />
             <div className="cmp-bar">
               <div className="cmp-tools">
                 <input ref={inputRef} className="visually-hidden" type="file" multiple accept=".pdf,.doc,.docx,.txt,image/png,image/jpeg,image/gif,image/webp" onChange={HandleFiles} />
-                <button className="cmp-btn icon-only" type="button" aria-label="上传文件" title="上传文件" onClick={() => inputRef.current?.click()}><Icon name="paperclip" size={15} /></button>
+                <button className="cmp-btn icon-only" type="button" disabled={Boolean(compacting)} aria-label="上传文件" title="上传文件" onClick={() => inputRef.current?.click()}><Icon name="paperclip" size={15} /></button>
                 <div className="menu-wrap">
-                  <button className="cmp-btn permission-button" type="button" aria-label={`权限范围：${CurrentConfirmation.label}`} aria-haspopup="true" aria-expanded={showPermission} onClick={() => setShowPermission((value) => !value)}><Icon name={CurrentConfirmation.icon} size={15} /><span>{CurrentConfirmation.label}</span><Icon name="chevron-up" className="chev" size={10} /></button>
+                  <button className="cmp-btn permission-button" type="button" disabled={Boolean(compacting)} aria-label={`权限范围：${CurrentConfirmation.label}`} aria-haspopup="true" aria-expanded={showPermission} onClick={() => setShowPermission((value) => !value)}><Icon name={CurrentConfirmation.icon} size={15} /><span>{CurrentConfirmation.label}</span><Icon name="chevron-up" className="chev" size={10} /></button>
                   {showPermission && <div className="menu pop" role="menu" aria-label="选择权限范围">
                     <div className="menu-label">权限范围</div>
                     {ConfirmationOptions.map((item) => <button key={item.id} type="button" role="menuitemradio" aria-checked={item.id === permission} className={item.id === permission ? 'menu-item sel' : 'menu-item'} onClick={() => { if (item.id === 'fully_trusted') { setShowPermission(false); setShowFullyTrustedWarning(true); } else void ApplyConfirmationMode(item.id); }}>
@@ -1046,11 +1107,11 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
                   </div>}
                 </div>
                 <div className="menu-wrap">
-                  <button className="cmp-btn model-button" type="button" aria-label={`模型：${provider} ${model}`} aria-haspopup="true" aria-expanded={showModel} onClick={() => setShowModel((value) => !value)}>{provider === 'DeepSeek' ? <Icon name="deepseek" size={15} /> : provider === 'Z.AI' ? <Icon name="zai" size={15} /> : provider === 'MIMO' ? <Icon name="mimo" size={15} /> : <Icon name="brain" size={15} />}<span>{model}</span><Icon name="chevron-up" className="chev" size={10} /></button>
+                  <button className="cmp-btn model-button" type="button" disabled={Boolean(compacting)} aria-label={`模型：${provider} ${model}`} aria-haspopup="true" aria-expanded={showModel} onClick={() => setShowModel((value) => !value)}>{provider === 'DeepSeek' ? <Icon name="deepseek" size={15} /> : provider === 'Z.AI' ? <Icon name="zai" size={15} /> : provider === 'MIMO' ? <Icon name="mimo" size={15} /> : <Icon name="brain" size={15} />}<span>{model}</span><Icon name="chevron-up" className="chev" size={10} /></button>
                   {showModel && <ModelPickerMenu providers={providerCatalog} provider={provider} model={model} onSelect={HandleSelectModel} />}
                 </div>
                 <div className="menu-wrap">
-                  <button className="cmp-btn reasoning-effort-button" type="button" aria-label={`思考强度：${ReasoningEffortLabels[reasoningEffort]}`} title="思考强度按会话保存，并在下一轮模型请求生效" aria-haspopup="true" aria-expanded={showReasoningEffort} onClick={() => setShowReasoningEffort((value) => !value)}><Icon name="brain" size={15} /><span>思考 {ReasoningEffortLabels[reasoningEffort]}</span><Icon name="chevron-up" className="chev" size={10} /></button>
+                  <button className="cmp-btn reasoning-effort-button" type="button" disabled={Boolean(compacting)} aria-label={`思考强度：${ReasoningEffortLabels[reasoningEffort]}`} title="思考强度按会话保存，并在下一轮模型请求生效" aria-haspopup="true" aria-expanded={showReasoningEffort} onClick={() => setShowReasoningEffort((value) => !value)}><Icon name="brain" size={15} /><span>思考 {ReasoningEffortLabels[reasoningEffort]}</span><Icon name="chevron-up" className="chev" size={10} /></button>
                   {showReasoningEffort && <div className="menu pop" role="menu" aria-label="思考强度">
                     <div className="menu-label">思考强度</div>
                     <div className="seg" role="radiogroup" aria-label="思考强度">
@@ -1086,7 +1147,7 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
                     <div className="cp-note">{usagePresentation.title}</div>
                   </div>
                 </div>
-                {visibleRequestId ? <button className="send" type="button" onClick={HandleStop} aria-label="停止生成"><Icon name="stop" size={16} /></button> : <button className="send" type="button" disabled={isComposerComposing || isReloadingContext || (!composer.trim() && attachments.length === 0) || attachments.some((attachment) => attachment.status === 'uploading')} onClick={() => void HandleSend()} aria-label="发送消息"><Icon name="send" size={16} /></button>}
+                {visibleRequestId || compacting ? <button className="send" type="button" onClick={HandleStop} aria-label="停止生成"><Icon name="stop" size={16} /></button> : <button className="send" type="button" disabled={isComposerComposing || isReloadingContext || (!composer.trim() && attachments.length === 0) || attachments.some((attachment) => attachment.status === 'uploading')} onClick={() => void HandleSend()} aria-label="发送消息"><Icon name="arrow-up" size={16} /></button>}
               </div>
             </div>
           </div>

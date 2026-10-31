@@ -26,7 +26,11 @@ export interface ConversationPresentation {
   /** 整轮过程的宿主时间，包含等待用户操作的时间；旧快照允许缺省。 */
   startedAt?: number;
   completedAt?: number;
+  /** 等待或暂停时冻结显示用时；恢复运行后清除，不把暂停阶段误显示为持续执行。 */
+  pausedAt?: number;
   error?: string;
+  /** 需要用户接管时的持久原因与操作说明，不用通用等待文案覆盖。 */
+  statusMessage?: string;
 }
 export interface ConversationActivity {
   kind: 'step' | 'text' | 'reasoning' | 'tool' | 'resource' | 'status';
@@ -90,6 +94,9 @@ export function ApplyConversationActivity(
     }
   }
   const status = activity.kind === 'status' ? activity.status ?? current.status : current.status;
+  const statusMessage = activity.kind === 'status'
+    ? status === 'waiting' || status === 'paused' ? activity.summary ?? current.statusMessage : undefined
+    : current.statusMessage;
   if (activity.kind === 'status' && status !== 'running') {
     parts = parts.map((part) => part.type === 'tool' && part.status === 'running'
       ? { ...part, status: status === 'waiting' ? 'waiting' : status === 'cancelled' ? 'cancelled' : status === 'completed' ? 'skipped' : status === 'paused' ? 'paused' : 'failed', completedAt: now }
@@ -97,9 +104,12 @@ export function ApplyConversationActivity(
   }
   // 等待和暂停仍属于同一轮；终态冻结用时，恢复执行时清除上一段终态时间。
   const terminal = status === 'completed' || status === 'cancelled' || status === 'failed' || status === 'interrupted';
+  const pausedAt = status === 'waiting' || status === 'paused' ? current.pausedAt ?? now : undefined;
+  const { statusMessage: _previousStatusMessage, pausedAt: _previousPausedAt, ...base } = current;
   return {
-    ...current, sequence, parts, status, startedAt: current.startedAt ?? now,
+    ...base, sequence, parts, status, ...(statusMessage !== undefined ? { statusMessage } : {}), startedAt: current.startedAt ?? now,
     completedAt: terminal ? current.completedAt ?? now : undefined,
+    ...(pausedAt !== undefined ? { pausedAt } : {}),
     ...(activity.error ? { error: activity.error } : {}),
   };
 }
@@ -130,8 +140,10 @@ export function IsConversationPresentation(value: unknown): value is Conversatio
   const candidate = value as ConversationPresentation;
   return candidate.version === 1 && typeof candidate.requestId === 'string'
     && (candidate.error === undefined || typeof candidate.error === 'string')
+    && (candidate.statusMessage === undefined || typeof candidate.statusMessage === 'string')
     && (candidate.startedAt === undefined || Number.isFinite(candidate.startedAt) && candidate.startedAt >= 0)
     && (candidate.completedAt === undefined || Number.isFinite(candidate.completedAt) && candidate.completedAt >= (candidate.startedAt ?? 0))
+    && (candidate.pausedAt === undefined || Number.isFinite(candidate.pausedAt) && candidate.pausedAt >= (candidate.startedAt ?? 0))
     && Number.isSafeInteger(candidate.sequence) && candidate.sequence >= 0
     && ['running', 'completed', 'waiting', 'paused', 'cancelled', 'failed', 'interrupted'].includes(candidate.status)
     && Array.isArray(candidate.parts) && candidate.parts.every((part) => {

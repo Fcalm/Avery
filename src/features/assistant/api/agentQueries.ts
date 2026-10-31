@@ -48,9 +48,21 @@ export async function GetProviderCatalog() {
   return Unwrap(await platformClient.agent.GetProviderCatalog());
 }
 
+export async function GetModelConfiguration(input: Parameters<import('@avery/contracts').DesktopAgentBridge['GetModelConfiguration']>[0]) {
+  return Unwrap(await platformClient.agent.GetModelConfiguration(input));
+}
+export async function SaveModelConfiguration(input: Parameters<import('@avery/contracts').DesktopAgentBridge['SaveModelConfiguration']>[0]) {
+  return Unwrap(await platformClient.agent.SaveModelConfiguration(input));
+}
+
 /** 提交一轮真实 Agent 请求；简历由 ReadResume 渐进加载，用户消息不再自动携带当前简历正文。 */
 export async function SendAgentRequest(request: AgentSendRequest) {
   return Unwrap(await platformClient.agent.Send(request));
+}
+
+/** 手动压缩使用独立接口；可见消息由页面先保存，命令不追加到模型业务历史。 */
+export async function CompactAgentSession(input: Parameters<import('@avery/contracts').DesktopAgentBridge['CompactSession']>[0]) {
+  return Unwrap(await platformClient.agent.CompactSession(input));
 }
 
 /** 审批和答案绑定原 Run，不调用普通消息发送接口。 */

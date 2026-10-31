@@ -20,17 +20,16 @@
 .user-message-attachment>span{min-width:0;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 /* 为字母下伸部和中文保留完整行盒；省略号容器会同时裁切纵向溢出，不能压到一倍行高。 */
 .user-message-skill{display:inline-flex;align-items:baseline;gap:4px;max-width:100%;margin-right:8px;color:var(--accent);font-weight:600;line-height:1.5;vertical-align:baseline;white-space:nowrap}
-.user-message-skill>.ph{flex:none}
-.user-message-skill>span{min-width:0;overflow:hidden;text-overflow:ellipsis}
+.user-message-skill>span:not(.cjk-text-icon){min-width:0;overflow:hidden;text-overflow:ellipsis}
 .conversation-response{min-width:0;overflow-wrap:anywhere}
 .conversation-process-body.conversation-process-timeline{gap:12px}
-.conversation-process-card{min-width:0;border:1px solid var(--border);border-radius:var(--r-card);background:var(--panel)}
-.conversation-process-card>summary{display:flex;align-items:center;gap:7px;min-height:36px;padding:7px 10px;list-style:none;cursor:pointer;color:var(--text-2);font-size:12px}
+.conversation-process-card{min-width:0;border:0;border-radius:var(--r-card);background:var(--panel)}
+.conversation-process-card>summary{display:flex;align-items:center;gap:6px;min-height:36px;padding:7px 0;list-style:none;cursor:pointer;color:var(--text-2);font-size:12px}
 .conversation-process-card>summary::-webkit-details-marker{display:none}
 .conversation-process-card>summary:hover{color:var(--text)}
 .conversation-process-card>summary>.ph{flex:none;color:var(--text-3)}
-.conversation-process-card>summary>small{margin-left:auto;color:var(--text-3);font-size:11px}
-.conversation-process-card>.conversation-process-body{padding:6px 10px 10px;border-top:1px solid var(--border)}
+.conversation-process-card>summary>small{margin-left:0;color:var(--text-3);font-size:11px}
+.conversation-process-card>.conversation-process-body{padding:6px 0 10px;border-top:1px solid var(--border)}
 .conversation-process{margin:0 0 12px}
 .conversation-process>summary,.conversation-reason>summary,.conversation-tool>summary{display:flex;align-items:center;gap:6px;list-style:none;cursor:pointer;min-width:0;border-radius:8px}
 .conversation-process>summary::-webkit-details-marker,.conversation-reason>summary::-webkit-details-marker,.conversation-tool>summary::-webkit-details-marker{display:none}

@@ -37,9 +37,24 @@ describe('对话组件内容与默认状态', () => {
     expect(html.match(/已准备好/g)).toHaveLength(1);
     expect(html).toContain('1 段思考'); expect(html).toContain('1 项工具');
   });
+  it('等待浏览器接管时原因显示在折叠过程之外，切回会话仍能看到', () => {
+    const html = Render({ ...presentation, status: 'waiting', statusMessage: '请重新加载 Avery Browser 扩展，再发送继续任务。' });
+    const note = html.indexOf('请重新加载 Avery Browser');
+    expect(note).toBeGreaterThan(-1);
+    expect(note).toBeLessThan(html.indexOf('<details class="conversation-process-card"'));
+    expect(html).toContain('role="status"');
+  });
+  it('压缩请求在过程投影到达前使用同一工作动画，终态不会重复或残留动画', () => {
+    const pending = renderToStaticMarkup(createElement(ConversationMessage, { message: { id: 'reply-compact', role: 'assistant', content: '' }, working: true, onOpenResource: () => undefined }));
+    expect(pending).toContain('conversation-work-art');
+    const completed = renderToStaticMarkup(createElement(ConversationMessage, { message: { id: 'reply-req1', role: 'assistant', content: '', presentation }, working: true, onOpenResource: () => undefined }));
+    expect(completed).not.toContain('conversation-work-art');
+    const running = renderToStaticMarkup(createElement(ConversationMessage, { message: { id: 'reply-req1', role: 'assistant', content: '', presentation: { ...presentation, status: 'running' } }, working: true, onOpenResource: () => undefined }));
+    expect(running.match(/class="conversation-work-art"/g)).toHaveLength(1);
+  });
   it('完成后默认折叠过程，产物与最终回答在折叠组外，工作动画消失', () => {
     const html = Render();
-    expect(html).toContain('<details class="conversation-process">');
+    expect(html).toContain('<details class="conversation-process-card">');
     expect(html).not.toContain('conversation-work');
     const resourcePosition = html.indexOf('class="conversation-resource"');
     expect(resourcePosition).toBeGreaterThan(html.lastIndexOf('</details>'));
@@ -49,12 +64,14 @@ describe('对话组件内容与默认状态', () => {
     expect(html.slice(resourcePosition)).toContain('class="is-removed" aria-label="删除 2 行">−2');
     expect(html).not.toContain('已保存，点击查看');
   });
-  it('运行与等待期间过程默认收起，工作动画独立显示，卡片等待最终报告完成', () => {
+  it('仅运行时显示工作动画，等待和暂停显示静态状态，过程仍可展开', () => {
     const running = Render({ ...presentation, status: 'running' });
-    expect(running).toContain('<details class="conversation-process">');
+    expect(running).toContain('<details class="conversation-process-card">');
     expect(running).toContain('conversation-work');
     expect(running).not.toContain('class="conversation-resource"');
-    expect(Render({ ...presentation, status: 'waiting' })).toContain('data-mode="waiting"');
+    expect(Render({ ...presentation, status: 'waiting' })).not.toContain('conversation-work-art');
+    expect(Render({ ...presentation, status: 'paused' })).not.toContain('conversation-work-art');
+    expect(Render({ ...presentation, status: 'waiting' })).toContain('等待你的确认或回答');
   });
   it('修改归零时不显示卡片，纯新增不显示删除计数', () => {
     const changed = structuredClone(presentation);

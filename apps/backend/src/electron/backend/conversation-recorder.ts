@@ -14,6 +14,7 @@ export class ConversationRecorder {
   private timer: ReturnType<typeof setTimeout> | undefined;
   private failure: Error | undefined;
   private disposed = false;
+  private browserWaitMessage: string | undefined;
   get Status(): ConversationPresentation['status'] { return this.presentation.status; }
 
   constructor(
@@ -29,8 +30,15 @@ export class ConversationRecorder {
   Accept(event: AgentStreamEvent): void {
     if (this.disposed) return;
     let activity = event.activity;
-    const status = TerminalStatuses[event.type];
-    if (status) activity = { kind: 'status', status, ...(event.type === 'error' ? { error: event.message ?? '运行失败' } : {}) };
+    if (event.type === 'browser_user_action' && event.browserAction?.summary) this.browserWaitMessage = event.browserAction.summary;
+    // 浏览器接管没有应用内待回答卡片；与真正的问答/审批等待分开，显示为已暂停。
+    const status = event.type === 'waiting_user_input' && this.browserWaitMessage ? 'paused' : TerminalStatuses[event.type];
+    if (status) {
+      activity = { kind: 'status', status, ...(event.type === 'error' ? { error: event.message ?? '运行失败' } : {}),
+        ...((status === 'waiting' || status === 'paused') && this.browserWaitMessage ? { summary: this.browserWaitMessage } : status === 'paused' && event.message ? { summary: event.message } : {}),
+      };
+      if (status !== 'waiting' && status !== 'paused') this.browserWaitMessage = undefined;
+    }
     // 已落库的实体事件才可创建产物引用，模型正文中的名称不视为资源授权。
     if ((event.type === 'resume_created' || event.type === 'resume_updated') && event.resumeId) {
       activity = { kind: 'resource', resource: { kind: 'resume', id: event.resumeId, title: event.resumeName || '简历', produced: true, ...(event.revision ? { revision: event.revision } : {}) } };

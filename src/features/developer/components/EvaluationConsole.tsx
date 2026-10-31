@@ -149,11 +149,12 @@ function EvaluationCaseBody({ summary, detail, runnerType, onShowTrace, traceVis
   const metrics = summary.metrics ?? {};
   const tokens = typeof metrics.totalTokens === 'number' ? metrics.totalTokens : null;
   const turns = typeof metrics.modelTurns === 'number' ? metrics.modelTurns : null;
-  const duration = summary.completedAt ? summary.completedAt - summary.createdAt : null;
+  const duration = typeof metrics.durationMs === 'number' ? metrics.durationMs : summary.completedAt ? summary.completedAt - summary.createdAt : null;
   const dimensions = Object.entries(score?.dimensions ?? {});
   const requirements = score?.requirementResults ?? [];
   const assertions = score?.assertionResults ?? [];
   const trace = detail?.trace ?? [];
+  const benchmark = score?.benchmark;
 
   return <div className="ev-case-b">
     <div className="ev-sub">
@@ -162,6 +163,7 @@ function EvaluationCaseBody({ summary, detail, runnerType, onShowTrace, traceVis
       <div className="ev-meta-line">
         <span><Icon name="clock" size={12} />{FormatDuration(duration)}</span>
         <span><Icon name="hash" size={12} />{tokens === null ? '暂无 token' : `${tokens.toLocaleString('zh-CN')} token`}</span>
+        {typeof metrics.cachedTokens === 'number' && metrics.cachedTokens > 0 && <span>缓存输入 {metrics.cachedTokens.toLocaleString('zh-CN')}</span>}
         <span><Icon name="refresh" size={12} />{turns === null ? '—' : `${turns} 轮`}</span>
       </div>
       {summary.error && <div className="ev-req is-fail"><Icon name="warning" size={14} /><span className="ev-req-b"><b>执行失败</b><small>{summary.error.code} · {summary.error.message}</small></span></div>}
@@ -183,7 +185,10 @@ function EvaluationCaseBody({ summary, detail, runnerType, onShowTrace, traceVis
           {Boolean(score?.hardFailures.length) && <div className="ev-req is-fail"><Icon name="warning" size={14} /><span className="ev-req-b"><b>硬失败</b><small>{score?.hardFailures.join('、')}</small></span></div>}
           {score?.reason && <p className="ev-reason">{score.reason}</p>}
         </>
-        : <>{assertions.length
+        : <>{benchmark && <>
+          <p className="ev-reason">{score?.reason} 字段准确率：{benchmark.fieldAccuracy === null ? '待统计' : `${benchmark.fieldAccuracy}%`}；关键字段错误：{benchmark.criticalErrors.length}。</p>
+          <div className="ev-reqs">{benchmark.issues.map((issue, index) => <div className="ev-req is-fail" key={`${issue.path}-${index}`}><Icon name="warning-circle" size={14} /><span className="ev-req-b"><b>{issue.path} · {issue.code}</b>{'expected' in issue && <span className="ev-actual">期望 <EvaluationKeyValue value={issue.expected} /></span>}{'actual' in issue && <span className="ev-actual">实际 <EvaluationKeyValue value={issue.actual} /></span>}</span></div>)}</div>
+        </>}{assertions.length
           ? <div className="ev-reqs">{assertions.map((item) => <div className={`ev-req ${item.passed ? '' : 'is-fail'}`} key={item.id}><Icon name={item.passed ? 'check-circle' : 'warning-circle'} size={14} /><span className="ev-req-b"><b>{item.id} · 权重 {item.weight}</b><small>{item.reason}</small><span className="ev-actual">实际值 <EvaluationKeyValue value={item.actual} /></span></span></div>)}</div>
           : <p className="ev-reason">旧评分记录没有断言结果。</p>}
           {Boolean(score?.hardFailures.length) && <div className="ev-req is-fail"><Icon name="warning" size={14} /><span className="ev-req-b"><b>硬失败</b><small>{score?.hardFailures.join('、')}</small></span></div>}
@@ -589,7 +594,7 @@ export function EvaluationConsole() {
                 const notRun = caseRun.status === 'cancelled';
                 const pending = caseRun.status === 'queued' || caseRun.status === 'running' || caseRun.status === 'scoring';
                 const scoreCls = scored ? (caseRun.score!.totalScore! < 70 ? 'is-miss' : '') : (notRun ? 'is-miss' : 'is-pending');
-                const scoreText = scored ? String(caseRun.score!.totalScore) : (notRun ? '未执行' : (caseRun.status === 'failed' ? '失败' : '待评测'));
+                const scoreText = scored ? String(caseRun.score!.totalScore) : (notRun ? '未执行' : caseRun.status === 'completed' ? caseRun.score?.benchmark?.outcome === 'needs_review' ? '待复核' : caseRun.score?.benchmark?.outcome === 'environment_failure' ? '环境失败' : '未计分' : (caseRun.status === 'failed' ? '失败' : '待评测'));
                 return <article className={`ev-case ${opened ? 'open' : ''}`} key={caseRun.id}>
                   <button type="button" className="ev-case-h" aria-expanded={opened} onClick={() => ToggleCase(caseRun.id)}>
                     <span className="ev-case-n">{String(index + 1).padStart(2, '0')}</span>
@@ -597,7 +602,7 @@ export function EvaluationConsole() {
                     <span className={`ev-case-s ${scoreCls}`}><b>{scoreText}</b>{scored && <small>得分</small>}</span>
                     <Icon name="chevron-down" size={14} className="ev-chev" />
                   </button>
-                  {opened && (scored
+                  {opened && (scored || caseRun.status === 'completed'
                     ? <EvaluationCaseBody summary={caseRun} detail={caseDetails[caseRun.id]} runnerType={displayRun.runnerType} onShowTrace={() => ToggleCase(caseRun.id)} traceVisible={opened} />
                     : <div className="ev-case-b"><div className="ev-sub"><div className="ev-sub-h"><Icon name={notRun ? 'warning' : 'clock'} size={14} /><span>{notRun ? '本题未执行' : (caseRun.status === 'failed' ? '本题执行失败' : '等待评测')}</span></div><p className="ev-reply">{caseRun.error ? `${caseRun.error.code} · ${caseRun.error.message}` : (notRun ? '评测在本题开始前被终止，因此没有模型回复，也没有评判记录。' : '评测按顺序执行，本题结果会在前面题目完成后写入。')}</p></div></div>)}
                 </article>;

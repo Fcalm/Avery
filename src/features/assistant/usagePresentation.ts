@@ -6,6 +6,7 @@ export interface SessionUsagePresentationInput {
   source: 'actual' | 'unavailable' | 'legacy_estimate' | 'loading';
   reportedRequestCount: number;
   unreportedRequestCount: number;
+  contextPending?: boolean;
 }
 
 export interface SessionUsagePresentation {
@@ -45,6 +46,7 @@ export function CreateSessionTokenUsage(usage: SessionTokenTotals) {
  * 缺失、历史估算和加载状态绝不显示为真实百分比，避免将本地推算误认为模型事实。
  */
 export function CreateSessionUsagePresentation(usage: SessionUsagePresentationInput): SessionUsagePresentation {
+  if (usage.contextPending) return { progress: 0, title: '上下文已压缩，等待下次请求确认进度' };
   if (usage.source === 'actual') {
     const percent = Math.min(100, Math.round((usage.inputTokens / Math.max(1, usage.contextLimit)) * 100));
     return {

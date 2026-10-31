@@ -2,8 +2,9 @@ import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 
 import { useQueryClient } from '@tanstack/react-query';
 import { useUiStore } from '../../../app/UiStore';
 import { useSettingsStore } from '../../../features/settings/api/settingsQueries';
-import { ClearAgentObservability, ConfigureAgent, GetAgentModuleConfiguration, GetAgentStatus, GetBrowserRuntimeStatus, GetCronBrowserAccess, GetProviderCatalog, GetProviderModels, IsDesktopAgentAvailable, ResetAgentModules, RevokeCronBrowserAccess, SelectAgentModuleDirectory, SetAgentTraceRetention, TestAgentConnection } from '../../../features/assistant/api/agentQueries';
-import { ApplyModelRuntime, CreateCatalogModel, DefaultContextWindow, DefaultMaxOutput, FindCatalogModel, FindCatalogProvider, FormatContextWindow, IsSyncedModelsTrusted, IsValidContextWindow, IsValidMaxOutput, LoadModelCatalog, MergeBackendProviders, MergeProviderModels, ModelApiFormats, SanitizeModelCatalog, SaveModelCatalog, type ModelApiFormat, type ModelCatalog, type ModelCatalogModel, type ModelCatalogProvider, type ModelCatalogProviderId } from '../api/modelCatalog';
+import { ClearAgentObservability, ConfigureAgent, GetAgentModuleConfiguration, GetAgentStatus, GetBrowserRuntimeStatus, GetCronBrowserAccess, GetProviderCatalog, GetProviderModels, GetModelConfiguration, SaveModelConfiguration, IsDesktopAgentAvailable, ResetAgentModules, RevokeCronBrowserAccess, SelectAgentModuleDirectory, SetAgentTraceRetention, TestAgentConnection } from '../../../features/assistant/api/agentQueries';
+import { ApplyModelRuntime, CreateCatalogModel, DefaultContextWindow, DefaultMaxOutput, FindCatalogModel, FindCatalogProvider, FormatContextWindow, IsSyncedModelsTrusted, IsValidContextWindow, IsValidMaxOutput, LegacyModelOverrides, LoadModelCatalog, MergeBackendProviders, MergeModelConfigurations, MergeProviderModels, ModelApiFormats, SanitizeModelCatalog, SaveModelCatalog, type ModelApiFormat, type ModelCatalog, type ModelCatalogModel, type ModelCatalogProvider, type ModelCatalogProviderId } from '../api/modelCatalog';
+import type { ModelCapabilityOverrides, ModelCapabilityValues, ResolvedModelConfiguration } from '@avery/agent-sdk';
 import { MigrateWorkspace } from '../../../features/workspace/api/workspaceActions';
 import { WORKSPACE_QUERY_KEY } from '../../../features/workspace/api/workspaceData';
 import { Button, DialogButton, Modal, Select } from '../../../shared/components/UI';
@@ -38,6 +39,9 @@ const ContextMax = 500;
 
 /** 模型编辑弹窗的草稿：数值字段保留字符串，取消时才不会写回目录。 */
 interface ModelDialogDraft {
+  configuration?: ResolvedModelConfiguration;
+  touched: Array<keyof ModelCapabilityValues>;
+  reset: boolean;
   index: number;
   id: string;
   contextWindow: string;
@@ -143,12 +147,34 @@ function SettingsPage({ onNavigateDeveloper, tab, requestedTab, tabRequestVersio
   const [providerConfigurations, setProviderConfigurations] = useState<Partial<Record<SettingsDraft['provider'], { model: string; baseUrl: string; contextLimit: number; contextLimitMode: 'default' | 'custom'; compressionThreshold: number; thinkingEnabled: boolean }>>>({});
   const [providerReloading, setProviderReloading] = useState(false);
   const providerSpinTimer = useRef(0);
-  // 供应商与模型目录只存在于应用本地：启用状态、API 格式、模型增删与模型能力都缓存在这里。
+  // 本地保留展示列表；模型能力与个人覆盖由后端保存，这里只缓存生效结果。
   const [catalog, setCatalog] = useState<ModelCatalog>(() => LoadModelCatalog());
+  const catalogRef = useRef(catalog);
   const [apiKeyShown, setApiKeyShown] = useState(false);
   const [apiFormatOpen, setApiFormatOpen] = useState(false);
   const apiFormatRef = useRef<HTMLDivElement>(null);
   const [modelDialog, setModelDialog] = useState<ModelDialogDraft | null>(null);
+  const [modelResolving, setModelResolving] = useState(false);
+  const [modelSaving, setModelSaving] = useState(false);
+  const [modelResolveError, setModelResolveError] = useState('');
+  const modelResolutionVersion = useRef(0);
+
+  /** 模型 ID 改动只请求无副作用的后端解析；过期响应不得覆盖新 ID 或用户正在编辑的字段。 */
+  useEffect(() => {
+    const id = modelDialog?.id.trim();
+    if (!id || !IsDesktopAgentAvailable()) { setModelResolving(false); return; }
+    const version = ++modelResolutionVersion.current;
+    let cancelled = false;
+    setModelResolving(true); setModelResolveError('');
+    const timer = window.setTimeout(() => {
+      void GetModelConfiguration({ provider: draft.provider, model: id, baseUrl: draft.baseUrl }).then((configuration) => {
+        if (cancelled || version !== modelResolutionVersion.current) return;
+        setModelDialog((current) => current?.id.trim() === id ? ApplyDialogConfiguration(current, configuration) : current);
+      }).catch((error) => { if (!cancelled && version === modelResolutionVersion.current) setModelResolveError(error instanceof Error ? error.message : '模型能力读取失败'); })
+        .finally(() => { if (!cancelled && version === modelResolutionVersion.current) setModelResolving(false); });
+    }, 250);
+    return () => { cancelled = true; window.clearTimeout(timer); };
+  }, [modelDialog?.id, draft.provider, draft.baseUrl]);
   const [modelErrors, setModelErrors] = useState<ModelDialogErrors>({});
   const [providerDeleteTarget, setProviderDeleteTarget] = useState<ModelCatalogProvider | null>(null);
   useEffect(() => { setDraft(NormalizeProviderSettings(settings)); }, [settings]);
@@ -193,6 +219,7 @@ function SettingsPage({ onNavigateDeveloper, tab, requestedTab, tabRequestVersio
   /** 写入本地模型目录并同步落缓存；目录是对话页过滤可选模型的依据。写入前清洗跨供应商残留模型。 */
   function UpdateCatalog(next: ModelCatalog): void {
     const sanitized = SanitizeModelCatalog(next);
+    catalogRef.current = sanitized;
     setCatalog(sanitized);
     SaveModelCatalog(sanitized);
   }
@@ -207,7 +234,7 @@ function SettingsPage({ onNavigateDeveloper, tab, requestedTab, tabRequestVersio
         if (manual) ShowNotice('模型列表与所选供应商不一致，已忽略本次结果；请重启应用后重试');
         return;
       }
-      if (result.models.length) UpdateCatalog(MergeProviderModels(catalog, provider, result.models));
+      if (result.models.length) UpdateCatalog(MergeModelConfigurations(MergeProviderModels(catalogRef.current, provider, result.models), provider, result.modelConfigurations ?? []));
       if (manual) ShowNotice(result.models.length ? '已同步最新模型列表' : '未获取到可用模型，已保留现有列表');
     } catch (error) {
       if (manual) ShowNotice(error instanceof Error ? error.message : '模型列表刷新失败');
@@ -220,14 +247,36 @@ function SettingsPage({ onNavigateDeveloper, tab, requestedTab, tabRequestVersio
   }, [tab, draft.provider]);
   /** 读取主进程侧的供应商目录与当前生效配置；进入页签与页头刷新按钮共用同一份逻辑。 */
   async function LoadProviderConfiguration() {
+    const previousCatalog = catalogRef.current;
     const backendCatalog = await GetProviderCatalog();
+    // 只迁移历史显式值；已存在的后端覆盖优先，revision 冲突不能静默覆写。
+    for (const provider of previousCatalog.providers) {
+      for (const model of provider.models) {
+        const legacy = LegacyModelOverrides(model);
+        if (!Object.keys(legacy).length) continue;
+        const entry = backendCatalog.providers.find((item) => item.provider === provider.id);
+        if (!entry) continue;
+        let configuration = entry.modelConfigurations?.find((item) => item.model === model.id)
+          ?? await GetModelConfiguration({ provider: provider.id, model: model.id, baseUrl: entry.baseUrl });
+        const missingOverride = Object.keys(legacy).some((key) => configuration.overrides[key as keyof ModelCapabilityValues] === undefined);
+        if (missingOverride) {
+          try { configuration = await SaveModelConfiguration({ provider: provider.id, model: model.id, baseUrl: entry.baseUrl,
+            overrides: { ...legacy, ...configuration.overrides }, expectedRevision: configuration.revision }); }
+          catch (error) {
+            if ((error as { code?: string }).code !== 'REVISION_CONFLICT') throw error;
+            configuration = await GetModelConfiguration({ provider: provider.id, model: model.id, baseUrl: entry.baseUrl });
+          }
+        }
+        entry.modelConfigurations = [...(entry.modelConfigurations ?? []).filter((item) => item.model !== model.id), configuration];
+      }
+    }
     setConfiguredProviders(new Set(backendCatalog.providers.filter((item) => item.configured).map((item) => item.provider)));
     setProviderConfigurations(Object.fromEntries(backendCatalog.providers.filter((item) => item.configured).map((item) => [item.provider, item])));
     const status = await GetAgentStatus();
     const runtimeProvider = status.provider === '自定义' ? '自定义' : status.provider === 'Z.AI' ? 'Z.AI' : status.provider === 'MIMO' ? 'MIMO' : 'DeepSeek';
     // 宿主目录只提供供应商与可用模型：已有的本地模型不被覆盖，重新加载还能找回被删掉的官方供应商；
     // 宿主返回的上下文窗口与思考模式是当前生效值，要回写到对应模型，避免进入设置页就把用户配置重置成默认值。
-    const merged = MergeBackendProviders(catalog, backendCatalog.providers);
+    const merged = MergeBackendProviders(catalogRef.current, backendCatalog.providers);
     const runtimeEntry = backendCatalog.providers.find((item) => item.provider === runtimeProvider);
     UpdateCatalog(ApplyModelRuntime(merged, runtimeProvider, status.model, { contextWindow: status.contextLimit, thinking: runtimeEntry?.thinkingEnabled }));
     setApiKeyConfigured(status.configured);
@@ -533,9 +582,11 @@ function SettingsPage({ onNavigateDeveloper, tab, requestedTab, tabRequestVersio
     ShowNotice(`已删除模型 ${model.id}`);
   }
   function OpenModelDialog(index: number) {
+    modelResolutionVersion.current += 1;
     const model = index >= 0 ? FindCatalogProvider(catalog, draft.provider)?.models[index] : undefined;
     setModelErrors({});
     setModelDialog({
+      configuration: model?.configuration, touched: [], reset: false,
       index,
       id: model?.id ?? '',
       contextWindow: String(model?.contextWindow ?? DefaultContextWindow),
@@ -545,25 +596,71 @@ function SettingsPage({ onNavigateDeveloper, tab, requestedTab, tabRequestVersio
       thinking: model?.thinking ?? true,
     });
   }
-  function CloseModelDialog() { setModelDialog(null); setModelErrors({}); }
-  function SaveModelDialog() {
+  function CloseModelDialog() { if (modelSaving) return; modelResolutionVersion.current += 1; setModelDialog(null); setModelErrors({}); }
+  function ApplyDialogConfiguration(current: ModelDialogDraft, configuration: ResolvedModelConfiguration): ModelDialogDraft {
+    const values = current.reset ? configuration.inherited : configuration.values;
+    const untouched = (key: keyof ModelCapabilityValues) => !current.touched.includes(key);
+    return { ...current, configuration,
+      ...(untouched('contextWindow') ? { contextWindow: String(values.contextWindow) } : {}),
+      ...(untouched('maxOutput') ? { maxOutput: String(values.maxOutput) } : {}),
+      ...(untouched('inputImage') ? { inputImage: values.inputImage } : {}),
+      ...(untouched('inputPdf') ? { inputPdf: values.inputPdf } : {}),
+      ...(untouched('thinking') ? { thinking: values.thinking } : {}),
+    };
+  }
+  function UpdateModelField(patch: Partial<ModelDialogDraft>, capability: keyof ModelCapabilityValues) {
+    setModelDialog((current) => current ? { ...current, ...patch, touched: [...new Set([...current.touched, capability])] } : current);
+  }
+  async function ResetModelCapabilities(refresh: boolean) {
+    if (!modelDialog?.id.trim() || !IsDesktopAgentAvailable()) return;
+    const id = modelDialog.id.trim(); setModelResolving(true); setModelResolveError('');
+    const version = ++modelResolutionVersion.current;
+    try {
+      const configuration = await GetModelConfiguration({ provider: draft.provider, model: id, baseUrl: draft.baseUrl, refresh });
+      if (version !== modelResolutionVersion.current) return;
+      setModelDialog((current) => current?.id.trim() === id ? ApplyDialogConfiguration({ ...current, reset: true, touched: [] }, configuration) : current);
+    } catch (error) { if (version === modelResolutionVersion.current) setModelResolveError(error instanceof Error ? error.message : '模型目录更新失败'); }
+    finally { if (version === modelResolutionVersion.current) setModelResolving(false); }
+  }
+  async function SaveModelDialog() {
     const provider = FindCatalogProvider(catalog, draft.provider);
     if (!modelDialog || !provider) return;
     const id = modelDialog.id.trim();
     const contextWindow = Number(modelDialog.contextWindow);
     const maxOutput = Number(modelDialog.maxOutput);
+    const validContext = IsValidContextWindow(contextWindow) || (!modelDialog.touched.includes('contextWindow') && contextWindow === modelDialog.configuration?.values.contextWindow);
     const duplicate = provider.models.some((item, index) => index !== modelDialog.index && item.id === id);
-    setModelErrors({ id: !id || duplicate, contextWindow: !IsValidContextWindow(contextWindow), maxOutput: !IsValidMaxOutput(maxOutput) });
+    setModelErrors({ id: !id || duplicate, contextWindow: !validContext, maxOutput: !IsValidMaxOutput(maxOutput) });
     if (!id || duplicate) { ShowNotice(duplicate ? '已经有同名的模型 ID' : '模型 ID 不能为空'); return; }
-    if (!IsValidContextWindow(contextWindow)) { ShowNotice('上下文窗口需为 128000–1000000 之间的整数'); return; }
+    if (!validContext) { ShowNotice('上下文窗口需为 128000–1000000 之间的整数'); return; }
     if (!IsValidMaxOutput(maxOutput)) { ShowNotice('最大输出 Token 需为正整数'); return; }
     const thinking = provider.id === 'Z.AI' ? true : modelDialog.thinking;
-    const next: ModelCatalogModel = { id, contextWindow, maxOutput, inputImage: modelDialog.inputImage, inputPdf: modelDialog.inputPdf, thinking };
+    let configuration = modelDialog.configuration;
+    if (IsDesktopAgentAvailable()) {
+      if (modelResolving || modelResolveError || !configuration || configuration.model !== id) { ShowNotice(modelResolveError || '请等待模型能力解析完成'); return; }
+      const values: ModelCapabilityValues = { contextWindow, maxOutput, inputImage: modelDialog.inputImage, inputPdf: modelDialog.inputPdf, thinking, toolCall: configuration.values.toolCall };
+      const overrides: ModelCapabilityOverrides = modelDialog.reset ? {} : { ...configuration.overrides };
+      for (const key of modelDialog.touched) Object.assign(overrides, { [key]: values[key] });
+      setModelSaving(true);
+      try { configuration = await SaveModelConfiguration({ provider: draft.provider, model: id, baseUrl: draft.baseUrl, overrides, expectedRevision: configuration.revision }); }
+      catch (error) {
+        if ((error as { code?: string }).code === 'REVISION_CONFLICT') {
+          try {
+            const latest = await GetModelConfiguration({ provider: draft.provider, model: id, baseUrl: draft.baseUrl });
+            setModelDialog((current) => current?.id.trim() === id ? ApplyDialogConfiguration(current, latest) : current);
+            ShowNotice('配置已在别处更新，已载入新版本；请核对后再次保存。');
+          } catch (reloadError) { ShowNotice(reloadError instanceof Error ? reloadError.message : '模型配置重新加载失败'); }
+        } else ShowNotice(error instanceof Error ? error.message : '模型配置保存失败');
+        return;
+      }
+      finally { setModelSaving(false); }
+    }
+    const next: ModelCatalogModel = { id, contextWindow, maxOutput, inputImage: modelDialog.inputImage, inputPdf: modelDialog.inputPdf, thinking, ...(configuration ? { ...configuration.values, configuration } : {}) };
     const wasActive = modelDialog.index >= 0 && draft.model === provider.models[modelDialog.index]?.id;
     const models = modelDialog.index >= 0 ? provider.models.map((item, index) => index === modelDialog.index ? next : item) : [...provider.models, next];
     UpdateCatalog(ReplaceProvider({ ...provider, models }));
-    // 改名后当前模型要跟着新 ID；编辑当前模型的上下文窗口与思考模式需要保存后才下发宿主。
-    if (wasActive) { UpdateDraft({ model: id }); setDirty(true); }
+    // 能力已由宿主保存；改名后的默认模型选择仍通过页头 API 配置保存。
+    if (wasActive && draft.model !== id) UpdateDraft({ model: id });
     CloseModelDialog();
     ShowNotice(modelDialog.index >= 0 ? '模型配置已保存' : `已添加模型 ${id}`);
   }
@@ -679,37 +776,45 @@ function SettingsPage({ onNavigateDeveloper, tab, requestedTab, tabRequestVersio
         onClose={CloseModelDialog}
         variant="dialog"
         footer={<>
-          <DialogButton onClick={CloseModelDialog}>取消</DialogButton>
-          <DialogButton tone="accent" onClick={SaveModelDialog}>保存</DialogButton>
+          <DialogButton onClick={CloseModelDialog} disabled={modelSaving}>取消</DialogButton>
+          <DialogButton tone="accent" onClick={() => { void SaveModelDialog(); }} disabled={modelSaving || modelResolving || Boolean(modelResolveError)}>{modelSaving ? '保存中…' : '保存'}</DialogButton>
         </>}
       >
         <div className="model-dialog model-set-scope">
+          <div className="set-field">
+            <small>{modelResolving ? '正在匹配模型能力…' : modelResolveError || (modelDialog.configuration?.source === 'directory' ? '已匹配目录推荐值；手动修改将保存为此模型的覆盖配置。' : '未匹配到目录，可手动配置模型能力。')}</small>
+            <div className="chk-row">
+              <DialogButton onClick={() => { void ResetModelCapabilities(false); }} disabled={modelSaving || modelResolving}>恢复自动匹配</DialogButton>
+              <DialogButton onClick={() => { void ResetModelCapabilities(true); }} disabled={modelSaving || modelResolving}>更新目录并匹配</DialogButton>
+            </div>
+          </div>
           <label className="set-field">
             <span className="lb">模型 ID</span>
             <input className={`set-inp${modelErrors.id ? ' bad' : ''}`} value={modelDialog.id} placeholder="供应商文档里的模型名" spellCheck={false} autoComplete="off" onChange={(event) => { setModelErrors((current) => ({ ...current, id: false })); setModelDialog({ ...modelDialog, id: event.target.value }); }} />
           </label>
           <label className="set-field">
             <span className="lb">上下文窗口</span>
-            <input className={`set-inp${modelErrors.contextWindow ? ' bad' : ''}`} value={modelDialog.contextWindow} inputMode="numeric" spellCheck={false} onChange={(event) => { setModelErrors((current) => ({ ...current, contextWindow: false })); setModelDialog({ ...modelDialog, contextWindow: event.target.value.replace(/[^0-9]/g, '') }); }} />
+            <input className={`set-inp${modelErrors.contextWindow ? ' bad' : ''}`} value={modelDialog.contextWindow} inputMode="numeric" spellCheck={false} onChange={(event) => { setModelErrors((current) => ({ ...current, contextWindow: false })); UpdateModelField({ contextWindow: event.target.value.replace(/[^0-9]/g, '') }, 'contextWindow'); }} />
           </label>
           <label className="set-field">
             <span className="lb">最大输出 Token</span>
-            <input className={`set-inp${modelErrors.maxOutput ? ' bad' : ''}`} value={modelDialog.maxOutput} inputMode="numeric" spellCheck={false} onChange={(event) => { setModelErrors((current) => ({ ...current, maxOutput: false })); setModelDialog({ ...modelDialog, maxOutput: event.target.value.replace(/[^0-9]/g, '') }); }} />
+            <input className={`set-inp${modelErrors.maxOutput ? ' bad' : ''}`} value={modelDialog.maxOutput} inputMode="numeric" spellCheck={false} onChange={(event) => { setModelErrors((current) => ({ ...current, maxOutput: false })); UpdateModelField({ maxOutput: event.target.value.replace(/[^0-9]/g, '') }, 'maxOutput'); }} />
           </label>
           <div className="set-field is-switch">
             <span className="sw-txt">
               <b>思考模式</b>
               <small>{draft.provider === 'Z.AI' ? 'GLM 模型始终启用思考模式。' : '开启后助手会展示可折叠的思考内容；当前模型的取值随配置一起保存。'}</small>
             </span>
-            <button className="switch" type="button" role="switch" aria-checked={draft.provider === 'Z.AI' ? true : modelDialog.thinking} aria-label="思考模式" aria-disabled={draft.provider === 'Z.AI' || undefined} disabled={draft.provider === 'Z.AI'} onClick={() => setModelDialog({ ...modelDialog, thinking: !modelDialog.thinking })}><span className="knob" /></button>
+            <button className="switch" type="button" role="switch" aria-checked={draft.provider === 'Z.AI' ? true : modelDialog.thinking} aria-label="思考模式" aria-disabled={draft.provider === 'Z.AI' || undefined} disabled={draft.provider === 'Z.AI'} onClick={() => UpdateModelField({ thinking: !modelDialog.thinking }, 'thinking')}><span className="knob" /></button>
           </div>
           <div className="set-field">
             <span className="lb">输入类型</span>
             <div className="chk-row">
               <label className="chk locked"><input type="checkbox" checked readOnly disabled /><span className="box"><Icon name="check" size={11} /></span><span>文本</span><Icon name="lock-simple" className="lock" size={12} /></label>
-              <label className="chk"><input type="checkbox" checked={modelDialog.inputImage} onChange={(event) => setModelDialog({ ...modelDialog, inputImage: event.target.checked })} /><span className="box"><Icon name="check" size={11} /></span><span>图片</span></label>
-              <label className="chk"><input type="checkbox" checked={modelDialog.inputPdf} onChange={(event) => setModelDialog({ ...modelDialog, inputPdf: event.target.checked })} /><span className="box"><Icon name="check" size={11} /></span><span>PDF</span></label>
+              <label className="chk"><input type="checkbox" checked={modelDialog.inputImage} onChange={(event) => UpdateModelField({ inputImage: event.target.checked }, 'inputImage')} /><span className="box"><Icon name="check" size={11} /></span><span>图片</span></label>
+              <label className="chk"><input type="checkbox" checked={modelDialog.inputPdf} onChange={(event) => UpdateModelField({ inputPdf: event.target.checked }, 'inputPdf')} /><span className="box"><Icon name="check" size={11} /></span><span>PDF</span></label>
             </div>
+            <small>图片配置同时用于图片附件和浏览器截图。PDF 仍通过文档解析读取；目录匹配不代表已实测 API。</small>
           </div>
           <div className="set-field">
             <span className="lb">输出类型</span>
@@ -883,7 +988,7 @@ function SettingsPage({ onNavigateDeveloper, tab, requestedTab, tabRequestVersio
     let pill: 'busy' | 'on' | 'off' | 'undetected';
     if (browserRuntimeBusy) { statusCopy = `正在连接 ${engineLabel}，完成扩展配对前不会操作任何页面。`; pill = 'busy'; }
     else if (!browserRuntime) { statusCopy = `还没有检测过。${needCopy}`; pill = 'undetected'; }
-    else if (browserRuntime.running) { statusCopy = `已连接。${browserRuntime.message || browserRuntime.currentUrl || `已经连上 ${BrowserEngineLabels[browserRuntime.engine]}，可以接管任务标签页。`}`; pill = 'on'; }
+    else if (browserRuntime.running && browserRuntime.state === 'ready') { statusCopy = `已连接。${browserRuntime.currentUrl || `已经连上 ${BrowserEngineLabels[browserRuntime.engine]}，可以接管任务标签页。`}`; pill = 'on'; }
     else if (browserRuntime.state === 'not_installed') { statusCopy = `没有连上。${BrowserEngineLabels[browserRuntime.engine]} 未安装或无法启动。`; pill = 'off'; }
     else if (browserRuntime.state === 'unhealthy') { statusCopy = `连接异常。${browserRuntime.message || '可以再检测一次。'}`; pill = 'off'; }
     else { statusCopy = `还没有连接。${browserRuntime.message || needCopy}`; pill = 'off'; }

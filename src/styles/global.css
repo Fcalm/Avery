@@ -5,6 +5,10 @@ button, input, textarea, select { font: inherit; }
 button { color: inherit; }
 button:not(:disabled), select { cursor: pointer; }
 .iconfont-png { display: inline-block; flex: 0 0 auto; width: 1em; height: 1em; vertical-align: -.14em; background: currentColor; -webkit-mask: var(--icon-image) center / contain no-repeat; mask: var(--icon-image) center / contain no-repeat; }
+/* Windows 中文回退字体的汉字字面中心约在基线上方 0.35em（微软雅黑“中”：715/2048）。
+   em 在外层按正文字号计算，内层仅负责图标自身尺寸；不使用英文行框中心作参照。 */
+.cjk-text-icon { position: relative; top: -.35em; display: inline-block; flex: none; align-self: baseline; width: var(--cjk-icon-size); height: 0; vertical-align: baseline; }
+.cjk-text-icon > :is(.ph, .iconfont-png, svg) { position: absolute; top: calc(var(--cjk-icon-size) / -2); left: 0; }
 button:focus-visible, [tabindex]:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; box-shadow: var(--focus-ring); }
 input:focus-visible, textarea:focus-visible, select:focus-visible { outline: none; box-shadow: none; }
 input, textarea, select { width: 100%; min-height: 40px; border: 0; border-radius: var(--radius-control); padding: 8px 12px; outline: none; color: var(--ink); background: var(--titlebar-control); transition: background var(--transition-standard), box-shadow var(--transition-standard); }

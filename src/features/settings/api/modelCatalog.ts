@@ -1,10 +1,10 @@
 /**
  * 模型目录的应用内缓存。
  *
- * 上下文窗口、最大输出 Token、输入类型、API 格式、供应商启用状态与模型增删在宿主侧都没有存储位置，
- * 因此按产品要求只缓存在应用本地（localStorage），不写入业务数据库，也不进入工作空间快照。
- * 只有当前选中模型的上下文窗口与思考模式会在保存时下发宿主配置，缓存同时是这两项的界面来源。
+ * 模型能力由后端目录与个人覆盖解析；此处只缓存展示结果以及本地模型列表、排序和启用状态。
+ * 能力缓存不能作为 Agent 授权或模型运行时事实源。
  */
+import type { ModelCapabilityOverrides, ResolvedModelConfiguration } from '@avery/agent-sdk';
 
 /** 供应商 ID 与宿主侧的 Provider 一一对应；推荐供应商由宿主固定官方端点，本地只决定启用状态与模型列表。 */
 export type ModelCatalogProviderId = 'DeepSeek' | 'Z.AI' | 'MIMO' | '自定义';
@@ -25,10 +25,12 @@ export const ModelApiFormats: ModelApiFormatOption[] = [
 ];
 
 export interface ModelCatalogModel {
+  /** 后端上次返回的生效配置；仅用于界面缓存和保存时的 revision 校验。 */
+  configuration?: ResolvedModelConfiguration;
   id: string;
   /** 上下文窗口（token）：当前模型的取值会作为宿主端上下文限制下发。 */
   contextWindow: number;
-  /** 最大输出 Token：宿主端没有对应配置，仅记录在应用内。 */
+  /** 最大输出 Token：来自后端生效配置，并约束实际模型请求。 */
   maxOutput: number;
   /** 输入类型：文本恒为可用，图片与 PDF 取决于模型能力。 */
   inputImage: boolean;
@@ -55,6 +57,7 @@ export interface ModelCatalog {
 
 /** 宿主侧返回的供应商快照，只取合并目录需要的字段。 */
 export interface BackendProviderSnapshot {
+  modelConfigurations?: ResolvedModelConfiguration[];
   provider: ModelCatalogProviderId;
   model: string;
   models: string[];
@@ -120,6 +123,8 @@ function NormalizeModel(value: unknown): ModelCatalogModel | null {
     inputImage: record.inputImage === true,
     inputPdf: record.inputPdf === true,
     thinking: record.thinking !== false,
+    ...(record.configuration && typeof record.configuration === 'object' && Number.isSafeInteger((record.configuration as ResolvedModelConfiguration).revision)
+      ? { configuration: record.configuration as ResolvedModelConfiguration } : {}),
   };
 }
 
@@ -239,8 +244,30 @@ export function MergeBackendProviders(catalog: ModelCatalog, snapshots: BackendP
       contextWindow: ToPositiveInteger(snapshot.contextLimit) ?? DefaultContextWindow,
       thinking: snapshot.thinkingEnabled !== false,
     });
+    next = MergeModelConfigurations(next, id, snapshot.modelConfigurations ?? []);
   }
   return { ...next, seeded: true };
+}
+
+/** 后端生效值覆盖展示缓存；目录自动值与个人覆盖由宿主统一解析，前端不重新推断能力。 */
+export function MergeModelConfigurations(catalog: ModelCatalog, providerId: ModelCatalogProviderId, configurations: ResolvedModelConfiguration[]): ModelCatalog {
+  return { ...catalog, providers: catalog.providers.map((provider) => provider.id !== providerId ? provider : {
+    ...provider, models: provider.models.map((model) => {
+      const configuration = configurations.find((item) => item.provider === providerId && item.model === model.id);
+      return configuration ? { ...model, ...configuration.values, configuration } : model;
+    }),
+  }) };
+}
+
+/** 旧缓存没有“自动/手动”标记：只迁移明确的正向能力标记和非默认数值，不让默认 false 关闭目录视觉。 */
+export function LegacyModelOverrides(model: ModelCatalogModel): ModelCapabilityOverrides {
+  if (model.configuration) return {};
+  return {
+    ...(model.inputImage ? { inputImage: true } : {}), ...(model.inputPdf ? { inputPdf: true } : {}),
+    ...(model.contextWindow !== DefaultContextWindow && model.contextWindow >= 1024 && model.contextWindow <= MaximumContextWindow ? { contextWindow: model.contextWindow } : {}),
+    ...(model.maxOutput !== DefaultMaxOutput && IsValidMaxOutput(model.maxOutput) ? { maxOutput: model.maxOutput } : {}),
+    ...(!model.thinking ? { thinking: false } : {}),
+  };
 }
 
 /**
@@ -278,8 +305,8 @@ export function ApplyModelRuntime(catalog: ModelCatalog, providerId: ModelCatalo
       ...provider,
       models: provider.models.map((model) => model.id !== modelId ? model : {
         ...model,
-        ...(contextWindow === null ? {} : { contextWindow }),
-        ...(thinking === undefined ? {} : { thinking }),
+        ...(contextWindow === null || model.configuration ? {} : { contextWindow }),
+        ...(thinking === undefined || model.configuration ? {} : { thinking }),
       }),
     }),
   };
