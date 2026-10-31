@@ -35,7 +35,7 @@ type MockTarget = {
   readyState: 'complete';
 };
 
-function CreateMockExtensionBridge(bridgeOptions: { emptySnapshotTargetId?: string; snapshotItems?: Array<Record<string, unknown>> } = {}) {
+function CreateMockExtensionBridge(bridgeOptions: { emptySnapshotTargetId?: string; snapshotItems?: Array<Record<string, unknown>>; initialInputValue?: string; fillFailure?: 'focus' | 'clear' | 'insert' } = {}) {
   const targetsByTask = new Map<string, MockTarget[]>();
   const userTargets: MockTarget[] = [{
     targetId: 'user-original-tab', tabId: 901, windowId: 1, openerTabId: null, type: 'page', url: 'http://127.0.0.1/user', title: 'user tab',
@@ -46,6 +46,17 @@ function CreateMockExtensionBridge(bridgeOptions: { emptySnapshotTargetId?: stri
   let fixtureResponses = 0;
   let snapshotEvaluations = 0;
   let uploadedFilePath: string | null = null;
+  const inputStates = new WeakMap<MockTarget, { locatedNodeId?: number; focusedNodeId?: number; selectedAll: boolean; values: Map<number, string> }>();
+  const fillStateChecks: Array<{ targetId: string; nodeId: number; expectedValue?: string; actualValue: string; valid: boolean }> = [];
+  // 测试桩必须模拟焦点、清空和插入产生的状态变化，不能用固定成功回执绕过生产填写校验。
+  const inputState = (target: MockTarget) => {
+    let state = inputStates.get(target);
+    if (!state) {
+      state = { selectedAll: false, values: new Map((bridgeOptions.snapshotItems ?? [{}]).map((_item, index) => [index + 1, bridgeOptions.initialInputValue ?? ''])) };
+      inputStates.set(target, state);
+    }
+    return state;
+  };
   const getTargets = (taskId: string) => {
     let targets = targetsByTask.get(taskId);
     if (!targets) {
@@ -108,6 +119,7 @@ function CreateMockExtensionBridge(bridgeOptions: { emptySnapshotTargetId?: stri
         if (!target) throw Object.assign(new Error('No task-owned attached target.'), { code: 'BROWSER_TAB_NOT_FOUND' });
         const url = String(params.url ?? '');
         await fetchFixture(url);
+        inputStates.delete(target);
         target.url = url;
         result = { frameId: `frame-${target.targetId}` };
         break;
@@ -116,7 +128,18 @@ function CreateMockExtensionBridge(bridgeOptions: { emptySnapshotTargetId?: stri
         const target = targets.find((item) => item.active) ?? targets.find((item) => item.attached);
         if (!target) throw Object.assign(new Error('No task-owned attached target.'), { code: 'BROWSER_TAB_NOT_FOUND' });
         const expression = String(params.expression ?? '');
-        if (expression.includes('querySelectorAll')) {
+        if (expression.includes('const expectedFillValue =')) {
+          const expected = JSON.parse(expression.match(/const expected = (.+);/)![1]) as { nodeId: number };
+          const encodedValue = expression.match(/const expectedFillValue = (.+);/)![1];
+          const expectedValue: string | undefined = encodedValue === 'undefined' ? undefined : JSON.parse(encodedValue);
+          const state = inputState(target);
+          const actualValue = state.values.get(expected.nodeId) ?? '';
+          const item = bridgeOptions.snapshotItems?.[expected.nodeId - 1];
+          const valid = state.focusedNodeId === expected.nodeId && item?.disabled !== true && item?.readOnly !== true
+            && (expectedValue === undefined || actualValue === expectedValue);
+          fillStateChecks.push({ targetId: target.targetId, nodeId: expected.nodeId, expectedValue, actualValue, valid });
+          result = { result: { type: 'object', value: { fillStateValid: valid } } };
+        } else if (expression.includes('querySelectorAll')) {
           snapshotEvaluations += 1;
           if (bridgeOptions.emptySnapshotTargetId && target.targetId === bridgeOptions.emptySnapshotTargetId) {
             // This branch models a genuinely loading child.  A static
@@ -134,6 +157,8 @@ function CreateMockExtensionBridge(bridgeOptions: { emptySnapshotTargetId?: stri
         } else if (expression.includes('document.readyState')) {
           result = { result: { type: 'object', value: { url: target.url, readyState: target.readyState } } };
         } else if (expression.includes('elementFromPoint')) {
+          const expected = JSON.parse(expression.match(/const expected = (.+);/)![1]) as { nodeId: number };
+          inputState(target).locatedNodeId = expected.nodeId;
           result = { result: { type: 'object', value: { stale: false, x: 100, y: 60, tag: 'input', type: 'text', disabled: false, contentEditable: false } } };
         } else if (expression.includes("element.type !== 'file'")) {
           result = { result: { type: 'object', objectId: 'pb03-file-input' } };
@@ -150,9 +175,23 @@ function CreateMockExtensionBridge(bridgeOptions: { emptySnapshotTargetId?: stri
       case 'Page.createIsolatedWorld': result = { executionContextId: 1 }; break;
       case 'Input.dispatchMouseEvent':
       case 'Input.dispatchKeyEvent':
-      case 'Input.insertText':
+      case 'Input.insertText': {
+        const target = targets.find(item => item.active) ?? targets.find(item => item.attached);
+        if (!target) throw new Error('Input event has no task-owned target.');
+        const state = inputState(target);
+        if (method === 'Input.dispatchMouseEvent' && params.type === 'mousePressed') {
+          state.focusedNodeId = bridgeOptions.fillFailure === 'focus' ? undefined : state.locatedNodeId; state.selectedAll = false;
+        }
+        if (state.focusedNodeId !== undefined) {
+          if (method === 'Input.dispatchKeyEvent' && params.commands?.includes('selectAll')) state.selectedAll = true;
+          if (method === 'Input.dispatchKeyEvent' && params.commands?.includes('deleteBackward') && state.selectedAll && bridgeOptions.fillFailure !== 'clear') {
+            state.values.set(state.focusedNodeId, ''); state.selectedAll = false;
+          }
+          if (method === 'Input.insertText' && bridgeOptions.fillFailure !== 'insert') state.values.set(state.focusedNodeId, (state.values.get(state.focusedNodeId) ?? '') + String(params.text ?? ''));
+        }
         result = {};
         break;
+      }
       case 'DOM.setFileInputFiles':
         uploadedFilePath = Array.isArray(params.files) && typeof params.files[0] === 'string' ? params.files[0] : null;
         result = {};
@@ -192,6 +231,11 @@ function CreateMockExtensionBridge(bridgeOptions: { emptySnapshotTargetId?: stri
     GetSnapshotEvaluationCount: () => snapshotEvaluations,
     GetUploadedFilePath: () => uploadedFilePath,
     GetFixtureResponseCount: () => fixtureResponses,
+    GetFillStateChecks: () => [...fillStateChecks],
+    GetInputValue: (targetId: string, nodeId: number) => {
+      const target = [...targetsByTask.values()].flat().find(item => item.targetId === targetId);
+      return target ? inputState(target).values.get(nodeId) : undefined;
+    },
   };
 }
 
@@ -334,6 +378,37 @@ describe('PB-03 fixture BrowserNavigate result handling', () => {
     } finally {
       await harness.host.Close();
     }
+  });
+
+  it.each([
+    { failure: undefined, validChecks: [true, true, true], expectedValue: '新填写内容' },
+    { failure: 'focus', validChecks: [false], expectedValue: '原有内容' },
+    { failure: 'clear', validChecks: [true, false], expectedValue: '原有内容' },
+    { failure: 'insert', validChecks: [true, true, false], expectedValue: '' },
+  ] as const)('verifies actual fixture fill state and stops on $failure failures', async ({ failure, validChecks, expectedValue }) => {
+    const fixture = await CreateFixtureServer();
+    const bridge = CreateMockExtensionBridge({
+      fillFailure: failure,
+      initialInputValue: '原有内容',
+    });
+    const harness = await CreateHostHarness(fixture.url, bridge, { providerTurns: 0 });
+    try {
+      const { runtime } = harness;
+      await runtime.Execute({ proposal: await runtime.Prepare({ toolName: 'BrowserNavigate', arguments: { url: fixture.url } }) });
+      const snapshot = await runtime.Execute({ proposal: await runtime.Prepare({ toolName: 'BrowserSnapshot', arguments: {} }) });
+      const pageRevision = (snapshot.data as { pageRevision: number }).pageRevision;
+      const result = await runtime.Execute({ proposal: await runtime.Prepare({ toolName: 'BrowserFill', arguments: { ref: '@e1', text: '新填写内容', pageRevision } }) });
+      expect(bridge.GetFillStateChecks().map(check => check.valid)).toEqual(validChecks);
+      const target = bridge.GetTaskTargets(runtime.GetBrowserTaskId()!)[0];
+      expect(bridge.GetInputValue(target.targetId, 1)).toBe(expectedValue);
+      if (failure) {
+        expect(result).toMatchObject({ status: 'status_unknown', data: { code: 'BROWSER_COMMAND_FAILED' } });
+        if (failure !== 'insert') expect(bridge.GetProtocolMethods()).not.toContain('Input.insertText');
+      } else {
+        expect(result).toMatchObject({ status: 'succeeded', data: { filled: true } });
+        expect(bridge.GetFillStateChecks().map(check => check.expectedValue)).toEqual([undefined, '', '新填写内容']);
+      }
+    } finally { await harness.host.Close(); }
   });
 
   it('keeps task-scoped refs through a read-only tab list and clears them only on explicit switch', async () => {
