@@ -83,9 +83,9 @@ function configureSecurityPolicies(): void {
   });
 }
 
-/** 窗口、任务栏、托盘与通知共用应用图标；开发态取 dist，打包态取安装目录内资源。 */
+/** 系统入口使用圆角白底图标；页面品牌图标仍使用独立的透明原图。 */
 function resolveAppIconPath(): string {
-  const fileName = join('dist', 'assets', 'avery-icon.png');
+  const fileName = join('dist', 'assets', 'avery-system-icon.png');
   const candidates = app.isPackaged
     ? [join(process.resourcesPath, 'app.asar', fileName), join(process.resourcesPath, fileName)]
     : [join(__dirname, '..', '..', '..', fileName)];
@@ -164,12 +164,16 @@ function createWindow(): BrowserWindow {
   const appIconPath = resolveAppIconPath();
   const appIcon = appIconPath ? nativeImage.createFromPath(appIconPath) : undefined;
   const validAppIcon = appIcon && !appIcon.isEmpty() ? appIcon : undefined;
+  // Shell 的图标引用必须是普通文件路径；安装版的 ICO 随 extraResources 放在 asar 外。
+  const taskbarIconPath = process.platform === 'win32'
+    ? app.isPackaged ? join(process.resourcesPath, 'avery-system-icon.ico') : join(app.getAppPath(), 'dist', 'assets', 'avery-system-icon.ico')
+    : undefined;
   const restoreSize = ResolveWindowRestoreSize();
   const window = new BrowserWindow({
     width: restoreSize.width, height: restoreSize.height, minWidth: 1024, minHeight: 680, frame: false, autoHideMenuBar: true,
     // 无边框窗口也显式加入任务栏，并给 Windows 任务栏提供应用图标。
     skipTaskbar: false,
-    ...(validAppIcon ? { icon: validAppIcon } : {}),
+    ...(taskbarIconPath || validAppIcon ? { icon: taskbarIconPath ?? validAppIcon } : {}),
     // 透明窗口会被 Electron 强制移除 WS_THICKFRAME/WS_CAPTION，导致系统动画和最大化受限。
     // 使用不透明宿主承载页面；保留原生框架能力，让 Windows 管理动画、工作区和还原位置。
     transparent: false,
@@ -177,15 +181,14 @@ function createWindow(): BrowserWindow {
     ...(process.platform === 'win32' ? { thickFrame: true, roundedCorners: true } : {}),
     webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true, preload: join(__dirname, '..', '..', '..', 'electron', 'preload.cjs') },
   });
-  if (process.platform === 'win32' && !app.isPackaged) {
+  if (taskbarIconPath) {
     // 任务栏固定入口读取的是 Shell 重启属性，窗口 PNG 图标不能修复失效的快捷方式关联。
-    // 开发环境直接提供 ICO 和带项目参数的启动命令，避免被识别为裸 Electron 或正式安装版。
-    const taskbarIconPath = join(app.getAppPath(), 'build', 'icon.ico');
+    // 两种发行环境均显式提供同款白底 ICO；测试环境的启动命令另携带项目参数。
     window.setAppDetails({
       appId: applicationId,
-      ...(existsSync(taskbarIconPath) ? { appIconPath: taskbarIconPath, appIconIndex: 0 } : {}),
-      relaunchCommand: `"${process.execPath}" "${app.getAppPath()}"`,
-      relaunchDisplayName: 'Avery（测试环境）',
+      appIconPath: taskbarIconPath, appIconIndex: 0,
+      relaunchCommand: app.isPackaged ? `"${process.execPath}"` : `"${process.execPath}" "${app.getAppPath()}"`,
+      relaunchDisplayName: app.isPackaged ? 'Avery' : 'Avery（测试环境）',
     });
   }
   mainWindow = window;

@@ -89,6 +89,10 @@
     ],
     "extraResources": [
       {
+      {
+        "from": "public/assets/avery-system-icon.ico",
+        "to": "avery-system-icon.ico"
+      },
         "from": "build/markitdown",
         "to": "markitdown",
         "filter": ["markitdown.exe"]
