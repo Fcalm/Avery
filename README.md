@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/assets/avery-brand.svg" alt="Avery Icon 与 Logo" width="420" />
+  <img src="docs/assets/avery-brand-baseline.svg" alt="Avery Icon 与 Logo" width="420" />
 </p>
 
 <p align="center">
