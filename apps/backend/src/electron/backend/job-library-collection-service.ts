@@ -2,11 +2,14 @@ import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, readFile, rename, writeFile, unlink } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { setTimeout as Delay } from 'node:timers/promises';
+import type { BrowserAutomationPort } from '@avery/agent-sdk';
 import { JobCollectionInputSchema, JobCollectionLimits, type CollectedJob, type JobCollectionInput, type JobCollectionRequest, type JobCollectionTask, type JobImportResult, type RecruitmentSource } from '@avery/contracts';
 import { AtsFactStore, AtsSourceRunner, CreateSource } from './ats/source-runner';
 import type { AtsSource, NormalizedJob, SourceResult } from './ats/types';
 import { BuiltinRecruitmentSources } from './recruitment-sources';
-import { NormalizeJobFilterValue } from '../repositories/job-query';
+import { JobCityMatches, NormalizeJobFilterValue } from '../repositories/job-query';
+import { CampusExpiredThroughYear, CampusRecruitmentSource, IsExpiredCampusRecruitment } from './campus-recruitment-source';
+import { CreateFeishuPageReader, FeishuBrowserCollector } from './feishu-browser-collection';
 
 interface CollectionStore {
   schemaVersion: 1;
@@ -20,14 +23,18 @@ export interface JobLibraryCollectionOptions {
   importJobs(batch: CollectedJob[]): Promise<JobImportResult>;
   collectBoss(input: { keyword: string; city: string; jobSeekingTypes: JobCollectionRequest['jobSeekingTypes']; educations: JobCollectionRequest['educations']; signal: AbortSignal; deadline: number; accept(job: CollectedJob): Promise<boolean> }): Promise<void>;
   /** 测试替身使用相同分段协议，不改变生产出口限制。 */
-  runner?: { Run(source: AtsSource, signal: AbortSignal): Promise<SourceResult> };
+  runner?: { Run(source: AtsSource, signal: AbortSignal, options?: { useCache?: boolean; refresh?: boolean; reusePartial?: boolean }): Promise<SourceResult> };
+  campus?: Pick<CampusRecruitmentSource, 'Discover'>;
   sources?: RecruitmentSource[];
   taskTimeoutMs?: (count: number) => number;
+  withBrowser?: <T>(run: (browser: BrowserAutomationPort) => Promise<T>) => Promise<T>;
+  feishu?: Pick<FeishuBrowserCollector, 'Run' | 'HasCachedQuery'>;
 }
 /** 仅Host传入的执行约束；不属于页面/模型可指定的采集条件。 */
 export interface JobCollectionExecution {
   signal?: AbortSignal; deadline?: number; idempotencyKey?: string; reconcileOnly?: boolean;
   collectBoss?: JobLibraryCollectionOptions['collectBoss'];
+  withBrowser?: JobLibraryCollectionOptions['withBrowser'];
 }
 function Failure(message: string, code = 'VALIDATION_ERROR'): Error { return Object.assign(new Error(message), { code }); }
 function Message(error: unknown): string { return (error instanceof Error ? error.message : String(error)).slice(0, 500); }
@@ -68,10 +75,14 @@ export class JobLibraryCollectionService {
   private path: string;
   private runner: NonNullable<JobLibraryCollectionOptions['runner']>;
   private readonly sources: RecruitmentSource[];
+  private campus: Pick<CampusRecruitmentSource, 'Discover'>;
+  private feishu: Pick<FeishuBrowserCollector, 'Run' | 'HasCachedQuery'>;
 
   constructor(private readonly options: JobLibraryCollectionOptions) {
     this.path = join(options.workspacePath, 'job-collection', 'state.json');
     this.sources = options.sources ?? BuiltinRecruitmentSources;
+    this.campus = options.campus ?? new CampusRecruitmentSource(join(options.workspacePath, 'job-collection', 'campus-cache.json'));
+    this.feishu = options.feishu ?? new FeishuBrowserCollector(join(options.workspacePath, 'job-collection', 'feishu-browser-cache.json'));
     this.runner = options.runner ?? new AtsSourceRunner(undefined, new AtsFactStore(join(options.workspacePath, 'job-collection', 'ats-facts.json')));
   }
   Initialize(): Promise<void> { return this.initialized ??= this.Load(); }
@@ -100,7 +111,7 @@ export class JobLibraryCollectionService {
     return operation;
   }
   HasActiveTask(): boolean { return this.starting || Boolean(this.active); }
-  HasActiveBrowserTask(): boolean { return this.active?.task.request.channel === 'boss_zhipin'; }
+  HasActiveBrowserTask(): boolean { return Boolean(this.active && (this.active.task.request.channel === 'boss_zhipin' || this.active.task.request.browserFallback)); }
   async ListRecruitmentSources(): Promise<RecruitmentSource[]> {
     await this.Initialize();
     return [...this.sources, ...this.state.customSources].map((source) => ({ ...source, ...this.state.sourceOverrides[source.sourceId] }));
@@ -123,7 +134,8 @@ export class JobLibraryCollectionService {
     await this.Initialize();
     const existing = execution.idempotencyKey ? this.state.tasks.find((task) => task.idempotencyKey === execution.idempotencyKey) : undefined;
     if (!existing && execution.reconcileOnly) throw Failure('原采集任务记录不可用，请先读取岗位库核对，不自动重新采集。', 'JOB_COLLECTION_TASK_MISSING');
-    if (existing && JSON.stringify(existing.request) !== JSON.stringify(JobCollectionInputSchema.parse(input))) throw Failure('采集幂等键对应的参数不一致。');
+    // 旧任务可能缺少新增的缺省字段；两侧统一规范化，升级后重放不能误判参数冲突。
+    if (existing && JSON.stringify(JobCollectionInputSchema.parse(existing.request)) !== JSON.stringify(JobCollectionInputSchema.parse(input))) throw Failure('采集幂等键对应的参数不一致。');
     const task = existing ?? await this.StartJobCollection(input, execution);
     if (this.active?.task.taskId === task.taskId) await this.active.work;
     return (await this.GetJobCollectionTask(task.taskId))!;
@@ -160,7 +172,7 @@ export class JobLibraryCollectionService {
       const abort = () => controller.abort(Date.now() >= task.deadline ? 'timed_out' : 'cancelled');
       if (execution.signal?.aborted) abort();
       else execution.signal?.addEventListener('abort', abort, { once: true });
-      active.work = this.Run(task, selected, controller, execution.collectBoss).finally(() => {
+      active.work = this.Run(task, selected, controller, execution.collectBoss, execution.withBrowser).finally(() => {
         execution.signal?.removeEventListener('abort', abort);
         if (this.active === active) this.active = undefined;
       });
@@ -194,13 +206,15 @@ export class JobLibraryCollectionService {
     this.state = { schemaVersion: 1, customSources: [], sourceOverrides: {}, tasks: [] };
     this.initialized = undefined;
     this.runner = this.options.runner ?? new AtsSourceRunner(undefined, new AtsFactStore(join(workspacePath, 'job-collection', 'ats-facts.json')));
+    this.campus = this.options.campus ?? new CampusRecruitmentSource(join(workspacePath, 'job-collection', 'campus-cache.json'));
+    this.feishu = this.options.feishu ?? new FeishuBrowserCollector(join(workspacePath, 'job-collection', 'feishu-browser-cache.json'));
     await this.Initialize();
   }
   private async Update(task: JobCollectionTask): Promise<void> { task.updatedAt = Date.now(); await this.Persist(); }
-  private async Run(task: JobCollectionTask, sources: RecruitmentSource[], controller: AbortController, collectBoss = this.options.collectBoss): Promise<void> {
+  private async Run(task: JobCollectionTask, sources: RecruitmentSource[], controller: AbortController, collectBoss = this.options.collectBoss, withBrowser = this.options.withBrowser): Promise<void> {
     const timer = setTimeout(() => controller.abort('timed_out'), Math.max(1, task.deadline - Date.now()));
     const seen = new Set<string>(), inspected = new Set<string>();
-    const filtered = { keyword: 0, jobSeekingType: 0, education: 0, unknownJobType: 0, unknownEducation: 0 };
+    const filtered = { expired: 0, keyword: 0, jobSeekingType: 0, education: 0, unknownJobType: 0, unknownEducation: 0 };
     const batch: CollectedJob[] = [];
     const Check = () => { if (controller.signal.aborted) throw Failure('采集已停止。', 'CANCELLED'); };
     const Flush = async () => {
@@ -228,12 +242,18 @@ export class JobLibraryCollectionService {
       Check();
       const firstInspection = !inspected.has(entry.identity);
       if (firstInspection) { inspected.add(entry.identity); task.scanned++; }
-      const text = `${entry.job.title}\n${entry.job.company}\n${entry.job.jd}`.toLowerCase();
+      // 新届公告也可能指向混合门户；官网名称明确过期时拒绝本次入库，不删除用户已有岗位。
+      if (task.request.channel === 'campus_aggregator' && IsExpiredCampusRecruitment(entry.job.title)) {
+        if (firstInspection) filtered.expired++;
+        return task.collected < task.request.targetCount;
+      }
+      const text = (task.request.keywordScope === 'title' ? entry.job.title : `${entry.job.title}\n${entry.job.company}\n${entry.job.jd}`).toLowerCase();
       if (seen.has(entry.identity)) return task.collected < task.request.targetCount;
       if (task.request.keyword && !text.includes(task.request.keyword.toLowerCase())) {
         if (firstInspection) filtered.keyword++;
         return task.collected < task.request.targetCount;
       }
+      if (task.request.channel !== 'boss_zhipin' && task.request.city && task.request.city !== '全国' && !JobCityMatches(entry.job.city, task.request.city)) return task.collected < task.request.targetCount;
       // 两个渠道共用入库前筛选；只使用明确来源字段，不根据 JD 或来源名单推测缺失信息。
       if (task.request.jobSeekingTypes.length && !task.request.jobSeekingTypes.some((type) => type === entry.job.jobSeekingType)) {
         if (firstInspection) { filtered.jobSeekingType++; if (!entry.job.jobSeekingType) filtered.unknownJobType++; }
@@ -251,6 +271,14 @@ export class JobLibraryCollectionService {
       return task.collected < task.request.targetCount;
     };
     try {
+      if (task.request.channel === 'campus_aggregator') {
+        const result = await this.campus.Discover(task.request, controller.signal);
+        Check(); sources = result.sources; task.discovery = result.discovery;
+        task.sources = sources.map((source) => ({ sourceId: source.sourceId, company: source.company, status: 'pending', segments: 0, received: 0 }));
+        task.warnings.push('汇总公告仅用于发现入口；届别/批次来自第三方，需以官网岗位说明核实，未复制第三方摘要或截止日期。');
+        if (result.discovery.skipped) task.warnings.push(`跳过 ${result.discovery.skipped} 条公告：${Object.entries(result.discovery.reasons).map(([reason, count]) => `${reason} ${count}`).join('，')}。来源：${result.discovery.url}`);
+        await this.Update(task);
+      }
       if (task.request.channel === 'boss_zhipin') {
         task.sources.push({ sourceId: 'boss_zhipin', company: 'BOSS直聘', status: 'running', segments: 1, received: 0 });
         await this.Update(task);
@@ -258,16 +286,37 @@ export class JobLibraryCollectionService {
           educations: task.request.educations, signal: controller.signal, deadline: task.deadline, accept: Accept });
         task.sources[0].received = task.scanned; task.sources[0].status = task.collected >= task.request.targetCount ? 'partial' : 'completed';
       } else {
+        // 批量发现时先使用通常可后台读取的来源，浏览器受限来源放后，减少冷启动时串行导航。
+        if (task.request.browserFallback) sources = sources.slice().sort((a,b) => Number(a.platform === 'feishu') - Number(b.platform === 'feishu'));
         for (const source of sources) {
           Check(); if (task.collected >= task.request.targetCount) break;
           const progress = task.sources.find((entry) => entry.sourceId === source.sourceId)!;
           progress.status = 'running'; await this.Update(task);
           try {
+            const Hybrid = async () => {
+              if (!withBrowser) throw Failure('当前宿主未提供飞书浏览器辅助采集，请连接浏览器后重试。', 'BROWSER_UNAVAILABLE');
+              progress.browserAssisted = true; await this.Update(task);
+              const note = '浏览器辅助读取官网原生关键词搜索结果，完成状态只代表该查询范围，不代表企业全部岗位。';
+              if (!task.warnings.includes(note)) task.warnings.push(note);
+              const report = await withBrowser((browser) => this.feishu.Run({ source, request: task.request, signal: controller.signal, deadline: Math.min(task.deadline, Date.now() + 60_000),
+                readPage: CreateFeishuPageReader(browser), accept: (job) => Accept(NormalizeCollectedAtsJob(job)) }));
+              progress.received = report.received; progress.segments++;
+              progress.status = report.errors.length ? 'failed' : report.complete ? 'completed' : 'partial';
+              if (report.errors.length) { progress.error = report.errors.join('；').slice(0,500); task.warnings.push(`${source.company}：${progress.error}`); }
+              await Flush();
+            };
+            if (source.platform === 'feishu' && task.request.browserFallback && await this.feishu.HasCachedQuery(source, task.request)) {
+              await Hybrid(); await this.Update(task); continue;
+            }
             let previousCursor = '', stalled = 0;
             while (task.collected < task.request.targetCount) {
               Check();
-              const result = await this.runner.Run({ ...CreateSource({ url: source.url, company: source.company, ats: source.platform, maxPages: 20 }), id: source.sourceId, companyId: source.companyId }, controller.signal);
+              const result = await this.runner.Run({ ...CreateSource({ url: source.url, company: source.company, ats: source.platform, maxPages: 20 }), id: source.sourceId, companyId: source.companyId }, controller.signal, { useCache: progress.segments === 0, refresh: task.request.refresh, reusePartial: true });
+              if (result.cacheHit && result.snapshotStatus === 'partial' && !task.warnings.includes('复用了近期已读取的部分官网岗位；该缓存不代表企业岗位已完整遍历。')) task.warnings.push('复用了近期已读取的部分官网岗位；该缓存不代表企业岗位已完整遍历。');
               Check(); progress.segments++; progress.received = Math.max(progress.received, result.receivedCount);
+              if (source.platform === 'feishu' && task.request.browserFallback && result.errors.some(error => error.code === 'SOURCE_BROWSER_REQUIRED')) {
+                await Hybrid(); break;
+              }
               for (const job of result.jobs) {
                 if (job.status !== 'open') continue;
                 if (!await Accept(NormalizeCollectedAtsJob(job))) break;
@@ -275,10 +324,11 @@ export class JobLibraryCollectionService {
               // 每段结束即落盘，部分失败和取消不依赖整个来源遍历完毕。
               await Flush();
               const warning = result.errors.map((error) => `${error.code}: ${error.message}`).join('；');
-              this.state.sourceOverrides[source.sourceId] = { ...this.state.sourceOverrides[source.sourceId],
+              if (task.request.channel !== 'campus_aggregator') this.state.sourceOverrides[source.sourceId] = { ...this.state.sourceOverrides[source.sourceId],
                 ...(result.jobs.length ? { lastValidatedAt: result.finishedAt } : {}), lastError: warning || undefined };
               if (task.collected >= task.request.targetCount) { progress.status = result.snapshotStatus === 'complete' ? 'completed' : 'partial'; break; }
               if (result.snapshotStatus === 'complete') { progress.status = 'completed'; break; }
+              if (result.scope === 'single_job' && !result.errors.length) { progress.status = 'partial'; break; }
               if (!result.continuation) throw Failure(warning || '来源未能完成遍历，且没有可继续执行的检查点。');
               const cursor = `${result.continuation.nextPage}:${result.continuation.pendingRows?.length ?? 0}:${result.jobs.length}`;
               stalled = cursor === previousCursor ? stalled + 1 : 0; previousCursor = cursor;
@@ -289,8 +339,8 @@ export class JobLibraryCollectionService {
           } catch (error) {
             if (controller.signal.aborted) throw error;
             progress.status = 'failed'; progress.error = Message(error);
-            this.state.sourceOverrides[source.sourceId] = { ...this.state.sourceOverrides[source.sourceId], lastError: progress.error };
-            task.warnings.push(`${source.company}：${progress.error}`);
+            if (task.request.channel !== 'campus_aggregator') this.state.sourceOverrides[source.sourceId] = { ...this.state.sourceOverrides[source.sourceId], lastError: progress.error };
+            if (task.warnings.length < 50) task.warnings.push(`${source.company}：${progress.error}`);
             await Flush();
           }
           await this.Update(task);
@@ -298,7 +348,7 @@ export class JobLibraryCollectionService {
       }
       await Flush();
       task.status = task.collected >= task.request.targetCount ? 'completed'
-        : task.sources.every((source) => source.status === 'failed') && !task.collected ? 'failed' : 'completed_with_shortage';
+        : task.sources.length > 0 && task.sources.every((source) => source.status === 'failed') && !task.collected ? 'failed' : 'completed_with_shortage';
       if (task.status === 'completed_with_shortage') task.warnings.push(`来源耗尽或部分失败，实际采集 ${task.collected}/${task.request.targetCount} 个岗位。`);
     } catch (error) {
       // 来源后续失败时仍保存此前已确认的有效项；用户取消或超时后不再提交新批次。
@@ -312,6 +362,7 @@ export class JobLibraryCollectionService {
     } finally {
       if (task.request.channel === 'boss_zhipin' && task.sources[0]) task.sources[0].received = task.scanned;
       // 按首次检查时的第一个不满足条件计数，重复来源/累计快照不会放大筛除数量。
+      if (filtered.expired) task.warnings.push(`跳过 ${filtered.expired} 个官网名称明确标注过期届别或批次的岗位（${CampusExpiredThroughYear}及以前）。`);
       if (filtered.keyword + filtered.jobSeekingType + filtered.education) task.warnings.push(`检查过程筛除：关键词 ${filtered.keyword}，求职类型 ${filtered.jobSeekingType}（未知 ${filtered.unknownJobType}），学历 ${filtered.education}（未知 ${filtered.unknownEducation}）。`);
       clearTimeout(timer); task.finishedAt = Date.now(); await this.Update(task);
     }

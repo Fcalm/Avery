@@ -1,5 +1,5 @@
 import { createRequire } from 'node:module';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -57,7 +57,7 @@ describe('Agent持久岗位库端口', () => {
     expect(collected).toMatchObject({ ok: true, requestedCount: 12, collected: 12, inserted: 12, existing: 0 });
     expect(collected).not.toHaveProperty('candidates');
     expect((await service.GetJobCollectionTask(collected.taskId))?.collected).toBe(repo.Query({}).total);
-    const args = { channel: 'company_website' as const, keyword: '产品', maxResults: 5 };
+    const args = { channel: 'company_website' as const, keyword: '产品', maxResults: 5, detailLevel: 'summary' as const };
     const first = await port.Read(args) as any;
     const second = await port.Read({ ...args, cursor: first.nextCursor }) as any;
     const third = await port.Read({ ...args, cursor: second.nextCursor }) as any;
@@ -69,10 +69,57 @@ describe('Agent持久岗位库端口', () => {
     db.prepare('INSERT INTO applications VALUES (?, ?, ?)').run('application-1', ids[0], '已投递');
     const detail = await port.Read({ jobId: ids[0] }) as any;
     expect(detail.items).toHaveLength(1); expect(detail.items[0].applicationStatuses).toEqual(['applied']);
-    expect(detail.items[0].jd.length).toBe(20000); expect(detail.items[0].truncatedFields).toContain('jd');
+    expect(detail.items[0].jd.length).toBe(8000); expect(detail.items[0].truncatedFields).toContain('jd');
+    let text = detail.items[0].jd, cursor = detail.nextCursor;
+    while (cursor) {
+      const part = await port.Read({ jobId: ids[0], cursor }) as any;
+      expect(part.items[0].jdOffset).toBe(text.length);
+      expect(JSON.stringify(part).length).toBeLessThanOrEqual(12000);
+      text += part.items[0].jd; cursor = part.nextCursor;
+    }
+    expect(text).toBe(repo.FindById(ids[0]).jd);
     // 新模块实例模拟确认续跑/进程重放，持久账本阻止再次执行成功的工具调用。
     const replayed = await CreateToolsModule(CreatePorts()).ExecuteToolCall(call, context);
     expect(JSON.parse(replayed.content).replayed).toBe(true); expect(repo.Query({}).total).toBe(12);
+  });
+
+  it('默认简表不带JD或URL；计数不返回岗位，字符预算续页不丢记录', async () => {
+    const { port, repo } = await Fixture({ runner: { Run: async () => Result(100) } });
+    await port.Collect({ request: { channel: 'company_website', targetCount: 100 }, idempotencyKey: 'budget' });
+    expect(await port.Read({ detailLevel: 'count' })).toMatchObject({ total: 100, mode: 'count', items: [], nextCursor: null });
+    const first = await port.Read({}) as any;
+    expect(first.items).toHaveLength(20); expect(first.detailLevel).toBe('brief');
+    expect(first.items[0]).not.toHaveProperty('jd'); expect(first.items[0]).not.toHaveProperty('url');
+    const seen = new Set<string>(); let cursor: string | undefined;
+    do {
+      const result = await port.Read({ detailLevel: 'summary', maxResults: 100, cursor }) as any;
+      expect(JSON.stringify(result).length).toBeLessThanOrEqual(12000);
+      expect(result.items.length).toBeGreaterThan(0);
+      for (const job of result.items) { expect(seen.has(job.jobId)).toBe(false); seen.add(job.jobId); }
+      cursor = result.nextCursor;
+    } while (cursor);
+    expect(seen.size).toBe(repo.Query({}).total);
+    await expect(port.Read({ detailLevel: 'summary', cursor: first.nextCursor })).rejects.toThrow('cursor');
+    await expect(port.Read({ detailLevel: 'detail' })).rejects.toThrow('jobId');
+  });
+
+  it('详情转义膨胀仍受预算限制；正文变化后旧游标拒绝拼接', async () => {
+    const { port, repo } = await Fixture();
+    repo.Upsert({ id: 'escaped', title: '产品', company: '测试', city: '上海', channel: 'company_website', url: '\u0000'.repeat(5000), jd: '\u0001"\\\n😀'.repeat(9000) });
+    const first = await port.Read({ jobId: 'escaped' }) as any;
+    expect(first.items).toHaveLength(1); expect(JSON.stringify(first).length).toBeLessThanOrEqual(12000);
+    expect(first.hasMore).toBe(true);
+    let reconstructed = first.items[0].jd, cursor = first.nextCursor;
+    while (cursor) {
+      const part = await port.Read({ jobId: 'escaped', cursor }) as any;
+      expect(JSON.stringify(part).length).toBeLessThanOrEqual(12000);
+      expect(part.items[0].jdOffset).toBe(reconstructed.length);
+      expect(part.items[0].jd).not.toMatch(/[\ud800-\udbff]$/);
+      reconstructed += part.items[0].jd; cursor = part.nextCursor;
+    }
+    expect(reconstructed).toBe(repo.FindById('escaped').jd);
+    const job = repo.FindById('escaped'); repo.Upsert({ ...job, jd: '已变化' }, job.revision);
+    await expect(port.Read({ jobId: 'escaped', cursor: first.nextCursor })).rejects.toThrow('changed');
   });
 
   it('游标绑定原筛选和数量；坏游标、混合详情参数拒绝，删除和到期岗位不可读', async () => {
@@ -144,6 +191,10 @@ describe('Agent持久岗位库端口', () => {
     const request = { channel: 'company_website' as const, targetCount: 12 };
     const original = await fixture.port.Collect({ request, idempotencyKey: 'persisted' });
     await fixture.service.Close();
+    const path = join(fixture.root, 'job-collection', 'state.json');
+    const stored = JSON.parse(await readFile(path, 'utf8')) as { tasks: Array<{ request: Record<string, unknown> }> };
+    for (const task of stored.tasks) { delete task.request.refresh; delete task.request.browserFallback; delete task.request.keywordScope; }
+    await writeFile(path, JSON.stringify(stored), 'utf8');
     const run = vi.fn(async () => Result());
     const restarted = new JobLibraryCollectionService({ workspacePath: fixture.root, sources: [source], runner: { Run: run },
       importJobs: async (batch) => fixture.repo.ImportCollectedJobs(batch), collectBoss: fixture.pageBrowser });

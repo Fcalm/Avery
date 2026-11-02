@@ -32,6 +32,28 @@ function Setup(statuses = [200], locations: Record<number, string> = {}) {
 const input = () => ({ signal: new AbortController().signal });
 
 describe('ATS public HTTP boundaries', () => {
+  it('代理Fake-IP须经独立解析为公网IP并固定连接；私网、混合结果或核实失败不放行', async () => {
+    Setup();
+    mocks.lookup.mockResolvedValue([{ address: '198.18.0.5', family: 4 }]);
+    const resolve = vi.fn(async () => [{ address: '93.184.216.34', family: 4 }]);
+    const transport = new AtsPublicTransport(resolve);
+    expect((await transport.Request('https://example.com/jobs', input())).status).toBe(200);
+    await transport.Request('https://example.com/other', input()); expect(resolve).toHaveBeenCalledTimes(1);
+    await expect(new AtsPublicTransport(async () => [{ address: '127.0.0.1', family: 4 }]).Request('https://example.com', input())).rejects.toMatchObject({ code: 'SOURCE_ACCESS_DENIED' });
+    mocks.lookup.mockResolvedValue([{ address: '198.18.0.5', family: 4 }, { address: '10.0.0.1', family: 4 }]);
+    const mixed = vi.fn(async () => [{ address: '93.184.216.34', family: 4 }]);
+    await expect(new AtsPublicTransport(mixed).Request('https://example.com', input())).rejects.toMatchObject({ code: 'SOURCE_ACCESS_DENIED' }); expect(mixed).not.toHaveBeenCalled();
+  });
+  it('条件请求和飞书路由头只接受固定用途字段，拒绝换行注入，304原样返回', async () => {
+    Setup([304]);
+    const result = await new AtsPublicTransport().Request('https://example.com/data', { ...input(), ifNoneMatch: '"version"', ifModifiedSince: 'Fri, 30 Oct 2026 00:00:00 GMT', feishuPath: 'campus' });
+    expect(result.status).toBe(304);
+    const headers = mocks.request.mock.calls[0][1].headers;
+    expect(headers['If-None-Match']).toBe('"version"'); expect(headers['website-path']).toBe('campus');
+    expect(headers.Cookie).toBeUndefined(); expect(headers.Authorization).toBeUndefined();
+    await expect(new AtsPublicTransport().Request('https://example.com', { ...input(), ifNoneMatch: 'a\r\nCookie: bad' })).rejects.toMatchObject({ code: 'SOURCE_ACCESS_DENIED' });
+    await expect(new AtsPublicTransport().Request('https://example.com', { ...input(), feishuPath: '../bad' })).rejects.toMatchObject({ code: 'SOURCE_ACCESS_DENIED' });
+  });
   it('公开表单编码正确转义，只接受标量，仍不带认证头', async () => {
     Setup();
     await new AtsPublicTransport().Request('https://example.com/jobs', { ...input(), method: 'POST', bodyEncoding: 'form', body: { title: '研发 & 测试', currentPage: 2, isFrompb: true } });

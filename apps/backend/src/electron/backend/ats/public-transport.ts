@@ -6,6 +6,23 @@ import { AtsError, type PublicResponse, type PublicRequest, type PublicTransport
 
 const MaxBodyBytes = 8 * 1024 * 1024;
 const RetryStatus = new Set([429, 502, 503, 504]);
+type PublicAddress = { address: string; family: number };
+const IsProxyFakeIp = (address: string) => /^198\.(?:18|19)\./.test(address) && isIP(address) === 4;
+
+/** 仅代理Fake-IP使用固定HTTPS公共DNS核实真实地址；不连接虚拟IP、不更改系统DNS或接收任意解析服务URL。 */
+async function ResolveProxyAddress(hostname: string, signal: AbortSignal): Promise<PublicAddress[]> {
+  const url = new URL('https://1.1.1.1/dns-query');
+  url.searchParams.set('name', hostname); url.searchParams.set('type', 'A');
+  let response: Response;
+  try { response = await fetch(url, { signal, redirect: 'error', headers: { Accept: 'application/dns-json' } }); }
+  catch { signal.throwIfAborted(); throw new AtsError('SOURCE_ACCESS_DENIED', 'Proxy Fake-IP could not be verified using public DNS.'); }
+  if (!response.ok) throw new AtsError('SOURCE_ACCESS_DENIED', 'Proxy Fake-IP could not be verified using public DNS.');
+  const text = await response.text();
+  if (text.length > 65536) throw new AtsError('SOURCE_ACCESS_DENIED', 'Public DNS response exceeds its size limit.');
+  const data = JSON.parse(text) as { Status?: number; Answer?: Array<{ type?: number; data?: string }> };
+  if (data.Status !== 0 || !Array.isArray(data.Answer)) throw new AtsError('SOURCE_ACCESS_DENIED', 'Public DNS did not resolve the recruitment host.');
+  return data.Answer.filter((answer) => answer.type === 1 && typeof answer.data === 'string').map((answer) => ({ address: answer.data!, family: 4 }));
+}
 
 async function WithAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
   signal.throwIfAborted();
@@ -33,6 +50,8 @@ function IsPublicIp(address: string): boolean {
 export class AtsPublicTransport implements PublicTransport {
   private active = 0;
   private readonly hosts = new Map<string, { active: number; nextAt: number }>();
+  private readonly proxyAddresses = new Map<string, { addresses: PublicAddress[]; expires: number }>();
+  constructor(private readonly resolveProxyAddress = ResolveProxyAddress) {}
 
   async Request(url: string, input: PublicRequest): Promise<PublicResponse> {
     for (let attempt = 0; ; attempt += 1) {
@@ -53,12 +72,24 @@ export class AtsPublicTransport implements PublicTransport {
     if (url.protocol !== 'https:' || url.username || url.password || (url.port && url.port !== '443')) {
       throw new AtsError('SOURCE_ACCESS_DENIED', 'Only public HTTPS recruitment URLs without credentials are supported.');
     }
+    if ([input.ifNoneMatch, input.ifModifiedSince].some((value) => value !== undefined && (value.length > 500 || /[\r\n]/.test(value)))
+      || (input.feishuPath !== undefined && !/^[a-zA-Z0-9_-]{1,100}$/.test(input.feishuPath))) throw new AtsError('SOURCE_ACCESS_DENIED', 'Invalid public cache or portal routing value.');
     const requestSignal = AbortSignal.any([input.signal, AbortSignal.timeout(10_000)]);
     let addresses;
     try { addresses = await WithAbort(lookup(url.hostname.replace(/^\[|\]$/g, ''), { all: true }), requestSignal); }
     catch (error) {
       if (!input.signal.aborted && requestSignal.aborted) throw Object.assign(new Error('DNS lookup timed out.'), { code: 'ETIMEDOUT' });
       throw error;
+    }
+    requestSignal.throwIfAborted();
+    // 仅“全部为代理保留地址”的结果进入核实；任何混合私网、回环地址仍直接拒绝。
+    if (addresses.length && addresses.every(({ address }) => IsProxyFakeIp(address))) {
+      const cached = this.proxyAddresses.get(url.hostname);
+      addresses = cached && cached.expires > Date.now() ? cached.addresses : await this.resolveProxyAddress(url.hostname, requestSignal);
+      if (addresses.length && addresses.every(({ address }) => IsPublicIp(address))) {
+        if (this.proxyAddresses.size >= 100) this.proxyAddresses.clear();
+        this.proxyAddresses.set(url.hostname, { addresses, expires: Date.now() + 60_000 });
+      }
     }
     requestSignal.throwIfAborted();
     if (!addresses.length || addresses.some(({ address }) => !IsPublicIp(address))) throw new AtsError('SOURCE_ACCESS_DENIED', 'Recruitment host resolves to a non-public address.');
@@ -87,7 +118,10 @@ export class AtsPublicTransport implements PublicTransport {
         input.onRequest?.();
         const req = request(url, {
           method: input.method ?? 'GET', signal,
-          headers: { 'User-Agent': 'Avery-Public-Recruitment-Collector/1.0', Accept: 'application/json,text/html', ...(body ? { 'Content-Type': input.bodyEncoding === 'form' ? 'application/x-www-form-urlencoded' : 'application/json', 'Content-Length': Buffer.byteLength(body) } : {}) },
+          headers: { 'User-Agent': 'Avery-Public-Recruitment-Collector/1.0', Accept: 'application/json,text/html',
+            ...(input.ifNoneMatch ? { 'If-None-Match': input.ifNoneMatch } : {}), ...(input.ifModifiedSince ? { 'If-Modified-Since': input.ifModifiedSince } : {}),
+            ...(input.feishuPath ? { 'website-path': input.feishuPath, 'Portal-Channel': 'saas-career', 'Portal-Platform': 'pc' } : {}),
+            ...(body ? { 'Content-Type': input.bodyEncoding === 'form' ? 'application/x-www-form-urlencoded' : 'application/json', 'Content-Length': Buffer.byteLength(body) } : {}) },
           lookup: (_hostname, options, callback) => options.all ? callback(null, addresses) : callback(null, addresses[0].address, addresses[0].family),
         }, (res) => {
           const chunks: Buffer[] = [];
@@ -98,7 +132,7 @@ export class AtsPublicTransport implements PublicTransport {
             else chunks.push(chunk);
           });
           res.on('error', reject);
-          res.on('end', () => resolve({ status: res.statusCode ?? 0, body: Buffer.concat(chunks).toString('utf8'), url: url.toString(), location: res.headers.location }));
+          res.on('end', () => resolve({ status: res.statusCode ?? 0, body: Buffer.concat(chunks).toString('utf8'), url: url.toString(), location: res.headers.location, etag: res.headers.etag, lastModified: res.headers['last-modified'] }));
         });
         req.on('error', (error) => {
           if (!input.signal.aborted && signal.aborted) reject(Object.assign(new Error('HTTP request timed out.'), { code: 'ETIMEDOUT' }));

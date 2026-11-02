@@ -94,6 +94,24 @@ afterEach(async () => {
 });
 
 describe('AgentBrowserRuntime', () => {
+  it('飞书固定提取只允许冻结的招聘域名，后台读取需要导航授权',async()=>{
+    const runtimeRoot=await mkdtemp(join(tmpdir(),'avery-feishu-origin-'));temporaryRoots.push(runtimeRoot);
+    let currentUrl='https://test.jobs.feishu.cn/campus/';const evals:string[]=[];
+    const runtime=CreateTestRuntime({runtimeRoot,resolveUploadFile:async()=>null,normalizeNavigationUrl:async(value:string)=>value,runBrowserCommand:async({args}:{args:string[]})=>{
+      if(args[0]==='get')return{success:true,data:{url:currentUrl}};
+      if(args[0]==='eval'){evals.push(args[2]);return{success:true,data:{result:{ready:true}}};}return{success:true,data:{}};
+    }});
+    try{
+      expect(await runtime.EvaluateTrustedPage({site:'feishu',expectedOrigin:'https://test.jobs.feishu.cn',expression:'({ready:true})'})).toEqual({ready:true});
+      await expect(runtime.EvaluateTrustedPage({site:'feishu',expectedOrigin:'https://other.jobs.feishu.cn',expression:'({})'})).rejects.toMatchObject({code:'BROWSER_NAVIGATION_DENIED'});
+      currentUrl='https://test.jobs.feishu.cn.evil.example/campus/';
+      await expect(runtime.EvaluateTrustedPage({site:'feishu',expectedOrigin:'https://test.jobs.feishu.cn.evil.example',expression:'({})'})).rejects.toMatchObject({code:'BROWSER_NAVIGATION_DENIED'});
+      currentUrl='https://test.jobs.feishu.cn/campus/';await runtime.SetUnattended(true,{cronTaskId:'cron'});
+      await expect(runtime.EvaluateTrustedPage({site:'feishu',expectedOrigin:'https://test.jobs.feishu.cn',expression:'({})'})).rejects.toMatchObject({code:'BROWSER_CRON_ACCESS_REQUIRED'});
+      await runtime.SetUnattended(true,{cronTaskId:'cron',browserTaskGrant:{mode:'personal_browser_extension',purpose:'job_search',allowNavigation:false,allowFormFill:false,allowExternalSend:false,allowFileUpload:false,resourceIds:[],grantedAt:'2026-11-01T00:00:00Z'}});
+      await expect(runtime.EvaluateTrustedPage({site:'feishu',expectedOrigin:'https://test.jobs.feishu.cn',expression:'({})'})).rejects.toMatchObject({code:'BROWSER_CRON_SCOPE_DENIED'});expect(evals).toHaveLength(1);
+    }finally{await runtime.Close();}
+  });
   it.each([true, false])('新任务冻结 closeTaskTabs=%s，后续切换偏好不改变旧任务，收尾仍撤销引用', async (closeTabs) => {
     const runtimeRoot = await mkdtemp(join(tmpdir(), 'avery-browser-close-policy-'));
     temporaryRoots.push(runtimeRoot);

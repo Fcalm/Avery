@@ -208,8 +208,8 @@ export async function DetectAts(source: AtsSource, transport: PublicTransport, s
   if (/(?:^|\.)(?:zhiye\.com|italent\.cn)$/.test(host)) return 'beisen';
   if (/(?:^|\.)mokahr\.com$/.test(host)) return 'moka';
   if (/(?:^|\.)hotjob\.cn$/.test(host)) return 'hotjob';
-  const recognizedPlatform = /(?:^|\.)(?:jobs\.feishu\.cn|jobs\.larkoffice\.com)$/.test(host) ? 'feishu'
-    : /(?:^|\.)dayee\.com$/.test(host) ? 'dayee'
+  if (/(?:^|\.)(?:jobs\.feishu\.cn|jobs\.larkoffice\.com)$/.test(host)) return 'feishu';
+  const recognizedPlatform = /(?:^|\.)dayee\.com$/.test(host) ? 'dayee'
     : /(?:^|\.)chinahr\.com$/.test(host) ? 'chinahr'
     : /(?:^|\.)zhaopin\.com$/.test(host) ? 'zhaopin' : undefined;
   // 域名识别不代表来源可访问；先检查真实响应，保留平台线索但不把网络失败算成待适配来源。
@@ -230,7 +230,7 @@ export async function DetectAts(source: AtsSource, transport: PublicTransport, s
   // 飞书自定义域名必须同时声明招聘站元数据及平台招聘资源，普通供应商字符串不能作为归属依据。
   if (/"website_info"\s*:/.test(page.body)
     && /https?:\/\/(?:[\w-]+\.)*(?:feishucdn\.com|bytescm\.com)\/[^"'\s<>]*(?:atsx|ATSX)/.test(page.body)) {
-    throw new AtsError('SOURCE_ADAPTER_UNAVAILABLE', 'Public page declares Feishu recruitment metadata and platform resources; adapter is not yet available.', 'feishu');
+    return 'feishu';
   }
   if (/https?:\/\/[^"'\s<>]*jobs\.feishu\.cn\//i.test(page.body)) throw new AtsError('SOURCE_ADAPTER_UNAVAILABLE', 'Public page links a Feishu recruitment source; adapter is not yet available.', 'feishu');
   if (/<(?:a|iframe)\b[^>]*\b(?:href|src)\s*=\s*["']https:\/\/(?:[\w-]+\.)*hotjob\.cn(?:\/|["'])/i.test(page.body)) return 'hotjob';

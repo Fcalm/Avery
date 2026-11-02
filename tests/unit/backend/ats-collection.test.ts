@@ -186,17 +186,17 @@ describe('ATS public source adapters', () => {
     await expect(DetectAts(custom, Transport([], '<html>other</html>'), signal())).rejects.toMatchObject({ code: 'SOURCE_UNKNOWN_PLATFORM' });
   });
   it('已知但未适配平台须验证可访问性，网络失败保留平台线索', async () => {
-    const item = CreateSource({ company: '乙', url: 'https://tenant.jobs.feishu.cn/' });
-    await expect(DetectAts(item, Transport([], '<html>公开招聘</html>'), signal())).rejects.toMatchObject({ code: 'SOURCE_ADAPTER_UNAVAILABLE', detectedPlatform: 'feishu' });
+    const item = CreateSource({ company: '乙', url: 'https://tenant.dayee.com/' });
+    await expect(DetectAts(item, Transport([], '<html>公开招聘</html>'), signal())).rejects.toMatchObject({ code: 'SOURCE_ADAPTER_UNAVAILABLE', detectedPlatform: 'dayee' });
     const denied: PublicTransport = { Request: vi.fn(async (url) => ({ url, status: 403, body: 'denied' })) };
-    await expect(DetectAts(item, denied, signal())).rejects.toMatchObject({ code: 'SOURCE_403', detectedPlatform: 'feishu' });
+    await expect(DetectAts(item, denied, signal())).rejects.toMatchObject({ code: 'SOURCE_403', detectedPlatform: 'dayee' });
     const failed: PublicTransport = { Request: vi.fn(async () => { throw new Error('ENOTFOUND'); }) };
-    await expect(DetectAts(item, failed, signal())).rejects.toMatchObject({ code: 'SOURCE_NETWORK_ERROR', detectedPlatform: 'feishu' });
+    await expect(DetectAts(item, failed, signal())).rejects.toMatchObject({ code: 'SOURCE_NETWORK_ERROR', detectedPlatform: 'dayee' });
   });
   it('飞书自定义招聘入口须有站点元数据及招聘静态资源，普通集成字段不误判', async () => {
     const custom = CreateSource({ company: '乙', url: 'https://careers.example.com/' });
     const html = '<script>window.config={"website_info":{"id":"1"},"BeisenExamAccount":true};</script><img src="https://lf3-atsx-tob.feishucdn.com/obj/static-atsx-online-ee-tob/saas_career/banner.png">';
-    await expect(DetectAts(custom, Transport([], html), signal())).rejects.toMatchObject({ code: 'SOURCE_ADAPTER_UNAVAILABLE', detectedPlatform: 'feishu' });
+    expect(await DetectAts(custom, Transport([], html), signal())).toBe('feishu');
     for (const body of ['<script>window.config={"website_info":{},"BeisenExamAccount":true}</script>', '<img src="https://lf3-atsx-tob.feishucdn.com/obj/static-atsx-online-ee-tob/banner.png">', '<script>beisenInternalCode="abc"</script>']) {
       await expect(DetectAts(custom, Transport([], body), signal())).rejects.toMatchObject({ code: 'SOURCE_UNKNOWN_PLATFORM' });
     }

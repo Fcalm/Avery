@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { ChannelValues, JobSeekingTypeValues } from './enums';
 import type { JobDto } from './dto';
 
-/** 岗位库共享查询：同一维度数组为 OR，不同维度为 AND；空数组与缺省均不限制。 */
+/** 岗位库共享查询：同一维度数组为 OR，不同维度为 AND；空数组与缺省均不限制。排序默认分数降序，旧调用无需补传方向。 */
 export const JobQuerySchema = z.object({
   jobId: z.string().trim().min(1).max(200).optional(),
   keyword: z.string().trim().max(500).default(''),
@@ -14,7 +14,8 @@ export const JobQuerySchema = z.object({
   educations: z.array(z.enum(['college', 'bachelor', 'master', 'doctor'])).max(4).default([]),
   companySizes: z.array(z.enum(['0-20', '20-99', '100-499', '500-999', '1000+'])).max(5).default([]),
   view: z.enum(['all', 'favorites', 'pending', 'applied']).default('all'),
-  sort: z.enum(['created', 'score']).default('score'),
+  sort: z.enum(['created', 'score', 'salary']).default('score'),
+  sortDirection: z.enum(['asc', 'desc']).default('desc'),
   page: z.number().int().min(1).max(1000000).default(1),
   pageSize: z.number().int().min(1).max(100).default(20),
 }).strict();

@@ -107,6 +107,7 @@ async function Bootstrap(): Promise<void> {
       AssertCollectionBrowserAvailable();
       return agent.WithCollectionBrowser(`job-collection-${randomUUID()}`, (browser: import('@avery/agent-sdk').BrowserAutomationPort) => CollectBossJobsToLibrary(browser, input));
     },
+    withBrowser: (run) => { AssertCollectionBrowserAvailable(); return agent.WithCollectionBrowser(`job-collection-${randomUUID()}`, run); },
   });
   await jobCollection.Initialize();
   agent.SetJobLibraryCollectionService(jobCollection, AssertCollectionBrowserAvailable);
@@ -233,7 +234,7 @@ async function Bootstrap(): Promise<void> {
         }
         const args = Array.isArray(typed.payload) ? typed.payload : [typed.payload];
         if (typed.channel === 'evaluation:run-start' && jobCollection.HasActiveBrowserTask()) {
-          PostMessage({ kind: 'result', requestId: typed.requestId, result: { ok: false, error: { code: 'RESOURCE_LOCKED', message: 'BOSS 采集正在占用浏览器，请等待或取消后再运行测评。', retryable: true } } });
+          PostMessage({ kind: 'result', requestId: typed.requestId, result: { ok: false, error: { code: 'RESOURCE_LOCKED', message: '岗位采集正在占用浏览器，请等待或取消后再运行测评。', retryable: true } } });
           return;
         }
         const result = await backend.HandleCommand(typed.channel, typed.requestId, typed.idempotencyKey, ...args);

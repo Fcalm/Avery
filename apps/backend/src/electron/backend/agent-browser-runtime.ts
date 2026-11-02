@@ -979,14 +979,21 @@ export class AgentBrowserRuntime implements BrowserAutomationPort {
    * 为 Host 内置站点适配器执行固定只读提取表达式。该入口不进入 Tool Registry，
    * 调用方只能是随应用发布的受信任代码，模型文本和网页内容不得构造 expression。
    */
-  async EvaluateTrustedPage(input: { site: 'boss_zhipin'; expression: string; signal?: AbortSignal; deadline?: number }): Promise<unknown> {
-    if (input.site !== 'boss_zhipin' || typeof input.expression !== 'string' || !input.expression.trim()
+  async EvaluateTrustedPage(input: { site: 'boss_zhipin' | 'feishu'; expression: string; expectedOrigin?: string; signal?: AbortSignal; deadline?: number }): Promise<unknown> {
+    if (!['boss_zhipin', 'feishu'].includes(input.site) || typeof input.expression !== 'string' || !input.expression.trim()
       || Buffer.byteLength(input.expression, 'utf8') > 256_000) {
       throw new AgentBrowserError('BROWSER_ARGUMENT_INVALID', 'Trusted page extraction input is invalid.');
     }
     const currentUrl = await this.RefreshCurrentUrl(input.signal, input.deadline);
-    if (!IsBossBrowserUrl(currentUrl)) {
+    if (input.site === 'boss_zhipin' && !IsBossBrowserUrl(currentUrl)) {
       throw new AgentBrowserError('BROWSER_NAVIGATION_DENIED', 'The BOSS collector can only inspect a zhipin.com page.');
+    }
+    if (input.site === 'feishu') {
+      this.AssertCronGrant('BrowserNavigate', {});
+      const current = new URL(currentUrl ?? 'about:blank');
+      if (current.protocol !== 'https:' || !/(?:^|\.)(?:jobs\.feishu\.cn|jobs\.larkoffice\.com)$/.test(current.hostname) || current.origin !== input.expectedOrigin) {
+        throw new AgentBrowserError('BROWSER_NAVIGATION_DENIED', 'The Feishu collector can only inspect the frozen recruitment origin.');
+      }
     }
     const encoded = Buffer.from(input.expression, 'utf8').toString('base64');
     const response = await this.RunCommand(['eval', '-b', encoded], { signal: input.signal, deadline: input.deadline });

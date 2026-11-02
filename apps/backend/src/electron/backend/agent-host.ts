@@ -388,6 +388,7 @@ export class AgentHost {
     this.jobLibraryPort = CreateAgentJobLibrary({ collection,
       query: (query) => this.business.ReadJobLibrary(query),
       collectBoss: (input) => { assertBrowserAvailable(); return CollectBossJobsToLibrary(this.browserRuntime, input); },
+      withBrowser: (run) => { assertBrowserAvailable(); return run(this.browserRuntime); },
     });
   }
 
@@ -588,7 +589,7 @@ export class AgentHost {
 
   /** 岗位页短期占用同一授权浏览器；同步加锁防止 Agent/Cron 与采集互相导航或清理。 */
   async WithCollectionBrowser<T>(taskId: string, run: (browser: BrowserAutomationPort) => Promise<T>): Promise<T> {
-    if (this.IsBusy()) throw Object.assign(new Error('Agent 正在运行，请稍后采集 BOSS 岗位。'), { code: 'AGENT_BUSY' });
+    if (this.IsBusy()) throw Object.assign(new Error('Agent 正在运行，请稍后使用浏览器采集岗位。'), { code: 'AGENT_BUSY' });
     this.browserRunId = taskId;
     try {
       await this.SyncBrowserEngine(true);

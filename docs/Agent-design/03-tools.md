@@ -146,9 +146,9 @@ interface AgentToolDefinition<TInput, TOutput> {
 
 `ExportResumeFile` 属于投递场景，用于把已绑定的简历准备成可上传文件；默认场景继续通过简历页面导出文件。工具契约见 5.2 节。
 
-`CollectJobs`与岗位页共享确定性采集和直接入库服务，仅投递场景开放，无需绑定简历。参数为`channel`、`keyword`、`targetCount`、`jobSeekingTypes`、`educations`、可选`city/sourceIds`，默认100、最多1000；BOSS沿用当前授权浏览器，企业官网省略sourceIds时使用应用维护的已启用来源。工具声明local_write、业务幂等、串行任务锁，返回taskId、实际新增/已有/失败数量及来源摘要，不返回全部JD。取消、超时和失败保留已落盘部分并等待在途写入收尾；不发送或投递。
+`CollectJobs`与岗位页共享确定性采集和直接入库服务，仅投递场景开放，无需绑定简历。参数为`channel`、`keyword`、`targetCount`、`jobSeekingTypes`、`educations`、可选`city/sourceIds`，默认100、最多1000；BOSS沿用当前授权浏览器，企业官网省略sourceIds时使用应用维护的已启用来源。`campus_aggregator`从校招汇总缓存按`company/graduationYear/batch/city/keyword`发现ATS入口，无法采集的公告跳过，不保存招聘线索；第三方摘要和截止日期不作为官网事实入库。`refresh`控制重新读取。工具声明local_write、业务幂等、串行任务锁，返回taskId、实际新增/已有/失败数量及来源摘要，不返回全部JD。取消、超时和失败保留已落盘部分并等待在途写入收尾；不发送或投递。`ReadJobs`提供`count/brief/summary/detail`，默认简表、整次回执12000字符预算和游标续读；详情分段返回，见[校招采集与岗位读取](../campus-job-collection.md)。
 
-`ReadJobs`在默认及投递场景均开放，只读持久岗位库；支持渠道、关键词、城市、求职类型、学历、视图、排序、maxResults及cursor，默认20、最多100。后续页必须保留相同筛选和数量，或单独使用jobId获取详情。列表JD上限300字符、详情20000字符，截断由truncatedFields标示；包含已有投递和BOSS联系状态。已入库岗位无需再SaveJob，旧collectionId/candidateId引用返回明确失效错误；SaveJob仍支持浏览器直接观察的完整字段模式。实现与验收见[岗位库采集规划](20-job-library-collection-development-plan.md)第5节。
+`ReadJobs`在默认及投递场景均开放，只读持久岗位库；支持渠道、关键词、城市、求职类型、学历、视图、排序、maxResults及cursor，默认20、最多100，并受整次12000字符预算限制。`count`只返回数量，默认`brief`不带JD或URL，`summary`附最多300字符JD及投递/联系状态，`detail`按jobId分段返回最多8000字符JD。后续页保持相同筛选、detailLevel及数量；详情游标保持jobId。截断由truncatedFields标示，详情正文变化后旧游标失效。已入库岗位无需再SaveJob，旧collectionId/candidateId引用返回明确失效错误；SaveJob仍支持浏览器直接观察的完整字段模式。
 
 `ContactBossJobs` 每次串行联系 1 至 10 个已保存的 BOSS 岗位，使用平台预设首条招呼语或冻结的自定义消息，并可向全部目标发送同一张已授权 PNG/JPEG 图片。它只接受岗位 ID、消息模式和资源 ID；URL、DOM、选择器、页面脚本与重试策略均由 Host 持有。工具要求有效简历绑定和已授权个人浏览器，并通过批次提案确认、发送前检查点、送达验证和 `uncertain` 停止规则防止重复发送。
 

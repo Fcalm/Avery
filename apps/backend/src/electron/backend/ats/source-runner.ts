@@ -3,6 +3,7 @@ import { readFile, mkdir, rename, writeFile, unlink } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { BeisenCareerAdapter, DetectAts, MokaPublicAdapter } from './adapters';
 import { HotjobPublicAdapter } from './hotjob';
+import { FeishuPublicAdapter } from './feishu';
 import { AtsPublicTransport } from './public-transport';
 import { AtsError, type AtsAdapter, type AtsSource, type CollectionContinuation, type NormalizedJob, type PublicTransport, type QuarantinedJob, type SourceResult } from './types';
 
@@ -74,6 +75,25 @@ export class AtsFactStore {
     return structuredClone(this.state.continuations?.[sourceId]);
   }
 
+  /** 完整事实/单岗位入口最多复用6小时；检查点集合最多15分钟，仍保持partial，不能关闭旧岗位。 */
+  async GetCached(source: AtsSource, maxAgeMs: number, allowPartial = false): Promise<SourceRun | undefined> {
+    await this.tail; await this.Initialize();
+    if (this.state.sources[source.id]?.url !== source.url || !source.enabled) return undefined;
+    const run = [...this.state.sourceRuns].reverse().find((run) => run.sourceId === source.id);
+    if (!run || run.quarantineCount || !Number.isFinite(Date.parse(run.finishedAt))) return undefined;
+    const partial = allowPartial && run.health === 'partial' && Boolean(this.state.continuations?.[source.id])
+      && run.errors.every((error) => ['SOURCE_PAGE_LIMIT', 'SOURCE_REQUEST_LIMIT', 'SOURCE_TIMEOUT', 'SOURCE_NETWORK_ERROR'].includes(error.code));
+    if ((run.errors.length > 0 && !partial) || (run.health !== 'healthy' && !(run.scope === 'single_job' && run.health === 'partial') && !partial)
+      || (run.snapshotStatus !== 'complete' && run.scope !== 'single_job' && !partial)
+      || Date.now() - Date.parse(run.finishedAt) > (partial ? Math.min(maxAgeMs, 15 * 60_000) : maxAgeMs)) return undefined;
+    // 分段缓存只使用检查点中实际读到的集合，不混入同来源更早的未确认事实。
+    const facts = partial ? this.state.continuations![source.id].jobs : Object.values(this.state.jobs).filter((job) => job.sourceId === source.id && job.status !== 'stale' && job.status !== 'closed');
+    if (facts.length !== run.normalizedCount) return undefined;
+    const { normalizedCount: _count, quarantineCount: _quarantine, fieldQuality: _quality, ...summary } = run;
+    return structuredClone({ ...summary, jobs: facts, quarantine: [], changes: [], requestCount: 0, cacheHit: true,
+      ...(partial ? { continuation: this.state.continuations![source.id] } : {}) });
+  }
+
   private async Initialize(): Promise<void> {
     if (this.initialized) return;
     return this.initialization ??= this.Load();
@@ -136,11 +156,17 @@ export class AtsFactStore {
 
 export class AtsSourceRunner {
   private readonly adapters: Map<string, AtsAdapter>;
-  constructor(private readonly transport: PublicTransport = new AtsPublicTransport(), private readonly store = new AtsFactStore(), adapters: AtsAdapter[] = [new BeisenCareerAdapter(), new MokaPublicAdapter(), new HotjobPublicAdapter()]) {
+  constructor(private readonly transport: PublicTransport = new AtsPublicTransport(), private readonly store = new AtsFactStore(), adapters: AtsAdapter[] = [new BeisenCareerAdapter(), new MokaPublicAdapter(), new HotjobPublicAdapter(), new FeishuPublicAdapter()]) {
     this.adapters = new Map(adapters.map((adapter) => [adapter.ats, adapter]));
   }
 
-  async Run(source: AtsSource, parentSignal?: AbortSignal): Promise<SourceRun> {
+  async Run(source: AtsSource, parentSignal?: AbortSignal, options?: { useCache?: boolean; refresh?: boolean; reusePartial?: boolean }): Promise<SourceRun> {
+    parentSignal?.throwIfAborted();
+    if (options?.useCache && !options.refresh) {
+      const cached = await this.store.GetCached(source, 6 * 60 * 60_000, options.reusePartial);
+      parentSignal?.throwIfAborted();
+      if (cached) return cached;
+    }
     const started = Date.now();
     const startedAt = new Date(started).toISOString();
     const signal = AbortSignal.any([AbortSignal.timeout(30_000), ...(parentSignal ? [parentSignal] : [])]);
@@ -174,7 +200,7 @@ export class AtsSourceRunner {
       const code = signal.aborted ? 'SOURCE_TIMEOUT' : error instanceof AtsError ? error.code : 'SOURCE_NETWORK_ERROR';
       if (error instanceof AtsError && error.detectedPlatform) result.detectedPlatform = error.detectedPlatform;
       const health = code === 'SOURCE_TIMEOUT' ? 'timeout' : ['SOURCE_401', 'SOURCE_403', 'SOURCE_CAPTCHA', 'SOURCE_LOGIN_REQUIRED', 'SOURCE_ACCESS_DENIED'].includes(code) ? 'access_controlled'
-        : ['SOURCE_PRIVATE_API', 'SOURCE_UNSUPPORTED', 'SOURCE_MULTIPLE_PORTALS', 'SOURCE_UNKNOWN_PLATFORM', 'SOURCE_ADAPTER_UNAVAILABLE'].includes(code) ? 'unsupported' : ['SOURCE_NETWORK_ERROR', 'SOURCE_REQUEST_LIMIT'].includes(code) ? 'partial' : 'schema_changed';
+        : ['SOURCE_PRIVATE_API', 'SOURCE_BROWSER_REQUIRED', 'SOURCE_UNSUPPORTED', 'SOURCE_MULTIPLE_PORTALS', 'SOURCE_UNKNOWN_PLATFORM', 'SOURCE_ADAPTER_UNAVAILABLE'].includes(code) ? 'unsupported' : ['SOURCE_NETWORK_ERROR', 'SOURCE_REQUEST_LIMIT'].includes(code) ? 'partial' : 'schema_changed';
       result.health = health;
       if (code === 'SOURCE_PRIVATE_API') result.transport = 'unsupported_private_api';
       result.errors.push({ code, message: error instanceof Error ? error.message : String(error) });

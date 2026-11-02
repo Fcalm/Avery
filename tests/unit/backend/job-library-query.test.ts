@@ -75,6 +75,15 @@ describe('岗位库共享查询', () => {
     }
   });
 
+  it('多选公司规模在同组取并集，并与学历条件取交集', () => {
+    const { Add, Ids } = Fixture();
+    Add('small', { companySize: '20-99人' });
+    Add('medium', { companySize: '100-499人' });
+    Add('large', { companySize: '1000人以上' });
+    Add('other-education', { companySize: '20-99人', education: '硕士' });
+    expect(Ids({ companySizes: ['20-99', '100-499'], educations: ['bachelor'] })).toEqual(['medium', 'small']);
+  });
+
   it('只用可解析月薪下限，日薪/年薪/面议不满足薪资门槛', () => {
     const { Add, Ids } = Fixture();
     Add('a', { salary: '20-30K' });
@@ -145,6 +154,32 @@ describe('岗位库共享查询', () => {
     repository.Delete('a');
     expect(Ids()).toEqual([]);
   });
+
+  it('分数与入库时间支持双向排序，未知分数始终置后，零分保持有效', () => {
+    const { Add, Ids, db } = Fixture();
+    Add('zero', { matchScore: 0 });
+    Add('high', { matchScore: 95 });
+    Add('unknown');
+    db.prepare('UPDATE jobs SET created_at = 2000 WHERE id = ?').run('high');
+    db.prepare('UPDATE jobs SET created_at = 3000 WHERE id = ?').run('unknown');
+    expect(Ids({ sort: 'score', sortDirection: 'asc' })).toEqual(['zero', 'high', 'unknown']);
+    expect(Ids({ sort: 'score', sortDirection: 'desc' })).toEqual(['high', 'zero', 'unknown']);
+    expect(Ids({ sort: 'created', sortDirection: 'asc' })).toEqual(['zero', 'high', 'unknown']);
+    expect(Ids({ sort: 'created', sortDirection: 'desc' })).toEqual(['unknown', 'high', 'zero']);
+  });
+
+  it('薪资按月薪下限全库排序后分页，同薪资结果稳定，非月薪与面议始终置后', () => {
+    const { Add, Ids, repository } = Fixture();
+    Add('low', { salary: '15-25K' });
+    Add('high-a', { salary: '3-4万/月' });
+    Add('high-b', { salary: '30000-40000元/月' });
+    Add('daily', { salary: '500元/天' });
+    Add('negotiable', { salary: '面议' });
+    Add('annual', { salary: '40万元/年' });
+    expect(Ids({ sort: 'salary', sortDirection: 'asc' })).toEqual(['low', 'high-a', 'high-b', 'annual', 'daily', 'negotiable']);
+    const pages = [1, 2, 3].map((page) => repository.Query({ sort: 'salary', sortDirection: 'desc', page, pageSize: 2 }));
+    expect(pages.flatMap((page) => page.items.map((job) => job.id))).toEqual(['high-a', 'high-b', 'low', 'annual', 'daily', 'negotiable']);
+  });
 });
 
 describe('岗位库批量删除', () => {
@@ -205,7 +240,8 @@ describe('月薪解析与岗位查询契约', () => {
   ])('月薪 %s => %s', (input, expected) => expect(MonthlySalaryMinimum(input)).toBe(expected));
 
   it('查询有确定默认值，拒绝非法枚举、页码、页大小与未知字段', () => {
-    expect(ParseJobQuery({})).toMatchObject({ page: 1, pageSize: 20, sort: 'score', view: 'all', channels: [] });
+    expect(ParseJobQuery({})).toMatchObject({ page: 1, pageSize: 20, sort: 'score', sortDirection: 'desc', view: 'all', channels: [] });
+    expect(() => ParseJobQuery({ sortDirection: 'DESC; DROP TABLE jobs' })).toThrow('岗位筛选参数无效');
     for (const input of [{ page: 0 }, { page: 1.5 }, { pageSize: 101 }, { channels: ['invalid'] }, { keyword: 5 }, { keyword: 'x'.repeat(501) }, { view: 'unknown' }, { sort: 'arbitrary SQL' }, { foo: true }]) {
       expect(() => ParseJobQuery(input)).toThrow('岗位筛选参数无效');
     }

@@ -67,7 +67,7 @@ export interface JobCollectionFilters {
 
 export interface JobCollectionCandidate {
   candidateId: string;
-  platform: 'boss_zhipin' | 'beisen' | 'moka' | 'hotjob';
+  platform: 'boss_zhipin' | 'beisen' | 'moka' | 'hotjob' | 'feishu';
   sourceJobId: string;
   title: string;
   company: string;
@@ -86,7 +86,7 @@ export interface JobCollectionCandidate {
 export interface JobCollectionPort {
   Collect(input: {
     sessionId: string;
-    platforms: Array<'boss_zhipin' | 'beisen' | 'moka' | 'hotjob'>;
+    platforms: Array<'boss_zhipin' | 'beisen' | 'moka' | 'hotjob' | 'feishu'>;
     queries: JobCollectionQuery[];
     /** ATS 来源由企业公开招聘 URL 指定，事实同步与筛选后的会话候选分离。 */
     sources?: Array<{ url: string; company: string; maxPages?: 5 | 10 | 20 }>;
@@ -104,7 +104,7 @@ export interface JobCollectionPort {
     warnings: string[];
     /** ATS 条件匹配统计；语义理解及是否保存仍交给 Agent。 */
     matching?: { processed: number; reused: number; failed: number };
-    sourceRuns?: Array<{ sourceId: string; ats?: 'beisen' | 'moka' | 'hotjob'; health: string; snapshotStatus: string; transport: string; jobCount: number; nextPage?: number; errors: Array<{ code: string; message: string }> }>;
+    sourceRuns?: Array<{ sourceId: string; ats?: 'beisen' | 'moka' | 'hotjob' | 'feishu'; health: string; snapshotStatus: string; transport: string; jobCount: number; nextPage?: number; errors: Array<{ code: string; message: string }> }>;
   }>;
   SaveCandidate(input: {
     sessionId: string;
@@ -115,15 +115,16 @@ export interface JobCollectionPort {
 }
 
 /** Agent列表数量和正文长度集中配置；Host投影与工具Schema共用同一上限。 */
-export const JobLibraryReadLimits = { defaultCount: 20, maxCount: 100, summaryJdChars: 300, detailJdChars: 20000 } as const;
+export const JobLibraryReadLimits = { defaultCount: 20, maxCount: 100, summaryJdChars: 300, detailJdChars: 8000, responseChars: 12000 } as const;
 
 /** 持久化岗位库端口；采集与页面共用任务和入库语义，不返回会话临时候选。 */
 export interface JobLibraryPort {
   Collect(input: {
     request: {
-      channel: 'boss_zhipin' | 'company_website'; keyword?: string; targetCount?: number;
+      channel: 'boss_zhipin' | 'company_website' | 'campus_aggregator'; keyword?: string; keywordScope?: 'all' | 'title'; targetCount?: number;
       jobSeekingTypes?: Array<'intern' | 'campus_recruitment' | 'social_recruitment'>;
       educations?: Array<'college' | 'bachelor' | 'master' | 'doctor'>; city?: string; sourceIds?: string[];
+      company?: string; graduationYear?: number; batch?: string; refresh?: boolean; browserFallback?: boolean;
     };
     idempotencyKey: string; signal?: AbortSignal; deadline?: number; reconcileOnly?: boolean;
   }): Promise<{
@@ -131,11 +132,14 @@ export interface JobLibraryPort {
     requestedCount: number; collected: number; inserted: number; existing: number; failedWrites: number;
     scanned: number; skippedDeleted: number; warnings: string[];
     sourceCount?: number; warningCount?: number; truncated?: boolean;
+    coverage?: { examined: number; failed: number; notRun: number; browserAssisted: number };
+    discovery?: { total: number; matched: number; sources: number; skipped: number; cacheHit: boolean; fetchedAt: number; url: string; reasons: Record<string, number> };
     sources: Array<{ sourceId: string; company: string; status: string; received: number; error?: string }>;
   }>;
   Read(input: {
     jobId?: string; channel?: 'boss_zhipin' | 'company_website' | 'other'; keyword?: string;
     maxResults?: number; cursor?: string; cities?: string[];
+    detailLevel?: 'count' | 'brief' | 'summary' | 'detail';
     jobSeekingTypes?: Array<'intern' | 'campus_recruitment' | 'social_recruitment'>;
     educations?: Array<'college' | 'bachelor' | 'master' | 'doctor'>;
     view?: 'all' | 'favorites' | 'pending' | 'applied'; sort?: 'created' | 'score';
@@ -260,7 +264,7 @@ export interface BrowserAutomationPort {
   /** 下一次创建任务时冻结关闭策略；关闭自动关闭后仍须撤销控制权，不能保留旧任务授权。 */
   SetCloseTaskTabs?(value: boolean): Promise<void> | void;
   /** 仅供受信任 Host 适配器运行固定页面提取表达式；不存在对应模型工具，也不得传入模型生成的脚本。 */
-  EvaluateTrustedPage?(input: { site: 'boss_zhipin'; expression: string; signal?: AbortSignal; deadline?: number }): Promise<unknown>;
+  EvaluateTrustedPage?(input: { site: 'boss_zhipin' | 'feishu'; expression: string; expectedOrigin?: string; signal?: AbortSignal; deadline?: number }): Promise<unknown>;
 }
 
 /** 文件读取端口：由宿主注入（agent-file-reader）；路径校验与资源边界由宿主持有，模块不可绕过。 */

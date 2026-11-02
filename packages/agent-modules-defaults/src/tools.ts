@@ -235,26 +235,36 @@ function BuildRegistry(): RegisteredAgentTool[] {
       resourceKeys: () => ['resume:export'], requiredResources: ['bound_resume'], allowedScenarios: ['application'],
     },
     {
-      definition: CreateDefinition('CollectJobs', 'Use to collect jobs directly into the persistent job library, without a bound resume. It does not apply or send messages. Uses the same service and conditions as the job-library collection button. BOSS requires keyword, city and an authorized logged-in personal browser. Company websites use enabled application-maintained sources; omit sourceIds to use all enabled sources, and never invent source IDs or supply recruitment URLs. Waits for completion and returns taskId, actual inserted/existing counts and warnings, not job bodies. targetCount counts unique successfully stored or existing jobs; a shortage or failure may retain partial writes. Call ReadJobs afterwards to select jobs; do not SaveJob for collected results. Example: {"channel":"boss_zhipin","keyword":"产品经理","city":"广州","targetCount":20,"jobSeekingTypes":["intern"],"educations":["bachelor"]}.', {
+      definition: CreateDefinition('CollectJobs', 'Collect real jobs directly into the persistent library; no bound resume, application or messaging. BOSS requires keyword, city and the authorized personal browser. company_website uses enabled maintained sources; omit sourceIds for all, never invent IDs. campus_aggregator searches cached sma-wiki announcements using company, graduationYear, batch, city and keyword, then collects from supported ATS (Beisen, Moka, Hotjob, Feishu). Unreadable, unsupported or WeChat entries are skipped with counts/reasons, not saved as jobs or leads. Third-party summaries, deadlines and cohort labels are not official job facts. Uses valid caches unless refresh=true. Returns actual inserted/existing counts and a bounded summary. Afterwards use ReadJobs count/brief to select candidates, not SaveJob. Example: {"channel":"campus_aggregator","graduationYear":2027,"city":"上海","keyword":"产品","targetCount":20}.', {
         type: 'object', properties: {
-          channel: { type: 'string', enum: ['boss_zhipin', 'company_website'], description: 'Collection channel: BOSS or company recruitment websites.' },
+          channel: { type: 'string', enum: ['boss_zhipin', 'company_website', 'campus_aggregator'], description: 'BOSS, maintained company sources, or campus announcements that discover supported ATS entry points.' },
           keyword: { type: 'string', maxLength: 500, description: 'Job keyword, e.g. 产品经理. Required and nonempty for BOSS; optional for company websites.' },
+          keywordScope: { type: 'string', enum: ['all','title'], default: 'all', description: 'Use title when the user specifies a job role: only job names may match. all (default) also matches company and JD. Feishu can prune nonmatching titles before detail requests.' },
           targetCount: { type: 'integer', minimum: 1, maximum: 1000, default: 100, description: 'Target number of unique jobs successfully stored or already in the library. Default 100, maximum 1000.' },
-          jobSeekingTypes: { type: 'array', maxItems: 3, uniqueItems: true, items: { type: 'string', enum: ['intern', 'campus_recruitment', 'social_recruitment'] }, description: 'Job types: internship, campus or social recruitment. Omit or [] for unrestricted. OR within this list.' },
+          jobSeekingTypes: { type: 'array', maxItems: 3, uniqueItems: true, items: { type: 'string', enum: ['intern', 'campus_recruitment', 'social_recruitment'] }, description: 'OR within job types. Omit or [] for unrestricted on BOSS/company sources; campus_aggregator defaults to officially classified campus or internship jobs and skips unknown types.' },
           educations: { type: 'array', maxItems: 4, uniqueItems: true, items: { type: 'string', enum: ['college', 'bachelor', 'master', 'doctor'] }, description: 'Education requirements. Omit or [] for unrestricted. AND with keyword and job type.' },
-          city: { type: 'string', minLength: 1, maxLength: 100, description: 'BOSS search city in Chinese, e.g. 广州 or 全国. Do not supply for company websites.' },
+          city: { type: 'string', minLength: 1, maxLength: 100, description: 'Chinese city, e.g. 上海 or 全国. Required for BOSS. ATS jobs must explicitly list the requested city.' },
+          company: { type: 'string', minLength: 1, maxLength: 200, description: 'Company name filter for campus_aggregator only.' },
+          graduationYear: { type: 'integer', minimum: 2020, maximum: 2100, description: 'Graduating year, e.g. 2027, for campus announcement discovery only. Explicitly expired cohorts/batches through 2026 are removed even when this is omitted; mixed/new/unknown cohorts are retained. Official titles explicitly marked expired are excluded at import. Third-party cohort labels are not official job eligibility.' },
+          batch: { type: 'string', minLength: 1, maxLength: 100, description: 'Campus announcement batch substring, e.g. 秋招 or 提前批. campus_aggregator only.' },
+          refresh: { type: 'boolean', default: false, description: 'Refresh cached source data. Omit to reuse valid cache.' },
+          browserFallback: { type: 'boolean', default: false, description: 'Allow the selected authorized browser to read Feishu lists rejected by HTTP. Scripts use native keyword search and pagination; details are fetched in bounded batches. Reserves the browser, requires navigation authorization for unattended runs. Omit for HTTP-only collection.' },
           sourceIds: { type: 'array', minItems: 1, maxItems: 1000, uniqueItems: true, items: { type: 'string', minLength: 1, maxLength: 100 }, description: 'Optional existing enabled company source IDs. Omit to use all enabled sources. Do not supply for BOSS.' },
         }, required: ['channel'], additionalProperties: false,
-        allOf: [{ if: { properties: { channel: { const: 'boss_zhipin' } } }, then: { required: ['keyword', 'city'], properties: { keyword: { minLength: 1 } }, not: { required: ['sourceIds'] } }, else: { not: { required: ['city'] } } }],
+        allOf: [
+          { if: { properties: { channel: { const: 'boss_zhipin' } } }, then: { required: ['keyword', 'city'], properties: { keyword: { type: 'string', minLength: 1 } }, not: { required: ['sourceIds'] } } },
+          { if: { properties: { channel: { const: 'campus_aggregator' } } }, then: { not: { required: ['sourceIds'] } }, else: { not: { anyOf: [{ required: ['company'] }, { required: ['graduationYear'] }, { required: ['batch'] }] } } },
+        ],
       }),
       timeoutMs: 1_800_000, isConcurrencySafe: false, sideEffect: 'local_write', risk: 'low', confirmation: 'scenario_policy', idempotency: 'required', allowedScenarios: ['application'],
-      resourceKeys: (input) => input.channel === 'boss_zhipin' ? ['jobs:library', 'jobs:collection', 'browser:avery-default'] : ['jobs:library', 'jobs:collection'],
+      resourceKeys: (input) => input.channel === 'boss_zhipin' || input.browserFallback === true ? ['jobs:library', 'jobs:collection', 'browser:avery-default'] : ['jobs:library', 'jobs:collection'],
       limits: { timeoutMs: 1_800_000, maxInputBytes: 131072, maxOutputBytes: 131072 },
     },
     {
-      definition: CreateDefinition('ReadJobs', 'Use to search the persistent job library after collection or before selecting a job. Read-only; no browser or bound resume required. List mode returns at most maxResults jobs with short JD summaries, saved application statuses, total and nextCursor. To continue, repeat the same filters and maxResults with the returned cursor. Use jobId alone to read one job in detail. truncatedFields explicitly lists shortened fields. This tool does not collect, save, apply or send messages.', {
+      definition: CreateDefinition('ReadJobs', 'Read the local job library without collecting or applying. For broad searches use detailLevel=count, refine filters, then read brief candidates (default; no JD or URL). summary adds a short JD and URL. detail requires jobId and returns JD in recoverable segments. Each response has a total character budget; maxResults is an upper bound. Reuse nextCursor with identical filters, detailLevel and maxResults; with jobId it continues that job detail. Do not exhaust all pages just to filter in the model. truncatedFields lists shortened fields.', {
         type: 'object', properties: {
-          jobId: { type: 'string', minLength: 1, maxLength: 200, description: 'One persisted job ID. Use separately from list filters and cursor.' },
+          jobId: { type: 'string', minLength: 1, maxLength: 200, description: 'One persisted job ID, separately from list filters. May use its nextCursor to continue JD.' },
+          detailLevel: { type: 'string', enum: ['count', 'brief', 'summary', 'detail'], description: 'count: total only; brief: compact candidates (default); summary: short JD; detail: one jobId, paginated JD (default with jobId).' },
           channel: { type: 'string', enum: ['boss_zhipin', 'company_website', 'other'] },
           keyword: { type: 'string', maxLength: 500, description: 'Search job title, company and JD.' },
           maxResults: { type: 'integer', minimum: 1, maximum: JobLibraryReadLimits.maxCount, default: JobLibraryReadLimits.defaultCount, description: 'Maximum jobs in this response, default 20 and at most 100. Keep unchanged when using nextCursor.' },
@@ -998,7 +1008,7 @@ export function CreateToolsModule(ports: AgentDefaultPorts): ToolsModule {
   async function CollectJobs(context: ToolContext, callId: string, args: Record<string, unknown>): Promise<ToolExecutionResult> {
     const collection = context.ports.jobLibrary;
     if (!collection) return CreateToolResult(callId, { ok: false, code: 'RESOURCE_NOT_AUTHORIZED', message: 'Scripted job collection is unavailable in the current host.' });
-    if (args.channel === 'boss_zhipin' && context.unattended && (!context.browserTaskGrant || context.browserTaskGrant.revokedAt || !context.browserTaskGrant.allowNavigation)) {
+    if ((args.channel === 'boss_zhipin' || args.browserFallback === true) && context.unattended && (!context.browserTaskGrant || context.browserTaskGrant.revokedAt || !context.browserTaskGrant.allowNavigation)) {
       return CreateToolResult(callId, { ok: false, code: 'BROWSER_CRON_SCOPE_DENIED', message: 'This CronTask has no active BrowserTaskGrant for job navigation.' }, { disposition: 'pause' });
     }
     const idempotencyKey = CreateIdempotencyKey(context, 'CollectJobs', HashArguments({ callId, args }));

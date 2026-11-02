@@ -519,7 +519,7 @@ export class JobCollectionService implements JobCollectionPort {
 
   async Collect(input: Parameters<JobCollectionPort['Collect']>[0]): ReturnType<JobCollectionPort['Collect']> {
     AssertActive(input.signal, input.deadline);
-    if (input.platforms.length && input.platforms.every((platform) => platform === 'beisen' || platform === 'moka' || platform === 'hotjob')) return this.CollectAts(input);
+    if (input.platforms.length && input.platforms.every((platform) => platform === 'beisen' || platform === 'moka' || platform === 'hotjob' || platform === 'feishu')) return this.CollectAts(input);
     if (!input.queries.length || input.sources?.length) throw new JobCollectionError('INVALID_TOOL_ARGUMENTS', 'BOSS requires keyword/city queries and must not include ATS sources.');
     const collector = input.platforms.length === 1 ? this.collectorRegistry.get(input.platforms[0]) : undefined;
     if (!collector) throw new JobCollectionError('JOB_COLLECTION_PLATFORM_UNSUPPORTED', 'The requested job platform is not supported.');

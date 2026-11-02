@@ -60,6 +60,41 @@ test('岗位分页 IPC 经生产业务 Worker 查询，写入与投递变更后�
   }
 });
 
+test('岗位筛选 IPC 保留多选条件与双向排序，跨页按完整岗位库顺序返回', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'avery-job-sort-'));
+  const business = CreateBusinessStoreClient({ workspacePath: directory });
+  try {
+    await business.ready;
+    const jobs = [
+      { id: 'low', salary: '15-25K', matchScore: 20, companySize: '20-99人' },
+      { id: 'high', salary: '3-4万/月', matchScore: 90, companySize: '100-499人' },
+      { id: 'unknown', salary: '面议', companySize: '20-99人' },
+      { id: 'excluded', salary: '50-60K', matchScore: 99, companySize: '1000人以上' },
+    ];
+    for (const job of jobs) await business.UpsertJob({ company: '测试企业', title: '工程师', city: '上海',
+      experience: '', channel: 'company_website', jd: '', ...job });
+    const backend = CreateBackend({ container: { jobs: { QueryJobs: (input) => business.QueryJobs(input) } } });
+    const filters = { companySizes: ['20-99', '100-499'] };
+    for (const sort of ['score', 'salary']) {
+      for (const sortDirection of ['asc', 'desc']) {
+        const ids = [];
+        for (let page = 1; page <= 3; page++) {
+          const result = await backend.HandleCommand('workspace:jobs-query', `${sort}-${sortDirection}-${page}`, undefined,
+            { ...filters, sort, sortDirection, page, pageSize: 1 });
+          assert.equal(result.ok, true);
+          assert.equal(result.data.total, 3);
+          ids.push(...result.data.items.map((job) => job.id));
+        }
+        assert.deepEqual(ids, sortDirection === 'asc' ? ['low', 'high', 'unknown'] : ['high', 'low', 'unknown']);
+      }
+    }
+  } finally {
+    await business.call('Close');
+    business.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test('批量采集经真实 Worker 幂等入库，墓碑不复活，迁移保留来源偏好和任务记录', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'avery-job-import-'));
   const destination = await mkdtemp(join(tmpdir(), 'avery-job-import-target-'));

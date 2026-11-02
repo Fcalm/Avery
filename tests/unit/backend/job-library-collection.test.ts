@@ -10,6 +10,8 @@ import { BuiltinRecruitmentSources } from '../../../apps/backend/src/electron/ba
 import { CollectBossJobsToLibrary } from '../../../apps/backend/src/electron/backend/job-collection-service';
 import { CreateBackend, ReadOnlyChannels, WriteCommandChannels } from '../../../apps/backend/src/router';
 import type { AtsSource, NormalizedJob, SourceResult } from '../../../apps/backend/src/electron/backend/ats/types';
+import type { FeishuBrowserCollector } from '../../../apps/backend/src/electron/backend/feishu-browser-collection';
+import type { BrowserAutomationPort } from '@avery/agent-sdk';
 
 const Database = createRequire(import.meta.url)('better-sqlite3');
 const cleanup: Array<() => Promise<void> | void> = [];
@@ -48,6 +50,72 @@ async function Finished(service: JobLibraryCollectionService) {
 }
 
 describe('批量采集入库', () => {
+  it('名称范围不接收仅JD提到关键词的岗位，保留原全文搜索兼容行为',async()=>{
+    const {service,repo}=await Service({runner:{Run:async()=>Result([{...Job('a'),title:'算法工程师',description:'与产品经理协作'},{...Job('b'),title:'产品经理',description:'产品设计'}])}});
+    await service.StartJobCollection({channel:'company_website',keyword:'产品',keywordScope:'title',targetCount:10});expect(await Finished(service)).toMatchObject({collected:1});expect(repo.Query({}).total).toBe(1);
+    await service.StartJobCollection({channel:'company_website',keyword:'产品',targetCount:10});expect(await Finished(service)).toMatchObject({collected:2});expect(repo.Query({}).total).toBe(2);
+  });
+  it('批量企业先HTTP再浏览器，源失败隔离，浏览器辅助沿用同一服务且只入库真实岗位', async () => {
+    const feishuSource = { ...BuiltinRecruitmentSources[0], sourceId:'feishu', company:'飞书企业', platform:'feishu' as const, url:'https://test.jobs.feishu.cn/campus/' };
+    const httpSource = { ...BuiltinRecruitmentSources[0], sourceId:'http' };
+    const order: string[] = [];
+    const run = vi.fn(async (source: AtsSource) => { order.push(source.id); return source.id === 'http' ? Result([Job('http','http')]) : Result([], {health:'unsupported',snapshotStatus:'unknown',errors:[{code:'SOURCE_BROWSER_REQUIRED',message:'HTTP rejected'}]}); });
+    const feishu = { HasCachedQuery: vi.fn(async()=>false), Run: vi.fn(async(input:Parameters<FeishuBrowserCollector['Run']>[0])=>{
+      order.push('browser');await input.accept({...Job('feishu','feishu'),ats:'feishu',id:'feishu:tenant:feishu'});return{received:1,complete:true,errors:[]};
+    }) };
+    const withBrowser: NonNullable<ConstructorParameters<typeof JobLibraryCollectionService>[0]['withBrowser']> = async work=>work({} as BrowserAutomationPort);
+    const {service,repo}=await Service({sources:[feishuSource,httpSource],runner:{Run:run},feishu,withBrowser});
+    await service.StartJobCollection({channel:'company_website',browserFallback:true,targetCount:10});const task=await Finished(service);
+    expect(order).toEqual(['http','feishu','browser']);expect(repo.Query({}).total).toBe(2);
+    expect(task.sources.find(s=>s.sourceId==='feishu')).toMatchObject({status:'completed',browserAssisted:true});
+    expect(task.warnings).toContain('浏览器辅助读取官网原生关键词搜索结果，完成状态只代表该查询范围，不代表企业全部岗位。');
+  });
+  it('未开启辅助不启动浏览器；缓存命中跳过失败HTTP探测；失败企业不阻断后续来源',async()=>{
+    const sources=[1,2].map(n=>({...BuiltinRecruitmentSources[0],sourceId:`feishu-${n}`,platform:'feishu' as const,url:`https://test${n}.jobs.feishu.cn/campus/`}));
+    const run=vi.fn(async()=>Result([],{health:'unsupported',snapshotStatus:'unknown',errors:[{code:'SOURCE_BROWSER_REQUIRED',message:'HTTP rejected'}]}));
+    const feishu={HasCachedQuery:vi.fn(async()=>true),Run:vi.fn(async(input:Parameters<FeishuBrowserCollector['Run']>[0])=>{
+      if(input.source.sourceId==='feishu-1')throw new Error('页面要求登录');
+      await input.accept({...Job('two',input.source.sourceId),ats:'feishu',id:'feishu:tenant:two'});return{received:1,complete:true,errors:[]};
+    })};
+    const withBrowser: NonNullable<ConstructorParameters<typeof JobLibraryCollectionService>[0]['withBrowser']> = async work=>work({} as BrowserAutomationPort);
+    const {service,repo}=await Service({sources,runner:{Run:run},feishu,withBrowser});
+    await service.StartJobCollection({channel:'company_website',targetCount:10});expect(await Finished(service)).toMatchObject({collected:0});expect(feishu.Run).not.toHaveBeenCalled();
+    run.mockClear();await service.StartJobCollection({channel:'company_website',targetCount:10,browserFallback:true});const task=await Finished(service);
+    expect(run).not.toHaveBeenCalled();expect(repo.Query({}).total).toBe(1);expect(task.sources[0]).toMatchObject({status:'failed',error:'页面要求登录'});expect(task.sources[1].status).toBe('completed');
+  });
+  it('校招汇总复用批量入库；只用官网JD和城市，跳过项不建立线索或岗位', async () => {
+    const campus = { Discover: vi.fn(async () => ({ sources: [BuiltinRecruitmentSources[0]], discovery: { total: 20, matched: 5, sources: 1, skipped: 4, cacheHit: true, fetchedAt: Date.now(), url: 'https://campus.sma-wiki.cn/campus/campus_recruit.html', reasons: { 仅微信公众号: 4 } } })) };
+    const { service, repo, run, directory } = await Service({ campus, runner: { Run: async () => Result([{ ...Job('sh'), jobType: 'campus_recruitment' }, { ...Job('bj'), locations: ['北京'] }]) } });
+    await service.StartJobCollection({ channel: 'campus_aggregator', graduationYear: 2027, city: '上海', targetCount: 10 });
+    const task = await Finished(service);
+    expect(task).toMatchObject({ status: 'completed_with_shortage', collected: 1, discovery: { matched: 5, skipped: 4 } });
+    expect(repo.Query({}).items[0]).toMatchObject({ title: '开发工程师 sh', city: '上海' });
+    expect(repo.Query({}).items[0].deadline).toBeUndefined();
+    expect((await readFile(join(directory, 'job-collection/state.json'), 'utf8'))).not.toContain('recruitmentLeads');
+    expect(campus.Discover).toHaveBeenCalledTimes(1); expect(run).not.toHaveBeenCalled();
+  });
+  it('校招汇总没有支持的入口时返回不足，不执行内置企业或伪装成功采到岗位', async () => {
+    const campus = { Discover: vi.fn(async () => ({ sources: [], discovery: { total: 2, matched: 2, sources: 0, skipped: 2, cacheHit: false, fetchedAt: Date.now(), url: 'https://campus.sma-wiki.cn/', reasons: { 仅微信公众号: 2 } } })) };
+    const { service, repo, run } = await Service({ campus });
+    await service.StartJobCollection({ channel: 'campus_aggregator', targetCount: 1 });
+    expect(await Finished(service)).toMatchObject({ status: 'completed_with_shortage', collected: 0 });
+    expect(repo.Query({}).total).toBe(0); expect(run).not.toHaveBeenCalled();
+  });
+  it('新届别入口中的明确旧届岗位也不入库，保留跨届/未知届别及用户已存岗位', async () => {
+    const campus = { Discover: vi.fn(async () => ({ sources: [BuiltinRecruitmentSources[0]], discovery: { total: 1, matched: 1, sources: 1, skipped: 0, cacheHit: true, fetchedAt: Date.now(), url: 'https://campus.sma-wiki.cn/', reasons: {} } })) };
+    const jobs = ['产品经理（26届）', '产品经理（27届）', '产品经理（26/27届）', '产品经理'].map((title, i) => ({ ...Job(String(i)), title, jobType: 'campus_recruitment' as const }));
+    const { service, repo } = await Service({ campus, runner: { Run: async () => Result(jobs) } });
+    const stored = NormalizeCollectedAtsJob(jobs[0]);
+    repo.ImportCollectedJobs([stored]);
+    const old = repo.FindById(stored.job.id);
+    repo.Upsert({ ...old, favorite: true, note: '用户保留' }, old.revision);
+    await service.StartJobCollection({ channel: 'campus_aggregator', targetCount: 10 });
+    const task = await Finished(service);
+    expect(task).toMatchObject({ collected: 3, inserted: 3, existing: 0 });
+    expect(task.warnings).toContain('跳过 1 个官网名称明确标注过期届别或批次的岗位（2026及以前）。');
+    expect(repo.Query({}).total).toBe(4);
+    expect(repo.FindById(stored.job.id)).toMatchObject({ favorite: true, note: '用户保留' });
+  });
   it('ATS正文保留纯文本换行及HTML段落/列表分行，不输出原始HTML或脚本', () => {
     const job = Job('formatted');
     job.description = '<p>岗位职责</p><ul><li>设计产品<br>跟进研发</li><li>沟通协作</li></ul><script>不要显示</script>';
@@ -106,6 +174,8 @@ describe('批量采集入库', () => {
     await service.StartJobCollection({ channel: 'company_website', keyword: '开发', targetCount: 31 });
     expect(await Finished(service)).toMatchObject({ status: 'completed', collected: 31, inserted: 31 });
     expect(run).toHaveBeenCalledTimes(2); expect(repo.Query({}).total).toBe(31); expect(first.snapshotStatus).toBe('partial');
+    expect(run.mock.calls[0][2]).toMatchObject({ useCache: true, reusePartial: true });
+    expect(run.mock.calls[1][2]).toMatchObject({ useCache: false });
   });
   it.each(['company_website', 'boss_zhipin'] as const)('%s 入库前按求职类型和学历 AND 筛选，跳过的岗位不占目标数量', async (channel) => {
     const jobs: NormalizedJob[] = [

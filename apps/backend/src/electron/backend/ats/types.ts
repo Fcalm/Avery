@@ -1,4 +1,4 @@
-export type AtsType = 'beisen' | 'moka' | 'hotjob';
+export type AtsType = 'beisen' | 'moka' | 'hotjob' | 'feishu';
 export type SourceHealth = 'healthy' | 'partial' | 'timeout' | 'schema_changed' | 'access_controlled' | 'empty' | 'unsupported';
 export type SnapshotStatus = 'complete' | 'partial' | 'unknown';
 export type Transport = 'public_api' | 'public_portal_json' | 'public_portal_html' | 'browser' | 'unsupported_private_api';
@@ -68,6 +68,9 @@ export interface ProbeResult {
   listUrl?: string;
   listHtml?: string;
   recruitmentUrl?: string;
+  feishuPath?: string;
+  directJobId?: string;
+  companyName?: string;
   recruitType?: 1 | 2 | 12 | 13;
   transport: Transport;
 }
@@ -86,6 +89,8 @@ export interface SourceResult {
   durationMs: number;
   requestCount: number;
   receivedCount: number;
+  scope?: 'single_job';
+  cacheHit?: boolean;
   publicJobCount?: number;
   detectedPlatform?: string;
   /** 未完成全量遍历的检查点；不代表增量同步或完整快照。 */
@@ -104,8 +109,9 @@ export interface CollectionContinuation {
   pendingRows?: Array<Record<string, unknown>>;
 }
 
-export interface PublicResponse { status: number; body: string; url: string }
-export interface PublicRequest { method?: 'GET' | 'POST'; body?: unknown; bodyEncoding?: 'json' | 'form'; signal: AbortSignal; onRequest?: () => void }
+export interface PublicResponse { status: number; body: string; url: string; etag?: string; lastModified?: string }
+/** 缓存校验和飞书公开站点路由是固定用途字段，不开放任意请求头或认证信息。 */
+export interface PublicRequest { method?: 'GET' | 'POST'; body?: unknown; bodyEncoding?: 'json' | 'form'; signal: AbortSignal; onRequest?: () => void; ifNoneMatch?: string; ifModifiedSince?: string; feishuPath?: string }
 export interface PublicTransport {
   Request(url: string, input: PublicRequest): Promise<PublicResponse>;
 }

@@ -386,6 +386,12 @@ describe('agent-modules-defaults', () => {
     expect(JSON.parse(result.content)).toMatchObject({ ok: false, code: 'BROWSER_CRON_SCOPE_DENIED' });
   });
 
+  it('飞书辅助在无后台导航授权时不进入采集服务',async()=>{
+    const collect=vi.fn(),base=CreateToolContext();
+    const context=CreateToolContext({scenarioId:'application',unattended:true,ports:{...base.ports,jobLibrary:{Collect:collect,Read:vi.fn()}}});
+    const result=await CreateToolsModule(CreatePorts()).ExecuteToolCall({id:'feishu-ungranted',type:'function',function:{name:'CollectJobs',arguments:'{"channel":"campus_aggregator","browserFallback":true,"keyword":"产品"}'}},context);
+    expect(collect).not.toHaveBeenCalled();expect(JSON.parse(result.content).code).toBe('BROWSER_CRON_SCOPE_DENIED');
+  });
   it('企业官网默认使用应用维护的来源，定时运行无需浏览器授权，数量不足保留真实摘要', async () => {
     const collect = vi.fn(async () => ({ status: 'completed_with_shortage' as const, taskId: 'collection-ats', requestedCount: 100, collected: 15, inserted: 15, existing: 0, failedWrites: 0, scanned: 15, skippedDeleted: 0, warnings: ['来源耗尽'], sources: [] }));
     const context = CreateToolContext({ scenarioId: 'application', unattended: true, ports: { ...CreateToolContext().ports, jobLibrary: { Collect: collect, Read: vi.fn() } } });
@@ -394,14 +400,28 @@ describe('agent-modules-defaults', () => {
     expect(collect).toHaveBeenCalledWith(expect.objectContaining({ request: { channel: 'company_website' } }));
   });
 
-  it('采集 Schema 拒绝旧协议、BOSS缺少城市、企业城市和超过上限的数量', async () => {
+  it('采集 Schema 拒绝旧协议、BOSS缺少城市、汇总来源ID和超过上限的数量', async () => {
     const collect = vi.fn();
     const context = CreateToolContext({ scenarioId: 'application', ports: { ...CreateToolContext().ports, jobLibrary: { Collect: collect, Read: vi.fn() } } });
-    for (const args of [{ platforms: ['boss_zhipin'], queries: [] }, { channel: 'boss_zhipin', keyword: '产品' }, { channel: 'company_website', city: '广州' }, { channel: 'company_website', targetCount: 1001 }]) {
+    for (const args of [{ platforms: ['boss_zhipin'], queries: [] }, { channel: 'boss_zhipin', keyword: '产品' }, { channel: 'campus_aggregator', sourceIds: ['invented'] }, { channel: 'company_website', graduationYear: 2027 }, { channel: 'company_website', targetCount: 1001 }]) {
       const result = await CreateToolsModule(CreatePorts()).ExecuteToolCall({ id: 'bad-ats', type: 'function', function: { name: 'CollectJobs', arguments: JSON.stringify(args) } }, context);
       expect(JSON.parse(result.content).ok).toBe(false);
     }
     expect(collect).not.toHaveBeenCalled();
+  });
+
+  it('校招汇总和企业城市参数透传；只读工具四种详细程度可用', async () => {
+    const collect = vi.fn(async () => ({ status: 'completed_with_shortage' as const, taskId: 'campus', requestedCount: 1, collected: 0, inserted: 0, existing: 0, failedWrites: 0, scanned: 0, skippedDeleted: 0, warnings: [], sources: [] }));
+    const read = vi.fn(async () => ({ total: 0, items: [] }));
+    const context = CreateToolContext({ scenarioId: 'application', ports: { ...CreateToolContext().ports, jobLibrary: { Collect: collect, Read: read } } });
+    const tools = CreateToolsModule(CreatePorts());
+    for (const request of [{ channel: 'campus_aggregator', graduationYear: 2027, city: '上海', company: '企业', batch: '秋招' }, { channel: 'company_website', city: '广州' }]) {
+      expect(JSON.parse((await tools.ExecuteToolCall({ id: JSON.stringify(request), type: 'function', function: { name: 'CollectJobs', arguments: JSON.stringify(request) } }, context)).content).ok).toBe(true);
+      expect(collect).toHaveBeenLastCalledWith(expect.objectContaining({ request }));
+    }
+    for (const detailLevel of ['count', 'brief', 'summary', 'detail']) {
+      expect(JSON.parse((await tools.ExecuteToolCall({ id: detailLevel, type: 'function', function: { name: 'ReadJobs', arguments: JSON.stringify({ detailLevel, ...(detailLevel === 'detail' ? { jobId: 'one' } : {}) }) } }, context)).content).ok).toBe(true);
+    }
   });
 
   it('SaveJob 旧引用明确失效，不从会话残留文本重建旧候选', async () => {
@@ -423,6 +443,7 @@ describe('agent-modules-defaults', () => {
     expect(collect.requiredResources).toBeUndefined(); expect(collect.timeoutMs).toBe(1800000);
     expect(collect.resourceKeys!({ channel: 'boss_zhipin' })).toContain('browser:avery-default');
     expect(collect.resourceKeys!({ channel: 'company_website' })).not.toContain('browser:avery-default');
+    expect(collect.resourceKeys!({ channel: 'campus_aggregator', browserFallback:true })).toContain('browser:avery-default');
     const read = vi.fn(async () => ({ total: 1, hasMore: false, items: [{ jobId: 'job-1' }] }));
     const context = CreateToolContext({ boundResume: null, ports: { ...CreateToolContext().ports, jobLibrary: { Read: read, Collect: vi.fn() } } });
     const result = await tools.ExecuteToolCall({ id: 'read-jobs', type: 'function', function: { name: 'ReadJobs', arguments: '{"channel":"boss_zhipin","maxResults":5}' } }, context);
