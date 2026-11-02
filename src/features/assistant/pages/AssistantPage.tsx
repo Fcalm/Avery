@@ -22,7 +22,6 @@ import {
 } from '../../../features/assistant/api/agentQueries';
 import { Button, DialogButton, Modal, Select } from '../../../shared/components/UI';
 import { Icon, type IconName } from '../../../shared/components/Icon';
-import { BrandAssets } from '../../../shared/brand';
 import { MarkdownText } from '../../../shared/components/MarkdownText';
 import { ASSISTANT_MAIN_MIN_WIDTH } from '../../../shared/layoutConstants';
 import { CalculateTokenSharePercent, CreateSessionTokenUsage, CreateSessionUsagePresentation } from '../usagePresentation';
@@ -1253,7 +1252,7 @@ function ConfirmationComposer({ title, description, preview, confirmLabel, onCan
 
 /** 新建对话界面：两个场景统一使用原型问候语，与输入框一起垂直居中。 */
 function EmptyAssistant({ name }: { name: string }) {
-  return <div className="empty"><h1><img className="empty-greeting-icon" src={BrandAssets.icon} alt="" aria-hidden="true" /><span>{name ? `你好${name}，需要什么帮助？` : '你好，需要什么帮助？'}</span></h1></div>;
+  return <div className="empty"><h1><span>{name ? `你好${name}，需要什么帮助？` : '你好，需要什么帮助？'}</span></h1></div>;
 }
 
 export { AssistantPage };

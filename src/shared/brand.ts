@@ -4,8 +4,14 @@ export const BrandAssets = {
   wordmark: './assets/avery-wordmark.png',
 } as const;
 
-/** 原图中 alpha >= 128 的可见底边比例；字标以 A 的底边为准，排除 y 的下伸部分。 */
+/** 原图中 alpha >= 128 的可见边界；字标取 A，排除透明留白与 y 的下伸部分。资源更换时同步更新。 */
+export const BrandGeometry = {
+  icon: { width: 1254, height: 1254, top: 261, bottom: 1076 },
+  wordmark: { width: 1983, height: 793, capitalTop: 101, capitalBottom: 584 },
+} as const;
+
+/** 顶部栏按可见底边对齐，启动页复用相同资源度量。 */
 export const BrandBaselines = {
-  icon: 1076 / 1254,
-  wordmarkCapital: 585 / 793,
+  icon: BrandGeometry.icon.bottom / BrandGeometry.icon.height,
+  wordmarkCapital: BrandGeometry.wordmark.capitalBottom / BrandGeometry.wordmark.height,
 } as const;

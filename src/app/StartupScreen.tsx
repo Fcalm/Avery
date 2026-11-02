@@ -1,9 +1,19 @@
 import { useEffect, useRef, useState } from 'react';
-import { BrandAssets } from '../shared/brand';
+import { BrandAssets, BrandGeometry } from '../shared/brand';
 import { Button, EmptyState } from '../shared/components/UI';
 import { Icon } from '../shared/components/Icon';
 
 type Props = { animationComplete: boolean; onAnimationComplete: () => void };
+
+// 字标保留原画布尺寸，起点向右留出放大图标所需的间距。
+const WordmarkBox = { x: 96, y: 0, width: 280, height: 112 };
+const WordmarkScale = Math.min(WordmarkBox.width / BrandGeometry.wordmark.width, WordmarkBox.height / BrandGeometry.wordmark.height);
+const WordmarkOffsetY = (WordmarkBox.height - BrandGeometry.wordmark.height * WordmarkScale) / 2;
+// 图片含透明留白；按 A 的实际上下边界计算图标大小与位置，使两者可见轮廓等高、底边对齐。
+const SplashIconSize = (BrandGeometry.wordmark.capitalBottom - BrandGeometry.wordmark.capitalTop) * WordmarkScale
+  * BrandGeometry.icon.height / (BrandGeometry.icon.bottom - BrandGeometry.icon.top);
+const SplashIconY = WordmarkBox.y + WordmarkOffsetY + BrandGeometry.wordmark.capitalTop * WordmarkScale
+  - BrandGeometry.icon.top / BrandGeometry.icon.height * SplashIconSize;
 
 /** 开屏只播放一次；动画结束后保持最后一帧，由上层等待工作空间就绪。 */
 export function StartupScreen({ animationComplete, onAnimationComplete }: Props) {
@@ -44,7 +54,7 @@ export function StartupScreen({ animationComplete, onAnimationComplete }: Props)
 
   return <div className="app-screen app-splash" role="status" aria-live="polite" aria-label="正在启动 Avery" aria-busy="true">
     <div className="app-splash-content">
-      <svg className="app-splash-brand" viewBox="0 0 360 112" role="img" aria-label="Avery">
+      <svg className="app-splash-brand" viewBox={`0 0 ${WordmarkBox.x + WordmarkBox.width} ${WordmarkBox.height}`} role="img" aria-label="Avery">
         <defs>
           <linearGradient id="avery-splash-reveal-gradient" x1="0" y1="0" x2="1" y2="0">
             <stop offset="0" stopColor="white" /><stop offset="0.76" stopColor="white" /><stop offset="1" stopColor="white" stopOpacity="0" />
@@ -56,8 +66,8 @@ export function StartupScreen({ animationComplete, onAnimationComplete }: Props)
           </mask>
         </defs>
         <g mask="url(#avery-splash-reveal-mask)">
-          <image href={BrandAssets.icon} x="0" y="24" width="64" height="64" preserveAspectRatio="xMidYMid meet" />
-          <image href={BrandAssets.wordmark} x="80" y="0" width="280" height="112" preserveAspectRatio="xMidYMid meet" />
+          <image href={BrandAssets.icon} x="0" y={SplashIconY} width={SplashIconSize} height={SplashIconSize} preserveAspectRatio="xMidYMid meet" />
+          <image href={BrandAssets.wordmark} {...WordmarkBox} preserveAspectRatio="xMidYMid meet" />
         </g>
       </svg>
     </div>

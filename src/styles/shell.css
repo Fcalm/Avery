@@ -483,7 +483,6 @@ button { background: none; border: 0; }
   text-align: center; animation: viewIn .5s var(--ease) both;
 }
 .empty h1 { display: inline-flex; align-items: center; justify-content: center; gap: .35em; max-width: 100%; font-size: 26px; font-weight: 640; letter-spacing: -.02em; margin: 0; }
-.empty-greeting-icon { display: block; width: 32px; height: 32px; flex: none; object-fit: contain; }
 .empty h1 > span { min-width: 0; overflow-wrap: anywhere; }
 
 /* 输入框底座：消息区之上的渐变衬底 + 792px 居中列 */
@@ -1857,8 +1856,7 @@ body.settings-has-configured-api-key .model-set-scope .set-field:has(input[type=
   background-color: var(--control-focus-surface);
 }
 :root .tr-search:focus-within { background-color: var(--control-focus-surface); }
-/* 导航栏搜索单独使用浅绿聚焦底，内部输入区保持透明，避免出现白色拼块。 */
-:root .sb-history-search:focus-within { background-color: var(--accent-soft); }
+/* 导航栏搜索聚焦不改变颜色，内部输入区保持透明，避免全局聚焦底色形成色块。 */
 :root .sb-history-search input:focus { background: transparent; }
 
 .app-toast[data-tone="pending"] > .ph { animation: toastPendingSpin .8s linear infinite; }
