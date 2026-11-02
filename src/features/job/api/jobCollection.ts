@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { JobCollectionInput } from '@avery/contracts';
 import { platformClient, Unwrap } from '../../../shared/platform/platformClient';
 import { WORKSPACE_QUERY_KEY } from '../../workspace/api/workspaceData';
+import { StartManualJobCollection } from './manualJobCollection';
 
 const TaskKey = ['workspace', 'job-collection-task'] as const;
 const SourcesKey = ['workspace', 'recruitment-sources'] as const;
@@ -28,16 +29,17 @@ export function useJobCollection(open: boolean) {
     if (current.status !== 'running') void client.invalidateQueries({ queryKey: SourcesKey });
   }, [task.data, client]);
   const start = useMutation({
-    mutationFn: (input: JobCollectionInput) => Unwrap(platformClient.workspace.StartJobCollection(input)),
+    mutationFn: (input: JobCollectionInput) => StartManualJobCollection(input, {
+      ListSources: () => Unwrap(platformClient.workspace.ListRecruitmentSources()),
+      EnableSource: (id) => Unwrap(platformClient.workspace.SetRecruitmentSourceEnabled(id, true)),
+      Start: (request) => Unwrap(platformClient.workspace.StartJobCollection(request)),
+    }),
     onSuccess: (result) => client.setQueryData(TaskKey, result),
+    onSettled: () => client.invalidateQueries({ queryKey: SourcesKey }),
   });
   const cancel = useMutation({
     mutationFn: (id: string) => Unwrap(platformClient.workspace.CancelJobCollection(id)),
     onSuccess: (result) => client.setQueryData(TaskKey, result),
   });
-  const setEnabled = useMutation({
-    mutationFn: (input: { id: string; enabled: boolean }) => Unwrap(platformClient.workspace.SetRecruitmentSourceEnabled(input.id, input.enabled)),
-    onSuccess: () => client.invalidateQueries({ queryKey: SourcesKey }),
-  });
-  return { sources, task, start, cancel, setEnabled };
+  return { sources, task, start, cancel };
 }

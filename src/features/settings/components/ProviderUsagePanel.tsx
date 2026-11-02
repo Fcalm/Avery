@@ -60,15 +60,15 @@ export function ProviderUsagePanel({ onConfigure }: { onConfigure: () => void })
   if (import.meta.env.DEV && import.meta.env.VITE_PROVIDER_USAGE_DEMO === '1') providers.push(CreateDemoSubscriptionUsage());
   async function OpenDashboard(provider: string) {
     try { await Unwrap(platformClient.desktop.OpenProviderDashboard(provider)); }
-    catch (error) { ShowNotice(error instanceof Error ? error.message : '无法打开供应商控制台。'); }
+    catch (error) { ShowNotice(error instanceof Error ? error.message : '无法打开供应商控制台。', "error"); }
   }
   async function AuthorizeMimo() {
     SetAuthorizing(true);
-    ShowNotice('请在 MiMo 窗口中完成登录，余额验证成功后窗口会自动关闭。');
+    ShowNotice('请在 MiMo 窗口中完成登录，余额验证成功后窗口会自动关闭。', "info");
     try {
       const result = await Unwrap(platformClient.desktop.OpenMimoAccountLogin());
-      ShowNotice(result.authorized ? 'MiMo 登录成功，正在刷新余额。' : '登录窗口已关闭，正在检查授权状态。');
-    } catch (error) { ShowNotice(error instanceof Error ? error.message : 'MiMo 登录失败，请稍后重试。'); }
+      ShowNotice(result.authorized ? 'MiMo 登录成功，正在刷新余额。' : '登录窗口已关闭，正在检查授权状态。', result.authorized ? 'success' : 'info');
+    } catch (error) { ShowNotice(error instanceof Error ? error.message : 'MiMo 登录失败，请稍后重试。', "error"); }
     finally { SetAuthorizing(false); await queryClient.invalidateQueries({ queryKey: ['provider-account-usage'] }); }
   }
   async function DisconnectMimo() {
@@ -77,8 +77,8 @@ export function ProviderUsagePanel({ onConfigure }: { onConfigure: () => void })
       await Unwrap(platformClient.desktop.DisconnectMimoAccount());
       // 先移除缓存余额，再读取主进程的撤销结果，避免菜单重开时闪现旧授权数据。
       queryClient.setQueryData<Awaited<ReturnType<typeof GetProviderUsage>>>(['provider-account-usage'], (current) => current ? { ...current, providers: current.providers.map((provider) => provider.provider === 'MIMO' ? { ...provider, status: 'needs_auth', balances: [], updatedAt: undefined, canDisconnect: false, message: '登录 MiMo 控制台后可查看余额。' } : provider) } : current);
-      ShowNotice('已断开 MiMo 授权，模型 API Key 保持不变。');
-    } catch (error) { ShowNotice(error instanceof Error ? error.message : '断开授权失败，请稍后重试。'); }
+      ShowNotice('已断开 MiMo 授权，模型 API Key 保持不变。', "success");
+    } catch (error) { ShowNotice(error instanceof Error ? error.message : '断开授权失败，请稍后重试。', "error"); }
     finally { SetDisconnecting(false); await queryClient.invalidateQueries({ queryKey: ['provider-account-usage'] }); }
   }
   return <>

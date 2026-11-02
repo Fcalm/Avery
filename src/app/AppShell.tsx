@@ -76,9 +76,9 @@ const BrandMark = <img src={BrandAssets.icon} alt="" />;
 
 function AppShell({ page, onNavigate, onRestartOnboarding, settingsTab, onRequestSettingsTab, children }: { page: PageId; onNavigate: (page: PageId) => void; onRestartOnboarding: () => void; settingsTab: SettingTab; onRequestSettingsTab: (tab: SettingTab) => void; children: ReactNode }) {
   const conversations = useConversations();
-  const renameConversation = useRenameConversation({ onConflict: () => ShowNotice('会话已在其他窗口被修改，已刷新为最新版本'), onFailure: () => ShowNotice('会话重命名失败，请稍后重试。') });
-  const pinConversation = useSetConversationPinned({ onConflict: () => ShowNotice('会话已在其他窗口被修改，已刷新为最新版本'), onFailure: () => ShowNotice('会话置顶失败，请稍后重试。') });
-  const archiveConversation = useSetConversationArchived({ onConflict: () => ShowNotice('会话已在其他窗口被修改，已刷新为最新版本'), onFailure: () => ShowNotice('会话归档失败，请稍后重试。') });
+  const renameConversation = useRenameConversation({ onConflict: () => ShowNotice('会话已在其他窗口被修改，已刷新为最新版本', "error"), onFailure: () => ShowNotice('会话重命名失败，请稍后重试。', "error") });
+  const pinConversation = useSetConversationPinned({ onConflict: () => ShowNotice('会话已在其他窗口被修改，已刷新为最新版本', "error"), onFailure: () => ShowNotice('会话置顶失败，请稍后重试。', "error") });
+  const archiveConversation = useSetConversationArchived({ onConflict: () => ShowNotice('会话已在其他窗口被修改，已刷新为最新版本', "error"), onFailure: () => ShowNotice('会话归档失败，请稍后重试。', "error") });
   const { settings, setSettings, saveSettingsNow } = useSettingsStore();
   // 开发者页是带独立侧栏的顶级页面：面包屑、Ctrl K 与导航指示器都要读取评测域的共享状态。
   const { projects: evalProjects, selectedProject: selectedEvalProject, SelectProject: SelectEvalProject, view: developerView, OpenCreate: OpenCreateEval } = useDeveloperConsole();
@@ -268,11 +268,11 @@ function AppShell({ page, onNavigate, onRestartOnboarding, settingsTab, onReques
       try {
         const runs = await ListEvalRuns();
         if (runs.some((run) => !['completed', 'failed', 'cancelled'].includes(run.status))) {
-          ShowNotice('存在未结束的测评，请先取消或等待完成');
+          ShowNotice('存在未结束的测评，请先取消或等待完成', "info");
           return;
         }
       } catch (error) {
-        ShowNotice(error instanceof Error ? error.message : '无法确认测评运行状态');
+        ShowNotice(error instanceof Error ? error.message : '无法确认测评运行状态', "error");
         return;
       }
     }
@@ -281,11 +281,11 @@ function AppShell({ page, onNavigate, onRestartOnboarding, settingsTab, onReques
       await saveSettingsNow(next);
       setSettings(() => next);
     } catch (error) {
-      ShowNotice(error instanceof Error ? error.message : '保存开发者模式失败');
+      ShowNotice(error instanceof Error ? error.message : '保存开发者模式失败', "error");
       return;
     }
     if (!enabled && page === 'developer') onNavigate('settings');
-    ShowNotice(enabled ? '开发者模式已开启' : '开发者模式已关闭');
+    ShowNotice(enabled ? '开发者模式已开启' : '开发者模式已关闭', "success");
   }
 
   function HandleResumePanel() {
@@ -315,7 +315,7 @@ function AppShell({ page, onNavigate, onRestartOnboarding, settingsTab, onReques
     const pinned = !(conversation.pinned ?? false);
     SetRowMenu(null);
     pinConversation.mutate({ id, pinned, expectedRevision: conversation.revision }, {
-      onSuccess: () => ShowNotice(pinned ? `已置顶「${conversation.title}」` : `已取消置顶「${conversation.title}」`),
+      onSuccess: () => ShowNotice(pinned ? `已置顶「${conversation.title}」` : `已取消置顶「${conversation.title}」`, "success"),
     });
   }
   async function ConfirmArchiveConversation() {
@@ -338,7 +338,7 @@ function AppShell({ page, onNavigate, onRestartOnboarding, settingsTab, onReques
             archiveConversation.mutate({ id, archived: false }, {
               onSuccess: () => {
                 if (wasActive) setActiveConversationId(id);
-                ShowNotice(`已恢复「${title}」`);
+                ShowNotice(`已恢复「${title}」`, "success");
               },
             });
           },
@@ -400,7 +400,7 @@ function AppShell({ page, onNavigate, onRestartOnboarding, settingsTab, onReques
     const next = { ...removedGroups, [target.projectId]: target.name };
     SetRemovedGroups(next);
     SaveLocalMap(RemovedGroupsKey, next);
-    ShowNotice(`已移除分组「${target.name}」，组内对话回到「最近」`);
+    ShowNotice(`已移除分组「${target.name}」，组内对话回到「最近」`, "success");
   }
   function OpenUserMenu(trigger: HTMLButtonElement) {
     if (userMenuPosition) { SetUserMenuPosition(null); return; }
@@ -670,7 +670,7 @@ function AppShell({ page, onNavigate, onRestartOnboarding, settingsTab, onReques
       <button className="menu-item plain" type="button" onClick={() => { SetUserMenuPosition(null); onRestartOnboarding(); }}><Icon name="recovery" size={16} /><span className="mt">重新查看使用教程</span></button>
       {settings.developerMode && <button className="menu-item plain" type="button" onClick={() => { SetUserMenuPosition(null); onNavigate('developer'); }}><Icon name="code" size={16} /><span className="mt">开发者工具</span></button>}
       <div className="menu-sep" aria-hidden="true" />
-      <button className="menu-item plain um-danger" type="button" onClick={() => ShowNotice('退出功能将在 Electron 客户端接入后启用')}><Icon name="logout" size={16} /><span className="mt">退出登录</span></button>
+      <button className="menu-item plain um-danger" type="button" onClick={() => ShowNotice('退出功能将在 Electron 客户端接入后启用', "info")}><Icon name="logout" size={16} /><span className="mt">退出登录</span></button>
     </div>}
 
     <Modal

@@ -1,6 +1,8 @@
 import { Children, cloneElement, isValidElement, useEffect, useId, useRef, useState, type ButtonHTMLAttributes, type KeyboardEvent as ReactKeyboardEvent, type ReactElement, type ReactNode, type RefObject } from 'react';
 import { createPortal } from 'react-dom';
 import { Icon } from './Icon';
+import { SelectMenu } from './SelectMenu';
+import { GetNextEnabledOption } from './selectMenuLayout';
 
 interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   variant?: 'primary' | 'secondary' | 'quiet' | 'danger';
@@ -129,20 +131,112 @@ function DialogButton({ tone = 'ghost', className = '', children, ...props }: Bu
   return <button type="button" className={`${base} ${className}`.trim()} {...props}>{children}</button>;
 }
 
-function FormField({ label, children, hint }: { label: ReactNode; children: ReactNode; hint?: string }) {
-  return <label className="form-field"><span>{label}</span>{children}{hint && <small>{hint}</small>}</label>;
+/** 校验错误与控件关联；既有自行设置 aria-invalid 的表单继续保留自己的状态。 */
+function FormField({ label, children, hint, error, required = false }: { label: ReactNode; children: ReactNode; hint?: string; error?: string; required?: boolean }) {
+  const fieldId = useId();
+  const errorId = `${fieldId}-error`;
+  const controls = Children.map(children, (child) => {
+    if ((!required && !error) || !isValidElement<Record<string, unknown>>(child)) return child;
+    if (child.type === Select) return cloneElement(child, {
+      ariaRequired: required || child.props.ariaRequired,
+      ariaInvalid: Boolean(error) || child.props.ariaInvalid,
+      ariaDescribedBy: error ? [child.props.ariaDescribedBy, errorId].filter(Boolean).join(' ') : child.props.ariaDescribedBy,
+    });
+    if (typeof child.type !== 'string' || !['input', 'textarea', 'select'].includes(child.type)) return child;
+    return cloneElement(child, {
+      'aria-required': required || child.props['aria-required'],
+      'aria-invalid': Boolean(error) || child.props['aria-invalid'],
+      'aria-describedby': error ? [child.props['aria-describedby'], errorId].filter(Boolean).join(' ') : child.props['aria-describedby'],
+    });
+  });
+  return <label className={`form-field${error ? ' has-error' : ''}`}><span>{required && <i className="profile-field-required" aria-hidden="true">*</i>}{label}</span>{controls}{error ? <small className="form-field-error" id={errorId}>{error}</small> : hint && <small>{hint}</small>}</label>;
 }
 
-interface SelectOption { value: string; label: string; }
+interface SelectOption { value: string; label: string; disabled?: boolean; }
+interface SelectProps {
+  value: string; options: SelectOption[]; onChange: (value: string) => void; ariaLabel: string;
+  disabled?: boolean; className?: string; dropUp?: boolean; id?: string;
+  ariaInvalid?: boolean; ariaRequired?: boolean; ariaDescribedBy?: string;
+  searchable?: boolean; searchPlaceholder?: string;
+}
+
+/** 搜索只是查找选项，只有明确选择后才改变绑定值；关闭菜单时恢复已选名称。 */
+function SearchableSelect({ value, options, onChange, ariaLabel, disabled = false, className = '', dropUp = false, id, ariaInvalid, ariaRequired, ariaDescribedBy, searchPlaceholder = '搜索选项' }: SelectProps) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState('');
+  const [activeIndex, setActiveIndex] = useState(0);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const listboxId = useId();
+  const selectedLabel = options.find((option) => option.value === value && value !== '')?.label ?? '';
+  const keywords = query.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean);
+  const filtered = options.filter((option) => option.value !== '' && keywords.every((word) => option.label.toLocaleLowerCase().includes(word)));
+  const currentIndex = filtered[activeIndex] && !filtered[activeIndex].disabled ? activeIndex : GetNextEnabledOption(filtered, -1, 1);
+
+  function OpenMenu() { setQuery(''); setActiveIndex(0); setOpen(true); }
+  function Choose(option: SelectOption) { if (option.disabled) return; onChange(option.value); setOpen(false); setQuery(''); }
+
+  useEffect(() => { if (disabled) { setOpen(false); setQuery(''); } }, [disabled]);
+
+  useEffect(() => {
+    if (!open) return;
+    const CloseOutside = (event: PointerEvent) => { if (!rootRef.current?.contains(event.target as Node)) setOpen(false); };
+    document.addEventListener('pointerdown', CloseOutside);
+    return () => document.removeEventListener('pointerdown', CloseOutside);
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    const menu = menuRef.current;
+    const row = menu?.querySelector<HTMLElement>('[data-active="true"]');
+    if (!menu || !row) return;
+    // 只滚动选项列表，不让键盘导航带动抽屉或页面跳动。
+    if (row.offsetTop < menu.scrollTop) menu.scrollTop = row.offsetTop;
+    else if (row.offsetTop + row.offsetHeight > menu.scrollTop + menu.clientHeight) menu.scrollTop = row.offsetTop + row.offsetHeight - menu.clientHeight;
+  }, [open, query, currentIndex]);
+
+  function HandleKeyDown(event: ReactKeyboardEvent<HTMLInputElement>) {
+    if (event.nativeEvent.isComposing || event.keyCode === 229) return;
+    if (event.key === 'Escape' && open) { event.preventDefault(); event.stopPropagation(); setOpen(false); setQuery(''); return; }
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault();
+      if (!open) { OpenMenu(); return; }
+      setActiveIndex(GetNextEnabledOption(filtered, currentIndex, event.key === 'ArrowDown' ? 1 : -1));
+    }
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      if (!open) OpenMenu();
+      else if (filtered[currentIndex]) Choose(filtered[currentIndex]);
+    }
+  }
+
+  return <div className={`custom-select ${className}`} ref={rootRef} onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) { setOpen(false); setQuery(''); } }}>
+    <div className="custom-select-trigger custom-select-search-field" onClick={() => { if (disabled) return; inputRef.current?.focus(); if (!open) OpenMenu(); }}>
+      <input ref={inputRef} id={id} type="text" role="combobox" autoComplete="off" spellCheck={false} aria-label={ariaLabel} aria-autocomplete="list" aria-controls={listboxId} aria-expanded={open} aria-haspopup="listbox" aria-activedescendant={open && currentIndex >= 0 ? `${listboxId}-${currentIndex}` : undefined} aria-invalid={ariaInvalid} aria-required={ariaRequired} aria-describedby={ariaDescribedBy} disabled={disabled} value={open ? query : selectedLabel} placeholder={open && selectedLabel ? selectedLabel : searchPlaceholder} onFocus={() => { if (!open) OpenMenu(); }} onChange={(event) => { setQuery(event.target.value); setActiveIndex(0); setOpen(true); }} onKeyDown={HandleKeyDown} />
+      <Icon name="chevron-down" size={16} />
+    </div>
+    {open && !disabled && <SelectMenu rootRef={rootRef} menuRef={menuRef} id={listboxId} ariaLabel={ariaLabel} preferUp={dropUp} onDismiss={() => setOpen(false)}>
+      {filtered.map((option, index) => <button key={option.value} id={`${listboxId}-${index}`} disabled={option.disabled} data-active={index === currentIndex} className={`custom-select-option ${option.value === value ? 'is-selected' : ''}`} tabIndex={-1} type="button" role="option" aria-selected={option.value === value} aria-disabled={option.disabled} title={option.label} onMouseDown={(event) => event.preventDefault()} onPointerEnter={() => { if (!option.disabled) setActiveIndex(index); }} onClick={() => Choose(option)}><span className="mt">{option.label}</span><Icon name="check" className="tick" size={14} /></button>)}
+      {!filtered.length && <div className="custom-select-empty" role="status">没有匹配结果</div>}
+    </SelectMenu>}
+  </div>;
+}
+
+function Select(props: SelectProps) {
+  return props.searchable ? <SearchableSelect {...props} /> : <PlainSelect {...props} />;
+}
 
 /**
  * 原生 select 的展开层由操作系统绘制，无法稳定使用应用的选中背景和圆角；统一由此组件承载菜单层。
  */
-function Select({ value, options, onChange, ariaLabel, disabled = false, className = '', dropUp = false, id, ariaInvalid, ariaRequired, ariaDescribedBy }: { value: string; options: SelectOption[]; onChange: (value: string) => void; ariaLabel: string; disabled?: boolean; className?: string; dropUp?: boolean; id?: string; ariaInvalid?: boolean; ariaRequired?: boolean; ariaDescribedBy?: string }) {
+function PlainSelect({ value, options, onChange, ariaLabel, disabled = false, className = '', dropUp = false, id, ariaInvalid, ariaRequired, ariaDescribedBy }: SelectProps) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
   const listboxId = useId();
   const selected = options.find((option) => option.value === value) ?? options[0];
+
+  useEffect(() => { if (disabled) setOpen(false); }, [disabled]);
 
   useEffect(() => {
     if (!open) return;
@@ -154,27 +248,42 @@ function Select({ value, options, onChange, ariaLabel, disabled = false, classNa
   }, [open]);
 
   function FocusOption(index: number) {
-    requestAnimationFrame(() => rootRef.current?.querySelectorAll<HTMLButtonElement>('.custom-select-option')[index]?.focus());
+    if (index < 0) return;
+    requestAnimationFrame(() => {
+      const row = rootRef.current?.querySelectorAll<HTMLButtonElement>('.custom-select-option')[index];
+      const menu = rootRef.current?.querySelector<HTMLElement>('.custom-select-menu');
+      if (!row || !menu || row.disabled) return;
+      row.focus({ preventScroll: true });
+      if (row.offsetTop < menu.scrollTop) menu.scrollTop = row.offsetTop;
+      else if (row.offsetTop + row.offsetHeight > menu.scrollTop + menu.clientHeight) menu.scrollTop = row.offsetTop + row.offsetHeight - menu.clientHeight;
+    });
   }
 
   function HandleTriggerKeyDown(event: ReactKeyboardEvent<HTMLButtonElement>) {
-    if (event.key === 'Escape') { setOpen(false); return; }
+    if (event.key === 'Escape' && open) { event.preventDefault(); event.stopPropagation(); setOpen(false); return; }
     if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp' && event.key !== 'Enter' && event.key !== ' ') return;
     event.preventDefault();
-    if (event.key === 'Enter' || event.key === ' ') { setOpen((current) => !current); return; }
+    if (event.key === 'Enter' || event.key === ' ') {
+      setOpen(!open);
+      if (!open) {
+        const selectedIndex = options.findIndex((option) => option.value === value && !option.disabled);
+        FocusOption(selectedIndex >= 0 ? selectedIndex : GetNextEnabledOption(options, -1, 1));
+      }
+      return;
+    }
     setOpen(true);
-    const currentIndex = Math.max(0, options.findIndex((option) => option.value === value));
-    FocusOption(Math.max(0, Math.min(options.length - 1, currentIndex + (event.key === 'ArrowDown' ? 1 : -1))));
+    const currentIndex = options.findIndex((option) => option.value === value);
+    FocusOption(GetNextEnabledOption(options, currentIndex, event.key === 'ArrowDown' ? 1 : -1));
   }
 
   function HandleOptionKeyDown(event: ReactKeyboardEvent<HTMLButtonElement>, index: number) {
-    if (event.key === 'Escape') { event.preventDefault(); setOpen(false); rootRef.current?.querySelector<HTMLButtonElement>('.custom-select-trigger')?.focus(); return; }
-    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); FocusOption((index + (event.key === 'ArrowDown' ? 1 : options.length - 1)) % options.length); }
+    if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); setOpen(false); rootRef.current?.querySelector<HTMLButtonElement>('.custom-select-trigger')?.focus({ preventScroll: true }); return; }
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); FocusOption(GetNextEnabledOption(options, index, event.key === 'ArrowDown' ? 1 : -1)); }
   }
 
-  return <div className={`custom-select ${className}`} ref={rootRef}>
+  return <div className={`custom-select ${className}`} ref={rootRef} onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setOpen(false); }}>
     <button id={id} className="custom-select-trigger" type="button" role="combobox" aria-label={ariaLabel} aria-invalid={ariaInvalid} aria-required={ariaRequired} aria-describedby={ariaDescribedBy} aria-controls={listboxId} aria-expanded={open} aria-haspopup="listbox" disabled={disabled} onClick={() => setOpen((current) => !current)} onKeyDown={HandleTriggerKeyDown}><span>{selected?.label ?? ''}</span><Icon name="chevron-down" size={16} /></button>
-    {open && <div className={`custom-select-menu${dropUp ? ' drop-up' : ''}`} id={listboxId} role="listbox" aria-label={ariaLabel}>{options.map((option, index) => <button key={option.value} className={`custom-select-option ${option.value === value ? 'is-selected' : ''}`} type="button" role="option" aria-selected={option.value === value} onClick={() => { onChange(option.value); setOpen(false); }} onKeyDown={(event) => HandleOptionKeyDown(event, index)}><span className="mt">{option.label}</span><Icon name="check" className="tick" size={14} /></button>)}</div>}
+    {open && !disabled && <SelectMenu rootRef={rootRef} id={listboxId} ariaLabel={ariaLabel} preferUp={dropUp} onDismiss={() => setOpen(false)}>{options.map((option, index) => <button key={option.value} className={`custom-select-option ${option.value === value ? 'is-selected' : ''}`} type="button" role="option" disabled={option.disabled} aria-disabled={option.disabled} aria-selected={option.value === value} title={option.label} onClick={() => { if (option.disabled) return; onChange(option.value); setOpen(false); rootRef.current?.querySelector<HTMLButtonElement>('.custom-select-trigger')?.focus({ preventScroll: true }); }} onKeyDown={(event) => HandleOptionKeyDown(event, index)}><span className="mt">{option.label}</span><Icon name="check" className="tick" size={14} /></button>)}</SelectMenu>}
   </div>;
 }
 

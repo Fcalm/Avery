@@ -239,7 +239,7 @@ export function EvaluationConsole() {
   const displayDetail = runDetail && displayRun && runDetail.id === displayRun.id ? runDetail : null;
 
   // 控制台每次重新挂载（离开又回到评估/对比视图）都刷新一次，弥补挂载期间错过的事件。
-  useEffect(() => { void Refresh().catch((error) => ShowNotice(error instanceof Error ? error.message : '读取评测项目失败')); }, [Refresh, ShowNotice]);
+  useEffect(() => { void Refresh().catch((error) => ShowNotice(error instanceof Error ? error.message : '读取评测项目失败', "error")); }, [Refresh, ShowNotice]);
 
   /** 列表项只有汇总；逐题结果来自完整 Run 详情，切换展示的 Run 时重新读取。 */
   useEffect(() => {
@@ -270,7 +270,7 @@ export function EvaluationConsole() {
     setCandidateDraft(structuredClone(candidates));
     setSelectedCandidateId(candidates[0]?.id ?? null);
     if (!selected) return;
-    void ListEvalDatasetVersions(selected.id).then(setVersions).catch((error) => ShowNotice(error instanceof Error ? error.message : '读取测试集版本失败'));
+    void ListEvalDatasetVersions(selected.id).then(setVersions).catch((error) => ShowNotice(error instanceof Error ? error.message : '读取测试集版本失败', "error"));
     void PreviewEvalProject(selected.id).then(setPromptPreview).catch(() => undefined);
   }, [selected?.id, ShowNotice]);
 
@@ -296,7 +296,7 @@ export function EvaluationConsole() {
 
   async function WithBusy(work: () => Promise<void>) {
     setBusy(true);
-    try { await work(); } catch (error) { ShowNotice(error instanceof Error ? error.message : '操作失败'); } finally { setBusy(false); }
+    try { await work(); } catch (error) { ShowNotice(error instanceof Error ? error.message : '操作失败', "error"); } finally { setBusy(false); }
   }
 
   async function SaveCandidates() {
@@ -308,7 +308,7 @@ export function EvaluationConsole() {
       setCandidateDraft(structuredClone(updated.config.candidates));
       if (!updated.config.candidates.some((candidate) => candidate.id === selectedCandidateId)) setSelectedCandidateId(updated.config.candidates[0]?.id ?? null);
       void PreviewEvalProject(selected.id).then(setPromptPreview).catch(() => undefined);
-      ShowNotice('Prompt 候选已保存');
+      ShowNotice('Prompt 候选已保存', "success");
     });
   }
 
@@ -319,7 +319,7 @@ export function EvaluationConsole() {
   function AddPromptOverride(candidateId: string) {
     const candidate = candidateDraft.find((item) => item.id === candidateId);
     const fragment = fragmentOptions.find((item) => candidate?.promptOverrides[item.id] === undefined);
-    if (!fragment) { ShowNotice('所有可替换位置都已添加'); return; }
+    if (!fragment) { ShowNotice('所有可替换位置都已添加', "info"); return; }
     UpdateCandidate(candidateId, (current) => ({ ...current, promptOverrides: { ...current.promptOverrides, [fragment.id]: fragment.content } }));
   }
 
@@ -347,7 +347,7 @@ export function EvaluationConsole() {
     await WithBusy(async () => {
       await UpdateEvalProject(selected.id, { name: selected.name, runnerType: selected.runnerType, rubric: rubricDraft, judgePrompt: judgeDraft, judgeStrictJson: judgeStrictJsonDraft, config: selected.config }, selected.revision);
       setShowJudgeDrawer(false);
-      await Refresh(); ShowNotice('评判提示词已保存，下次评测生效');
+      await Refresh(); ShowNotice('评判提示词已保存，下次评测生效', "success");
     });
   }
 
@@ -357,7 +357,7 @@ export function EvaluationConsole() {
       const config = { ...selected.config, [kind]: model };
       if (kind === 'judgeModel') config.judgeProvider = 'DeepSeek';
       await UpdateEvalProject(selected.id, { name: selected.name, runnerType: selected.runnerType, rubric: selected.rubric, judgePrompt: selected.judgePrompt, config }, selected.revision);
-      await Refresh(); ShowNotice('模型已更新，下次评测生效');
+      await Refresh(); ShowNotice('模型已更新，下次评测生效', "success");
     });
   }
 
@@ -367,7 +367,7 @@ export function EvaluationConsole() {
       await SelectEvalDatasetVersion(selected.id, version, selected.revision);
       await Refresh();
       void ListEvalDatasetVersions(selected.id).then(setVersions).catch(() => undefined);
-      ShowNotice('已切换测试集版本，下次评测生效');
+      ShowNotice('已切换测试集版本，下次评测生效', "success");
     });
   }
 
@@ -375,7 +375,7 @@ export function EvaluationConsole() {
     if (!selected) return;
     setImportJsonl('');
     setShowManage(true);
-    void ListEvalDatasetVersions(selected.id).then(setVersions).catch((error) => ShowNotice(error instanceof Error ? error.message : '读取测试集版本失败'));
+    void ListEvalDatasetVersions(selected.id).then(setVersions).catch((error) => ShowNotice(error instanceof Error ? error.message : '读取测试集版本失败', "error"));
   }
 
   async function ConfirmDeleteVersion() {
@@ -385,19 +385,19 @@ export function EvaluationConsole() {
       setDeleteVersion(null);
       await Refresh();
       void ListEvalDatasetVersions(selected.id).then(setVersions).catch(() => undefined);
-      ShowNotice('版本已删除；已跑完的评测读取自己的冻结快照，结果不受影响');
+      ShowNotice('版本已删除；已跑完的评测读取自己的冻结快照，结果不受影响', "success");
     });
   }
 
   async function ImportVersion() {
     if (!selected) return;
-    if (!importJsonl.trim()) { ShowNotice('请先粘贴或上传 JSONL 测试集'); return; }
+    if (!importJsonl.trim()) { ShowNotice('请先粘贴或上传 JSONL 测试集', "error"); return; }
     await WithBusy(async () => {
       await ImportEvalDataset(selected.id, importJsonl, selected.rubric, selected.revision);
       setImportJsonl('');
       await Refresh();
       void ListEvalDatasetVersions(selected.id).then(setVersions).catch(() => undefined);
-      ShowNotice('测试集已冻结为新版本');
+      ShowNotice('测试集已冻结为新版本', "success");
     });
   }
 
@@ -405,11 +405,11 @@ export function EvaluationConsole() {
     if (!selected) return;
     await WithBusy(async () => {
       const validation = await ValidateEvalProject(selected.id);
-      if (!validation.valid) { ShowNotice(validation.errors.join('；')); return; }
+      if (!validation.valid) { ShowNotice(validation.errors.join('；'), "error"); return; }
       const run = await StartEvalRun(selected.id, selectedCandidateId ?? undefined);
       setSelectedRunId(run.id);
       await Refresh();
-      ShowNotice('评测已进入队列');
+      ShowNotice('评测已进入队列', "info");
     });
   }
 
@@ -418,7 +418,7 @@ export function EvaluationConsole() {
     setShowStop(false);
     await WithBusy(async () => {
       await CancelEvalRun(activeRun.id);
-      await Refresh(); ShowNotice('评测已终止，未执行的题目不会补跑');
+      await Refresh(); ShowNotice('评测已终止，未执行的题目不会补跑', "info");
     });
   }
 
@@ -437,7 +437,7 @@ export function EvaluationConsole() {
     });
     if (caseDetails[caseRunId] || openCases.has(caseRunId)) return;
     void ReadEvalCaseResult(caseRunId).then((detail) => setCaseDetails((current) => ({ ...current, [caseRunId]: detail })))
-      .catch((error) => ShowNotice(error instanceof Error ? error.message : '读取本题证据失败'));
+      .catch((error) => ShowNotice(error instanceof Error ? error.message : '读取本题证据失败', "error"));
   }
 
   /** 进入对比视图时默认配对同一评测最近两次已完结的运行：旧者为基线，新者为候选。 */
@@ -461,7 +461,7 @@ export function EvaluationConsole() {
   }, [view]);
 
   async function RunCompare() {
-    if (!leftRunId || !rightRunId || leftRunId === rightRunId) { ShowNotice('请选择两个不同的运行记录'); return; }
+    if (!leftRunId || !rightRunId || leftRunId === rightRunId) { ShowNotice('请选择两个不同的运行记录', "error"); return; }
     await WithBusy(async () => setCompare(await CompareEvalRuns(leftRunId, rightRunId)));
   }
 
@@ -707,7 +707,7 @@ export function EvaluationConsole() {
         </div>)}
       </div>
       <div className="ev-manage-import">
-        <TextFileUpload label="上传测试集" accept=".jsonl,application/json" hint="支持 .jsonl，最多 8 MiB；每行一个 JSON 案例" maxBytes={8 * 1024 * 1024} onLoad={(content) => setImportJsonl(content)} onError={ShowNotice} />
+        <TextFileUpload label="上传测试集" accept=".jsonl,application/json" hint="支持 .jsonl，最多 8 MiB；每行一个 JSON 案例" maxBytes={8 * 1024 * 1024} onLoad={(content) => setImportJsonl(content)} onError={(message) => ShowNotice(message, 'error')} />
         <FormField label="测试集内容" hint="坏行会整体拒绝并返回行号。"><textarea rows={6} value={importJsonl} onChange={(event) => setImportJsonl(event.target.value)} /></FormField>
       </div>
     </Modal>

@@ -45,7 +45,7 @@ export function AppUpdateNotice() {
         const next = await DownloadAppUpdate();
         SetState(previous => !previous || next.revision >= previous.revision ? next : previous);
       }
-    } catch (error) { ShowNotice(error instanceof Error ? error.message : '更新操作失败，请稍后重试。'); }
+    } catch (error) { ShowNotice(error instanceof Error ? error.message : '更新操作失败，请稍后重试。', "error"); }
     finally { SetBusy(false); }
   }
   const compact = hiddenVersion === state.version;

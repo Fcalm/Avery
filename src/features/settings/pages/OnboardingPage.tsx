@@ -151,7 +151,7 @@ export function OnboardingPage({ review = false, onComplete, onClose }: Props) {
       setSaveError(null);
       setApiKey('');
       setDraft(nextDraft);
-      ShowNotice('连接成功，配置已加密保存在本机。');
+      ShowNotice('连接成功，配置已加密保存在本机。', "success");
     } catch (error) { setFormError(error instanceof Error ? error.message : '连接未成功，请检查密钥、地址和网络后重试。'); }
     finally { EndOperation(); }
   }
@@ -179,7 +179,7 @@ export function OnboardingPage({ review = false, onComplete, onClose }: Props) {
   }
 
   async function CopyPrompt(prompt: string) {
-    try { await Unwrap(platformClient.desktop.WriteClipboardText(prompt)); ShowNotice('示例指令已复制。'); }
+    try { await Unwrap(platformClient.desktop.WriteClipboardText(prompt)); ShowNotice('示例指令已复制。', "success"); }
     catch (error) { ShowNotice(error instanceof Error ? error.message : '复制失败，请重试。', 'error'); }
   }
 

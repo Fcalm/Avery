@@ -77,7 +77,7 @@ function FormatDay(value?: number): string {
 function ProfilesPage() {
   const { ShowNotice, setProfileConflict } = useUiStore();
   const profiles = useProfiles();
-  const saveProfiles = useSaveProfiles({ onConflict: () => setProfileConflict(true), onFailure: () => ShowNotice('档案保存失败，请稍后重试。') });
+  const saveProfiles = useSaveProfiles({ onConflict: () => setProfileConflict(true), onFailure: () => ShowNotice('档案保存失败，请稍后重试。', "error") });
   const [drawer, SetDrawer] = useState<ProfileDrawer | null>(null);
   const [draft, SetDraft] = useState<Partial<ProfileItem>>({ category: 'project', title: '', content: '' });
   const [deleteTarget, SetDeleteTarget] = useState<ProfileItem | null>(null);
@@ -104,12 +104,12 @@ function ProfilesPage() {
   useEffect(() => {
     if (!drawer) return undefined;
     const CloseOnEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') { event.preventDefault(); SetDrawer(null); }
+      if (event.key === 'Escape' && !saveProfiles.isPending) { event.preventDefault(); SetDrawer(null); }
     };
     document.addEventListener('keydown', CloseOnEscape);
     drawerRef.current?.focus();
     return () => document.removeEventListener('keydown', CloseOnEscape);
-  }, [drawer]);
+  }, [drawer, saveProfiles.isPending]);
 
   // 原型档案视图：按固定分类顺序分组，组内按标题排序，保证列表稳定。
   const groups = useMemo(() => {
@@ -149,19 +149,21 @@ function ProfilesPage() {
     // 只有磁盘写入成功才关闭；错误与冲突由 mutation 处理，草稿保留供继续编辑。
     saveProfiles.mutate({ items: next }, { onSuccess: () => {
       SetDrawer((current) => current === drawer ? null : current);
-      ShowNotice(editingItem ? '资料已保存' : '已新增资料');
+      ShowNotice(editingItem ? '资料已保存' : '已新增资料', "success");
     } });
   }
-  function ConfirmDeleteProfile() {
-    if (!deleteTarget) return;
+  async function ConfirmDeleteProfile() {
+    if (!deleteTarget || saveProfiles.isPending) return;
     const next = profiles.filter((item) => item.id !== deleteTarget.id);
-    saveProfiles.mutate({ items: next });
-    SetDeleteTarget(null); SetDrawer(null); ShowNotice('资料已删除');
+    try {
+      await saveProfiles.mutateAsync({ items: next });
+      SetDeleteTarget(null); SetDrawer(null); ShowNotice('资料已删除', 'success');
+    } catch { /* mutation 已提示失败或冲突，保留确认窗口。 */ }
   }
   function CopyEntry() {
     if (drawer?.mode !== 'view') return;
     // 剪贴板可能被系统策略拒绝；复制失败不打断阅读，只跳过确认提示。
-    void navigator.clipboard?.writeText(GetProfileCopyText(drawer.item)).then(() => ShowNotice(`已复制「${drawer.item.title}」的内容`)).catch(() => undefined);
+    void navigator.clipboard?.writeText(GetProfileCopyText(drawer.item)).then(() => ShowNotice(`已复制「${drawer.item.title}」的内容`, "success")).catch(() => undefined);
   }
 
   const drawerTitle = drawer
@@ -172,8 +174,8 @@ function ProfilesPage() {
   const drawerCategory = drawer ? (drawer.mode === 'view' ? drawer.item.category : draft.category ?? 'project') : 'project';
   return <div className="profile-view">
     <div className="view-h">
-      <div><h1>档案</h1><p>你的资料底稿，Avery 写简历、填申请表时都从这里取。点开任意一条可以看到完整内容。</p></div>
-      <div className="vh-act"><button className="ghost-btn" type="button" onClick={OpenNew}><Icon name="plus" size={14} />添加条目</button></div>
+      <h1>档案</h1>
+      <div className="vh-act"><button className="btn-accent" type="button" onClick={OpenNew}><Icon name="plus" size={14} />添加条目</button></div>
     </div>
     {groups.map((group) => <div key={group.category}>
       <div className="vgroup-h">{ProfileCategoryLabel[group.category]}</div>
@@ -230,10 +232,10 @@ function ProfilesPage() {
     <Modal
       open={Boolean(deleteTarget)}
       title="删除这条资料？"
-      onClose={() => SetDeleteTarget(null)}
+      onClose={() => { if (!saveProfiles.isPending) SetDeleteTarget(null); }}
       footer={<>
-        <DialogButton onClick={() => SetDeleteTarget(null)}>取消</DialogButton>
-        <DialogButton tone="danger" onClick={ConfirmDeleteProfile}>确认删除</DialogButton>
+        <DialogButton disabled={saveProfiles.isPending} onClick={() => SetDeleteTarget(null)}>取消</DialogButton>
+        <DialogButton disabled={saveProfiles.isPending} tone="danger" onClick={() => void ConfirmDeleteProfile()}>{saveProfiles.isPending ? '删除中…' : '确认删除'}</DialogButton>
       </>}
     >
       该操作不可撤销。

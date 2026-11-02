@@ -113,7 +113,7 @@ function DeveloperConsoleProvider({ active, children }: { active: boolean; child
   // 进入开发者页时拉取；离开再进入会重新执行，保证侧栏与面包屑拿到最新数据。
   useEffect(() => {
     if (!active) return;
-    Refresh().catch((error) => ShowNotice(error instanceof Error ? error.message : '读取评测数据失败'));
+    Refresh().catch((error) => ShowNotice(error instanceof Error ? error.message : '读取评测数据失败', "error"));
   }, [active, Refresh, ShowNotice]);
 
   // 切换评测回到评估视图：对比视图绑定在具体评测的运行上，换评测后旧配对无意义。
@@ -129,7 +129,7 @@ function DeveloperConsoleProvider({ active, children }: { active: boolean; child
 
   async function WithBusy(work: () => Promise<void>) {
     setBusy(true);
-    try { await work(); } catch (error) { ShowNotice(error instanceof Error ? error.message : '操作失败'); } finally { setBusy(false); }
+    try { await work(); } catch (error) { ShowNotice(error instanceof Error ? error.message : '操作失败', "error"); } finally { setBusy(false); }
   }
 
   async function CreateProject() {
@@ -138,7 +138,7 @@ function DeveloperConsoleProvider({ active, children }: { active: boolean; child
       setCreateOpen(false);
       setSelectedProjectId(created.id);
       await Refresh();
-      ShowNotice(createRunner === 'career-portal' ? '网申填写测评已创建，已载入 8 个只填写场景' : '评测已创建，先导入测试集');
+      ShowNotice(createRunner === 'career-portal' ? '网申填写测评已创建，已载入 8 个只填写场景' : '评测已创建，先导入测试集', "success");
     });
   }
 
@@ -149,7 +149,7 @@ function DeveloperConsoleProvider({ active, children }: { active: boolean; child
       setDeleteProjectId(null);
       setSelectedProjectId(null);
       await Refresh();
-      ShowNotice('评测已删除，历史运行记录保留');
+      ShowNotice('评测已删除，历史运行记录保留', "success");
     });
   }
 

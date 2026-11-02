@@ -15,12 +15,12 @@ import type { SettingsDraft } from '../../../types/domain';
 import type { AgentBrowserRuntimeStatus, AgentModuleConfiguration, BrowserExtensionSetup, CronBrowserAccessStatus } from '@avery/contracts';
 
 export type SettingTab = 'general' | 'persona' | 'api' | 'browser' | 'developer';
-export const SettingsTabs: Array<{ id: SettingTab; label: string; description: string }> = [
-  { id: 'general', label: '常规', description: '语言、工作空间、通知与更新的默认行为，改完就生效。' },
-  { id: 'persona', label: '个性化', description: '头像、昵称、说话方式和界面外观，都按你的习惯来。' },
-  { id: 'api', label: '模型配置', description: '管理模型供应商、默认模型与上下文能力；凭据加密存储在本机。' },
-  { id: 'browser', label: '浏览器控制', description: '选择 Chrome、Edge 或 ego lite，查看连接状态和任务授权。' },
-  { id: 'developer', label: '开发者模式', description: '查看本地日志、Trace 和上下文用量界面。' },
+export const SettingsTabs: Array<{ id: SettingTab; label: string }> = [
+  { id: 'general', label: '常规' },
+  { id: 'persona', label: '个性化' },
+  { id: 'api', label: '模型配置' },
+  { id: 'browser', label: '浏览器控制' },
+  { id: 'developer', label: '开发者模式' },
 ];
 /** 浏览器显示名与后端引擎枚举一致，三者共用扩展接入流程。 */
 const BrowserEngineLabels = { chrome: 'Google Chrome', edge: 'Microsoft Edge', ego: 'ego lite' } as const;
@@ -235,13 +235,13 @@ function SettingsPage({ onNavigateDeveloper, tab, requestedTab, tabRequestVersio
       const result = await GetProviderModels(provider);
       // 结果必须来自请求的供应商：不一致时（例如后端是没有转发 provider 参数的旧版本）丢弃而不是并入。
       if (!IsSyncedModelsTrusted(provider, result)) {
-        if (manual) ShowNotice('模型列表与所选供应商不一致，已忽略本次结果；请重启应用后重试');
+        if (manual) ShowNotice('模型列表与所选供应商不一致，已忽略本次结果；请重启应用后重试', "error");
         return;
       }
       if (result.models.length) UpdateCatalog(MergeModelConfigurations(MergeProviderModels(catalogRef.current, provider, result.models), provider, result.modelConfigurations ?? []));
-      if (manual) ShowNotice(result.models.length ? '已同步最新模型列表' : '未获取到可用模型，已保留现有列表');
+      if (manual) ShowNotice(result.models.length ? '已同步最新模型列表' : '未获取到可用模型，已保留现有列表', result.models.length ? 'success' : 'info');
     } catch (error) {
-      if (manual) ShowNotice(error instanceof Error ? error.message : '模型列表刷新失败');
+      if (manual) ShowNotice(error instanceof Error ? error.message : '模型列表刷新失败', "error");
     } finally {
       setRefreshingModels(false);
     }
@@ -303,15 +303,15 @@ function SettingsPage({ onNavigateDeveloper, tab, requestedTab, tabRequestVersio
   }, [tab]);
   /** 页头的重新加载按钮：先播一次旋转动画，再回读主进程配置。 */
   async function ReloadProviderConfiguration() {
-    if (!IsDesktopAgentAvailable()) { ShowNotice('请在桌面客户端中重新加载配置'); return; }
+    if (!IsDesktopAgentAvailable()) { ShowNotice('请在桌面客户端中重新加载配置', "info"); return; }
     if (providerSpinTimer.current) window.clearTimeout(providerSpinTimer.current);
     setProviderReloading(true);
     providerSpinTimer.current = window.setTimeout(() => setProviderReloading(false), 640);
     try {
       await LoadProviderConfiguration();
-      ShowNotice('配置已重新加载');
+      ShowNotice('配置已重新加载', "success");
     } catch (error) {
-      ShowNotice(error instanceof Error ? error.message : '配置重新加载失败');
+      ShowNotice(error instanceof Error ? error.message : '配置重新加载失败', "error");
     }
   }
   useEffect(() => () => { if (providerSpinTimer.current) window.clearTimeout(providerSpinTimer.current); }, []);
@@ -356,7 +356,7 @@ function SettingsPage({ onNavigateDeveloper, tab, requestedTab, tabRequestVersio
   // 只剩模型配置页还走显式保存：常规/个性化/浏览器控制/开发者页都是即改即存，不经过这里。
   async function SaveSettings() {
     const activeParameters = ResolveActiveModelParameters();
-    if (!activeParameters) { ShowNotice('请先在模型列表里添加或选择一个模型'); return false; }
+    if (!activeParameters) { ShowNotice('请先在模型列表里添加或选择一个模型', "error"); return false; }
     ShowNotice('正在保存 API 配置…', 'pending');
     if (IsDesktopAgentAvailable()) {
       try {
@@ -398,14 +398,14 @@ function SettingsPage({ onNavigateDeveloper, tab, requestedTab, tabRequestVersio
   async function ClearDeveloperObservability() {
     if (IsDesktopAgentAvailable()) await ClearAgentObservability();
     setShowClear(false);
-    ShowNotice('运行日志与 Trace 已清空');
+    ShowNotice('运行日志与 Trace 已清空', "success");
   }
   async function OpenWorkspaceDirectoryHandler() {
     try {
       const opened = await window.averyWindow?.OpenWorkspaceDirectory();
-      if (opened !== true) ShowNotice('无法打开工作空间目录');
+      if (opened !== true) ShowNotice('无法打开工作空间目录', "error");
     } catch (error) {
-      ShowNotice(error instanceof Error ? error.message : '无法打开工作空间目录');
+      ShowNotice(error instanceof Error ? error.message : '无法打开工作空间目录', "error");
     }
   }
   /** 手动检查与自动任务共用 Main 更新服务，失败不得显示“已是最新”。 */
@@ -413,12 +413,12 @@ function SettingsPage({ onNavigateDeveloper, tab, requestedTab, tabRequestVersio
     try {
       const state = await CheckAppUpdates();
       const message = state.status === 'not_available' ? `当前已是最新版本 v${state.currentVersion}`
-        : state.status === 'downloaded' ? `v${state.version} 已就绪，可在侧栏重启安装`
+        : state.status === 'downloaded' ? `v${state.version} 已就绪，可在右下角重启安装`
         : state.status === 'downloading' ? `正在后台下载 v${state.version}`
-        : state.status === 'available' ? `发现新版本 v${state.version}，可在侧栏下载`
+        : state.status === 'available' ? `发现新版本 v${state.version}，可在右下角下载`
         : state.message ?? '正在检查更新…';
-      ShowNotice(message);
-    } catch (error) { ShowNotice(error instanceof Error ? error.message : '检查更新失败，请稍后重试。'); }
+      ShowNotice(message, state.status === 'error' ? 'error' : ['checking', 'downloading'].includes(state.status) ? 'pending' : ['not_available', 'downloaded'].includes(state.status) ? 'success' : 'info');
+    } catch (error) { ShowNotice(error instanceof Error ? error.message : '检查更新失败，请稍后重试。', "error"); }
   }
   /** 常规/个性化页即改即存：直接写入设置存储（乐观更新 + 300ms 防抖持久化），没有页头保存按钮。 */
   function ApplySettings(patch: Partial<SettingsDraft>) {
@@ -457,21 +457,21 @@ function SettingsPage({ onNavigateDeveloper, tab, requestedTab, tabRequestVersio
       await MigrateWorkspace();
       setShowMigrate(false);
       setDirty(false);
-      ShowNotice('工作空间已迁移；原目录保留为安全副本。');
+      ShowNotice('工作空间已迁移；原目录保留为安全副本。', "success");
       void queryClient.invalidateQueries({ queryKey: WORKSPACE_QUERY_KEY });
     } catch (error) {
-      ShowNotice(error instanceof Error ? error.message : '工作空间迁移失败');
+      ShowNotice(error instanceof Error ? error.message : '工作空间迁移失败', "error");
     }
   }
   async function TestApiConnection() {
-    if (!IsDesktopAgentAvailable()) { ShowNotice('请在桌面客户端中测试 API 连接'); return; }
+    if (!IsDesktopAgentAvailable()) { ShowNotice('请在桌面客户端中测试 API 连接', "info"); return; }
     const activeParameters = ResolveActiveModelParameters();
-    if (!activeParameters) { ShowNotice('请先在模型列表里添加或选择一个模型'); return; }
+    if (!activeParameters) { ShowNotice('请先在模型列表里添加或选择一个模型', "error"); return; }
     try {
       await TestAgentConnection({ provider: draft.provider, apiKey: draft.apiKey, baseUrl: draft.baseUrl, model: draft.model, thinkingEnabled: draft.thinkingEnabled, contextLength: draft.contextLength, contextLimitMode: draft.contextLimitMode, compressionThreshold: draft.compressionThreshold });
-      ShowNotice('API 连接测试成功，配置尚未保存');
+      ShowNotice('API 连接测试成功，配置尚未保存', "success");
     } catch (error) {
-      ShowNotice(error instanceof Error ? error.message : 'API 连接测试失败');
+      ShowNotice(error instanceof Error ? error.message : 'API 连接测试失败', "error");
     }
   }
   async function RefreshModuleConfiguration() {
@@ -567,9 +567,9 @@ function SettingsPage({ onNavigateDeveloper, tab, requestedTab, tabRequestVersio
     try {
       const configuration = await SelectAgentModuleDirectory();
       setModuleConfiguration(configuration);
-      ShowNotice(configuration.status === 'active' ? '本地模块已校验并启用' : '未选择新的模块目录，已保留当前配置');
+      ShowNotice(configuration.status === 'active' ? '本地模块已校验并启用' : '未选择新的模块目录，已保留当前配置', configuration.status === 'active' ? 'success' : 'info');
     } catch (error) {
-      ShowNotice(error instanceof Error ? error.message : '本地模块配置失败');
+      ShowNotice(error instanceof Error ? error.message : '本地模块配置失败', "error");
     } finally { setUpdatingModules(false); }
   }
   async function ConfirmResetModules() {
@@ -578,9 +578,9 @@ function SettingsPage({ onNavigateDeveloper, tab, requestedTab, tabRequestVersio
       const configuration = await ResetAgentModules();
       setModuleConfiguration(configuration);
       setShowResetModules(false);
-      ShowNotice('已恢复官方默认模块');
+      ShowNotice('已恢复官方默认模块', "success");
     } catch (error) {
-      ShowNotice(error instanceof Error ? error.message : '恢复默认模块失败');
+      ShowNotice(error instanceof Error ? error.message : '恢复默认模块失败', "error");
     } finally { setUpdatingModules(false); }
   }
   function SelectProvider(provider: SettingsDraft['provider']) {
@@ -601,23 +601,23 @@ function SettingsPage({ onNavigateDeveloper, tab, requestedTab, tabRequestVersio
   /** 启用/禁用供应商：禁用后它不再出现在对话的模型选择里。 */
   function ToggleProviderEnabled(provider: ModelCatalogProvider) {
     UpdateCatalog(ReplaceProvider({ ...provider, enabled: !provider.enabled }));
-    ShowNotice(provider.enabled ? `${provider.name} 已禁用，不会再出现在对话的模型选择里` : `${provider.name} 已启用，可在对话里选择使用`);
+    ShowNotice(provider.enabled ? `${provider.name} 已禁用，不会再出现在对话的模型选择里` : `${provider.name} 已启用，可在对话里选择使用`, "success");
   }
   function RemoveProvider(provider: ModelCatalogProvider) {
     UpdateCatalog({ ...catalog, providers: catalog.providers.filter((item) => item.id !== provider.id) });
     setProviderDeleteTarget(null);
-    ShowNotice(`已从模型目录移除 ${provider.name}`);
+    ShowNotice(`已从模型目录移除 ${provider.name}`, "success");
   }
   function SetApiFormat(apiFormat: ModelApiFormat) {
     const provider = FindCatalogProvider(catalog, draft.provider);
     setApiFormatOpen(false);
     if (!provider) return;
     UpdateCatalog(ReplaceProvider({ ...provider, apiFormat }));
-    ShowNotice(`接口格式改为 ${ModelApiFormats.find((item) => item.key === apiFormat)?.label ?? apiFormat}`);
+    ShowNotice(`接口格式改为 ${ModelApiFormats.find((item) => item.key === apiFormat)?.label ?? apiFormat}`, "success");
   }
   function RemoveModel(provider: ModelCatalogProvider, model: ModelCatalogModel) {
     UpdateCatalog(ReplaceProvider({ ...provider, models: provider.models.filter((item) => item.id !== model.id) }));
-    ShowNotice(`已删除模型 ${model.id}`);
+    ShowNotice(`已删除模型 ${model.id}`, "success");
   }
   function OpenModelDialog(index: number) {
     modelResolutionVersion.current += 1;
@@ -669,13 +669,13 @@ function SettingsPage({ onNavigateDeveloper, tab, requestedTab, tabRequestVersio
     const validContext = IsValidContextWindow(contextWindow) || (!modelDialog.touched.includes('contextWindow') && contextWindow === modelDialog.configuration?.values.contextWindow);
     const duplicate = provider.models.some((item, index) => index !== modelDialog.index && item.id === id);
     setModelErrors({ id: !id || duplicate, contextWindow: !validContext, maxOutput: !IsValidMaxOutput(maxOutput) });
-    if (!id || duplicate) { ShowNotice(duplicate ? '已经有同名的模型 ID' : '模型 ID 不能为空'); return; }
-    if (!validContext) { ShowNotice('上下文窗口需为 128000–1000000 之间的整数'); return; }
-    if (!IsValidMaxOutput(maxOutput)) { ShowNotice('最大输出 Token 需为正整数'); return; }
+    if (!id || duplicate) { ShowNotice(duplicate ? '已经有同名的模型 ID' : '模型 ID 不能为空', "error"); return; }
+    if (!validContext) { ShowNotice('上下文窗口需为 128000–1000000 之间的整数', "error"); return; }
+    if (!IsValidMaxOutput(maxOutput)) { ShowNotice('最大输出 Token 需为正整数', "error"); return; }
     const thinking = provider.id === 'Z.AI' ? true : modelDialog.thinking;
     let configuration = modelDialog.configuration;
     if (IsDesktopAgentAvailable()) {
-      if (modelResolving || modelResolveError || !configuration || configuration.model !== id) { ShowNotice(modelResolveError || '请等待模型能力解析完成'); return; }
+      if (modelResolving || modelResolveError || !configuration || configuration.model !== id) { ShowNotice(modelResolveError || '请等待模型能力解析完成', modelResolveError ? 'error' : 'info'); return; }
       const values: ModelCapabilityValues = { contextWindow, maxOutput, inputImage: modelDialog.inputImage, inputPdf: modelDialog.inputPdf, thinking, toolCall: configuration.values.toolCall };
       const overrides: ModelCapabilityOverrides = modelDialog.reset ? {} : { ...configuration.overrides };
       for (const key of modelDialog.touched) Object.assign(overrides, { [key]: values[key] });
@@ -686,9 +686,9 @@ function SettingsPage({ onNavigateDeveloper, tab, requestedTab, tabRequestVersio
           try {
             const latest = await GetModelConfiguration({ provider: draft.provider, model: id, baseUrl: draft.baseUrl });
             setModelDialog((current) => current?.id.trim() === id ? ApplyDialogConfiguration(current, latest) : current);
-            ShowNotice('配置已在别处更新，已载入新版本；请核对后再次保存。');
-          } catch (reloadError) { ShowNotice(reloadError instanceof Error ? reloadError.message : '模型配置重新加载失败'); }
-        } else ShowNotice(error instanceof Error ? error.message : '模型配置保存失败');
+            ShowNotice('配置已在别处更新，已载入新版本；请核对后再次保存。', "error");
+          } catch (reloadError) { ShowNotice(reloadError instanceof Error ? reloadError.message : '模型配置重新加载失败', "error"); }
+        } else ShowNotice(error instanceof Error ? error.message : '模型配置保存失败', "error");
         return;
       }
       finally { setModelSaving(false); }
@@ -700,7 +700,7 @@ function SettingsPage({ onNavigateDeveloper, tab, requestedTab, tabRequestVersio
     // 能力已由宿主保存；改名后的默认模型选择仍通过页头 API 配置保存。
     if (wasActive && draft.model !== id) UpdateDraft({ model: id });
     CloseModelDialog();
-    ShowNotice(modelDialog.index >= 0 ? '模型配置已保存' : `已添加模型 ${id}`);
+    ShowNotice(modelDialog.index >= 0 ? '模型配置已保存' : `已添加模型 ${id}`, "success");
   }
   /** 当前生效模型的宿主端参数：上下文窗口与思考模式取自本地目录里选中的模型。 */
   function ResolveActiveModelParameters() {
@@ -729,10 +729,7 @@ function SettingsPage({ onNavigateDeveloper, tab, requestedTab, tabRequestVersio
     });
     return <div className="set set-root model-set-scope">
       <div className="set-head">
-        <div>
-          <h1>模型设置</h1>
-          <p>管理自定义模型供应商，配置后可在聊天时选择使用。</p>
-        </div>
+        <h1>模型设置</h1>
         <button className={`icon-btn set-refresh${providerReloading ? ' is-spinning' : ''}`} type="button" aria-label="重新加载配置" title="重新加载配置" onClick={() => void ReloadProviderConfiguration()}><Icon name="recovery" size={17} /></button>
       </div>
       <div className="set-card">
@@ -901,17 +898,15 @@ function SettingsPage({ onNavigateDeveloper, tab, requestedTab, tabRequestVersio
   if (tab === 'general' || tab === 'persona') {
     return <div className="settings-page is-set-page"><div className="set-root">
       <div className="set-head">
-        <div>
-          <h1>{current.label}</h1>
-          <p>{current.description}</p>
-        </div>
+        <h1>{current.label}</h1>
         {tab === 'general' && <button className="quiet-btn gn-reset" type="button" onClick={() => void ResetGeneralDefaults()}><Icon name="recovery" size={14} />恢复默认</button>}
       </div>
       {tab === 'general' ? <div className="gn-card">
         <div className="gn-cap">通用</div>
         <div className="gn-row">
-          <div className="gn-txt"><span className="gn-t">语言</span><span className="gn-d">界面与系统通知的语言；当前版本界面文案仅提供中文。</span></div>
-          <div className="gn-ctl"><Select value={settings.language ?? 'zh'} onChange={(value) => ApplySettings({ language: value as 'zh' | 'en' })} ariaLabel="语言" options={[{ value: 'zh', label: '简体中文' }, { value: 'en', label: 'English' }]} /></div>
+          <div className="gn-txt"><span className="gn-t">语言</span><span className="gn-d">当前提供简体中文，英文界面待支持。</span></div>
+          {/* 展示实际支持的中文，不自动覆盖磁盘中尚未生效的其他语言偏好。 */}
+          <div className="gn-ctl"><Select value="zh" onChange={() => ApplySettings({ language: 'zh' })} ariaLabel="语言" options={[{ value: 'zh', label: '简体中文' }, { value: 'en', label: 'English（待支持）', disabled: true }]} /></div>
         </div>
         <div className="gn-row">
           <div className="gn-txt"><span className="gn-t">启动时打开</span><span className="gn-d">每次打开应用先停在哪里。</span></div>
@@ -992,14 +987,14 @@ function SettingsPage({ onNavigateDeveloper, tab, requestedTab, tabRequestVersio
           </div>
         </div>
         <div className="gn-row">
-          <div className="gn-txt"><span className="gn-t">主题颜色</span><span className="gn-d">按钮和强调色跟着变；真实换肤暂未接入，先记录你的选择。</span></div>
+          <div className="gn-txt"><span className="gn-t">主题颜色 <span className="setting-unavailable">待支持</span></span><span className="gn-d">主题配色切换暂未开放。</span></div>
           <div className="gn-ctl pf-accs">
-            {AccentColors.map((color) => <button key={color.key} className="acc-sw" type="button" style={{ background: color.hex }} aria-pressed={color.key === (settings.accentColor ?? 'pine')} aria-label={color.label} title={color.label} onClick={() => ApplySettings({ accentColor: color.key })} />)}
+            {AccentColors.map((color) => <button key={color.key} className="acc-sw" type="button" disabled style={{ background: color.hex }} aria-pressed={color.key === (settings.accentColor ?? 'pine')} aria-label={`${color.label}（待支持）`} title={`${color.label}（待支持）`} />)}
           </div>
         </div>
         <div className="gn-row">
-          <div className="gn-txt"><span className="gn-t">简历模板</span><span className="gn-d">Avery 改简历时用的版式；模板渲染暂未接入，先记录你的选择。</span></div>
-          <div className="gn-ctl"><Select value={settings.resumeTemplate ?? 'classic'} onChange={(value) => ApplySettings({ resumeTemplate: value as NonNullable<SettingsDraft['resumeTemplate']> })} ariaLabel="简历模板" dropUp options={ResumeTemplates.map((item) => ({ value: item.key, label: item.label }))} /></div>
+          <div className="gn-txt"><span className="gn-t">简历模板 <span className="setting-unavailable">待支持</span></span><span className="gn-d">简历模板切换暂未开放。</span></div>
+          <div className="gn-ctl"><Select disabled value={settings.resumeTemplate ?? 'classic'} onChange={() => undefined} ariaLabel="简历模板（待支持）" dropUp options={ResumeTemplates.map((item) => ({ value: item.key, label: item.label }))} /></div>
         </div>
       </div>}
       {/* 迁移确认弹窗跟着常规页渲染：触发按钮在常规页的工作空间行，此前被留在旧版最终 return 里导致点「更改」无响应。 */}
@@ -1033,7 +1028,7 @@ function SettingsPage({ onNavigateDeveloper, tab, requestedTab, tabRequestVersio
     const pillClass = pill === 'on' ? 'on' : pill === 'busy' ? 'busy' : 'off';
     const pillText = pill === 'busy' ? '检测中' : pill === 'on' ? '已连接' : pill === 'undetected' ? '未检测' : '未连接';
     return <div className="settings-page is-set-page"><div className="set-root">
-      <div className="set-head"><div><h1>浏览器控制</h1><p>选择 Chrome、Edge 或 ego lite，查看连接状态和定时任务授权。</p></div></div>
+      <div className="set-head"><h1>浏览器控制</h1></div>
       <div className="gn-card browser-settings-card">
         <div className="gn-cap">浏览器</div>
         <div className="gn-row">
@@ -1088,7 +1083,7 @@ function SettingsPage({ onNavigateDeveloper, tab, requestedTab, tabRequestVersio
   if (tab === 'api') return <div className="settings-page is-model-set">{RenderModelConfiguration()}{RenderLeaveDialog()}</div>;
   if (tab === 'developer') {
     return <div className="settings-page is-set-page"><div className="set-root">
-      <div className="set-head"><div><h1>开发者模式</h1><p>查看本地日志、Trace 和上下文用量界面。</p></div></div>
+      <div className="set-head"><h1>开发者模式</h1></div>
       <div className="gn-card">
         <div className="gn-cap">开发者工具</div>
         <RenderGeneralSwitch label="启用开发者模式" description="开启后在侧边栏显示本地开发者工具。" checked={settings.developerMode} onToggle={() => ApplySettings({ developerMode: !settings.developerMode })} />

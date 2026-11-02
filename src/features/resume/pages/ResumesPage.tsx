@@ -28,9 +28,9 @@ function ResumeTargetText(resume: Resume): string {
 function ResumesPage({ onGoAssistant }: { onGoAssistant: () => void }) {
   const { ShowNotice, setActiveConversationId, setAssistantView, currentResumeId, setCurrentResumeId, setComposerSeed } = useUiStore();
   const resumes = useResumes();
-  const restoreResumeRevision = useRestoreResumeRevision({ onConflict: () => ShowNotice('简历已被其他操作修改，已刷新为最新版本'), onFailure: () => ShowNotice('还原简历版本失败，请稍后重试。') });
-  const deleteResume = useDeleteResume({ onFailure: () => ShowNotice('简历删除失败，请稍后重试。') });
-  const upsertResume = useUpsertResume({ onConflict: () => ShowNotice('简历已在其他窗口被修改，已刷新为最新版本'), onFailure: () => ShowNotice('简历保存失败，请稍后重试。') });
+  const restoreResumeRevision = useRestoreResumeRevision({ onConflict: () => ShowNotice('简历已被其他操作修改，已刷新为最新版本', "error"), onFailure: () => ShowNotice('还原简历版本失败，请稍后重试。', "error") });
+  const deleteResume = useDeleteResume({ onFailure: () => ShowNotice('简历删除失败，请稍后重试。', "error") });
+  const upsertResume = useUpsertResume({ onConflict: () => ShowNotice('简历已在其他窗口被修改，已刷新为最新版本', "error"), onFailure: () => ShowNotice('简历保存失败，请稍后重试。', "error") });
   const [drawerResume, SetDrawerResume] = useState<Resume | null>(null);
   const [revisions, SetRevisions] = useState<ResumeRevisionRow[]>([]);
   const [viewingRevision, SetViewingRevision] = useState<ResumeRevisionDocumentDto | null>(null);
@@ -53,13 +53,13 @@ function ResumesPage({ onGoAssistant }: { onGoAssistant: () => void }) {
   useEffect(() => {
     if (!drawerResume) return undefined;
     const CloseOnEscape = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape') return;
+      if (event.key !== 'Escape' || deleteResume.isPending) return;
       event.preventDefault();
       if (editing) CancelEdit(); else CloseDrawer();
     };
     document.addEventListener('keydown', CloseOnEscape);
     return () => document.removeEventListener('keydown', CloseOnEscape);
-  }, [drawerResume, editing]);
+  }, [drawerResume, editing, deleteResume.isPending]);
 
   // 卸载兜底释放编辑锁：离开页面时不把用户锁留在后端。
   useEffect(() => () => { if (editLockRef.current) void ReleaseResumeEditLock(editLockRef.current); }, []);
@@ -97,19 +97,19 @@ function ResumesPage({ onGoAssistant }: { onGoAssistant: () => void }) {
     try {
       SetViewingRevision(await LoadResumeRevision(drawerResume.id, revision.id));
       bodyRef.current?.scrollTo({ top: 0 });
-    } catch (error) { ShowNotice(error instanceof Error ? error.message : '读取历史版本失败'); }
+    } catch (error) { ShowNotice(error instanceof Error ? error.message : '读取历史版本失败', "error"); }
   }
   function ReturnToCurrent() { SetViewingRevision(null); bodyRef.current?.scrollTo({ top: 0 }); }
   async function ConfirmRestoreRevision() {
     if (!drawerResume || !restoreTarget) return;
     // 还原会覆盖当前正文，先取得编辑锁避免与 Avery 的进行中编辑互相踩踏。
     const lock = await AcquireResumeEditLock(drawerResume.id);
-    if (!lock.acquired) { ShowNotice(lock.reason ?? '简历正被占用，暂时无法还原'); return; }
+    if (!lock.acquired) { ShowNotice(lock.reason ?? '简历正被占用，暂时无法还原', "info"); return; }
     try {
       const result = await restoreResumeRevision.mutateAsync({ resumeId: drawerResume.id, revisionId: restoreTarget.id, expectedRevision: drawerResume.revision });
       SetDrawerResume(result.resume); SetViewingRevision(null); SetRestoreTarget(null);
       await RefreshRevisions(result.id);
-      ShowNotice(`已从 v${result.restoredFromRevision} 创建当前 v${result.revision}`);
+      ShowNotice(`已从 v${result.restoredFromRevision} 创建当前 v${result.revision}`, "success");
     } catch {
       // 冲突与普通失败已由 mutation 统一提示；锁必须在 finally 中释放。
     } finally { await ReleaseResumeEditLock(drawerResume.id); }
@@ -118,7 +118,7 @@ function ResumesPage({ onGoAssistant }: { onGoAssistant: () => void }) {
   async function StartEdit() {
     if (!drawerResume || viewingRevision) return;
     const lock = await AcquireResumeEditLock(drawerResume.id);
-    if (!lock.acquired) { ShowNotice(lock.reason ?? '简历正被占用，暂时无法编辑'); return; }
+    if (!lock.acquired) { ShowNotice(lock.reason ?? '简历正被占用，暂时无法编辑', "info"); return; }
     editLockRef.current = drawerResume.id;
     SetEditText(drawerResume.content); SetSavedText(drawerResume.content); SetEditHistory([]);
     SetEditing(true);
@@ -140,39 +140,41 @@ function ResumesPage({ onGoAssistant }: { onGoAssistant: () => void }) {
       SetSavedText(editText); SetEditHistory([]); SetEditing(false);
       SetDrawerResume((current) => (current ? { ...current, content: editText, updatedAt: Date.now(), revision: result.revision } : current));
       void RefreshRevisions(drawerResume.id);
-      ShowNotice('简历已保存');
+      ShowNotice('简历已保存', "success");
     } catch { /* 冲突与普通失败已由 mutation 统一提示 */ }
   }
   /** 取消编辑恢复最后一次已保存内容，并立即释放锁供 Avery 继续更新（与侧边栏一致）。 */
   function CancelEdit() {
     SetEditText(savedText); SetEditHistory([]); SetEditing(false);
     if (editLockRef.current) { void ReleaseResumeEditLock(editLockRef.current); editLockRef.current = null; }
-    ShowNotice('已取消编辑，未保存修改已放弃');
+    ShowNotice('已取消编辑，未保存修改已放弃', "info");
   }
-  function ConfirmDeleteResume() {
-    if (!deleteTarget) return;
-    deleteResume.mutate({ id: deleteTarget.id });
-    // 后端已连同历史版本硬删除；当前使用指针指向被删简历时一并清空，避免助手引用失效简历。
-    if (currentResumeId === deleteTarget.id) setCurrentResumeId(null);
-    CloseDrawer(); ShowNotice('简历已删除');
+  async function ConfirmDeleteResume() {
+    if (!deleteTarget || deleteResume.isPending) return;
+    try {
+      await deleteResume.mutateAsync({ id: deleteTarget.id });
+      // 后端确认删除后才清空当前指针，失败时继续保留原有简历及选择。
+      if (currentResumeId === deleteTarget.id) setCurrentResumeId(null);
+      CloseDrawer(); ShowNotice('简历已删除', 'success');
+    } catch { /* mutation 已提示删除失败，保留确认窗口。 */ }
   }
   function SetCurrentResume(resume: Resume) {
     setCurrentResumeId(resume.id);
     CloseDrawer();
-    ShowNotice('已设为当前版本');
+    ShowNotice('已设为当前版本', "success");
   }
   async function DownloadPdf() {
     if (!drawerResume) return;
     try {
       const result = await ExportResumeFile(drawerResume, 'pdf');
-      ShowNotice(`已导出 ${result.fileName} 到工作空间 exports 文件夹`);
-    } catch (error) { ShowNotice(error instanceof Error ? error.message : '简历导出失败'); }
+      ShowNotice(`已导出 ${result.fileName} 到工作空间 exports 文件夹`, "success");
+    } catch (error) { ShowNotice(error instanceof Error ? error.message : '简历导出失败', "error"); }
   }
 
   return <div className="resumes-view">
     <div className="view-h">
-      <div><h1>简历</h1><p>每一版各自针对一个职位。点开任意一版可以看到完整内容，以及这一版改了什么。</p></div>
-      <div className="vh-act"><button className="ghost-btn" type="button" onClick={SaveViaAvery}><Icon name="assistant" size={14} />让Avery保存简历</button></div>
+      <h1>简历</h1>
+      <div className="vh-act"><button className="btn-accent" type="button" onClick={SaveViaAvery}><Icon name="assistant" size={14} />让Avery保存简历</button></div>
     </div>
     {sortedResumes.map((resume) => {
       const isCurrent = resume.id === currentResumeId;
@@ -251,10 +253,10 @@ function ResumesPage({ onGoAssistant }: { onGoAssistant: () => void }) {
     <Modal
       open={Boolean(deleteTarget)}
       title="删除这份简历？"
-      onClose={() => SetDeleteTarget(null)}
+      onClose={() => { if (!deleteResume.isPending) SetDeleteTarget(null); }}
       footer={<>
-        <DialogButton onClick={() => SetDeleteTarget(null)}>取消</DialogButton>
-        <DialogButton tone="danger" onClick={ConfirmDeleteResume}>确认删除</DialogButton>
+        <DialogButton disabled={deleteResume.isPending} onClick={() => SetDeleteTarget(null)}>取消</DialogButton>
+        <DialogButton disabled={deleteResume.isPending} tone="danger" onClick={() => void ConfirmDeleteResume()}>{deleteResume.isPending ? '删除中…' : '确认删除'}</DialogButton>
       </>}
     >
       删除后这份简历及其全部历史版本将从数据库中移除，无法恢复。

@@ -119,7 +119,7 @@ export function ComposerInput({ value, onChange, inputRef, sessionId, scenarioId
       if (live) {
         setSkills(CreateSkillCommands(items)); setSkillState('ready');
         if (skillRef.current && !items.some((item) => item.id === skillRef.current?.skillId)) {
-          onSkillChange(null); ShowNotice('原先选择的技能在当前场景不可用，已移除标签，正文保留。');
+          onSkillChange(null); ShowNotice('原先选择的技能在当前场景不可用，已移除标签，正文保留。', "info");
         }
       }
     }).catch(() => { if (live) setSkillState('error'); });
@@ -198,7 +198,7 @@ export function ComposerInput({ value, onChange, inputRef, sessionId, scenarioId
   function Choose(command: ComposerCommand) {
     if (!context || busy || reloading) return;
     if (command.action === 'compact') {
-      if (skill || mode) { ShowNotice('请先移除技能或模式标签，再选择压缩上下文。'); return; }
+      if (skill || mode) { ShowNotice('请先移除技能或模式标签，再选择压缩上下文。', "info"); return; }
       const suffix = context.value.slice(context.end);
       Write(`/compact${/^\s/.test(suffix) ? '' : ' '}${suffix}`, '/compact '.length);
       Dismiss(); return;
@@ -208,7 +208,7 @@ export function ComposerInput({ value, onChange, inputRef, sessionId, scenarioId
     if (command.action === 'skill') onSkillChange(command);
     if (command.action === 'placeholder') {
       if (command.mode) { onModeChange(command.mode); setPlaceholderMode(command.mode); }
-      else ShowNotice(`${command.label}功能暂未接入，当前仅为占位。`);
+      else ShowNotice(`${command.label}功能暂未接入，当前仅为占位。`, "info");
     }
   }
   function Insert(text: string) {
@@ -219,7 +219,7 @@ export function ComposerInput({ value, onChange, inputRef, sessionId, scenarioId
   async function Reload() {
     const pending = pendingReload;
     if (!pending || reloading) return;
-    if (pending.value !== valueRef.current) { setPendingReload(null); ShowNotice('草稿已变化，请重新选择重载上下文。'); return; }
+    if (pending.value !== valueRef.current) { setPendingReload(null); ShowNotice('草稿已变化，请重新选择重载上下文。', "info"); return; }
     setReloading(true);
     try {
       const success = await onReload();

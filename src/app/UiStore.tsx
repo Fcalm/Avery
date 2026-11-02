@@ -1,17 +1,10 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { NoticePresentation, type NoticeTone } from './noticePresentation';
 
-type NoticeTone = 'success' | 'error' | 'pending';
 type NoticeAction = { label: string; run: () => void };
 type Notice = { id: number; message: string; tone: NoticeTone; action?: NoticeAction; duration?: number };
-/* 原型节奏：普通通知 1.9 秒自动消失；带动作的通知停留 5 秒留出点击窗口。 */
-const BaseNoticeDuration = 1900;
+/* 带动作的通知至少停留 5 秒，留出操作窗口。 */
 const ActionNoticeDuration = 5000;
-
-function InferNoticeTone(message: string): NoticeTone {
-  if (/失败|错误|无法|请先|不可|冲突|异常|未知|被占用|未获取|缺失/.test(message)) return 'error';
-  if (/处理中|测试中|保存中|加载中|同步中|刷新中|迁移中|等待/.test(message)) return 'pending';
-  return 'success';
-}
 
 /** 跨页面轻量 UI 状态：只存导航、抽屉、当前实体与 Toast 等非事实源状态。 */
 interface UiStoreValue {
@@ -24,7 +17,7 @@ interface UiStoreValue {
   assistantView: 'chat' | 'trace';
   setAssistantView: (view: 'chat' | 'trace') => void;
   notice: Notice | null;
-  ShowNotice: (message: string, tone?: NoticeTone, options?: { action?: NoticeAction; duration?: number }) => void;
+  ShowNotice: (message: string, tone: NoticeTone, options?: { action?: NoticeAction; duration?: number }) => void;
   HideNotice: () => void;
   profileConflict: boolean;
   setProfileConflict: (open: boolean) => void;
@@ -50,13 +43,13 @@ function UiStoreProvider({ children }: { children: ReactNode }) {
     if (noticeTimerRef.current !== null) window.clearTimeout(noticeTimerRef.current);
   }, []);
 
-  const ShowNotice = useCallback((message: string, tone: NoticeTone = InferNoticeTone(message), options?: { action?: NoticeAction; duration?: number }) => {
+  const ShowNotice = useCallback((message: string, tone: NoticeTone, options?: { action?: NoticeAction; duration?: number }) => {
     if (noticeTimerRef.current !== null) window.clearTimeout(noticeTimerRef.current);
     setNotice({ id: ++noticeIdRef.current, message, tone, action: options?.action, duration: options?.duration });
     noticeTimerRef.current = window.setTimeout(() => {
       setNotice(null);
       noticeTimerRef.current = null;
-    }, options?.duration ?? (options?.action ? ActionNoticeDuration : BaseNoticeDuration));
+    }, options?.duration ?? (options?.action ? Math.max(ActionNoticeDuration, NoticePresentation[tone].duration) : NoticePresentation[tone].duration));
   }, []);
   const HideNotice = useCallback(() => {
     if (noticeTimerRef.current !== null) { window.clearTimeout(noticeTimerRef.current); noticeTimerRef.current = null; }

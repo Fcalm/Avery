@@ -19,6 +19,7 @@ import { Button, DialogButton, EmptyState, Modal } from '../shared/components/UI
 import { BackendRecoveryGate, IsBackendRecoveryError } from './BackendRecoveryGate';
 import { Icon } from '../shared/components/Icon';
 import { StartupScreen } from './StartupScreen';
+import { NoticePresentation } from './noticePresentation';
 import type { PageId } from '../types/domain';
 
 /** 「启动时打开-恢复上次的对话」用的本机记录：只存会话 id，随工作空间之外的本机偏好保存。 */
@@ -81,8 +82,8 @@ function AppContent() {
   const { settings, setSettings } = useSettingsStore();
   const { profileConflict, setProfileConflict, ShowNotice, activeConversationId, setActiveConversationId } = useUiStore();
   const profiles = useProfiles();
-  const reloadProfiles = useReloadProfiles({ onFailure: ShowNotice });
-  const keepProfiles = useKeepProfiles({ onFailure: ShowNotice });
+  const reloadProfiles = useReloadProfiles({ onFailure: (message) => ShowNotice(message, 'error') });
+  const keepProfiles = useKeepProfiles({ onFailure: (message) => ShowNotice(message, 'error') });
   const conversations = useConversations();
   const [page, setPage] = useState<PageId>('assistant');
   const [reviewingTutorial, setReviewingTutorial] = useState(false);
@@ -143,9 +144,9 @@ function AppContent() {
   /** 处理档案外部修改冲突：重新加载磁盘版本或强制保留应用版本。 */
   function ResolveProfileConflict(action: 'reload' | 'keep') {
     if (action === 'reload') {
-      void reloadProfiles.mutateAsync({}).then(() => { setProfileConflict(false); ShowNotice('已重新加载磁盘上的档案版本'); });
+      void reloadProfiles.mutateAsync({}).then(() => { setProfileConflict(false); ShowNotice('已重新加载磁盘上的档案版本', "success"); });
     } else {
-      void keepProfiles.mutateAsync({ items: profiles }).then(() => { setProfileConflict(false); ShowNotice('已保留应用版本并覆盖本地档案'); });
+      void keepProfiles.mutateAsync({ items: profiles }).then(() => { setProfileConflict(false); ShowNotice('已保留应用版本并覆盖本地档案', "success"); });
     }
   }
 
@@ -163,7 +164,7 @@ function AppContent() {
       <AppShell page={page} onNavigate={setPage} onRestartOnboarding={() => setReviewingTutorial(true)} settingsTab={settingsTab} onRequestSettingsTab={RequestSettingsTab}>
         {/* 在途 Agent 依赖 Renderer 流订阅写回消息终态；导航时隐藏而非卸载，避免遗漏流事件。 */}
         <section className="assistant-page-presence" hidden={page !== 'assistant'}><AssistantPage onNavigate={setPage} /></section>
-        {page === 'jobs' && <JobsPage onGoAssistant={() => setPage('assistant')} />}{page === 'applications' && <ApplicationsPage />}{page === 'resumes' && <ResumesPage onGoAssistant={() => setPage('assistant')} />}{page === 'profiles' && <ProfilesPage />}{page === 'settings' && <SettingsPage onNavigateDeveloper={() => setPage('developer')} tab={settingsTab} requestedTab={requestedSettingsTab} tabRequestVersion={settingsTabRequestVersion} onTabChange={setSettingsTab} />}{page === 'developer' && <DeveloperPage />}
+        {page === 'jobs' && <JobsPage onGoAssistant={() => setPage('assistant')} />}{page === 'applications' && <ApplicationsPage onNavigate={setPage} />}{page === 'resumes' && <ResumesPage onGoAssistant={() => setPage('assistant')} />}{page === 'profiles' && <ProfilesPage />}{page === 'settings' && <SettingsPage onNavigateDeveloper={() => setPage('developer')} tab={settingsTab} requestedTab={requestedSettingsTab} tabRequestVersion={settingsTabRequestVersion} onTabChange={setSettingsTab} />}{page === 'developer' && <DeveloperPage />}
       </AppShell>
     </DeveloperConsoleProvider>
     <Modal
@@ -186,8 +187,8 @@ function AppContent() {
 function AppNotice() {
   const { notice, HideNotice } = useUiStore();
   if (!notice) return null;
-  return createPortal(<div key={notice.id} className={`app-toast${notice.action ? ' has-action' : ''}`} role="status" aria-live="polite">
-      <Icon name={notice.tone === 'error' ? 'error' : notice.tone === 'pending' ? 'loading' : 'check-circle'} size={14} />
+  return createPortal(<div key={notice.id} data-tone={notice.tone} className={`app-toast${notice.action ? ' has-action' : ''}`} role={notice.tone === 'error' ? 'alert' : 'status'} aria-live={notice.tone === 'error' ? 'assertive' : 'polite'}>
+      <Icon name={NoticePresentation[notice.tone].icon} size={14} />
       <span>{notice.message}</span>
       {notice.action && <button className="app-toast-act" type="button" onClick={() => { HideNotice(); notice.action?.run(); }}>{notice.action.label}</button>}
     </div>, document.body);

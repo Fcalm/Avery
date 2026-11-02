@@ -173,11 +173,11 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
   const conversations = useConversations();
   const resumes = useResumes();
   const settings = useSettings();
-  const createConversation = useCreateConversation({ onFailure: () => ShowNotice('会话创建失败，请稍后重试。') });
-  const appendMessages = useAppendConversationMessages({ onFailure: () => ShowNotice('消息保存失败，请稍后重试。') });
-  const completeMessage = useCompleteConversationMessage({ onFailure: () => ShowNotice('消息保存失败，请稍后重试。') });
+  const createConversation = useCreateConversation({ onFailure: () => ShowNotice('会话创建失败，请稍后重试。', "error") });
+  const appendMessages = useAppendConversationMessages({ onFailure: () => ShowNotice('消息保存失败，请稍后重试。', "error") });
+  const completeMessage = useCompleteConversationMessage({ onFailure: () => ShowNotice('消息保存失败，请稍后重试。', "error") });
   const removeMessage = useRemoveConversationMessage();
-  const upsertResume = useUpsertResume({ onConflict: () => ShowNotice('简历已在其他窗口被修改，已刷新为最新版本'), onFailure: () => ShowNotice('简历保存失败，请稍后重试。') });
+  const upsertResume = useUpsertResume({ onConflict: () => ShowNotice('简历已在其他窗口被修改，已刷新为最新版本', "error"), onFailure: () => ShowNotice('简历保存失败，请稍后重试。', "error") });
   const patchConversations = usePatchConversations();
   const [composer, setComposer] = useState('');
   const [isComposerComposing, setIsComposerComposing] = useState(false);
@@ -521,7 +521,7 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
     } catch {
       if (version === sessionLoadVersionRef.current && activeConversationRef.current === sessionId) {
         setUsage({ ...EmptyUsage, source: 'unavailable' });
-        ShowNotice('会话状态恢复失败，当前 usage 未知');
+        ShowNotice('会话状态恢复失败，当前 usage 未知', "error");
       }
     }
   }, [PersistConversationComposerState, ShowNotice, settings.provider, UpdateSessionTasks, SetSessionRun, ApplyPendingEvent, pendingEditVersions, pendingBrowserActionVersions, pendingCronTaskVersions, pendingQuestionsVersions]);
@@ -590,7 +590,7 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
   // 卸载时释放仍持有的用户编辑锁，避免锁在租约期内阻塞 Agent 编辑。
   useEffect(() => () => { if (editLockRef.current) void ReleaseResumeEditLock(editLockRef.current); }, []);
   useEffect(() => SubscribeAgentStream((event: AgentStreamEvent) => {
-    if (event.type === 'conversation_save_error') { ShowNotice(event.message ?? '会话过程保存失败'); return; }
+    if (event.type === 'conversation_save_error') { ShowNotice(event.message ?? '会话过程保存失败', "error"); return; }
     const owner = event.sessionId ?? (event.requestId ? activePlaceholdersRef.current.get(event.requestId)?.conversationId : undefined);
     if (event.type === 'run_resumed' && owner && event.requestId) {
       const requestId = event.requestId;
@@ -620,7 +620,7 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
         if (event.type === 'resume_created') setCurrentResumeId(event.resumeId);
         if (event.type === 'resume_created' || event.resumeId === currentResumeId) { setResumeText(event.content); setSavedText(event.content); setHistory([]); }
       }
-      ShowNotice(event.type === 'resume_created' ? 'Agent 已创建并保存简历' : 'Agent 已保存简历修改');
+      ShowNotice(event.type === 'resume_created' ? 'Agent 已创建并保存简历' : 'Agent 已保存简历修改', "success");
       return;
     }
     if (event.type === 'cron_task_changed') return;
@@ -629,10 +629,10 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
     if (event.type === 'cron_run_completed') { void RefreshWorkspacePreservingMessages(); return; }
     if (event.type === 'browser_action_completed' && event.browserAction) {
       if (owner) setPendingBrowserActionForSession(owner, (current) => current?.requestId === event.requestId ? null : current);
-      if (event.browserAction.status === 'status_unknown') ShowNotice('浏览器动作结果未知，请先在目标网站核对，不要重复执行');
+      if (event.browserAction.status === 'status_unknown') ShowNotice('浏览器动作结果未知，请先在目标网站核对，不要重复执行', "error");
       return;
     }
-    if (event.type === 'browser_user_action') { ShowNotice(event.browserAction?.summary ?? '请在浏览器中完成登录或验证，然后发送“继续任务”'); return; }
+    if (event.type === 'browser_user_action') { ShowNotice(event.browserAction?.summary ?? '请在浏览器中完成登录或验证，然后发送“继续任务”', "info"); return; }
     if ((event.type === 'task_created' || event.type === 'task_updated') && event.task && owner) {
       const task = event.task;
       UpdateSessionTasks(owner, (state) => ({ todos: state.todos.some((item) => item.id === task.id) ? state.todos.map((item) => item.id === task.id ? task : item) : [...state.todos, task], active: true }));
@@ -661,33 +661,33 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
       SetSessionRun(owner, undefined, event.requestId);
       if (owner === activeConversationRef.current) { setScrollToBottomRequest((current) => current + 1); void RefreshSessionAssistantState(owner); }
     }
-    if (event.type === 'error') ShowNotice(event.message ?? 'Agent 请求失败');
-    if (event.type === 'cancelled') ShowNotice('已停止生成');
+    if (event.type === 'error') ShowNotice(event.message ?? 'Agent 请求失败', "error");
+    if (event.type === 'cancelled') ShowNotice('已停止生成', "info");
     if (event.type === 'cancelled' && owner) {
       setPendingQuestionsForSession(owner, (current) => current?.requestId === event.requestId ? null : current);
       setPendingEditForSession(owner, (current) => current?.requestId === event.requestId ? null : current);
       setPendingBrowserActionForSession(owner, (current) => current?.requestId === event.requestId ? null : current);
       setPendingCronTaskForSession(owner, (current) => current?.requestId === event.requestId ? null : current);
     }
-    if (event.type === 'paused') ShowNotice(event.message ?? 'Agent 运行已暂停');
+    if (event.type === 'paused') ShowNotice(event.message ?? 'Agent 运行已暂停', "info");
     if (event.type === 'run_released') {
-      if (event.cleanupOutcomes?.some((outcome) => outcome.status === 'status_unknown')) ShowNotice('浏览器任务页面清理状态未知；后续任务会使用新的隔离页面。');
-      else if (event.cleanupOutcomes?.some((outcome) => outcome.status === 'failed')) ShowNotice('浏览器任务页面清理失败；后续任务会使用新的隔离页面。');
+      if (event.cleanupOutcomes?.some((outcome) => outcome.status === 'status_unknown')) ShowNotice('浏览器任务页面清理状态未知；后续任务会使用新的隔离页面。', "error");
+      else if (event.cleanupOutcomes?.some((outcome) => outcome.status === 'failed')) ShowNotice('浏览器任务页面清理失败；后续任务会使用新的隔离页面。', "error");
     }
   }), [ShowNotice, currentResumeId, SetSessionRun, UpdateSessionTasks, RefreshSessionAssistantState, RefreshWorkspacePreservingMessages, RefreshConversationTrace, ApplyPendingEvent, setPendingBrowserActionForSession, setCurrentResumeId]);
 
   async function HandleReloadContext(): Promise<boolean> {
     if (compactingRef.current) return false;
     const owner = activeConversationId;
-    if (!owner) { ShowNotice('请先发送一条消息建立会话，再重载会话上下文'); return false; }
-    if (activeRequestsRef.current.has(owner)) { ShowNotice('Agent 正在处理，请等待本轮结束后再试'); return false; }
+    if (!owner) { ShowNotice('请先发送一条消息建立会话，再重载会话上下文', "info"); return false; }
+    if (activeRequestsRef.current.has(owner)) { ShowNotice('Agent 正在处理，请等待本轮结束后再试', "info"); return false; }
     setIsReloadingContext(true);
     try {
       const result = await ReloadAgentSession(owner);
-      if (!result.reloaded) { ShowNotice(result.reason === 'busy' ? 'Agent 正在处理，请等待本轮结束后再试' : `会话上下文重载失败：${result.reason ?? '请重试'}`); return false; }
-      ShowNotice(`会话上下文已重载（revision ${result.sessionRevision ?? ''}）`);
+      if (!result.reloaded) { ShowNotice(result.reason === 'busy' ? 'Agent 正在处理，请等待本轮结束后再试' : `会话上下文重载失败：${result.reason ?? '请重试'}`, result.reason === 'busy' ? 'info' : 'error'); return false; }
+      ShowNotice(`会话上下文已重载（revision ${result.sessionRevision ?? ''}）`, "success");
       return activeConversationRef.current === owner;
-    } catch (error) { ShowNotice(error instanceof Error ? error.message : '会话上下文重载失败'); return false; }
+    } catch (error) { ShowNotice(error instanceof Error ? error.message : '会话上下文重载失败', "error"); return false; }
     finally { setIsReloadingContext(false); }
   }
 
@@ -697,9 +697,9 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
     const compactFocus = ParseCompactCommand(composer);
     if (compactFocus !== null) {
       const owner = activeConversationId;
-      if (!owner) { ShowNotice('请先发送消息建立会话，再压缩上下文。'); return; }
-      if (attachments.length || selectedSkill || composerMode) { ShowNotice('压缩命令不处理附件、技能或模式标签，请先移除；草稿已保留。'); return; }
-      if (activeRequestsRef.current.has(owner)) { ShowNotice('请先结束、确认或取消当前任务，再压缩上下文。'); return; }
+      if (!owner) { ShowNotice('请先发送消息建立会话，再压缩上下文。', "info"); return; }
+      if (attachments.length || selectedSkill || composerMode) { ShowNotice('压缩命令不处理附件、技能或模式标签，请先移除；草稿已保留。', "info"); return; }
+      if (activeRequestsRef.current.has(owner)) { ShowNotice('请先结束、确认或取消当前任务，再压缩上下文。', "info"); return; }
       const requestId = crypto.randomUUID();
       compactCancelRef.current = false;
       compactingRef.current = true; setCompacting({ requestId, sessionId: owner });
@@ -723,8 +723,8 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
         const result = await CompactAgentSession({ requestId, sessionId: owner, instructions: compactFocus, provider, model, reasoningEffort });
         if (result.compacted) {
           await RefreshSessionAssistantState(owner);
-          ShowNotice('上下文已压缩，原始记录已保留。');
-        } else ShowNotice('当前没有可进一步压缩的历史。');
+          ShowNotice('上下文已压缩，原始记录已保留。', "success");
+        } else ShowNotice('当前没有可进一步压缩的历史。', "info");
       } catch (error) {
         const message = error instanceof Error ? error.message : '压缩失败，请稍后重试。';
         if (recorded && !conversationsRef.current.find((item) => item.id === owner)?.messages.find((item) => item.id === reply.id)?.presentation) {
@@ -732,7 +732,7 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
           try { await completeMessage.mutateAsync({ conversationId: owner, messageId: reply.id, content: message, thinkingContent: '' }); }
           catch { /* mutation 已提示存储错误；释放压缩状态，不能把存储失败误当成再次执行的理由。 */ }
         }
-        ShowNotice(message);
+        ShowNotice(message, "error");
       }
       finally {
         SetSessionRun(owner, undefined, requestId);
@@ -741,10 +741,10 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
       }
       return;
     }
-    if (activeConversationId && activeRequestsRef.current.has(activeConversationId)) { ShowNotice('已有任务正在执行，请等待本轮结束或回到原会话停止任务。'); return; }
+    if (activeConversationId && activeRequestsRef.current.has(activeConversationId)) { ShowNotice('已有任务正在执行，请等待本轮结束或回到原会话停止任务。', "info"); return; }
     if (/^\/reload(?:-session)?\s*$/.test(composer)) { setReloadCommandTrigger((revision) => revision + 1); return; }
     if (attachments.some((attachment) => attachment.status === 'uploading')) {
-      ShowNotice('附件仍在上传，请完成后再发送。');
+      ShowNotice('附件仍在上传，请完成后再发送。', "info");
       return;
     }
     const readyAttachments = attachments.filter((attachment): attachment is Extract<ComposerAttachment, { status: 'ready' }> => attachment.status === 'ready');
@@ -825,7 +825,7 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
         SetSessionRun(targetId, undefined, requestId);
         UpdateSessionTasks(targetId, (state) => ({ ...state, active: false }));
       }
-      ShowNotice(error instanceof Error ? error.message : '无法发起 Agent 请求');
+      ShowNotice(error instanceof Error ? error.message : '无法发起 Agent 请求', "error");
     } finally {
       // 旧 Send 的迟到 IPC 回执不能清理已恢复的同 requestId Run。
       if (runVersions.current[targetId] === startedRunVersion) {
@@ -841,7 +841,7 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
 
   function OpenConversationResource(resource: ConversationResource) {
     if (!activeConversationId) return;
-    if (editing) { ShowNotice('请先保存或取消当前简历编辑，再查看产物。'); return; }
+    if (editing) { ShowNotice('请先保存或取消当前简历编辑，再查看产物。', "info"); return; }
     if (resource.kind === 'resume') HandleSelectResume(resource.id);
     setResourcePreview({ sessionId: activeConversationId, resource });
     setResumePanelOpen(true);
@@ -860,7 +860,7 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
     try {
       await UpdateAgentConfirmationMode(requestId, next);
     } catch (error) {
-      ShowNotice(error instanceof Error ? error.message : '确认权限同步失败，将在下一轮任务生效');
+      ShowNotice(error instanceof Error ? error.message : '确认权限同步失败，将在下一轮任务生效', "error");
     }
   }
 
@@ -882,7 +882,7 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
     PersistConversationComposerState(activeConversationId, { reasoningEffort: nextEffort });
     if (activeConversationId) {
       void UpdateAgentReasoningEffort(activeConversationId, nextEffort)
-        .catch((error) => ShowNotice(error instanceof Error ? error.message : '思考强度保存失败，将在下一次发送时重试'));
+        .catch((error) => ShowNotice(error instanceof Error ? error.message : '思考强度保存失败，将在下一次发送时重试', "error"));
     }
   }
 
@@ -893,7 +893,7 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
 
     const availableSlots = Math.max(0, 10 - attachments.length);
     const acceptedFiles = files.slice(0, availableSlots);
-    if (acceptedFiles.length < files.length) ShowNotice('最多可添加 10 个附件，超出部分未添加。');
+    if (acceptedFiles.length < files.length) ShowNotice('最多可添加 10 个附件，超出部分未添加。', "info");
     if (acceptedFiles.length === 0) return;
 
     const pendingAttachments = acceptedFiles.map((file) => ({ id: crypto.randomUUID(), name: file.name, status: 'uploading' as const }));
@@ -933,12 +933,12 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
   async function HandleSelectProject() {
     const selected = await SelectAgentProjectDirectory();
     if (!selected) return;
-    if (!activeConversationId) { setProjectEnvironment(selected); ShowNotice('项目环境会在发送首条消息后绑定到新会话'); return; }
+    if (!activeConversationId) { setProjectEnvironment(selected); ShowNotice('项目环境会在发送首条消息后绑定到新会话', "info"); return; }
     try {
       const project = await BindProjectEnvironment(activeConversationId, selected.projectId);
       setProjectEnvironment(project ?? selected);
     } catch (error) {
-      ShowNotice(error instanceof Error ? error.message : '项目环境绑定失败');
+      ShowNotice(error instanceof Error ? error.message : '项目环境绑定失败', "error");
     }
   }
 
@@ -953,9 +953,9 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
   /** 用户发起手动编辑前获取后端互斥锁；Agent 占用或本轮仍在处理时拒绝进入编辑。 */
   async function HandleStartEditing() {
     if (!resume) return;
-    if (activeConversationId && activeRequestsRef.current.has(activeConversationId)) { ShowNotice('Agent 正在处理当前简历，请等待本轮结束后再编辑'); return; }
+    if (activeConversationId && activeRequestsRef.current.has(activeConversationId)) { ShowNotice('Agent 正在处理当前简历，请等待本轮结束后再编辑', "info"); return; }
     const lock = await AcquireResumeEditLock(resume.id);
-    if (!lock.acquired) { ShowNotice(lock.reason ?? '简历正被占用，暂时无法编辑'); return; }
+    if (!lock.acquired) { ShowNotice(lock.reason ?? '简历正被占用，暂时无法编辑', "info"); return; }
     editLockRef.current = resume.id;
     setEditing(true);
   }
@@ -968,7 +968,7 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
       setSavedText(resumeText);
       setHistory([]);
       setEditing(false);
-      ShowNotice('简历已保存到本地工作空间');
+      ShowNotice('简历已保存到本地工作空间', "success");
     } catch {
       // 保存失败提示已由 mutation onConflict/onFailure 处理；此处保持编辑态与锁。
     }
@@ -979,7 +979,7 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
     setHistory([]);
     setEditing(false);
     if (editLockRef.current) { void ReleaseResumeEditLock(editLockRef.current); editLockRef.current = null; }
-    ShowNotice('已取消编辑，未保存修改已放弃');
+    ShowNotice('已取消编辑，未保存修改已放弃', "info");
   }
   /** 切换当前简历：释放仍持有的编辑锁并重置编辑态，加载用户在菜单中选定的简历。 */
   function HandleSelectResume(resumeId: string) {
@@ -994,7 +994,7 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
   }
   function HandleScenarioChange(nextScenarioId: 'default' | 'application') {
     if (nextScenarioId === scenarioId) { setShowScenario(false); return; }
-    if (activeConversationId && activeRequestsRef.current.has(activeConversationId)) { ShowNotice('Agent 正在执行任务，请停止或等待本轮结束后再切换场景'); return; }
+    if (activeConversationId && activeRequestsRef.current.has(activeConversationId)) { ShowNotice('Agent 正在执行任务，请停止或等待本轮结束后再切换场景', "info"); return; }
     nextDraftScenarioRef.current = activeConversationId ? nextScenarioId : null;
     setActiveConversationId(null);
     setShowScenario(false);
@@ -1002,7 +1002,7 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
     // 场景切换会建立新会话；确认权限不得跨场景沿用，尤其不能把完全信任隐式带入真实网站投递。
     setPermission('always_confirm');
     onNavigate('assistant');
-    ShowNotice(`已切换到${ScenarioOptions.find((item) => item.id === nextScenarioId)?.label}的新对话`);
+    ShowNotice(`已切换到${ScenarioOptions.find((item) => item.id === nextScenarioId)?.label}的新对话`, "success");
   }
 
   /** 确认失败可能已消费提案；只清理原会话中同一个确认，不影响切换后的会话或新提案。 */
@@ -1017,7 +1017,7 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
       if (kind === 'cron_task_confirmation') setPendingCronTask((current) => current?.confirmationId === confirmationId ? null : current);
       if (kind === 'browser_confirmation') setPendingBrowserAction((current) => current?.confirmationId === confirmationId ? null : current);
     } catch (error) {
-      ShowNotice(error instanceof Error ? `无法核对确认状态：${error.message}` : '无法核对确认状态，请切回原会话检查。');
+      ShowNotice(error instanceof Error ? `无法核对确认状态：${error.message}` : '无法核对确认状态，请切回原会话检查。', "error");
     }
   }
 
@@ -1028,7 +1028,7 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
     try {
       await RespondToAgentInteraction(response);
     } catch (error) {
-      ShowNotice(error instanceof Error ? error.message : '交互处理失败，请重试');
+      ShowNotice(error instanceof Error ? error.message : '交互处理失败，请重试', "error");
       try {
         const state = await GetSessionAssistantState(response.sessionId);
         for (const event of state.pendingEvents ?? []) ApplyPendingEvent(event);
@@ -1055,7 +1055,7 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
     if (!pendingQuestions || !activeConversationId) return;
     const answers = Object.fromEntries(pendingQuestions.questions.map((question) => [question.id,
       questionAnswers[question.id] === '其他' ? otherAnswers[question.id]?.trim() : questionAnswers[question.id]]));
-    if (Object.values(answers).some((answer) => !answer)) { ShowNotice('请选择或填写每一道问题的答案'); return; }
+    if (Object.values(answers).some((answer) => !answer)) { ShowNotice('请选择或填写每一道问题的答案', "error"); return; }
     void SubmitInteraction({ kind: 'answer', sessionId: activeConversationId, requestId: pendingQuestions.requestId, interactionId: pendingQuestions.interactionId, answers });
   }
 
