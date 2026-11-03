@@ -499,6 +499,8 @@ button { background: none; border: 0; }
 .empty h1 > span { min-width: 0; overflow-wrap: anywhere; }
 
 /* 输入框底座：消息区之上的渐变衬底 + 792px 居中列 */
+/* 菜单可跨过左右分栏边界；消息列表独立滚动，整体裁切仍由 assistant-layout 承担。 */
+.assistant-layout > .assistant-main:not(.assistant-trace) { overflow: visible; }
 .composer-dock {
   position: relative; z-index: 2; flex: none;
   padding: 0 26px 18px;
