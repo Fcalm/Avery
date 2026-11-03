@@ -1,7 +1,7 @@
 {
   "name": "avery",
   "private": true,
-  "version": "0.2.4",
+  "version": "0.2.5",
   "description": "Avery 本地优先的 AI 求职与简历助手（灾后重建工作区）",
   "author": "Avery",
   "license": "PolyForm-Noncommercial-1.0.0",
