@@ -13,6 +13,7 @@ import {
   NormalizeError,
   ProfileItemsSchema,
   ResumeUpsertSchema,
+  ResumeDocumentInputSchema,
   SettingsSubmitSchema,
   type ErrorCodeValue,
 } from '@avery/contracts';
@@ -22,6 +23,7 @@ export const MaxCommandPayloadBytes = 10 * 1024 * 1024;
 
 /** 只读命令通道集合：工作空间迁移期间仍放行，保证 UI 能读到当前数据。 */
 export const ReadOnlyChannels = new Set<string>([
+  'workspace:preview-resume-pdf',
   'agent:get-model-configuration',
   'agent:get-provider-usage',
   'workspace:status', 'workspace:get-view-model', 'workspace:get-settings',
@@ -153,6 +155,7 @@ export const MethodRoutes: Record<string, MethodRoute> = {
   'workspace:resume-revisions-restore': { service: 'resumes', method: 'RestoreResumeRevision' },
   'workspace:resume-revisions-delete': { service: 'resumes', method: 'DeleteResumeRevision' },
   'workspace:export-resume': { service: 'desktop', method: 'ExportResume' },
+  'workspace:preview-resume-pdf': { service: 'desktop', method: 'PreviewResumePdf' },
 };
 
 /** 函数路由通道（编排型，由 CreateBackend 注入实现）。 */
@@ -338,6 +341,7 @@ export function CreateBackend(options: CreateBackendOptions) {
           if (args.length !== 1) throw Object.assign(new Error('岗位查询需要且仅需要一组条件。'), { code: 'VALIDATION_ERROR' });
           args[0] = ParseJobQuery(args[0]);
         }
+        if (channel === 'workspace:preview-resume-pdf' && !z.tuple([ResumeDocumentInputSchema]).safeParse(args).success) throw Object.assign(new Error('简历预览参数无效'), { code: 'VALIDATION_ERROR' });
         if (writeSchema) {
           const parsed = writeSchema.safeParse(args);
           if (!parsed.success) {

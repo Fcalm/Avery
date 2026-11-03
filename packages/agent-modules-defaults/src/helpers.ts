@@ -1,4 +1,5 @@
 import type { ResumeSnapshot, ToolDisposition, ToolExecutionResult, ToolReceipt } from '@avery/agent-sdk';
+import type { ResumeData } from '@avery/agent-sdk';
 
 /** 校验字符串字段，避免工具/配置输入直接进入请求层或持久化。 */
 export function RequireString(value: unknown, field: string, maxLength = 20000): string {
@@ -29,6 +30,8 @@ export interface PendingResumeEdit {
   resumeId: string;
   name?: string;
   content: string;
+  /** 新版提案同时冻结数据和可读正文；旧提案无此字段时继续按旧协议完成。 */
+  data?: ResumeData;
   reason: string;
   baseRevision?: number;
   ownerId: string;

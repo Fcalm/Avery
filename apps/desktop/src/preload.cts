@@ -111,6 +111,7 @@ const workspaceBridge: WorkspaceBridge = {
   RestoreResumeRevision: (resumeId, revisionId, revision, options) => invokeWorkspaceWrite('workspace:resume-revisions-restore', [resumeId, revisionId, revision], options) as ReturnType<WorkspaceBridge['RestoreResumeRevision']>,
   DeleteResumeRevision: (resumeId, revisionId, options) => invokeWorkspaceWrite('workspace:resume-revisions-delete', [resumeId, revisionId], options) as ReturnType<WorkspaceBridge['DeleteResumeRevision']>,
   ExportResume: (resume, format) => invoke('workspace:export-resume', resume, format) as ReturnType<WorkspaceBridge['ExportResume']>,
+  PreviewResumePdf: (resume) => invoke('workspace:preview-resume-pdf', resume) as ReturnType<WorkspaceBridge['PreviewResumePdf']>,
   Migrate: () => invoke('workspace:migrate') as ReturnType<WorkspaceBridge['Migrate']>,
 };
 

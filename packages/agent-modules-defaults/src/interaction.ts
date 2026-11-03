@@ -1,5 +1,6 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { AgentSdkContractVersion } from '@avery/agent-sdk';
+import { ParseAgentResumeData, ResumeDataToText } from '@avery/contracts';
 import type { InteractionModule, ToolContext, ToolLedgerEntry, ToolReceipt } from '@avery/agent-sdk';
 import { RequireString, type PendingResumeEdit } from './helpers';
 
@@ -25,6 +26,18 @@ export function CreateInteractionModule(): InteractionModule {
       context.pendingEdits.delete(confirmationId);
       if (!accepted) {
         return { applied: false };
+      }
+      // 旧提案继续使用原协议；新版提案校验数据、预览正文和冻结哈希一致后才进入写入。
+      let data = pending.data;
+      if (data) {
+        const { version, mode, legacyContent, ...fields } = data;
+        if (version !== 1 || mode !== 'structured') throw new Error('简历提案数据版本无效');
+        data = ParseAgentResumeData(fields, legacyContent);
+        if (ResumeDataToText(data) !== pending.content) throw new Error('简历提案正文与结构化数据不一致');
+        const canonical = pending.kind === 'create'
+          ? { kind: 'create', resumeId: pending.resumeId, name: pending.name, content: pending.content, data, reason: pending.reason }
+          : { kind: 'edit', resumeId: pending.resumeId, content: pending.content, data, reason: pending.reason, baseRevision: pending.baseRevision };
+        if (createHash('sha256').update(JSON.stringify(canonical)).digest('hex') !== pending.proposalHash) throw new Error('简历提案已变更，请重新提交修改');
       }
       const toolName = pending.kind === 'create' ? 'CreateResume' : 'UpdateResume';
       const ledger = GetLedger(context);
@@ -60,8 +73,8 @@ export function CreateInteractionModule(): InteractionModule {
       try {
         saved = await context.ports.resumeWrite.Save({
           resume: pending.kind === 'create'
-            ? { id: pending.resumeId, name: pending.name ?? '', content: pending.content, updatedAt: '', targetRoles: [], summary: pending.content.slice(0, 120) }
-            : { id: pending.resumeId, name: pending.resume?.name ?? '', content: pending.content, updatedAt: '', targetRoles: pending.resume?.targetRoles, summary: pending.resume?.summary },
+            ? { id: pending.resumeId, name: pending.name ?? '', content: pending.content, ...(data ? { data, templateId: 'classic' as const } : {}), updatedAt: '', targetRoles: [], summary: pending.content.slice(0, 120) }
+            : { ...pending.resume, id: pending.resumeId, name: pending.resume?.name ?? '', content: pending.content, ...(data ? { data } : {}), updatedAt: '', targetRoles: pending.resume?.targetRoles, summary: pending.resume?.summary },
           baseRevision: pending.baseRevision,
         });
       } catch (error) {

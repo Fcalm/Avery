@@ -94,7 +94,7 @@ export class WorkspaceService {
       const copiedDatabasePath = path.join(temporaryPath, 'avery.db');
       this.db.exec(`VACUUM INTO '${copiedDatabasePath.replace(/'/g, "''")}'`);
       if (existsSync(this.profilePath)) copyFileSync(this.profilePath, path.join(temporaryPath, 'profile.json'));
-      for (const directory of ['attachments', 'exports', 'backups', 'derived', 'job-collection']) {
+      for (const directory of ['attachments', 'exports', 'backups', 'derived', 'job-collection', 'resumes']) {
         const sourceDirectory = path.join(sourcePath, directory);
         if (existsSync(sourceDirectory)) cpSync(sourceDirectory, path.join(temporaryPath, directory), { recursive: true, force: true });
       }

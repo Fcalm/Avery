@@ -95,7 +95,7 @@ export class BusinessStore {
     this.workspaceOperations = new WorkspaceOperationService({ db: this.db, workspacePath });
     this.attachmentLifecycle = new AttachmentLifecycleService({ db: this.db, workspacePath });
     this.conversations = new ConversationRepository({ db: this.db, attachmentLifecycle: this.attachmentLifecycle });
-    this.resumes = new ResumeRepository({ db: this.db, attachmentLifecycle: this.attachmentLifecycle });
+    this.resumes = new ResumeRepository({ db: this.db, attachmentLifecycle: this.attachmentLifecycle, workspacePath });
     this.jobs = new JobRepository({ db: this.db });
     this.applications = new ApplicationRepository({ db: this.db });
     this.profiles = new ProfileRepository({ profilePath: this.profilePath });

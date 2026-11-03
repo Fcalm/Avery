@@ -205,6 +205,7 @@ async function Bootstrap(): Promise<void> {
           return { projectId, name: result.name };
         },
         ExportResume: (resume: unknown, format: unknown) => desktop.Call('ExportResume', [{ workspacePath: currentWorkspacePath, resume, format }]),
+        PreviewResumePdf: (resume: unknown) => desktop.Call('PreviewResumePdf', [{ resume }]),
       },
     },
     functionRoutes: { 'workspace:migrate': MigrateWorkspace },

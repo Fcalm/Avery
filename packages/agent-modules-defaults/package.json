@@ -9,6 +9,7 @@
     "build": "node ../../node_modules/typescript/bin/tsc -p tsconfig.json"
   },
   "dependencies": {
+    "@avery/contracts": "0.1.0",
     "@avery/agent-sdk": "0.1.0",
     "acorn": "^8.19.0",
     "ajv": "^8.17.1"

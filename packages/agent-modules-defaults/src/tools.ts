@@ -1,6 +1,7 @@
 import Ajv from 'ajv';
 import { createHash, randomUUID } from 'node:crypto';
 import { AgentSdkContractVersion, JobLibraryReadLimits } from '@avery/agent-sdk';
+import { CreateAgentResumeDataJsonSchema, ParseAgentResumeData, ResumeDataToText } from '@avery/contracts';
 import type {
   BrowserActionProposal, BrowserToolName, JobLibraryPort, RegisteredAgentTool, ToolCallFragment, ToolContext, ToolExecutionResult, ToolLedgerEntry,
   ToolReceipt, ToolsModule,
@@ -16,6 +17,7 @@ function CreateDefinition(name: string, description: string, parameters: Record<
 }
 
 const EmptyParameters = { type: 'object', properties: {}, additionalProperties: false };
+const AgentResumeDataParameters = CreateAgentResumeDataJsonSchema();
 
 /** 旧工具名 → 新工具名兼容映射；新 Run 不再向模型暴露旧名，旧快照重放时仍可安全执行。 */
 const ToolAliases: Record<string, string> = {
@@ -76,7 +78,7 @@ function BuildRegistry(): RegisteredAgentTool[] {
       resourceKeys: (input) => [input?.resumeId ? `resume:${String(input.resumeId)}` : 'resume:index'],
     },
     {
-      definition: CreateDefinition('CreateResume', 'Create a new resume from user-provided facts. Only use after the user has clearly requested a new resume.', { type: 'object', properties: { name: { type: 'string' }, content: { type: 'string' }, reason: { type: 'string' } }, required: ['name', 'content', 'reason'], additionalProperties: false }),
+      definition: CreateDefinition('CreateResume', 'Create a new resume in the structured editor from user-provided facts. Submit data, not Markdown content. Ask the user for missing required facts before calling. github and work.project may be empty strings; unused groups may be empty arrays. Up to 3 groups per category and 1–5 descriptions/items per group. Only use after the user has clearly requested a new resume.', { type: 'object', properties: { name: { type: 'string' }, data: AgentResumeDataParameters, reason: { type: 'string' } }, required: ['name', 'data', 'reason'], additionalProperties: false }),
       timeoutMs: 10000,
       isConcurrencySafe: false,
       sideEffect: 'local_write',
@@ -86,7 +88,7 @@ function BuildRegistry(): RegisteredAgentTool[] {
       resourceKeys: () => ['resume:new'],
     },
     {
-      definition: CreateDefinition('UpdateResume', 'Apply a structured patch to the resume previously loaded and bound by ReadResume({resumeId}). The argument resumeId must match that binding. Only use after the user has clearly requested a resume edit.', { type: 'object', properties: { resumeId: { type: 'string' }, content: { type: 'string' }, reason: { type: 'string' } }, required: ['resumeId', 'content', 'reason'], additionalProperties: false }),
+      definition: CreateDefinition('UpdateResume', 'Update the resume loaded and bound by ReadResume({resumeId}). For a structured resume submit the full revised data, preserving unrelated fields. data also converts a legacy resume to the new editor. content is only for legacy resumes without structured data. Submit exactly one of data or content. Ask for missing facts; never invent them.', { type: 'object', properties: { resumeId: { type: 'string' }, data: AgentResumeDataParameters, content: { type: 'string' }, reason: { type: 'string' } }, required: ['resumeId', 'reason'], oneOf: [{ required: ['data'] }, { required: ['content'] }], additionalProperties: false }),
       timeoutMs: 10000,
       isConcurrencySafe: false,
       sideEffect: 'local_write',
@@ -745,9 +747,10 @@ export function CreateToolsModule(ports: AgentDefaultPorts): ToolsModule {
     if (context.resumeEditing) throw new Error('The user is editing a resume. Do not create another resume until the user saves or exits edit mode.');
     const resumeId = `resume-${randomUUID()}`;
     const name = RequireString(args.name, 'name', 200);
-    const content = RequireString(args.content, 'content', 100000);
+    const data = ParseAgentResumeData(args.data);
+    const content = ResumeDataToText(data);
     const reason = RequireString(args.reason, 'reason', 1000);
-    const canonical = { kind: 'create', resumeId, name, content, reason };
+    const canonical = { kind: 'create', resumeId, name, content, data, reason };
     const proposalHash = HashArguments(canonical);
     const idempotencyKey = CreateIdempotencyKey(context, 'CreateResume', proposalHash);
     const ledger = GetLedger(context);
@@ -758,12 +761,12 @@ export function CreateToolsModule(ports: AgentDefaultPorts): ToolsModule {
     const uncertainItems = ExtractUncertainItems(content);
     if (uncertainItems.length) {
       return WaitForDraftTextConfirmation(context, callId, {
-        kind: 'create', sessionId: context.sessionId, resumeId, name, content, reason, baseRevision: undefined,
+        kind: 'create', sessionId: context.sessionId, resumeId, name, content, data, reason, baseRevision: undefined,
         ownerId: `agent-${context.requestId}`, proposalHash, canonicalArguments: canonical, idempotencyKey, uncertainItems,
       });
     }
     if (RequiresConfirmation(context, 'CreateResume')) {
-      const pending: PendingResumeEdit = { kind: 'create', sessionId: context.sessionId, resumeId, name, content, reason, baseRevision: undefined, ownerId: `agent-${context.requestId}`, proposalHash, canonicalArguments: canonical, idempotencyKey };
+      const pending: PendingResumeEdit = { kind: 'create', sessionId: context.sessionId, resumeId, name, content, data, reason, baseRevision: undefined, ownerId: `agent-${context.requestId}`, proposalHash, canonicalArguments: canonical, idempotencyKey };
       const confirmationId = `resume-confirmation-${randomUUID()}`;
       context.pendingEdits.set(confirmationId, pending);
       context.emit({ type: 'resume_confirmation', requestId: context.requestId, confirmationId, resumeId, resumeName: name, content, reason });
@@ -778,7 +781,7 @@ export function CreateToolsModule(ports: AgentDefaultPorts): ToolsModule {
     }
     let saved;
     try {
-      saved = await context.ports.resumeWrite.Save({ resume: { id: resumeId, name, content, updatedAt: '', targetRoles: [], summary: content.slice(0, 120) } });
+      saved = await context.ports.resumeWrite.Save({ resume: { id: resumeId, name, content, data, templateId: 'classic', updatedAt: '', targetRoles: [], summary: content.slice(0, 120) } });
     } catch (error) {
       await FinishLedger(context, ledgerEntry, 'failed', { errorCode: 'SAVE_FAILED' });
       throw error;
@@ -795,10 +798,12 @@ export function CreateToolsModule(ports: AgentDefaultPorts): ToolsModule {
   async function UpdateResume(context: ToolContext, callId: string, args: Record<string, unknown>): Promise<ToolExecutionResult> {
     if (!context.boundResume || args.resumeId !== context.boundResume.id) throw new Error('The bound resume is unavailable or does not match resumeId. Call ReadResume with this resumeId first.');
     if (context.resumeEditing) throw new Error('The user is editing this resume. Do not retry until the user saves or exits edit mode.');
-    const content = RequireString(args.content, 'content', 100000);
+    if (args.data === undefined && context.boundResume.data?.mode === 'structured') throw new Error('This resume uses structured data. Submit its full revised data instead of content, preserving unrelated fields.');
+    const data = args.data === undefined ? undefined : ParseAgentResumeData(args.data, context.boundResume.data?.mode === 'structured' ? context.boundResume.data.legacyContent : undefined);
+    const content = data ? ResumeDataToText(data) : RequireString(args.content, 'content', 100000);
     const reason = RequireString(args.reason, 'reason', 1000);
     const baseRevision = context.boundResume.revision;
-    const canonical = { kind: 'edit', resumeId: args.resumeId, content, reason, baseRevision };
+    const canonical = { kind: 'edit', resumeId: args.resumeId, content, ...(data ? { data } : {}), reason, baseRevision };
     const proposalHash = HashArguments(canonical);
     const idempotencyKey = CreateIdempotencyKey(context, 'UpdateResume', proposalHash);
     const ledger = GetLedger(context);
@@ -809,13 +814,13 @@ export function CreateToolsModule(ports: AgentDefaultPorts): ToolsModule {
     const uncertainItems = ExtractUncertainItems(content);
     if (uncertainItems.length) {
       return WaitForDraftTextConfirmation(context, callId, {
-        kind: 'edit', sessionId: context.sessionId, resumeId: args.resumeId as string, content, reason, baseRevision,
+        kind: 'edit', sessionId: context.sessionId, resumeId: args.resumeId as string, content, data, reason, baseRevision,
         ownerId: `agent-${context.requestId}`, resume: { ...context.boundResume }, proposalHash,
         canonicalArguments: canonical, idempotencyKey, uncertainItems,
       });
     }
     if (RequiresConfirmation(context, 'UpdateResume')) {
-      const pending: PendingResumeEdit = { kind: 'edit', sessionId: context.sessionId, resumeId: args.resumeId, content, reason, baseRevision, ownerId: `agent-${context.requestId}`, resume: { ...context.boundResume }, proposalHash, canonicalArguments: canonical, idempotencyKey };
+      const pending: PendingResumeEdit = { kind: 'edit', sessionId: context.sessionId, resumeId: args.resumeId, content, data, reason, baseRevision, ownerId: `agent-${context.requestId}`, resume: { ...context.boundResume }, proposalHash, canonicalArguments: canonical, idempotencyKey };
       const confirmationId = `resume-confirmation-${randomUUID()}`;
       context.pendingEdits.set(confirmationId, pending);
       context.emit({ type: 'resume_confirmation', requestId: context.requestId, confirmationId, resumeId: args.resumeId, content, reason });
@@ -830,7 +835,7 @@ export function CreateToolsModule(ports: AgentDefaultPorts): ToolsModule {
     }
     let saved;
     try {
-      saved = await context.ports.resumeWrite.Save({ resume: { ...context.boundResume, content }, baseRevision });
+      saved = await context.ports.resumeWrite.Save({ resume: { ...context.boundResume, content, ...(data ? { data } : {}) }, baseRevision });
     } catch (error) {
       await FinishLedger(context, ledgerEntry, 'failed', { errorCode: 'SAVE_FAILED' });
       throw error;
@@ -839,7 +844,7 @@ export function CreateToolsModule(ports: AgentDefaultPorts): ToolsModule {
     }
     const receipt: ToolReceipt = { receiptId: `receipt-${randomUUID()}`, toolDefinitionId: 'UpdateResume', resourceIds: [args.resumeId], revisions: { resume: saved.revision }, idempotencyKey };
     await FinishLedger(context, ledgerEntry, 'succeeded', { receipt });
-    await context.bindResume({ ...context.boundResume, content, revision: saved.revision });
+    await context.bindResume({ ...context.boundResume, content, ...(data ? { data } : {}), revision: saved.revision });
     context.emit({ type: 'resume_updated', requestId: context.requestId, resumeId: args.resumeId, content, reason, revision: saved.revision });
     return CreateToolResult(callId, { ok: true, saved: true, resumeId: args.resumeId, revision: saved.revision }, { disposition: 'continue', receipt });
   }

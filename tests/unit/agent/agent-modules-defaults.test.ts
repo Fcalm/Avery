@@ -1203,6 +1203,7 @@ describe('agent-modules-defaults', () => {
     expect(onRequest).toHaveBeenCalledOnce();
     expect(onRequest).toHaveBeenCalledWith({
       kind: 'completion', model: 'deepseek-v4-flash', toolCount: 0,
+      attempt: 1, mode: 'stream',
       messages: [{ role: 'system', content: 'compiled prompt' }, { role: 'user', content: 'runtime status' }],
     });
   });
@@ -1401,7 +1402,7 @@ describe('agent-modules-defaults', () => {
       { choices: [], usage: { prompt_tokens: 11, prompt_cache_hit_tokens: 8, prompt_tokens_details: { cached_tokens: 3 }, completion_tokens: 7, total_tokens: 18 } },
       { choices: [], usage: { prompt_tokens: 11, prompt_tokens_details: { cached_tokens: 5 }, completion_tokens: 7, total_tokens: 18 } },
     ];
-    vi.stubGlobal('fetch', vi.fn(async () => SseResponse([responses.shift(), '[DONE]'])));
+    vi.stubGlobal('fetch', vi.fn(async () => SseResponse([{ choices: [{ delta: { content: '有效答复' } }] }, responses.shift(), '[DONE]'])));
     vi.resetModules();
     const { CreateProviderModule } = await import('../../../packages/agent-modules-defaults/src/provider');
     const provider = CreateProviderModule(CreatePorts());
@@ -1513,7 +1514,7 @@ describe('agent-modules-defaults', () => {
     ['总数不等于输入输出之和', { prompt_tokens: 11, completion_tokens: 7, total_tokens: 19 }],
     ['缓存命中超过输入', { prompt_tokens: 11, completion_tokens: 7, total_tokens: 18, prompt_tokens_details: { cached_tokens: 12 } }],
   ])('Provider 拒绝%s usage，不把协议异常冒充为真实值', async (_name, usage) => {
-    vi.stubGlobal('fetch', vi.fn(async () => SseResponse([{ choices: [], usage }, '[DONE]'])));
+    vi.stubGlobal('fetch', vi.fn(async () => SseResponse([{ choices: [{ delta: { content: '有效答复' } }] }, { choices: [], usage }, '[DONE]'])));
     vi.resetModules();
     const { CreateProviderModule } = await import('../../../packages/agent-modules-defaults/src/provider');
     const provider = CreateProviderModule(CreatePorts());
@@ -1534,7 +1535,7 @@ describe('agent-modules-defaults', () => {
     ])));
     vi.resetModules();
     const { CreateProviderModule } = await import('../../../packages/agent-modules-defaults/src/provider');
-    const provider = CreateProviderModule(CreatePorts());
+    const provider = CreateProviderModule(CreatePorts(), { maxAttempts: 1 });
 
     await expect(provider.StreamCompletion({
       requestId: 'request-duplicate-usage', model: 'deepseek-v4-flash', history: [], tools: [], signal: new AbortController().signal,
@@ -1549,7 +1550,7 @@ describe('agent-modules-defaults', () => {
     ])));
     vi.resetModules();
     const { CreateProviderModule } = await import('../../../packages/agent-modules-defaults/src/provider');
-    const provider = CreateProviderModule(CreatePorts());
+    const provider = CreateProviderModule(CreatePorts(), { maxAttempts: 1 });
 
     await expect(provider.StreamCompletion({
       requestId: 'request-invalid-usage-chunk', model: 'deepseek-v4-flash', history: [], tools: [], signal: new AbortController().signal,
@@ -1561,7 +1562,7 @@ describe('agent-modules-defaults', () => {
     vi.stubGlobal('fetch', vi.fn(async () => SseResponse(['{malformed-json', '[DONE]'])));
     vi.resetModules();
     const { CreateProviderModule } = await import('../../../packages/agent-modules-defaults/src/provider');
-    const provider = CreateProviderModule(CreatePorts());
+    const provider = CreateProviderModule(CreatePorts(), { maxAttempts: 1 });
 
     await expect(provider.StreamCompletion({
       requestId: 'request-1', model: 'deepseek-v4-flash', history: [], tools: [], signal: new AbortController().signal,

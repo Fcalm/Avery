@@ -1,15 +1,51 @@
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AgentHost } from '../../../apps/backend/src/electron/backend/agent-host';
-import { ExportResume } from '../../../apps/desktop/src/resume-export';
+import { ExportResume, PreviewResumePdf } from '../../../apps/desktop/src/resume-export';
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 
 describe('Agent resume file export', () => {
+  it('PDF 预览与导出复用同一字节，预览不落盘且打印窗口保持隔离', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'avery-pdf-preview-')); roots.push(root);
+    const bytes = Buffer.from('%PDF-1.7\nshared-preview-export');
+    const printToPDF = vi.fn(async () => bytes);
+    const destroy = vi.fn(); const executeJavaScript = vi.fn(async () => undefined);
+    const options: unknown[] = [];
+    class Window {
+      constructor(value: unknown) { options.push(value); }
+      webContents = { executeJavaScript, printToPDF, capturePage: vi.fn() };
+      loadURL = vi.fn(async () => undefined); setContentSize = vi.fn(); isDestroyed = () => false; destroy = destroy;
+    }
+    const resume = { name: '预览与导出', summary: '', content: '一致的正文与分页' };
+    const preview = await PreviewResumePdf(Window as any, resume);
+    expect(Buffer.from(preview.base64, 'base64')).toEqual(bytes);
+    expect(existsSync(join(root, 'exports'))).toBe(false);
+    const result = await ExportResume({ BrowserWindow: Window as any, workspacePath: root, resume, format: 'pdf' });
+    expect(readFileSync(result.path)).toEqual(bytes);
+    expect(printToPDF).toHaveBeenCalledOnce(); expect(destroy).toHaveBeenCalledOnce();
+    expect(options[0]).toMatchObject({ show: false, webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false } });
+    expect(printToPDF.mock.calls[0][0]).toMatchObject({ preferCSSPageSize: true, printBackground: true });
+    expect(executeJavaScript.mock.calls[0][0]).toContain('data:font/woff2;base64,');
+  });
+
+  it('新内容重新生成，打印失败后销毁窗口并允许显式重试', async () => {
+    const destroy = vi.fn();
+    const printToPDF = vi.fn().mockRejectedValueOnce(new Error('print failed')).mockResolvedValue(Buffer.from('%PDF-1.7\nnew-content'));
+    class Window {
+      webContents = { executeJavaScript: vi.fn(async () => undefined), printToPDF, capturePage: vi.fn() };
+      loadURL = vi.fn(async () => undefined); setContentSize = vi.fn(); isDestroyed = () => false; destroy = destroy;
+    }
+    const resume = { name: '失败重试', summary: '', content: '先失败再重试' };
+    await expect(PreviewResumePdf(Window as any, resume)).rejects.toThrow('print failed');
+    await PreviewResumePdf(Window as any, resume);
+    await PreviewResumePdf(Window as any, { ...resume, content: '下一份正文' });
+    expect(printToPDF).toHaveBeenCalledTimes(3); expect(destroy).toHaveBeenCalledTimes(3);
+  });
   it('reuses the desktop PDF/PNG renderer and refuses a truncated PNG', async () => {
     const root = mkdtempSync(join(tmpdir(), 'avery-export-render-'));
     roots.push(root);

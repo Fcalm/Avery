@@ -3,7 +3,8 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, basename, join } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { ExportResume } from './resume-export';
+import { ExportResume, PreviewResumePdf, type ResumeExportInput } from './resume-export';
+import { ResumeDocumentInputSchema } from '@avery/contracts';
 
 type WindowGetter = () => BrowserWindow | undefined;
 type CredentialConfig = { provider: 'DeepSeek' | 'Z.AI' | 'MIMO' | '自定义'; baseUrl: unknown; model: unknown; thinkingEnabled: unknown; contextLimit: unknown; contextLimitMode?: unknown; compressionThreshold: unknown; apiKey: string };
@@ -72,8 +73,9 @@ export function CreateDesktopAdapters({ getWindow, userDataPath, executablePath 
     SelectProjectDirectory: async () => { const selected = await selectDirectory(getWindow, ['openDirectory']); return selected ? { path: selected, name: basename(selected) } : null; },
     SelectModuleDirectory: async () => { const selected = await selectDirectory(getWindow, ['openDirectory']); return selected ? { path: selected, name: basename(selected) } : null; },
     SelectWorkspaceDirectory: () => selectDirectory(getWindow, ['openDirectory', 'createDirectory']),
-    ExportResume: async ({ workspacePath, resume, format }: { workspacePath: string; resume: { name: string; summary: string; content: string }; format: 'html' | 'pdf' | 'docx' | 'png' }) => {
-      const result = await ExportResume({ BrowserWindow, workspacePath, resume, format });
+    PreviewResumePdf: async ({ resume }: { resume: ResumeExportInput }) => PreviewResumePdf(BrowserWindow, ResumeDocumentInputSchema.parse(resume)),
+    ExportResume: async ({ workspacePath, resume, format }: { workspacePath: string; resume: ResumeExportInput; format: 'html' | 'pdf' | 'docx' | 'png' }) => {
+      const result = await ExportResume({ BrowserWindow, workspacePath, resume: ResumeDocumentInputSchema.parse(resume), format });
       return { fileName: result.fileName, exported: true };
     },
     /** 仅供 Backend AgentHost 使用；Renderer 的导出 IPC 不返回物理路径。 */
