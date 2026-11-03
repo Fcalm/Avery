@@ -1,7 +1,7 @@
 {
   "name": "avery",
   "private": true,
-  "version": "0.2.2",
+  "version": "0.2.4",
   "description": "Avery 本地优先的 AI 求职与简历助手（灾后重建工作区）",
   "author": "Avery",
   "license": "PolyForm-Noncommercial-1.0.0",
@@ -68,7 +68,13 @@
     "icon": "build/icon.ico",
     "asar": true,
     "npmRebuild": false,
-    "publish": [{ "provider": "github", "owner": "Fcalm", "repo": "Avery" }],
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "Fcalm",
+        "repo": "Avery"
+      }
+    ],
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
@@ -104,12 +110,16 @@
       {
         "from": "build/markitdown",
         "to": "markitdown",
-        "filter": ["markitdown.exe"]
+        "filter": [
+          "markitdown.exe"
+        ]
       },
       {
         "from": "apps/browser-extension",
         "to": "browser-extension",
-        "filter": ["**/*"]
+        "filter": [
+          "**/*"
+        ]
       }
     ]
   }
