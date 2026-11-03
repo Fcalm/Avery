@@ -5,8 +5,10 @@ const { join } = require('node:path');
 const { pathToFileURL } = require('node:url');
 const { tmpdir } = require('node:os');
 const assert = require('node:assert/strict');
-const { PreviewResumePdf, ExportResume } = require('../dist/resume-export.js');
-const { CreateEmptyResumeData, ResumeDataToText } = require('../../../packages/contracts/dist/index.js');
+// 可指向真实打包目录中的 app.asar，验证资源路径与离线加载，而非仅验证源码构建目录。
+const appRoot = process.env.AVERY_PDF_APP_ROOT || join(__dirname, '../../..');
+const { PreviewResumePdf, ExportResume } = require(join(appRoot, 'apps/desktop/dist/resume-export.js'));
+const { CreateEmptyResumeData, ResumeDataToText } = require(join(appRoot, 'packages/contracts/dist/index.js'));
 const root = process.argv[2] || mkdtempSync(join(tmpdir(), 'avery-pdf-verification-'));
 mkdirSync(root, { recursive: true });
 mkdirSync(join(root, 'electron-state'), { recursive: true });
@@ -31,20 +33,27 @@ app.whenReady().then(async () => {
     longData.projects = Array.from({ length: 3 }, (_, i) => ({ ...data.projects[0], name: `长篇项目 ${i + 1}`, descriptions: Array.from({ length: 5 }, () => longDescription) }));
     const multi = await PreviewResumePdf(BrowserWindow, { ...resume, name: '多页测试简历', data: longData, content: ResumeDataToText(longData) });
     writeFileSync(join(root, 'multiple-pages.pdf'), Buffer.from(multi.base64, 'base64'));
-    const assets = join(__dirname, '../../../dist/assets');
+    const assets = join(appRoot, 'dist/assets');
     const runtime = readdirSync(assets).filter((name) => /^pdfRuntime-.*\.js$/.test(name)).sort((a, b) => statSync(join(assets, b)).mtimeMs - statSync(join(assets, a)).mtimeMs)[0];
     assert.ok(runtime, 'PDF.js 预览构建必须存在');
     const documentPath = join(root, 'pdf-runtime.html');
-    writeFileSync(documentPath, '<!doctype html><meta charset="utf-8"><div id="root"></div><canvas id="page"></canvas>');
+    // 验证页沿用应用的 CSP，避免无安全策略的独立页面掩盖打包后的 Worker 启动失败。
+    const appHtml = readFileSync(join(appRoot, 'dist/index.html'), 'utf8');
+    const csp = appHtml.match(/<meta\s+http-equiv="Content-Security-Policy"[^>]*>/i)?.[0];
+    assert.ok(csp, '必须使用应用构建产物的安全策略');
+    writeFileSync(documentPath, `<!doctype html><meta charset="utf-8">${csp}<div id="root"></div><canvas id="page"></canvas>`);
     viewer = new BrowserWindow({ show: false, webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false } });
+    viewer.webContents.on('console-message', (event) => { if (event.level === 'error') process.stderr.write(event.message + '\n'); });
     await viewer.loadFile(documentPath);
+    await viewer.webContents.executeJavaScript(`globalThis.pdfCspViolations = []; document.addEventListener('securitypolicyviolation', event => globalThis.pdfCspViolations.push({ directive: event.effectiveDirective, blocked: event.blockedURI }));`);
     const results = [];
     for (const [name, base64] of [['single', preview.base64], ['multiple', multi.base64]]) {
       const result = await viewer.webContents.executeJavaScript(`(async () => {
         const { LoadResumePdf } = await import(${JSON.stringify(pathToFileURL(join(assets, runtime)).href)});
         const loaded = LoadResumePdf(${JSON.stringify(base64)});
         try {
-          const pdf = await loaded.task.promise;
+          let timeout;
+          const pdf = await Promise.race([loaded.task.promise, new Promise((_, reject) => { timeout = setTimeout(() => reject(new Error('PDF Worker 在 15 秒内未就绪')), 15000); })]).finally(() => clearTimeout(timeout));
           const page = await pdf.getPage(1);
           const viewport = page.getViewport({ scale: 1.5 });
           const canvas = document.getElementById('page'); canvas.width = Math.ceil(viewport.width); canvas.height = Math.ceil(viewport.height);
@@ -59,7 +68,10 @@ app.whenReady().then(async () => {
       writeFileSync(join(root, `${name}-page-1.png`), Buffer.from(result.png, 'base64'));
       results.push({ name, pages: result.pages, githubLink: true });
     }
-    writeFileSync(join(root, 'result.json'), JSON.stringify({ sharedPdfBytes: true, results }, null, 2));
-    process.stdout.write(JSON.stringify({ root, sharedPdfBytes: true, results }) + '\n');
+    const cspViolations = await viewer.webContents.executeJavaScript('globalThis.pdfCspViolations');
+    // PDF.js 会探测 eval 能力并自行降级；仍禁止 eval，只检查 Worker 不被策略拦截。
+    assert.deepEqual(cspViolations.filter((item) => item.directive === 'worker-src'), [], 'PDF Worker 不得触发安全策略拦截');
+    writeFileSync(join(root, 'result.json'), JSON.stringify({ sharedPdfBytes: true, cspViolations, results }, null, 2));
+    process.stdout.write(JSON.stringify({ root, sharedPdfBytes: true, cspViolations, results }) + '\n');
   } finally { if (viewer && !viewer.isDestroyed()) viewer.destroy(); app.quit(); }
 }).catch((error) => { process.stderr.write(error.stack + '\n'); app.exit(1); });
