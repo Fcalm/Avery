@@ -448,7 +448,7 @@ body.is-resizing-resume, body.is-resizing-resume * { cursor: col-resize !importa
 .developer-view-tabs { display: inline-flex; gap: var(--space-1); margin-bottom: var(--space-4); border-radius: var(--radius-control); padding: var(--space-1); background: var(--paper-deep); }
 .developer-view-tabs button { border: 0; border-radius: calc(var(--radius-control) - 3px); padding: var(--space-2) var(--space-4); color: var(--ink-soft); background: transparent; }
 .developer-view-tabs button.selected { color: var(--accent-strong); background: var(--card); box-shadow: var(--shadow-nav-current); }
-.assistant-main { min-width: var(--assistant-main-min-width, 480px); }
+.assistant-main { min-width: var(--assistant-main-min-width, 336px); }
 .assistant-main { min-height: 0; overflow: hidden; }
 .message-thread { min-height: max-content; }
 

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type Ref } from 'react';
-import { CreateResumeDocumentMarkup, type ConversationResource } from '@avery/contracts';
+import { type ConversationResource } from '@avery/contracts';
 import { ASSISTANT_MAIN_MIN_WIDTH } from '../../../shared/layoutConstants';
 import { useProfiles } from '../../profile/api/profileQueries';
 import { ProfileEntryView } from '../../profile/components/ProfileEntryView';
@@ -10,6 +10,11 @@ import { MarkdownText } from '../../../shared/components/MarkdownText';
 import { DownloadMarkdown, useConversationResource, type ConversationResourceSelection } from '../useConversationResource';
 import { useSidePanelResume } from '../useSidePanelResume';
 import type { ProfileCategory, ProfileItem, Resume } from '../../../types/domain';
+import { ResumeEditor } from '../../resume/components/ResumeEditor';
+import type { ResumeDraft } from '../../resume/resumeDraft';
+import { ResumePdfPreview } from '../../resume/components/ResumePdfPreview';
+import { ExportResumeFile } from '../../resume/api/resumeQueries';
+import { useUiStore } from '../../../app/UiStore';
 
 type SideKind = 'resume' | 'profile';
 
@@ -32,6 +37,20 @@ const KindMeta: Record<SideKind, { label: string; icon: 'resumes' | 'profiles'; 
   profile: { label: '档案', icon: 'profiles', picker: '选择档案', menuLabel: '档案条目', emptyTitle: '还没有选择档案', emptyHint: '从右下角选一条档案，它的完整内容会显示在这里。' },
 };
 
+/** 主区的外边距也占用横向空间；不能仅减主区最小宽度，否则上限处会被父级裁掉。 */
+function ReadPanelWidthRange(panel: HTMLElement | null) {
+  const layout = panel?.closest<HTMLElement>('.assistant-layout');
+  if (!layout) return { minimum: 360, maximum: 720 };
+  const main = layout.querySelector<HTMLElement>('.assistant-main');
+  const mainStyle = main ? getComputedStyle(main) : null;
+  const layoutStyle = getComputedStyle(layout);
+  const Pixels = (value: string | undefined) => Number.parseFloat(value ?? '') || 0;
+  const occupied = Pixels(mainStyle?.marginLeft) + Pixels(mainStyle?.marginRight)
+    + Pixels(layoutStyle.paddingLeft) + Pixels(layoutStyle.paddingRight) + Pixels(layoutStyle.columnGap);
+  const maximum = Math.min(720, Math.max(0, layout.clientWidth - occupied - ASSISTANT_MAIN_MIN_WIDTH));
+  return { minimum: Math.min(360, maximum), maximum };
+}
+
 interface DocSidePanelProps {
   open: boolean;
   resourceSelection?: ConversationResourceSelection | null;
@@ -40,13 +59,15 @@ interface DocSidePanelProps {
   resumes: Resume[];
   currentResumeId: string | null;
   editing: boolean;
-  resumeText: string;
+  resumeDraft: ResumeDraft;
+  validationAttempt: number;
+  saving: boolean;
   canUndo: boolean;
   panelWidth: number;
   /** 边栏根元素引用：拖拽时用它实时读边栏与布局宽度（原型 startW 读 getBoundingClientRect）。 */
   contentRef: Ref<HTMLElement>;
   onSelectResume: (resumeId: string) => void;
-  onEditChange: (value: string) => void;
+  onEditChange: (value: ResumeDraft) => void;
   onStartEditing: () => void;
   onCancelEditing: () => void;
   onSaveResume: () => void;
@@ -57,15 +78,18 @@ interface DocSidePanelProps {
 /**
  * 原型一比一的右侧资料边栏（.rside）：拖拽 grip、类型选择屏、文档阅读区与右下角
  * 的条目选择菜单。常规打开先选类型；对话中的资源引用直接定位对应条目或历史版本。
- * 简历渲染沿用当前导出模板（CreateResumeDocumentMarkup），编辑/撤销/保存沿用页面的
- * 锁与保存流程，只把按钮换成原型样式；档案条目在边栏内只读，编辑走档案页抽屉。
+ * 简历通过共用 PDF 管线展示实际分页，编辑/撤销/保存沿用页面的锁与保存流程；
+ * 档案条目在边栏内只读，编辑走档案页抽屉。
  */
-function DocSidePanelContent({ resourceSelection = null, onClearResourceSelection, onClose, resumes, currentResumeId, editing, resumeText, canUndo, panelWidth, contentRef, onSelectResume, onEditChange, onStartEditing, onCancelEditing, onSaveResume, onUndo, onPanelWidthChange }: Omit<DocSidePanelProps, 'open'>) {
+function DocSidePanelContent({ resourceSelection = null, onClearResourceSelection, onClose, resumes, currentResumeId, editing, resumeDraft, validationAttempt, saving, canUndo, panelWidth, contentRef, onSelectResume, onEditChange, onStartEditing, onCancelEditing, onSaveResume, onUndo, onPanelWidthChange }: Omit<DocSidePanelProps, 'open'>) {
+  const { ShowNotice } = useUiStore();
   const profiles = useProfiles();
   const [selection, SetSelection] = useState<DocumentSelection | null>(() => resourceSelection ? SelectionFromResource(resourceSelection) : null);
   const [openMenu, SetOpenMenu] = useState<'documents' | 'versions' | null>(null);
   const menuWrapRef = useRef<HTMLDivElement>(null);
   const versionMenuWrapRef = useRef<HTMLDivElement>(null);
+  const panelWidthRef = useRef(panelWidth);
+  panelWidthRef.current = panelWidth;
   const selectedKind = selection?.kind ?? null;
   const profileId = selectedKind === 'profile' ? selection?.id : null;
   const resume = selectedKind === 'resume' ? resumes.find((item) => item.id === selection?.id) ?? null : null;
@@ -74,10 +98,9 @@ function DocSidePanelContent({ resourceSelection = null, onClearResourceSelectio
   const resumeDocument = useSidePanelResume(resume, selection?.revision);
   const displayedResume = resumeDocument.document;
   const isCurrentResume = !!displayedResume && displayedResume.id === currentResumeId && displayedResume.revision === resume?.revision;
-  const displayedResumeText = isCurrentResume ? resumeText : displayedResume?.content ?? '';
   const versions = resumeDocument.versions;
   const currentRevision = versions.find((version) => version.isCurrent)?.revision ?? resume?.revision;
-  const downloadLabel = resource.view?.format === 'file'
+  const downloadLabel = selectedKind === 'resume' ? '下载 PDF' : resource.view?.format === 'file'
     ? resource.view.mimeType === 'application/pdf' ? '下载 PDF' : '下载 PNG'
     : '下载 Markdown';
 
@@ -91,12 +114,26 @@ function DocSidePanelContent({ resourceSelection = null, onClearResourceSelectio
     SetOpenMenu(null);
   }, [resourceSelection]);
 
-  // 宽度上下限与页面 HandleResize 原逻辑一致：窗口放不下时设计下限让位（原型 rsClamp）。
+  // 拖拽与键盘共用实际布局边界，空间不足时让侧栏的设计下限让位。
   const WidthRange = () => {
-    const layoutWidth = contentRef && 'current' in contentRef ? contentRef.current?.closest<HTMLElement>('.assistant-layout')?.clientWidth ?? 0 : 0;
-    const maximum = Math.min(720, Math.max(360, layoutWidth - ASSISTANT_MAIN_MIN_WIDTH));
-    return { minimum: Math.min(360, maximum), maximum };
+    return ReadPanelWidthRange(contentRef && 'current' in contentRef ? contentRef.current : null);
   };
+
+  // 窗口或左侧导航变化后，旧宽度可能超出新的上限；同步收紧，避免右侧内容溢出。
+  useEffect(() => {
+    const panel = contentRef && 'current' in contentRef ? contentRef.current : null;
+    const layout = panel?.closest<HTMLElement>('.assistant-layout');
+    if (!layout) return;
+    const ClampWidth = () => {
+      const { minimum, maximum } = ReadPanelWidthRange(panel);
+      const next = Math.min(maximum, Math.max(minimum, panelWidthRef.current));
+      if (next !== panelWidthRef.current) onPanelWidthChange(next);
+    };
+    ClampWidth();
+    const observer = new ResizeObserver(ClampWidth);
+    observer.observe(layout);
+    return () => observer.disconnect();
+  }, [contentRef, onPanelWidthChange]);
 
   /**
    * 原型 initRsGrip 的拖拽：按住左缘左右拖动改写宽度，起点宽度取元素实时矩形。
@@ -109,11 +146,11 @@ function DocSidePanelContent({ resourceSelection = null, onClearResourceSelectio
     const grip = event.currentTarget;
     const startX = event.clientX;
     const startWidth = contentRef && 'current' in contentRef ? contentRef.current?.getBoundingClientRect().width ?? panelWidth : panelWidth;
-    const { minimum, maximum } = WidthRange();
     try { grip.setPointerCapture(event.pointerId); } catch { /* 捕获失败时由 document 监听兜底 */ }
     grip.classList.add('on');
     document.body.classList.add('is-resizing-resume');
     const HandleMove = (moveEvent: PointerEvent) => {
+      const { minimum, maximum } = WidthRange();
       onPanelWidthChange(Math.round(Math.min(maximum, Math.max(minimum, startWidth + (startX - moveEvent.clientX)))));
     };
     const HandleUp = (upEvent: PointerEvent) => {
@@ -184,8 +221,11 @@ function DocSidePanelContent({ resourceSelection = null, onClearResourceSelectio
     if (nextKind === 'resume' && id) onSelectResume(id);
   }
 
-  function DownloadDocument() {
-    if (selectedKind === 'resume' && displayedResume) DownloadMarkdown(displayedResume.content, displayedResume.name);
+  async function DownloadDocument() {
+    if (selectedKind === 'resume' && displayedResume) {
+      try { const result = await ExportResumeFile(displayedResume, 'pdf'); ShowNotice(`已导出 ${result.fileName} 到工作空间 exports 文件夹`, 'success'); }
+      catch (error) { ShowNotice(error instanceof Error ? error.message : '简历导出失败', 'error'); }
+    }
     else if (selectedKind === 'profile' && profile) DownloadMarkdown(profile.content, profile.title);
     else resource.Download();
   }
@@ -251,8 +291,8 @@ function DocSidePanelContent({ resourceSelection = null, onClearResourceSelectio
           </div>
           {selectedKind === 'resume'
             ? (editing && isCurrentResume
-              ? <textarea className="rs-resume-editor" value={resumeText} onChange={(event) => onEditChange(event.target.value)} aria-label="编辑简历内容" />
-              : <div className="rs-doc-resume resume-html-preview" dangerouslySetInnerHTML={{ __html: CreateResumeDocumentMarkup({ name: displayedResume?.name ?? '未命名简历', summary: '', content: displayedResumeText }) }} />)
+              ? <ResumeEditor value={resumeDraft} onChange={onEditChange} validationAttempt={validationAttempt} disabled={saving} />
+              : displayedResume && <ResumePdfPreview resume={displayedResume} />)
             : profile && <ProfileEntryView item={profile} />}
         </div> : resource.view?.format === 'markdown' ? <div className="rs-doc"><MarkdownText content={resource.view.content} /></div>
         : resource.view?.format === 'file' ? resource.view.mimeType === 'image/png'
@@ -266,14 +306,14 @@ function DocSidePanelContent({ resourceSelection = null, onClearResourceSelectio
       </div>
       <footer className="rs-foot">
         {selectedKind === 'resume' && <div className="rs-actions">
-          <button className="ghost-btn" type="button" disabled={!isCurrentResume} aria-label={editing ? '取消编辑' : '编辑简历'} title={!isCurrentResume ? '历史版本只读，请选择当前版本后编辑' : editing ? '取消编辑' : '编辑简历'} onClick={editing ? onCancelEditing : () => { if (!resume) return; SelectDocument('resume', resume.id); onStartEditing(); }}>
+          <button className="ghost-btn" type="button" disabled={!isCurrentResume || saving} aria-label={editing ? '取消编辑' : '编辑简历'} title={!isCurrentResume ? '历史版本只读，请选择当前版本后编辑' : editing ? '取消编辑' : '编辑简历'} onClick={editing ? onCancelEditing : () => { if (!resume) return; SelectDocument('resume', resume.id); onStartEditing(); }}>
             <Icon name={editing ? 'close' : 'pencil-simple'} size={14} /><span className="btn-txt">{editing ? '取消' : '编辑'}</span>
           </button>
-          <button className="ghost-btn" type="button" disabled={!editing || !canUndo} aria-label="撤销修改" title="撤销修改" onClick={onUndo}>
+          <button className="ghost-btn" type="button" disabled={!editing || !canUndo || saving} aria-label="撤销修改" title="撤销修改" onClick={onUndo}>
             <Icon name="recovery" size={14} /><span className="btn-txt">撤销</span>
           </button>
-          <button className="btn-accent" type="button" disabled={!editing} aria-label="保存简历" title="保存简历" onClick={onSaveResume}>
-            <Icon name="check-circle" size={14} /><span className="btn-txt">保存</span>
+          <button className="btn-accent" type="button" disabled={!editing || saving} aria-label="保存简历" title="保存简历" onClick={onSaveResume}>
+            <Icon name="check-circle" size={14} /><span className="btn-txt">{saving ? '保存中…' : '保存'}</span>
           </button>
         </div>}
         {selectedKind === 'resume' && resume && <div className="menu-wrap rs-resource-version-wrap" ref={versionMenuWrapRef} onKeyDown={HandleVersionMenuKeyDown} onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) SetOpenMenu((current) => current === 'versions' ? null : current); }}>

@@ -34,6 +34,14 @@ button { background: none; border: 0; }
 }
 .app-shell.is-collapsed { --sidebar-width: 64px; }
 .app-body { display: flex; min-height: 0; min-width: 0; border-top: 1px solid var(--border); }
+/* 槽位只参与固定展开/折叠布局；临时浮出的导航在槽位上覆盖，不改变主区宽度。 */
+.sidebar-slot {
+  position: relative; z-index: 10; flex: 0 0 var(--sidebar-width); width: var(--sidebar-width);
+  height: 100%; min-height: 0;
+  transition: flex-basis .38s var(--ease), width .38s var(--ease);
+}
+.sidebar-slot > .sidebar { position: absolute; inset: 0 auto 0 0; }
+.app-shell.is-sidebar-floating .sidebar { width: 268px; box-shadow: 8px 0 24px -12px rgba(24, 24, 27, .28); }
 .main-frame {
   flex: 1;
   min-width: var(--main-content-min-width, 800px);
@@ -383,7 +391,7 @@ button { background: none; border: 0; }
 /* ------------------------------------------------------------- 折叠态侧栏 */
 /* 内容保留在原来的行内，只压缩水平方向；固定行高与底栏高度，避免收起时发生纵向跳动。
    visibility 延后到淡出完成，既保留过渡，也让收起后的隐藏控件退出键盘导航。 */
-.app-shell.is-collapsed .sidebar { --sb-content-hide-delay: .24s; }
+.app-shell.is-collapsed:not(.is-sidebar-floating) .sidebar { --sb-content-hide-delay: .24s; }
 .sidebar .nav-item > span,
 .sidebar .sb-new-chat > span,
 .sidebar .sb-history-search input,
@@ -401,21 +409,21 @@ button { background: none; border: 0; }
   overflow: hidden;
   transition: width .38s var(--ease), opacity .24s var(--ease), visibility 0s var(--sb-content-hide-delay), background-color .18s var(--ease), color .18s var(--ease);
 }
-.app-shell.is-collapsed .nav-item > span,
-.app-shell.is-collapsed .sb-new-chat > span,
-.app-shell.is-collapsed .sb-history-search input,
-.app-shell.is-collapsed .sb-sec,
-.app-shell.is-collapsed .user-card .uc-body,
-.app-shell.is-collapsed .user-card .chev,
-.app-shell.is-collapsed .uc-row > .icon-btn {
+.app-shell.is-collapsed:not(.is-sidebar-floating) .nav-item > span,
+.app-shell.is-collapsed:not(.is-sidebar-floating) .sb-new-chat > span,
+.app-shell.is-collapsed:not(.is-sidebar-floating) .sb-history-search input,
+.app-shell.is-collapsed:not(.is-sidebar-floating) .sb-sec,
+.app-shell.is-collapsed:not(.is-sidebar-floating) .user-card .uc-body,
+.app-shell.is-collapsed:not(.is-sidebar-floating) .user-card .chev,
+.app-shell.is-collapsed:not(.is-sidebar-floating) .uc-row > .icon-btn {
   opacity: 0; visibility: hidden; pointer-events: none;
 }
-.app-shell.is-collapsed .nav-item { gap: 0; padding-left: 13px; padding-right: 13px; }
-.app-shell.is-collapsed .sb-new-chat { gap: 0; padding-left: 14px; padding-right: 14px; }
-.app-shell.is-collapsed .uc-row { gap: 0; }
-.app-shell.is-collapsed .user-card { gap: 0; padding-left: 6.5px; padding-right: 6.5px; }
-.app-shell.is-collapsed .user-card .chev { max-width: 0; }
-.app-shell.is-collapsed .uc-row > .icon-btn { width: 0; }
+.app-shell.is-collapsed:not(.is-sidebar-floating) .nav-item { gap: 0; padding-left: 13px; padding-right: 13px; }
+.app-shell.is-collapsed:not(.is-sidebar-floating) .sb-new-chat { gap: 0; padding-left: 14px; padding-right: 14px; }
+.app-shell.is-collapsed:not(.is-sidebar-floating) .uc-row { gap: 0; }
+.app-shell.is-collapsed:not(.is-sidebar-floating) .user-card { gap: 0; padding-left: 6.5px; padding-right: 6.5px; }
+.app-shell.is-collapsed:not(.is-sidebar-floating) .user-card .chev { max-width: 0; }
+.app-shell.is-collapsed:not(.is-sidebar-floating) .uc-row > .icon-btn { width: 0; }
 
 /* ---------------------------------------------------------------- 设置主区 */
 /* 分类导航已上移到全局侧栏，旧两列网格退化为单列内容流 */
@@ -426,7 +434,7 @@ button { background: none; border: 0; }
 /* ------------------------------------------------------------------- 降级 */
 @media (prefers-reduced-motion: reduce) {
   .app-shell .sidebar { --sb-content-hide-delay: 0s; }
-  .topbar, .sidebar, .nav-ind, .menu, .menu-item, .thread-item, .ti-more, .sb-new-chat, .icon-btn, .crumb-btn, .win-btn, .tb-txt-btn {
+  .topbar, .sidebar, .sidebar-slot, .nav-ind, .menu, .menu-item, .thread-item, .ti-more, .sb-new-chat, .icon-btn, .crumb-btn, .win-btn, .tb-txt-btn {
     animation-duration: .001ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: .001ms !important;
@@ -446,6 +454,11 @@ button { background: none; border: 0; }
   animation: toastIn .32s var(--ease) both;
 }
 .app-toast i { flex: none; }
+.app-toast { --toast-success: #73d6aa; --toast-warning: #f2cd65; --toast-error: #ff938a; }
+[data-theme="dark"] .app-toast { --toast-success: #17654f; --toast-warning: #a46e00; --toast-error: #b4413c; }
+.app-toast[data-tone="success"] > .ph { color: var(--toast-success); }
+.app-toast[data-tone="warning"] > .ph { color: var(--toast-warning); }
+.app-toast[data-tone="error"] > .ph { color: var(--toast-error); }
 .app-toast.has-action { padding-right: 8px; }
 .app-toast-act {
   flex: none; margin-left: 3px; padding: 4px 10px; border-radius: var(--r-pill);
@@ -462,8 +475,8 @@ button { background: none; border: 0; }
    对话主区：输入框（共享组件）+ 新建对话空态 —— 一比一复刻 Avery 原型
    ---------------------------------------------------------------------------
    结构：composer-dock（渐变衬底）> composer-col（792px 居中）> 附件 ctx 药丸
-   + composer 输入卡（textarea / cmp-bar 工具行 / usage 环 / 发送钮）
-   + nv-bar（仅新建对话：项目空间 + 场景）+ composer-foot 快捷键行。
+   + composer 输入卡（文本 / 附件 / 发送钮）
+   + 已有会话：下方设置行（权限 / 模型 / 思考 / 上下文）；新建会话：框内设置 + 项目/场景与快捷键行。
    全部样式取自 avery-prototype.html 对应段落；本文件在 global.css 之后加载，
    同名旧规则以这里为准。
    ============================================================================ */
@@ -540,23 +553,38 @@ button { background: none; border: 0; }
   padding: 4px 2px 2px; font-size: 14px; line-height: 1.5;
 }
 .composer textarea::placeholder { color: var(--text-3); }
+/* 已有会话使用单行起步的横向输入栏；长文本仍可换行，附件与发送始终留在两侧。 */
+.composer.is-inline { display: flex; align-items: flex-end; gap: 8px; padding: 8px 10px; }
+.composer.is-inline > .slash-input-root { flex: 1; min-width: 0; }
+.composer.is-inline > .cmp-btn, .composer.is-inline > .send { flex: none; }
+.composer.is-inline > .cmp-btn { margin-bottom: 1px; }
+/* 换行后正文占满上方宽度，两个操作按钮固定在下方两侧；短消息仍保留一行布局。 */
+.composer.is-inline.is-multiline { display: grid; grid-template-columns: 28px minmax(0, 1fr) 30px; row-gap: 6px; }
+.composer.is-inline.is-multiline > .slash-input-root { grid-column: 1 / -1; grid-row: 1; }
+.composer.is-inline.is-multiline > .cmp-btn { grid-column: 1; grid-row: 2; }
+.composer.is-inline.is-multiline > .send { grid-column: 3; grid-row: 2; }
 
-/* 工具行：左侧 附件/权限/模型/思考，右侧 usage 环 + 发送 */
+/* 框内工具行：附件靠左、发送靠右；新建会话的权限/模型/思考仍在框内。 */
 .cmp-bar { display: flex; align-items: center; gap: 4px; margin-top: 6px; }
 .cmp-tools { display: flex; align-items: center; gap: 2px; flex: 1; min-width: 0; }
 .cmp-right { display: flex; align-items: center; gap: 4px; flex: none; }
+.cmp-settings { display: flex; align-items: center; gap: 2px; min-width: 0; }
+.composer-settings-bar { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 7px 3px 0; }
+.composer-settings-bar > .ctx-wrap { margin-left: auto; }
 .cmp-btn {
-  display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 8px;
+  position: relative; display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 8px;
   border-radius: 8px; color: var(--text-2); font-size: 12.5px; font-weight: 500; white-space: nowrap;
   transition: background-color .16s var(--ease), color .16s var(--ease), transform .12s var(--ease);
 }
 .cmp-btn i { font-size: 15px; flex: none; }
+.cmp-btn > .cmp-label { flex: none; }
 .cmp-btn:hover { background: var(--surface-2); color: var(--text); }
 .cmp-btn:active { transform: scale(.97); }
 .cmp-btn[aria-expanded="true"] { background: var(--surface-2); color: var(--text); }
 .cmp-btn .chev { font-size: 10px; color: var(--text-3); transition: transform .25s var(--ease); }
 .cmp-btn[aria-expanded="true"] .chev { transform: rotate(180deg); }
 .cmp-btn.icon-only { width: 28px; padding: 0; justify-content: center; }
+.composer .cmp-btn.icon-only { color: var(--text); }
 
 /* 输入框内的菜单向上展开 */
 .menu.pop {
@@ -566,7 +594,7 @@ button { background: none; border: 0; }
 }
 /* 输入框工具条靠主内容区左缘：菜单若向左展开会伸出 .main-frame 的 overflow 边界被裁剪，
    且右侧边栏展开时更甚。按原型 .menu.pop 的方向改为从触发器左缘向右展开。 */
-.composer .menu.pop {
+:is(.composer, .composer-settings-bar) .menu.pop {
   right: auto; left: 0;
   transform-origin: bottom left;
 }
@@ -633,11 +661,11 @@ button { background: none; border: 0; }
 /* 发送按钮 */
 .send {
   width: 30px; height: 30px; flex: none; display: grid; place-items: center;
-  border-radius: var(--r-control); background: var(--accent); color: var(--accent-on);
+  border-radius: 8px; background: transparent; color: var(--text);
   transition: background-color .18s var(--ease), transform .12s var(--ease), opacity .2s var(--ease);
 }
 .send i { font-size: 16px; }
-.send:hover { background: var(--accent-hover); }
+.send:hover:not(:disabled) { background: var(--surface-2); }
 .send:active { transform: scale(.92); }
 .send:disabled { opacity: .35; cursor: not-allowed; transform: none; }
 
@@ -668,8 +696,8 @@ button { background: none; border: 0; }
 }
 .nv-x:hover { background: var(--surface-2); color: var(--text); }
 
-/* 窄输入栏：按钮只保留图标（沿用既有的紧凑密度逻辑） */
-.assistant-layout.is-composer-compact .cmp-btn:not(.icon-only) span { display: none; }
+/* 隐藏标签保留固有尺寸供空间判断；只收起标签和箭头，不隐藏由 span 绘制的厂商图标。 */
+.assistant-layout.is-composer-compact .cmp-settings .cmp-btn > :is(.cmp-label, .chev) { position: absolute; width: max-content; visibility: hidden; pointer-events: none; }
 .assistant-layout.is-composer-compact .composer-foot > span:last-child { display: none; }
 @media (prefers-reduced-motion: reduce) {
   .empty, .message-list, .ctx-item, .menu.pop { animation-duration: .001ms !important; }

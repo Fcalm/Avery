@@ -5,6 +5,7 @@
 }
 .user-menu > :not(.pu-providers) { flex-shrink: 0; }
 .user-menu .menu-item { min-height: 32px; padding: 5px 10px; }
+.user-menu > button.menu-item > .mt { font-weight: 400; }
 .user-menu .menu-sep { margin: 4px 4px 2px; }
 .pu-section-head { display: flex; align-items: center; justify-content: space-between; padding: 3px 10px 5px; }
 .pu-section-head strong { font-size: 12px; font-weight: 600; }

@@ -1,0 +1,19 @@
+.resume-pdf-preview { min-width: 0; border: 1px solid var(--border); border-radius: var(--r-control); overflow: hidden; color: var(--text); background: var(--surface); }
+.resume-pdf-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 12px; border-bottom: 1px solid var(--border); font-size: 12px; }
+.resume-pdf-count { color: var(--text-3); font-variant-numeric: tabular-nums; }
+.resume-pdf-zoom { display: flex; align-items: center; gap: 2px; margin-left: auto; }
+.resume-pdf-zoom .icon-btn { width: 24px; height: 24px; }
+.resume-pdf-fit { min-width: 42px; padding: 3px; border: 0; border-radius: 4px; background: transparent; color: var(--text-2); font: inherit; cursor: pointer; }
+.resume-pdf-fit:hover { background: var(--surface-2); }
+.resume-pdf-status { min-height: 120px; display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 8px; padding: 20px; font-size: 12px; color: var(--text-3); }
+.resume-pdf-status p { width: 100%; text-align: center; overflow-wrap: anywhere; }
+.resume-pdf-viewport { max-height: 68dvh; min-height: 180px; overflow: auto; overscroll-behavior: contain; scrollbar-gutter: stable; padding: 12px; background: var(--surface-2); }
+.resume-pdf-page { width: var(--pdf-page-width, 100%); max-width: var(--pdf-page-max-width, 794px); margin: 0 auto 14px; }
+.resume-pdf-page:last-child { margin-bottom: 0; }
+.resume-pdf-sheet { position: relative; width: 100%; aspect-ratio: 210 / 297; background: white; box-shadow: 0 2px 8px #18181b14; }
+.resume-pdf-sheet canvas { display: block; width: 100%; height: 100%; }
+.resume-pdf-page figcaption { padding-top: 8px; color: var(--text-3); text-align: center; font-size: 11px; line-height: 1.4; }
+.resume-pdf-link { position: absolute; cursor: pointer; }
+.resume-pdf-link:hover { background: #17654f12; }
+.resume-pdf-link:focus-visible { outline: 1px solid var(--accent); }
+.resume-pdf-page-error { position: absolute; inset: 20px; color: var(--danger, #bf3e3e); font-size: 12px; overflow-wrap: anywhere; }

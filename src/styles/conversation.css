@@ -1,6 +1,6 @@
 /* 一级过程与二级事件卡片默认收起；中间正文随一级展示，工作动画独立显示。 */
 /* 厂商列表允许子菜单溢出，滚动只发生在各自列表内；不能沿用 pop 的整层裁剪。 */
-.composer .menu.pop.model-menu{width:190px;min-width:0;max-height:none;overflow:visible}
+:is(.composer,.composer-settings-bar) .menu.pop.model-menu{width:190px;min-width:0;max-height:none;overflow:visible}
 .model-provider-list{max-height:min(52vh,350px);overflow-y:auto;scrollbar-width:thin;scrollbar-color:var(--border-2) transparent}
 .model-provider.is-expanded{background:var(--surface-2)}
 .model-provider .model-provider-chevron{flex:none;margin:0;color:var(--text-3)}
@@ -29,7 +29,7 @@
 .conversation-process-card>summary:hover{color:var(--text)}
 .conversation-process-card>summary>.ph{flex:none;color:var(--text-3)}
 .conversation-process-card>summary>small{margin-left:0;color:var(--text-3);font-size:11px}
-.conversation-process-card>.conversation-process-body{padding:6px 0 10px;border-top:1px solid var(--border)}
+.conversation-process-card>.conversation-process-body{padding:6px 0 10px}
 .conversation-process{margin:0 0 12px}
 .conversation-process>summary,.conversation-reason>summary,.conversation-tool>summary{display:flex;align-items:center;gap:6px;list-style:none;cursor:pointer;min-width:0;border-radius:8px}
 .conversation-process>summary::-webkit-details-marker,.conversation-reason>summary::-webkit-details-marker,.conversation-tool>summary::-webkit-details-marker{display:none}
@@ -93,7 +93,7 @@ details[open]>summary>.conversation-chevron{transform:rotate(90deg)}
 .conversation-tool-meta dd{margin:0}
 .conversation-response a[href^="avery:"]{color:var(--accent);text-decoration:none;border-bottom:1px solid var(--accent);cursor:pointer}
 .conversation-artifacts{display:grid;gap:7px;margin-top:16px;min-width:0}
-.conversation-resource{box-sizing:border-box;display:flex;align-items:center;gap:12px;width:100%;max-width:440px;border:1px solid var(--border);border-radius:var(--r-card);padding:13px 14px;margin:0;background:var(--bg);text-align:left;color:var(--text);cursor:pointer;transition:border-color .2s,box-shadow .2s}
+.conversation-resource{box-sizing:border-box;display:flex;align-items:center;gap:12px;width:100%;max-width:100%;border:1px solid var(--border);border-radius:var(--r-card);padding:13px 14px;margin:0;background:var(--bg);text-align:left;color:var(--text);cursor:pointer;transition:border-color .2s,box-shadow .2s}
 .conversation-resource:hover{border-color:var(--accent);box-shadow:var(--shadow);background:var(--bg)}
 .conversation-resource-symbol{width:34px;height:39px;border-radius:8px;background:var(--accent-soft);color:var(--accent);display:grid;place-items:center;flex:none}
 .conversation-resource-copy{display:flex;flex-direction:column;gap:2px;min-width:0;flex:1}
@@ -106,11 +106,10 @@ details[open]>summary>.conversation-chevron{transform:rotate(90deg)}
 .conversation-resource-changes .is-removed{color:var(--danger)}
 .conversation-run-note{font-size:12px;color:var(--text-3)}
 .conversation-run-error{font-size:12px;line-height:1.8}
-.conversation-work{display:flex;align-items:center;gap:12px;margin:0 0 20px;min-height:48px;color:var(--accent)}
+.conversation-work{display:flex;align-items:flex-end;gap:12px;margin:0 0 20px;min-height:24px;color:var(--accent)}
 .conversation-work-art{width:24px;height:24px;flex:none;overflow:visible}
 .conversation-work-art circle{fill:currentColor}
-.conversation-work-title{font-size:12px;font-weight:550;line-height:1.8}
-.conversation-work-caption{font-size:11px;color:var(--text-3);line-height:1.8;margin-top:1px}
+.conversation-work-title{font-size:12px;font-weight:550;line-height:1.5}
 .rs-resource-close{margin-left:auto}
 .rs-foot .rs-resource-version-wrap{margin-left:0}
 .rs-foot .rs-resource-version{width:56px;min-width:0;padding:0 4px;justify-content:center;font-variant-numeric:tabular-nums}
@@ -131,5 +130,5 @@ details[open]>summary>.conversation-chevron{transform:rotate(90deg)}
 }
 .conversation-response summary:focus-visible,.conversation-resource:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
 @keyframes conversation-spin{to{transform:rotate(360deg)}}
-@media(max-width:640px){.conversation-process>summary{flex-wrap:wrap;gap:6px}.conversation-tool>summary small{font-size:10px}.conversation-work-caption{font-size:10px}}
+@media(max-width:640px){.conversation-process>summary{flex-wrap:wrap;gap:6px}.conversation-tool>summary small{font-size:10px}}
 @media(prefers-reduced-motion:reduce){.conversation-response *,.conversation-response *::before,.conversation-response *::after,.conversation-response details::details-content{animation:none!important;transition:none!important}}

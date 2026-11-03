@@ -21,10 +21,11 @@ interface Props {
   onReload: () => Promise<boolean>;
   onCompositionChange: (composing: boolean) => void;
   reloadTrigger: number;
+  onMultilineChange?: (multiline: boolean) => void;
 }
 
 /** 正文与标签共用首行，标签独立于可编辑 DOM，避免混入请求文本和字符偏移。 */
-export function ComposerInput({ value, onChange, inputRef, sessionId, scenarioId, busy, placeholder, skill, mode, onSkillChange, onModeChange, onSend, onReload, onCompositionChange, reloadTrigger }: Props) {
+export function ComposerInput({ value, onChange, inputRef, sessionId, scenarioId, busy, placeholder, skill, mode, onSkillChange, onModeChange, onSend, onReload, onCompositionChange, reloadTrigger, onMultilineChange }: Props) {
   const { ShowNotice } = useUiStore();
   const id = useId();
   const root = useRef<HTMLDivElement>(null);
@@ -150,6 +151,40 @@ export function ComposerInput({ value, onChange, inputRef, sessionId, scenarioId
     else if (editorValue && !editorValue.endsWith('\n')) sentinel?.remove();
     Update();
   }, [editorValue, commandPrefix, inputRef, Update, Caret, Selection]);
+  // 始终按单行布局的宽度判断是否换行，避免铺满后变成一行而导致布局反复切换。
+  // 测量副本不接收焦点，不改动真实编辑 DOM、选区或输入法状态。
+  useLayoutEffect(() => {
+    if (!onMultilineChange) return;
+    const host = root.current;
+    const composer = host?.closest<HTMLElement>('.composer');
+    const line = host?.querySelector<HTMLElement>('.slash-editor-line');
+    if (!host || !composer || !line) return;
+    let previousWidth = -1;
+    const Measure = () => {
+      if (composer.clientWidth <= 0) return;
+      previousWidth = composer.clientWidth;
+      const style = getComputedStyle(composer);
+      const Pixels = (value: string) => Number.parseFloat(value) || 0;
+      const buttons = [...composer.querySelectorAll<HTMLElement>(':scope > .cmp-btn, :scope > .send')];
+      const width = composer.clientWidth - Pixels(style.paddingLeft) - Pixels(style.paddingRight)
+        - buttons.reduce((sum, button) => sum + button.offsetWidth, 0) - buttons.length * Pixels(style.columnGap);
+      const probe = line.cloneNode(true) as HTMLElement;
+      probe.inert = true;
+      probe.setAttribute('aria-hidden', 'true');
+      Object.assign(probe.style, { position: 'fixed', visibility: 'hidden', pointerEvents: 'none', width: `${Math.max(1, width)}px`, maxHeight: 'none', overflow: 'hidden' });
+      host.append(probe);
+      try {
+        const lineStyle = getComputedStyle(line);
+        const singleHeight = Math.max(Pixels(lineStyle.minHeight), Pixels(lineStyle.lineHeight) + Pixels(lineStyle.paddingTop) + Pixels(lineStyle.paddingBottom));
+        onMultilineChange(probe.offsetHeight > singleHeight + 1);
+      } finally { probe.remove(); }
+    };
+    Measure();
+    const observer = new ResizeObserver(() => { if (composer.clientWidth !== previousWidth) Measure(); });
+    observer.observe(composer);
+    document.fonts.addEventListener('loadingdone', Measure);
+    return () => { observer.disconnect(); document.fonts.removeEventListener('loadingdone', Measure); };
+  }, [editorValue, commandPrefix, skill, mode, placeholder, onMultilineChange]);
   useEffect(() => {
     const SelectionChanged = () => Update();
     const Outside = (event: PointerEvent) => { if (event.target instanceof Node && !root.current?.contains(event.target)) Dismiss(); };

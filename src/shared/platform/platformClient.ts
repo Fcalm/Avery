@@ -183,7 +183,8 @@ export const platformClient = {
     GetResumeRevision: (resumeId: string, revisionId: string) => CallBridge(() => RequireWorkspace().GetResumeRevision(resumeId, revisionId)),
     RestoreResumeRevision: (resumeId: string, revisionId: string, expectedRevision?: number, options?: WriteCommandOptions) => CallBridge(() => RequireWorkspace().RestoreResumeRevision(resumeId, revisionId, expectedRevision, ResolveWriteOptions(options))),
     DeleteResumeRevision: (resumeId: string, revisionId: string, options?: WriteCommandOptions) => CallBridge(() => RequireWorkspace().DeleteResumeRevision(resumeId, revisionId, ResolveWriteOptions(options))),
-    ExportResume: (resume: { name: string; summary: string; content: string }, format: 'html' | 'pdf' | 'docx' | 'png') => CallBridge(() => RequireWorkspace().ExportResume(resume, format)),
+    ExportResume: (resume: import('@avery/contracts').ResumeDocumentInput, format: 'html' | 'pdf' | 'docx' | 'png') => CallBridge(() => RequireWorkspace().ExportResume(resume, format)),
+    PreviewResumePdf: (resume: import('@avery/contracts').ResumeDocumentInput) => CallBridge(() => RequireWorkspace().PreviewResumePdf(resume)),
     Migrate: () => CallBridge(() => RequireWorkspace().Migrate()),
   },
   evaluation: {

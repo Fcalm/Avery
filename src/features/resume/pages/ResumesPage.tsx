@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { CreateResumeDocumentMarkup, type ResumeRevisionDocumentDto } from '@avery/contracts';
+import { type ResumeRevisionDocumentDto } from '@avery/contracts';
 import { useUiStore } from '../../../app/UiStore';
 import { useDeleteResume, useResumes, useRestoreResumeRevision, useUpsertResume, LoadResumeRevisions, LoadResumeRevision, ExportResumeFile } from '../../../features/resume/api/resumeQueries';
 import { AcquireResumeEditLock, ReleaseResumeEditLock } from '../../assistant/api/agentQueries';
@@ -8,6 +8,9 @@ import { DialogButton, Modal } from '../../../shared/components/UI';
 import { Icon } from '../../../shared/components/Icon';
 import { FormatTime } from '../../../shared/utils/format';
 import type { Resume } from '../../../types/domain';
+import { ResumeEditor } from '../components/ResumeEditor';
+import { ResumePdfPreview } from '../components/ResumePdfPreview';
+import { ApplyResumeDraft, useResumeDraft } from '../resumeDraft';
 
 interface ResumeRevisionRow {
   id: string;
@@ -36,11 +39,9 @@ function ResumesPage({ onGoAssistant }: { onGoAssistant: () => void }) {
   const [viewingRevision, SetViewingRevision] = useState<ResumeRevisionDocumentDto | null>(null);
   const [restoreTarget, SetRestoreTarget] = useState<ResumeRevisionRow | null>(null);
   const [deleteTarget, SetDeleteTarget] = useState<Resume | null>(null);
-  // 编辑态与侧边栏简历编辑共用同一套语义：editText 为编辑中内容，savedText 为最后一次已保存内容，editHistory 为撤销栈。
   const [editing, SetEditing] = useState(false);
-  const [editText, SetEditText] = useState('');
-  const [savedText, SetSavedText] = useState('');
-  const [editHistory, SetEditHistory] = useState<string[]>([]);
+  const editor = useResumeDraft();
+  const [creating, SetCreating] = useState(false);
   const drawerRef = useRef<HTMLElement>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
   // 用户编辑锁：记录持有锁的简历，保存/取消/卸载时释放（与侧边栏 editLockRef 是同一把后端锁）。
@@ -82,10 +83,15 @@ function ResumesPage({ onGoAssistant }: { onGoAssistant: () => void }) {
     onGoAssistant();
   }
   function OpenDrawer(resume: Resume) {
+    SetCreating(false);
     SetDrawerResume(resume); SetViewingRevision(null); SetRevisions([]);
     void RefreshRevisions(resume.id);
   }
-  function CloseDrawer() { SetDrawerResume(null); SetViewingRevision(null); SetRestoreTarget(null); SetDeleteTarget(null); }
+  function CloseDrawer() { SetDrawerResume(null); SetViewingRevision(null); SetRestoreTarget(null); SetDeleteTarget(null); SetCreating(false); }
+  function CreateResume() {
+    const draft: Resume = { id: crypto.randomUUID(), name: '未命名简历', targetRoles: [], summary: '', content: '' };
+    SetDrawerResume(draft); SetCreating(true); SetViewingRevision(null); SetRevisions([]); editor.Begin(draft); SetEditing(true);
+  }
   /** 关闭入口统一收口：编辑中先取消编辑（恢复正文并释放锁），再次操作才真正收起抽屉。 */
   function RequestClose() { if (editing) { CancelEdit(); return; } CloseDrawer(); }
   async function RefreshRevisions(resumeId: string) {
@@ -120,32 +126,27 @@ function ResumesPage({ onGoAssistant }: { onGoAssistant: () => void }) {
     const lock = await AcquireResumeEditLock(drawerResume.id);
     if (!lock.acquired) { ShowNotice(lock.reason ?? '简历正被占用，暂时无法编辑', "info"); return; }
     editLockRef.current = drawerResume.id;
-    SetEditText(drawerResume.content); SetSavedText(drawerResume.content); SetEditHistory([]);
+    editor.Begin(drawerResume);
     SetEditing(true);
   }
-  function HandleEditChange(value: string) { SetEditHistory((current) => [...current, editText]); SetEditText(value); }
-  /** 撤销最近一次编辑：弹回上一份快照；保存或取消后撤销栈清空。 */
-  function UndoEdit() {
-    const last = editHistory.at(-1);
-    if (last === undefined) return;
-    SetEditText(last);
-    SetEditHistory((current) => current.slice(0, -1));
-  }
   async function SaveEdit() {
-    if (!drawerResume) return;
+    if (!drawerResume || upsertResume.isPending || !editor.Validate()) return;
     try {
-      const result = await upsertResume.mutateAsync({ resume: { ...drawerResume, content: editText, updatedAt: Date.now() }, expectedRevision: drawerResume.revision });
+      const next = ApplyResumeDraft(editor.baseResume ?? drawerResume, editor.draft);
+      const result = await upsertResume.mutateAsync({ resume: next, expectedRevision: editor.baseResume?.revision });
       // 保存成功才释放锁并退出编辑态；失败时保留编辑态与锁供重试（提示由 mutation 统一给出）。
       if (editLockRef.current) { void ReleaseResumeEditLock(editLockRef.current); editLockRef.current = null; }
-      SetSavedText(editText); SetEditHistory([]); SetEditing(false);
-      SetDrawerResume((current) => (current ? { ...current, content: editText, updatedAt: Date.now(), revision: result.revision } : current));
+      SetEditing(false); SetCreating(false);
+      SetDrawerResume({ ...next, revision: result.revision });
       void RefreshRevisions(drawerResume.id);
       ShowNotice('简历已保存', "success");
     } catch { /* 冲突与普通失败已由 mutation 统一提示 */ }
   }
   /** 取消编辑恢复最后一次已保存内容，并立即释放锁供 Avery 继续更新（与侧边栏一致）。 */
   function CancelEdit() {
-    SetEditText(savedText); SetEditHistory([]); SetEditing(false);
+    if (upsertResume.isPending) return;
+    SetEditing(false);
+    if (creating) CloseDrawer();
     if (editLockRef.current) { void ReleaseResumeEditLock(editLockRef.current); editLockRef.current = null; }
     ShowNotice('已取消编辑，未保存修改已放弃', "info");
   }
@@ -166,7 +167,7 @@ function ResumesPage({ onGoAssistant }: { onGoAssistant: () => void }) {
   async function DownloadPdf() {
     if (!drawerResume) return;
     try {
-      const result = await ExportResumeFile(drawerResume, 'pdf');
+      const result = await ExportResumeFile(viewingRevision?.document ?? drawerResume, 'pdf');
       ShowNotice(`已导出 ${result.fileName} 到工作空间 exports 文件夹`, "success");
     } catch (error) { ShowNotice(error instanceof Error ? error.message : '简历导出失败', "error"); }
   }
@@ -174,7 +175,7 @@ function ResumesPage({ onGoAssistant }: { onGoAssistant: () => void }) {
   return <div className="resumes-view">
     <div className="view-h">
       <h1>简历</h1>
-      <div className="vh-act"><button className="btn-accent" type="button" onClick={SaveViaAvery}><Icon name="assistant" size={14} />让Avery保存简历</button></div>
+      <div className="vh-act"><button className="ghost-btn" type="button" onClick={SaveViaAvery}><Icon name="assistant" size={14} />让Avery保存简历</button><button className="btn-accent" type="button" onClick={CreateResume}><Icon name="plus" size={14} />新建简历</button></div>
     </div>
     {sortedResumes.map((resume) => {
       const isCurrent = resume.id === currentResumeId;
@@ -203,21 +204,19 @@ function ResumesPage({ onGoAssistant }: { onGoAssistant: () => void }) {
               <span>{drawerResume.targetRoles.length ? `针对 ${drawerResume.targetRoles.join('、')}` : '通用版本'}</span>
               {Boolean(drawerResume.updatedAt) && <span>{FormatTime(drawerResume.updatedAt)} 修改</span>}
               {viewingRevision && <span>正在查看 v{viewingRevision.revision}（只读）</span>}
-              {editing && <span>正在编辑 Markdown 源文</span>}
+              {editing && <span>正在编辑</span>}
             </div>
           </div>
           <button className="icon-btn" type="button" aria-label="关闭详情" title="关闭详情" autoFocus onClick={RequestClose}><Icon name="close" size={16} /></button>
         </div>
         <div className="dw-body" ref={bodyRef}>
-          {/* 编辑态把正文整体换成 Markdown 源文编辑框；阅读态维持渲染模板与版本历史。 */}
-          {editing ? <textarea className="dw-resume-editor" value={editText} onChange={(event) => HandleEditChange(event.target.value)} aria-label="编辑简历内容" /> : <>
+          {editing ? <ResumeEditor value={editor.draft} onChange={editor.Change} validationAttempt={editor.validationAttempt} disabled={upsertResume.isPending} /> : <>
             {viewingRevision && <div className="note plain">
               <Icon name="info" size={15} />
               <span>正在查看 v{viewingRevision.revision} 历史版本，内容不可编辑。</span>
               <button className="note-act" type="button" onClick={ReturnToCurrent}>返回当前版本</button>
             </div>}
-            {/* 简历正文沿用现有渲染模板（CreateResumeDocumentMarkup）；查看历史版本时替换为只读快照。 */}
-            <div className="resume-html-preview" dangerouslySetInnerHTML={{ __html: CreateResumeDocumentMarkup(viewingRevision?.document ?? drawerResume) }} />
+            <ResumePdfPreview resume={viewingRevision?.document ?? drawerResume} />
             <section className="sec rev-sec">
               <div className="sec-h">版本历史</div>
               {revisions.length ? revisions.map((revision) => <div className="rev-row" key={revision.id}>
@@ -234,9 +233,9 @@ function ResumesPage({ onGoAssistant }: { onGoAssistant: () => void }) {
         <div className="dw-foot">
           {/* 编辑态换用侧边栏同款按钮组：取消 / 撤销 / 保存；阅读态保留删除、编辑、导出与设为当前。 */}
           {editing ? <>
-            <button className="ghost-btn" type="button" onClick={CancelEdit}><Icon name="close" size={14} />取消</button>
-            <button className="ghost-btn" type="button" disabled={!editHistory.length} onClick={UndoEdit}><Icon name="recovery" size={14} />撤销</button>
-            <button className="btn-accent" type="button" onClick={() => void SaveEdit()}><Icon name="check-circle" size={14} />保存</button>
+            <button className="ghost-btn" type="button" disabled={upsertResume.isPending} onClick={CancelEdit}><Icon name="close" size={14} />取消</button>
+            <button className="ghost-btn" type="button" disabled={!editor.canUndo || upsertResume.isPending} onClick={editor.Undo}><Icon name="recovery" size={14} />撤销</button>
+            <button className="btn-accent" type="button" disabled={upsertResume.isPending} onClick={() => void SaveEdit()}><Icon name="check-circle" size={14} />{upsertResume.isPending ? '保存中…' : '保存'}</button>
           </> : <>
             <button className="ghost-btn is-danger" type="button" onClick={() => SetDeleteTarget(drawerResume)}><Icon name="delete" size={14} />删除</button>
             <button className="ghost-btn" type="button" disabled={Boolean(viewingRevision)} title={viewingRevision ? '历史版本只读，返回当前版本后可编辑' : undefined} onClick={() => void StartEdit()}>

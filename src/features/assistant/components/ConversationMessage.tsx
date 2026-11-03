@@ -86,7 +86,7 @@ export function ConversationMessage({ message, onOpenResource, authorizedResourc
   const workingLabel = lastPart?.type === 'tool' ? ToolNames[lastPart.name] ?? '正在执行工具' : lastPart?.type === 'reasoning' ? '正在梳理与分析' : '正在整理结果';
   return <div className="conversation-response">
     {/* 动画独立于折叠过程，按整轮状态持续显示，生成最终报告期间也不提前隐藏。 */}
-    {status === 'running' && <WorkingIndicator label={workingLabel} />}
+    {status === 'running' && <WorkingIndicator label={presentation.statusMessage ?? workingLabel} />}
     {(status === 'waiting' || status === 'paused') && <p className="conversation-run-note" role="status">{presentation.statusMessage ?? (status === 'waiting' ? '等待你的确认或回答，处理过程已保留。' : '任务已暂停，处理过程已保留。')}</p>}
     {(blocks.length > 0 || processActive) && <details className="conversation-process" open={processOpen} onToggle={(event) => setProcessOpen(event.currentTarget.open)}>
       <ConversationProcessSummary presentation={presentation} messageCreatedAt={message.createdAt} messageUpdatedAt={message.updatedAt} />

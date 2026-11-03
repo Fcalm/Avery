@@ -14,6 +14,7 @@ import { useResumes, useUpsertResume } from '../../../features/resume/api/resume
 import { useSettings } from '../../../features/settings/api/settingsQueries';
 import { ApplyModelCatalogToProviders, LoadModelCatalog, SubscribeModelCatalog } from '../../../features/settings/api/modelCatalog';
 import { DocSidePanel } from '../components/DocSidePanel';
+import { ApplyResumeDraft, useResumeDraft } from '../../resume/resumeDraft';
 import { UserMessage } from '../components/UserMessage';
 import { ParseCompactCommand } from '../composerCommands';
 import {
@@ -207,10 +208,9 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
   ]);
   const [panelWidth, setPanelWidth] = useState(430);
   const [isComposerCompact, setIsComposerCompact] = useState(false);
+  const [isComposerMultiline, setIsComposerMultiline] = useState(false);
   const [editing, setEditing] = useState(false);
-  const [resumeText, setResumeText] = useState(resumes.find((item) => item.id === currentResumeId)?.content ?? '');
-  const [savedText, setSavedText] = useState(resumeText);
-  const [history, setHistory] = useState<string[]>([]);
+  const resumeEditor = useResumeDraft();
   const [resourcePreview, setResourcePreview] = useState<{ sessionId: string; resource: ConversationResource } | null>(null);
   const [runsBySession, setRunsBySession] = useState<Record<string, string | undefined>>({});
   const taskVersions = useRef<Record<string, number>>({});
@@ -227,6 +227,8 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
   const [observability, setObservability] = useState<AgentObservability | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const composerRef = useRef<HTMLDivElement>(null);
+  const composerSettingsRef = useRef<HTMLDivElement>(null);
+  const composerSettingsBarRef = useRef<HTMLDivElement>(null);
   const composerInputRef = useRef<HTMLSpanElement>(null);
   const messageListRef = useRef<HTMLDivElement>(null);
   const enteredConversationRef = useRef<string | null>(null);
@@ -395,21 +397,48 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
     };
   }, [scrollToBottomRequest]);
 
-  /** 以输入栏的实际可用宽度切换紧凑控件，不依赖任一侧栏的拖拽方向或宽度。
-      轨迹视图会卸载输入栏：切回对话时必须重建观察并立即校正，否则卸载期间
-      宽度塌缩为 0 的那次采样会把按钮永久钉在紧凑态。宽度为 0 的采样一律忽略。 */
+  /** 已有会话按按钮的完整内容测量，给右侧上下文用量留空间；收起后仍能测量隐藏文字，避免密度反复切换。
+      新建会话沿用框内工具行的密度；确认界面、轨迹视图卸载输入框后，返回时重新建立观察。 */
   useEffect(() => {
     const composerElement = composerRef.current;
     if (!composerElement) return undefined;
+    const bar = composerSettingsBarRef.current;
+    const settings = composerSettingsRef.current;
+    let frame = 0;
+    let disposed = false;
+    const Pixels = (value: string) => Number.parseFloat(value) || 0;
     const UpdateComposerDensity = () => {
-      const width = composerElement.clientWidth;
-      if (width > 0) setIsComposerCompact(width < ComposerCompactWidth);
+      if (disposed) return;
+      if (!bar || !settings) {
+        if (composerElement.clientWidth > 0) setIsComposerCompact(composerElement.clientWidth < ComposerCompactWidth);
+        return;
+      }
+      if (bar.clientWidth <= 0) return;
+      const buttons = [...settings.querySelectorAll<HTMLElement>(':scope > .menu-wrap > .cmp-btn')];
+      const settingsStyle = getComputedStyle(settings);
+      const fullWidth = buttons.reduce((width, button) => {
+        const style = getComputedStyle(button);
+        const children = [...button.children];
+        return width + Pixels(style.paddingLeft) + Pixels(style.paddingRight)
+          + Pixels(style.borderLeftWidth) + Pixels(style.borderRightWidth)
+          + children.reduce((sum, child) => sum + child.getBoundingClientRect().width, 0)
+          + Math.max(0, children.length - 1) * Pixels(style.columnGap);
+      }, 0) + Math.max(0, buttons.length - 1) * Pixels(settingsStyle.columnGap);
+      const style = getComputedStyle(bar);
+      const usageWidth = bar.querySelector<HTMLElement>(':scope > .ctx-wrap')?.getBoundingClientRect().width ?? 0;
+      const available = bar.clientWidth - Pixels(style.paddingLeft) - Pixels(style.paddingRight) - Pixels(style.columnGap) - usageWidth;
+      setIsComposerCompact(fullWidth > available);
     };
+    const ScheduleUpdate = () => { cancelAnimationFrame(frame); frame = requestAnimationFrame(UpdateComposerDensity); };
     UpdateComposerDensity();
-    const observer = new ResizeObserver(UpdateComposerDensity);
-    observer.observe(composerElement);
-    return () => observer.disconnect();
-  }, [assistantView]);
+    const observer = new ResizeObserver(ScheduleUpdate);
+    observer.observe(bar ?? composerElement);
+    const usageElement = bar?.querySelector<HTMLElement>(':scope > .ctx-wrap');
+    if (usageElement) observer.observe(usageElement);
+    document.fonts.addEventListener('loadingdone', ScheduleUpdate);
+    void document.fonts.ready.then(() => { if (!disposed) ScheduleUpdate(); });
+    return () => { disposed = true; cancelAnimationFrame(frame); observer.disconnect(); document.fonts.removeEventListener('loadingdone', ScheduleUpdate); };
+  }, [assistantView, !conversation?.messages.length, Boolean(pendingQuestions || pendingEdit || pendingCronTask || pendingBrowserAction), model, provider, permission, reasoningEffort]);
 
   useEffect(() => {
     if (!showPermission && !showScenario && !showModel && !showReasoningEffort) return undefined;
@@ -617,7 +646,6 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
       void RefreshWorkspacePreservingMessages();
       if (owner === activeConversationRef.current && !editLockRef.current) {
         if (event.type === 'resume_created') setCurrentResumeId(event.resumeId);
-        if (event.type === 'resume_created' || event.resumeId === currentResumeId) { setResumeText(event.content); setSavedText(event.content); setHistory([]); }
       }
       ShowNotice(event.type === 'resume_created' ? 'Agent 已创建并保存简历' : 'Agent 已保存简历修改', "success");
       return;
@@ -642,6 +670,14 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
     }
     if (!event.requestId) return;
     const placeholder = activePlaceholdersRef.current.get(event.requestId);
+    if (event.type === 'conversation_activity' && event.activity?.reset && placeholder && typeof event.content === 'string') {
+      const content = event.content, thinkingContent = event.thinkingContent ?? '';
+      activePlaceholdersRef.current.set(event.requestId, { ...placeholder, content, thinkingContent });
+      patchConversationsRef.current(current => current.map(item => item.id !== placeholder.conversationId ? item : {
+        ...item, messages: item.messages.map(message => message.id === 'reply-' + event.requestId ? { ...message, content, thinkingContent } : message),
+      }));
+      return;
+    }
     if (event.type === 'content_delta' || event.type === 'thinking_delta') {
       if (!placeholder) return;
       const delta = event.delta ?? '';
@@ -743,7 +779,7 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
     if (activeConversationId && activeRequestsRef.current.has(activeConversationId)) { ShowNotice('已有任务正在执行，请等待本轮结束或回到原会话停止任务。', "info"); return; }
     if (/^\/reload(?:-session)?\s*$/.test(composer)) { setReloadCommandTrigger((revision) => revision + 1); return; }
     if (attachments.some((attachment) => attachment.status === 'uploading')) {
-      ShowNotice('附件仍在上传，请完成后再发送。', "info");
+      ShowNotice('附件仍在上传，请完成后再发送。', "warning");
       return;
     }
     const readyAttachments = attachments.filter((attachment): attachment is Extract<ComposerAttachment, { status: 'ready' }> => attachment.status === 'ready');
@@ -892,7 +928,7 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
 
     const availableSlots = Math.max(0, 10 - attachments.length);
     const acceptedFiles = files.slice(0, availableSlots);
-    if (acceptedFiles.length < files.length) ShowNotice('最多可添加 10 个附件，超出部分未添加。', "info");
+    if (acceptedFiles.length < files.length) ShowNotice('最多可添加 10 个附件，超出部分未添加。', "warning");
     if (acceptedFiles.length === 0) return;
 
     const pendingAttachments = acceptedFiles.map((file) => ({ id: crypto.randomUUID(), name: file.name, status: 'uploading' as const }));
@@ -941,14 +977,6 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
     }
   }
 
-  function HandleEditChange(value: string) { setHistory((current) => [...current, resumeText]); setResumeText(value); }
-  /** 撤销最近一次编辑：弹回上一份快照；编辑期间随时可用，保存后历史清空。 */
-  function UndoResumeEdit() {
-    const last = history.at(-1);
-    if (!last) return;
-    setResumeText(last);
-    setHistory((current) => current.slice(0, -1));
-  }
   /** 用户发起手动编辑前获取后端互斥锁；Agent 占用或本轮仍在处理时拒绝进入编辑。 */
   async function HandleStartEditing() {
     if (!resume) return;
@@ -956,16 +984,15 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
     const lock = await AcquireResumeEditLock(resume.id);
     if (!lock.acquired) { ShowNotice(lock.reason ?? '简历正被占用，暂时无法编辑', "info"); return; }
     editLockRef.current = resume.id;
+    resumeEditor.Begin(resume);
     setEditing(true);
   }
   async function HandleSaveResume() {
-    if (!resume) return;
+    if (!resume || upsertResume.isPending || !resumeEditor.Validate()) return;
     try {
-      await upsertResume.mutateAsync({ resume: { ...resume, content: resumeText, updatedAt: Date.now() }, expectedRevision: resume.revision });
+      await upsertResume.mutateAsync({ resume: ApplyResumeDraft(resumeEditor.baseResume ?? resume, resumeEditor.draft), expectedRevision: resumeEditor.baseResume?.revision });
       // 保存成功才释放锁并退出编辑态；失败时保留编辑态与锁，供用户重试。
       if (editLockRef.current) { void ReleaseResumeEditLock(editLockRef.current); editLockRef.current = null; }
-      setSavedText(resumeText);
-      setHistory([]);
       setEditing(false);
       ShowNotice('简历已保存到本地工作空间', "success");
     } catch {
@@ -974,21 +1001,18 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
   }
   /** 取消编辑必须恢复最后一次已保存内容，并立即释放用户编辑锁供 Agent 继续更新简历。 */
   function HandleCancelEditing() {
-    setResumeText(savedText);
-    setHistory([]);
+    if (upsertResume.isPending) return;
     setEditing(false);
     if (editLockRef.current) { void ReleaseResumeEditLock(editLockRef.current); editLockRef.current = null; }
     ShowNotice('已取消编辑，未保存修改已放弃', "info");
   }
   /** 切换当前简历：释放仍持有的编辑锁并重置编辑态，加载用户在菜单中选定的简历。 */
   function HandleSelectResume(resumeId: string) {
+    if (upsertResume.isPending) return;
     const nextResume = resumes.find((item) => item.id === resumeId);
     if (!nextResume || nextResume.id === currentResumeId) return;
     if (editLockRef.current) { void ReleaseResumeEditLock(editLockRef.current); editLockRef.current = null; }
     setEditing(false);
-    setHistory([]);
-    setResumeText(nextResume.content);
-    setSavedText(nextResume.content);
     setCurrentResumeId(nextResume.id);
   }
   function HandleScenarioChange(nextScenarioId: 'default' | 'application') {
@@ -1079,6 +1103,64 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
   const CurrentScenario = ScenarioOptions.find((item) => item.id === scenarioId) ?? ScenarioOptions[0];
   const sessionTokenUsage = CreateSessionTokenUsage(usage);
   const cacheSharePercent = sessionTokenUsage ? CalculateTokenSharePercent(sessionTokenUsage.cachedInputTokens, sessionTokenUsage.totalTokens) : null;
+  const composerSettings = <div className="cmp-settings" ref={composerSettingsRef}>
+    <div className="menu-wrap">
+      <button className="cmp-btn permission-button" type="button" disabled={Boolean(compacting)} aria-label={`权限范围：${CurrentConfirmation.label}`} title={`权限范围：${CurrentConfirmation.label}`} aria-haspopup="true" aria-expanded={showPermission} onClick={() => setShowPermission((value) => !value)}><Icon name={CurrentConfirmation.icon} size={15} /><span className="cmp-label">{CurrentConfirmation.label}</span><Icon name="chevron-up" className="chev" size={10} /></button>
+      {showPermission && <div className="menu pop" role="menu" aria-label="选择权限范围">
+        <div className="menu-label">权限范围</div>
+        {ConfirmationOptions.map((item) => <button key={item.id} type="button" role="menuitemradio" aria-checked={item.id === permission} className={item.id === permission ? 'menu-item sel' : 'menu-item'} onClick={() => { if (item.id === 'fully_trusted') { setShowPermission(false); setShowFullyTrustedWarning(true); } else void ApplyConfirmationMode(item.id); }}>
+          <Icon name={item.icon} size={16} />
+          <span><span className="mt">{item.label}</span><span className="md">{item.description}</span></span>
+          <Icon name="check" className="tick" size={14} />
+        </button>)}
+        <div className="menu-foot">权限越高，Avery 能做的事越多，需要你确认的步骤越少。</div>
+      </div>}
+    </div>
+    <div className="menu-wrap">
+      <button className="cmp-btn model-button" type="button" disabled={Boolean(compacting)} aria-label={`模型：${provider} ${model}`} title={`模型：${provider} ${model}`} aria-haspopup="true" aria-expanded={showModel} onClick={() => setShowModel((value) => !value)}>{provider === 'DeepSeek' ? <Icon name="deepseek" size={15} /> : provider === 'Z.AI' ? <Icon name="zai" size={15} /> : provider === 'MIMO' ? <Icon name="mimo" size={15} /> : <Icon name="brain" size={15} />}<span className="cmp-label">{model}</span><Icon name="chevron-up" className="chev" size={10} /></button>
+      {showModel && <ModelPickerMenu providers={providerCatalog} provider={provider} model={model} onSelect={HandleSelectModel} />}
+    </div>
+    <div className="menu-wrap">
+      <button className="cmp-btn reasoning-effort-button" type="button" disabled={Boolean(compacting)} aria-label={`思考强度：${ReasoningEffortLabels[reasoningEffort]}`} title={`思考强度：${ReasoningEffortLabels[reasoningEffort]}；按会话保存，在下一轮模型请求生效`} aria-haspopup="true" aria-expanded={showReasoningEffort} onClick={() => setShowReasoningEffort((value) => !value)}><Icon name="brain" size={15} /><span className="cmp-label">思考 {ReasoningEffortLabels[reasoningEffort]}</span><Icon name="chevron-up" className="chev" size={10} /></button>
+      {showReasoningEffort && <div className="menu pop" role="menu" aria-label="思考强度">
+        <div className="menu-label">思考强度</div>
+        <div className="seg" role="radiogroup" aria-label="思考强度">
+          {reasoningEffortOptions.map((effort) => <button key={effort} type="button" role="radio" aria-checked={effort === reasoningEffort} className={effort === reasoningEffort ? 'seg-i sel' : 'seg-i'} onClick={() => HandleSelectReasoningEffort(effort)}>{ReasoningEffortLabels[effort]}</button>)}
+        </div>
+        <div className="think-d">{ReasoningEffortDescriptions[reasoningEffort]}</div>
+      </div>}
+    </div>
+  </div>;
+  const contextUsage = <div className="ctx-wrap">
+    <button className="ctx-ring" type="button" aria-label={usagePresentation.title}>
+      <svg viewBox="0 0 22 22" aria-hidden="true" focusable="false">
+        <circle className="track" cx="11" cy="11" r="8" pathLength="100" />
+        <circle className="val" cx="11" cy="11" r="8" pathLength="100" style={{ strokeDashoffset: 100 - usagePresentation.progress }} />
+      </svg>
+      <span className="ctx-pct">{usage.tokens > 0 ? `${usage.percent}%` : '—'}</span>
+    </button>
+    <div className="ctx-pop" role="tooltip">
+      <div className="cp-h">上下文使用</div>
+      <div className="cp-big"><span className="cp-pct">{usage.tokens > 0 ? `${usage.percent}%` : '—'}</span><span className="cp-tok">{usage.tokens > 0 ? `${FormatTokenCount(usage.tokens)} / ${FormatTokenCount(usage.limit)} tokens` : `上限 ${FormatTokenCount(usage.limit)} tokens`}</span></div>
+      <div className="cp-rows">
+        <div className="cp-row"><span>累计请求</span><b>{usage.reportedRequestCount + usage.unreportedRequestCount} 次</b></div>
+        <div className="cp-row dim"><span>剩余可用</span><b>{usage.tokens > 0 ? FormatTokenCount(Math.max(0, usage.limit - usage.tokens)) : '—'}</b></div>
+      </div>
+      <div className="cp-cache">
+        <div className="cp-cache-h">
+          <span><Icon name="lightning" size={13} />缓存命中率</span>
+          <b>{cacheSharePercent === null ? '—' : `${cacheSharePercent}%`}</b>
+        </div>
+        <div className="cp-cache-d">Σ命中输入 token ÷ Σ总 token</div>
+      </div>
+      <div className="cp-note">{usagePresentation.title}</div>
+    </div>
+  </div>;
+  const attachmentButton = <>
+    <input ref={inputRef} className="visually-hidden" type="file" multiple accept=".pdf,.doc,.docx,.txt,image/png,image/jpeg,image/gif,image/webp" onChange={HandleFiles} />
+    <button className="cmp-btn icon-only" type="button" disabled={Boolean(compacting)} aria-label="上传文件" title="上传文件" onClick={() => inputRef.current?.click()}><Icon name="plus" size={15} /></button>
+  </>;
+  const sendButton = visibleRequestId || compacting ? <button className="send is-stop" type="button" onClick={HandleStop} aria-label="停止生成"><Icon name="stop" size={16} /></button> : <button className="send" type="button" disabled={isComposerComposing || isReloadingContext || (!composer.trim() && attachments.length === 0) || attachments.some((attachment) => attachment.status === 'uploading')} onClick={() => void HandleSend()} aria-label="发送消息" title="发送消息"><Icon name="arrow-bend-down-left" size={16} /></button>;
   return <div className={`assistant-layout ${isComposerCompact ? 'is-composer-compact' : ''}`} style={{ '--assistant-main-min-width': `${ASSISTANT_MAIN_MIN_WIDTH}px` } as CSSProperties}>
     {assistantView === 'trace' ? <section className="assistant-main assistant-trace" aria-label="当前对话轨迹"><ConversationTrace traces={(observability?.traces ?? []).filter((trace) => trace.sessionId === activeConversationId)} sessionTokenUsage={sessionTokenUsage} title={conversation?.title ?? '新对话'} onSelectTrace={GetAgentTraceEvents} /></section> : <section className={`assistant-main ${isNewThread ? 'is-new-thread' : ''}`}>
       {conversation?.messages.length ? <div key={conversation.id} ref={messageListRef} className="message-list"><div className="message-thread">{conversation.messages.map((message) => <article key={message.id} className={`chat-message ${message.role}`}>{message.role === 'assistant' ? <ConversationMessage message={message} working={compacting?.sessionId === conversation.id && message.id === `reply-${compacting.requestId}`} authorizedResources={conversationResources} onOpenResource={OpenConversationResource} /> : message.role === 'user' ? <UserMessage message={message} /> : <MarkdownText content={message.content} />}</article>)}</div></div> : <EmptyAssistant name={settings.nickname} />}
@@ -1087,68 +1169,13 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
         {shouldShowTodo && <div className="task-dock"><div className="task-summary"><span className={`task-status-icon ${GetTodoPresentation(activeTodo?.status ?? 'pending').className}`} aria-hidden="true">{GetTodoPresentation(activeTodo?.status ?? 'pending').symbol}</span><span className="task-summary-copy">{activeTodo?.title ?? '正在处理任务'}</span><span className={`task-summary-status ${GetTodoPresentation(activeTodo?.status ?? 'pending').className}`}>{GetTodoPresentation(activeTodo?.status ?? 'pending').label}</span></div><div className="task-card" aria-label="Todo 列表"><div className="task-card-heading">Todo · {agentTodos.length} 项</div><div className="task-list">{agentTodos.map((todo) => { const presentation = GetTodoPresentation(todo.status); return <div key={todo.id} className={`task-list-item ${presentation.className}`}><span className="task-status-icon" aria-hidden="true">{presentation.symbol}</span><span className="task-list-title">{todo.title}</span><span className="task-list-status">{presentation.label}</span></div>; })}</div></div></div>}
         {pendingQuestions ? <QuestionComposer questions={pendingQuestions.questions} answers={questionAnswers} otherAnswers={otherAnswers} questionIndex={pendingQuestionIndex} onAnswer={(questionId, answer) => setQuestionAnswers((current) => ({ ...current, [questionId]: answer }))} onOtherAnswer={(questionId, answer) => setOtherAnswers((current) => ({ ...current, [questionId]: answer }))} onPrevious={() => setPendingQuestionIndex((current) => Math.max(0, current - 1))} onCancel={CancelPendingQuestions} onContinue={ContinuePendingQuestions} /> : pendingEdit ? <ConfirmationComposer title="确认 Agent 修改简历" description={pendingEdit.reason} preview={pendingEdit.content} confirmLabel="确认并保存" onCancel={() => void HandlePendingEdit(false)} onConfirm={() => void HandlePendingEdit(true)} /> : pendingCronTask ? <ConfirmationComposer title="确认创建无人值守定时任务" description={`${pendingCronTask.summary}\n任务消息：${pendingCronTask.message}`} preview={JSON.stringify(pendingCronTask.schedule, null, 2)} confirmLabel="确认整个周期" onCancel={() => void HandlePendingCronTask(false)} onConfirm={() => void HandlePendingCronTask(true)} /> : pendingBrowserAction ? <ConfirmationComposer title="确认浏览器外部动作" description={`${pendingBrowserAction.summary ?? pendingBrowserAction.toolName}${pendingBrowserAction.url ? `\n目标网站：${pendingBrowserAction.url}` : ''}\n风险级别：${pendingBrowserAction.risk === 'high' ? '高风险' : pendingBrowserAction.risk === 'medium' ? '中风险' : '低风险'}`} confirmLabel="确认执行" onCancel={() => void HandlePendingBrowserAction(false)} onConfirm={() => void HandlePendingBrowserAction(true)} /> : <div className="composer-col">
           {attachments.length > 0 && <div className="ctx">{attachments.map((attachment) => <span className="ctx-item" key={attachment.id} aria-busy={attachment.status === 'uploading'}>{AttachmentUploadStatus(attachment)}<span className="ctx-name">{attachment.name}</span><button className="ctx-x" type="button" aria-label={`移除 ${attachment.name}`} onClick={() => RemoveAttachment(attachment.id)}><Icon name="close" size={11} /></button></span>)}</div>}
-          <div ref={composerRef} className="composer">
-            <ComposerInput key={activeConversationId ?? '__draft__'} inputRef={composerInputRef} value={composer} onChange={setComposer} sessionId={activeConversationId} scenarioId={scenarioId} busy={Boolean(visibleRequestId) || isReloadingContext || Boolean(compacting)} skill={selectedSkill} mode={composerMode} onSkillChange={setSelectedSkill} onModeChange={setComposerMode} onSend={() => void HandleSend()} onReload={HandleReloadContext} reloadTrigger={reloadCommandTrigger} onCompositionChange={setIsComposerComposing} placeholder={scenarioId === 'application' ? '让 Avery 编辑简历、采集岗位或完成浏览器任务…' : '聊聊你的问题，或让 Avery 分析资料、提供建议…'} />
-            <div className="cmp-bar">
-              <div className="cmp-tools">
-                <input ref={inputRef} className="visually-hidden" type="file" multiple accept=".pdf,.doc,.docx,.txt,image/png,image/jpeg,image/gif,image/webp" onChange={HandleFiles} />
-                <button className="cmp-btn icon-only" type="button" disabled={Boolean(compacting)} aria-label="上传文件" title="上传文件" onClick={() => inputRef.current?.click()}><Icon name="paperclip" size={15} /></button>
-                <div className="menu-wrap">
-                  <button className="cmp-btn permission-button" type="button" disabled={Boolean(compacting)} aria-label={`权限范围：${CurrentConfirmation.label}`} aria-haspopup="true" aria-expanded={showPermission} onClick={() => setShowPermission((value) => !value)}><Icon name={CurrentConfirmation.icon} size={15} /><span>{CurrentConfirmation.label}</span><Icon name="chevron-up" className="chev" size={10} /></button>
-                  {showPermission && <div className="menu pop" role="menu" aria-label="选择权限范围">
-                    <div className="menu-label">权限范围</div>
-                    {ConfirmationOptions.map((item) => <button key={item.id} type="button" role="menuitemradio" aria-checked={item.id === permission} className={item.id === permission ? 'menu-item sel' : 'menu-item'} onClick={() => { if (item.id === 'fully_trusted') { setShowPermission(false); setShowFullyTrustedWarning(true); } else void ApplyConfirmationMode(item.id); }}>
-                      <Icon name={item.icon} size={16} />
-                      <span><span className="mt">{item.label}</span><span className="md">{item.description}</span></span>
-                      <Icon name="check" className="tick" size={14} />
-                    </button>)}
-                    <div className="menu-foot">权限越高，Avery 能做的事越多，需要你确认的步骤越少。</div>
-                  </div>}
-                </div>
-                <div className="menu-wrap">
-                  <button className="cmp-btn model-button" type="button" disabled={Boolean(compacting)} aria-label={`模型：${provider} ${model}`} aria-haspopup="true" aria-expanded={showModel} onClick={() => setShowModel((value) => !value)}>{provider === 'DeepSeek' ? <Icon name="deepseek" size={15} /> : provider === 'Z.AI' ? <Icon name="zai" size={15} /> : provider === 'MIMO' ? <Icon name="mimo" size={15} /> : <Icon name="brain" size={15} />}<span>{model}</span><Icon name="chevron-up" className="chev" size={10} /></button>
-                  {showModel && <ModelPickerMenu providers={providerCatalog} provider={provider} model={model} onSelect={HandleSelectModel} />}
-                </div>
-                <div className="menu-wrap">
-                  <button className="cmp-btn reasoning-effort-button" type="button" disabled={Boolean(compacting)} aria-label={`思考强度：${ReasoningEffortLabels[reasoningEffort]}`} title="思考强度按会话保存，并在下一轮模型请求生效" aria-haspopup="true" aria-expanded={showReasoningEffort} onClick={() => setShowReasoningEffort((value) => !value)}><Icon name="brain" size={15} /><span>思考 {ReasoningEffortLabels[reasoningEffort]}</span><Icon name="chevron-up" className="chev" size={10} /></button>
-                  {showReasoningEffort && <div className="menu pop" role="menu" aria-label="思考强度">
-                    <div className="menu-label">思考强度</div>
-                    <div className="seg" role="radiogroup" aria-label="思考强度">
-                      {reasoningEffortOptions.map((effort) => <button key={effort} type="button" role="radio" aria-checked={effort === reasoningEffort} className={effort === reasoningEffort ? 'seg-i sel' : 'seg-i'} onClick={() => HandleSelectReasoningEffort(effort)}>{ReasoningEffortLabels[effort]}</button>)}
-                    </div>
-                    <div className="think-d">{ReasoningEffortDescriptions[reasoningEffort]}</div>
-                  </div>}
-                </div>
-              </div>
-              <div className="cmp-right">
-                <div className="ctx-wrap">
-                  <button className="ctx-ring" type="button" aria-label={usagePresentation.title}>
-                    <svg viewBox="0 0 22 22" aria-hidden="true" focusable="false">
-                      <circle className="track" cx="11" cy="11" r="8" pathLength="100" />
-                      <circle className="val" cx="11" cy="11" r="8" pathLength="100" style={{ strokeDashoffset: 100 - usagePresentation.progress }} />
-                    </svg>
-                    <span className="ctx-pct">{usage.tokens > 0 ? `${usage.percent}%` : '—'}</span>
-                  </button>
-                  <div className="ctx-pop" role="tooltip">
-                    <div className="cp-h">上下文使用</div>
-                    <div className="cp-big"><span className="cp-pct">{usage.tokens > 0 ? `${usage.percent}%` : '—'}</span><span className="cp-tok">{usage.tokens > 0 ? `${FormatTokenCount(usage.tokens)} / ${FormatTokenCount(usage.limit)} tokens` : `上限 ${FormatTokenCount(usage.limit)} tokens`}</span></div>
-                    <div className="cp-rows">
-                      <div className="cp-row"><span>累计请求</span><b>{usage.reportedRequestCount + usage.unreportedRequestCount} 次</b></div>
-                      <div className="cp-row dim"><span>剩余可用</span><b>{usage.tokens > 0 ? FormatTokenCount(Math.max(0, usage.limit - usage.tokens)) : '—'}</b></div>
-                    </div>
-                    <div className="cp-cache">
-                      <div className="cp-cache-h">
-                        <span><Icon name="lightning" size={13} />缓存命中率</span>
-                        <b>{cacheSharePercent === null ? '—' : `${cacheSharePercent}%`}</b>
-                      </div>
-                      <div className="cp-cache-d">Σ命中输入 token ÷ Σ总 token</div>
-                    </div>
-                    <div className="cp-note">{usagePresentation.title}</div>
-                  </div>
-                </div>
-                {visibleRequestId || compacting ? <button className="send" type="button" onClick={HandleStop} aria-label="停止生成"><Icon name="stop" size={16} /></button> : <button className="send" type="button" disabled={isComposerComposing || isReloadingContext || (!composer.trim() && attachments.length === 0) || attachments.some((attachment) => attachment.status === 'uploading')} onClick={() => void HandleSend()} aria-label="发送消息"><Icon name="arrow-up" size={16} /></button>}
-              </div>
-            </div>
+          <div ref={composerRef} className={`composer${isNewThread ? '' : ` is-inline${isComposerMultiline ? ' is-multiline' : ''}`}`}>
+            {!isNewThread && attachmentButton}
+            <ComposerInput key={activeConversationId ?? '__draft__'} inputRef={composerInputRef} value={composer} onChange={setComposer} sessionId={activeConversationId} scenarioId={scenarioId} busy={Boolean(visibleRequestId) || isReloadingContext || Boolean(compacting)} skill={selectedSkill} mode={composerMode} onSkillChange={setSelectedSkill} onModeChange={setComposerMode} onSend={() => void HandleSend()} onReload={HandleReloadContext} reloadTrigger={reloadCommandTrigger} onCompositionChange={setIsComposerComposing} onMultilineChange={isNewThread ? undefined : setIsComposerMultiline} placeholder={scenarioId === 'application' ? '让 Avery 帮你工作…' : '输入消息…'} />
+            {isNewThread ? <div className="cmp-bar">
+              <div className="cmp-tools">{attachmentButton}{composerSettings}</div>
+              <div className="cmp-right">{sendButton}</div>
+            </div> : sendButton}
           </div>
           {!conversation?.messages.length && <div className="nv-bar">
             <div className="nv-slot">
@@ -1175,15 +1202,15 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
               </div>}
             </div>
           </div>}
-          <div className="composer-foot">
+          {isNewThread ? <div className="composer-foot">
             <span>Enter 发送</span><span className="kbd-hint">Shift + Enter</span><span>换行</span>
             <span className="sep" />
             <span>{CurrentConfirmation.note}</span>
-          </div>
+          </div> : <div ref={composerSettingsBarRef} className="composer-settings-bar" role="group" aria-label="会话设置">{composerSettings}{contextUsage}</div>}
         </div>}
       </div>
     </section>}
-    <DocSidePanel open={resumePanelOpen} resourceSelection={resourcePreview} onClearResourceSelection={() => setResourcePreview(null)} onClose={() => { setResourcePreview(null); setResumePanelOpen(false); }} resumes={resumes} currentResumeId={currentResumeId} editing={editing} resumeText={resumeText} canUndo={history.length > 0} panelWidth={panelWidth} contentRef={resumeSideRef} onSelectResume={HandleSelectResume} onEditChange={HandleEditChange} onStartEditing={() => void HandleStartEditing()} onCancelEditing={HandleCancelEditing} onSaveResume={() => void HandleSaveResume()} onUndo={UndoResumeEdit} onPanelWidthChange={setPanelWidth} />
+    <DocSidePanel open={resumePanelOpen} resourceSelection={resourcePreview} onClearResourceSelection={() => setResourcePreview(null)} onClose={() => { setResourcePreview(null); setResumePanelOpen(false); }} resumes={resumes} currentResumeId={currentResumeId} editing={editing} resumeDraft={resumeEditor.draft} validationAttempt={resumeEditor.validationAttempt} saving={upsertResume.isPending} canUndo={resumeEditor.canUndo} panelWidth={panelWidth} contentRef={resumeSideRef} onSelectResume={HandleSelectResume} onEditChange={resumeEditor.Change} onStartEditing={() => void HandleStartEditing()} onCancelEditing={HandleCancelEditing} onSaveResume={() => void HandleSaveResume()} onUndo={resumeEditor.Undo} onPanelWidthChange={setPanelWidth} />
     <Modal
       open={showFullyTrustedWarning}
       title="开启完全信任模式"

@@ -18,6 +18,9 @@ import { SettingsTabs, type SettingTab } from '../features/settings/pages/Settin
 import { AppUpdateNotice } from '../features/updates/AppUpdateNotice';
 
 const MinContentWidth = 800;
+// 展开导航 268px 加常规页面 800px；按应用整体宽度判断，避免折叠本身反复触发阈值。
+const SidebarAutoCollapseWidth = 1068;
+const SidebarHoverCloseDelay = 180;
 const UserMenuWidth = 332;
 const UserMenuViewportPadding = 12;
 const UserMenuAnchorGap = 7;
@@ -85,7 +88,12 @@ function AppShell({ page, onNavigate, onRestartOnboarding, settingsTab, onReques
   const { activeConversationId, setActiveConversationId, resumePanelOpen, setResumePanelOpen, assistantView, setAssistantView, ShowNotice } = useUiStore();
   const activeConversation = conversations.find((item) => item.id === activeConversationId);
 
-  const [collapsed, SetCollapsed] = useState(false);
+  const [manuallyCollapsed, SetCollapsed] = useState(false);
+  const [autoCollapsed, SetAutoCollapsed] = useState(() => window.innerWidth < SidebarAutoCollapseWidth);
+  const [sidebarPreview, SetSidebarPreview] = useState(false);
+  const collapsed = manuallyCollapsed || autoCollapsed;
+  const sidebarFloating = collapsed && sidebarPreview;
+  const sidebarContentCollapsed = collapsed && !sidebarFloating;
   const [theme, SetTheme] = useState<ThemeMode>(() => (localStorage.getItem('avery-theme') === 'dark' ? 'dark' : 'light'));
   const [showCrumbMenu, SetShowCrumbMenu] = useState(false);
   const [userMenuPosition, SetUserMenuPosition] = useState<{ left: number; bottom: number } | null>(null);
@@ -123,12 +131,77 @@ function AppShell({ page, onNavigate, onRestartOnboarding, settingsTab, onReques
   const [removeGroupTarget, SetRemoveGroupTarget] = useState<{ projectId: string; name: string; count: number } | null>(null);
 
   const appShellRef = useRef<HTMLDivElement>(null);
+  const sidebarRef = useRef<HTMLElement>(null);
+  const sidebarToggleRef = useRef<HTMLButtonElement>(null);
+  const sidebarCloseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const navRef = useRef<HTMLElement>(null);
   const navIndicatorRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const renamingConversationIdRef = useRef<string | null>(null);
   const activeConversationIdRef = useRef<string | null>(activeConversationId);
   activeConversationIdRef.current = activeConversationId;
+
+  useEffect(() => {
+    const shell = appShellRef.current;
+    if (!shell) return;
+    const UpdateWidth = () => {
+      if (shell.clientWidth > 0) SetAutoCollapsed(shell.clientWidth < SidebarAutoCollapseWidth);
+    };
+    UpdateWidth();
+    const observer = new ResizeObserver(UpdateWidth);
+    observer.observe(shell);
+    return () => { observer.disconnect(); CancelSidebarClose(); };
+  }, []);
+
+  function CancelSidebarClose() {
+    if (sidebarCloseTimerRef.current !== null) clearTimeout(sidebarCloseTimerRef.current);
+    sidebarCloseTimerRef.current = null;
+  }
+
+  function RevealSidebar() {
+    CancelSidebarClose();
+    if (collapsed) SetSidebarPreview(true);
+  }
+
+  function ScheduleSidebarClose() {
+    if (sidebarCloseTimerRef.current !== null) return;
+    // 顶栏按钮到导航之间允许短暂跨越；鼠标或键盘仍在导航内时不关闭。
+    sidebarCloseTimerRef.current = setTimeout(() => {
+      sidebarCloseTimerRef.current = null;
+      if (sidebarRef.current?.matches(':hover') || sidebarToggleRef.current?.matches(':hover')) return;
+      SetSidebarPreview(false);
+    }, SidebarHoverCloseDelay);
+  }
+
+  function ToggleSidebar() {
+    CancelSidebarClose();
+    if (autoCollapsed) SetSidebarPreview((value) => !value);
+    else { SetCollapsed((value) => !value); SetSidebarPreview(false); }
+  }
+
+  useEffect(() => {
+    if (!sidebarFloating) return;
+    // 行菜单和账户菜单挂在导航外；操作这些菜单也视为仍在使用导航。
+    const FollowPointer = (event: PointerEvent) => {
+      const target = event.target;
+      if (!(target instanceof Element)) return;
+      if (sidebarRef.current?.contains(target) || sidebarToggleRef.current?.contains(target) || target.closest('[data-floating-menu]')) CancelSidebarClose();
+      else ScheduleSidebarClose();
+    };
+    const CloseOnEscape = (event: KeyboardEvent) => { if (event.key === 'Escape') SetSidebarPreview(false); };
+    const CloseOnBlur = () => SetSidebarPreview(false);
+    document.addEventListener('pointerover', FollowPointer);
+    document.addEventListener('keydown', CloseOnEscape);
+    window.addEventListener('blur', CloseOnBlur);
+    return () => {
+      CancelSidebarClose();
+      document.removeEventListener('pointerover', FollowPointer);
+      document.removeEventListener('keydown', CloseOnEscape);
+      window.removeEventListener('blur', CloseOnBlur);
+    };
+  }, [sidebarFloating]);
+
+  useEffect(() => { SetSidebarPreview(false); CancelSidebarClose(); }, [autoCollapsed]);
 
   const windowControls = (window as Window & { averyWindow?: WindowControls }).averyWindow;
   useEffect(() => {
@@ -246,7 +319,7 @@ function AppShell({ page, onNavigate, onRestartOnboarding, settingsTab, onReques
     const timer = window.setTimeout(MoveNavIndicator, 420);
     document.fonts?.ready.then(MoveNavIndicator).catch(() => undefined);
     return () => { window.removeEventListener('resize', MoveNavIndicator); window.clearTimeout(timer); };
-  }, [MoveNavIndicator, page, settingsTab, collapsed, settings.developerMode, developerView]);
+  }, [MoveNavIndicator, page, settingsTab, collapsed, sidebarFloating, settings.developerMode, developerView]);
 
   function HandleNewConversation() {
     // 仅切换到未保存草稿；首次发送时由助手页创建实际会话，避免空会话进入历史列表。
@@ -443,10 +516,10 @@ function AppShell({ page, onNavigate, onRestartOnboarding, settingsTab, onReques
     </div>;
   }
 
-  return <div ref={appShellRef} className={`app-shell ${collapsed ? 'is-collapsed' : ''}`} style={{ '--main-content-min-width': `${minimumContentWidth}px` } as CSSProperties}>
+  return <div ref={appShellRef} className={`app-shell ${collapsed ? 'is-collapsed' : ''}${sidebarFloating ? ' is-sidebar-floating' : ''}`} style={{ '--main-content-min-width': `${minimumContentWidth}px` } as CSSProperties}>
     <header className="topbar">
       <div className="tb-group">
-        <button className="icon-btn" type="button" aria-label={collapsed ? '展开侧栏' : '收起侧栏'} aria-pressed={!collapsed} title={collapsed ? '展开侧栏' : '收起侧栏'} onClick={() => SetCollapsed((value) => !value)}><Icon name="sidebar-expand" size={17} /></button>
+        <button ref={sidebarToggleRef} className="icon-btn" type="button" aria-label={collapsed ? '展开侧栏' : '收起侧栏'} aria-pressed={!collapsed} aria-expanded={!sidebarContentCollapsed} aria-controls="app-sidebar" title={collapsed ? '展开侧栏' : '收起侧栏'} onPointerEnter={(event) => { if (event.pointerType !== 'touch') RevealSidebar(); }} onPointerLeave={ScheduleSidebarClose} onFocus={(event) => { if (event.currentTarget.matches(':focus-visible')) RevealSidebar(); }} onBlur={ScheduleSidebarClose} onClick={ToggleSidebar}><Icon name="sidebar-expand" size={17} /></button>
         <div className="brand" style={{ '--brand-icon-baseline-offset': BrandBaselines.wordmarkCapital - BrandBaselines.icon } as CSSProperties}>
           <span className="brand-mark" aria-hidden="true">{BrandMark}</span>
           <img className="brand-name" src={BrandAssets.wordmark} alt="Avery" />
@@ -518,7 +591,8 @@ function AppShell({ page, onNavigate, onRestartOnboarding, settingsTab, onReques
     </header>
 
     <div className="app-body">
-      <aside className="sidebar" aria-label={page === 'settings' ? '设置导航' : page === 'developer' ? '开发者工具' : '主导航'}>
+      <div className="sidebar-slot">
+      <aside ref={sidebarRef} id="app-sidebar" className="sidebar" onPointerEnter={CancelSidebarClose} onPointerLeave={ScheduleSidebarClose} onFocus={CancelSidebarClose} onBlur={ScheduleSidebarClose} aria-label={page === 'settings' ? '设置导航' : page === 'developer' ? '开发者工具' : '主导航'}>
         {page === 'settings' ? <div className="sb-inner">
           {/* 原型设置侧栏：主色返回入口 + 带指示器的分类导航 + 用户卡 */}
           <button className="sb-new-chat" type="button" onClick={() => onNavigate('assistant')} title="返回工作区">
@@ -574,8 +648,8 @@ function AppShell({ page, onNavigate, onRestartOnboarding, settingsTab, onReques
           </nav>
 
           <div className="nav-item sb-history-search" role="search" aria-label="搜索对话">
-            <button className="sb-history-search-icon" type="button" aria-label="搜索对话" title="搜索对话" onClick={() => { SetCollapsed(false); requestAnimationFrame(() => searchInputRef.current?.focus()); }}><Icon name="search" size={17} /></button>
-            <input ref={searchInputRef} type="search" value={searchQuery} tabIndex={collapsed ? -1 : 0} aria-hidden={collapsed} placeholder="搜索对话" aria-label="搜索对话" autoComplete="off" onChange={(event) => ChangeHistorySearch(event.target.value)} onKeyDown={(event) => { if (event.key === 'Escape') ChangeHistorySearch(''); }} />
+            <button className="sb-history-search-icon" type="button" aria-label="搜索对话" title="搜索对话" onClick={() => { if (autoCollapsed) RevealSidebar(); else SetCollapsed(false); requestAnimationFrame(() => searchInputRef.current?.focus()); }}><Icon name="search" size={17} /></button>
+            <input ref={searchInputRef} type="search" value={searchQuery} tabIndex={sidebarContentCollapsed ? -1 : 0} aria-hidden={sidebarContentCollapsed} placeholder="搜索对话" aria-label="搜索对话" autoComplete="off" onChange={(event) => ChangeHistorySearch(event.target.value)} onKeyDown={(event) => { if (event.key === 'Escape') ChangeHistorySearch(''); }} />
           </div>
 
           <div className="sb-scroll">
@@ -611,11 +685,11 @@ function AppShell({ page, onNavigate, onRestartOnboarding, settingsTab, onReques
                 <span className="uc-body"><span className="uc-name">{settings.nickname}</span></span>
                 <Icon name="chevron-up" size={12} className="chev" />
               </button>
-              <button className="icon-btn" type="button" aria-label="设置" title="设置" onClick={() => onNavigate('settings')}><Icon name="settings" size={17} /></button>
             </div>
           </div>
         </div>}
       </aside>
+      </div>
       <main className="main-frame">
         <div className="page-container">{children}</div>
       </main>
@@ -667,6 +741,7 @@ function AppShell({ page, onNavigate, onRestartOnboarding, settingsTab, onReques
         <span className="switch" aria-hidden="true"><span className="knob" /></span>
         <input className="menu-switch-input" type="checkbox" role="switch" aria-label="深色模式" checked={theme === 'dark'} onChange={(event) => SetTheme(event.target.checked ? 'dark' : 'light')} />
       </label>
+      <button className="menu-item plain" type="button" role="menuitem" onClick={() => { SetUserMenuPosition(null); onNavigate('settings'); }}><Icon name="settings" size={16} /><span className="mt">设置</span></button>
       <button className="menu-item plain" type="button" onClick={() => { SetUserMenuPosition(null); onRestartOnboarding(); }}><Icon name="recovery" size={16} /><span className="mt">重新查看使用教程</span></button>
       {settings.developerMode && <button className="menu-item plain" type="button" onClick={() => { SetUserMenuPosition(null); onNavigate('developer'); }}><Icon name="code" size={16} /><span className="mt">开发者工具</span></button>}
       <div className="menu-sep" aria-hidden="true" />

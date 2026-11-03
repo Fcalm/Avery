@@ -70,6 +70,6 @@ export function WorkingIndicator({ waiting, label }: { waiting?: boolean; label:
       <circle r="8" cx="0" cy="0" />
       <circle r="8" cx="24" cy="0" />
     </svg>
-    <div><div className="conversation-work-title">{label}</div><div className="conversation-work-caption">{waiting ? '处理过程已保留，等待后续操作' : '正在结合已有信息推进任务'}</div></div>
+    <div className="conversation-work-title">{label}</div>
   </div>;
 }

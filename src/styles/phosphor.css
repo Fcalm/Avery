@@ -91,6 +91,7 @@
 .ph-archive::before { content: "\e00c"; }
 .ph-arrow-left::before { content: "\e058"; }
 .ph-arrow-up::before { content: "\e08e"; }
+.ph-arrow-bend-down-left::before { content: "\e018"; }
 .ph-check-circle::before { content: "\e184"; }
 .ph-folder-open::before { content: "\e256"; }
 .ph-sliders-horizontal::before { content: "\e434"; }

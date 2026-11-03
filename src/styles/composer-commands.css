@@ -23,7 +23,7 @@
 .slash-editor { display: inline; min-width: 1px; padding: 0; border: 0; outline: none; color: inherit; caret-color: var(--text); font: inherit; line-height: inherit; white-space: pre-wrap; overflow-wrap: anywhere; }
 .slash-editor:focus-visible { outline: none; box-shadow: none; }
 .slash-editor.is-empty { display: inline-block; min-width: 1px; min-height: 21px; vertical-align: top; }
-.slash-placeholder { color: var(--text-3); pointer-events: none; }
+.slash-placeholder { color: var(--text-3); white-space: nowrap; pointer-events: none; }
 .slash-editor[aria-disabled="true"] { opacity: .55; }
 .slash-chips { display: inline; margin: 0; padding: 0; white-space: normal; }
 .slash-chip { display: inline-flex; align-items: baseline; vertical-align: baseline; gap: 4px; margin: 0 8px 0 0; padding: 0; border: 0; background: transparent; color: var(--accent); font-size: 14px; font-weight: 600; line-height: 21px; white-space: nowrap; animation: slash-chip-in .18s var(--ease) both; }

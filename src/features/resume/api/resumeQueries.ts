@@ -79,6 +79,6 @@ export function useDeleteResumeRevision(handlers?: WorkspaceMutationHandlers) {
 }
 
 /** 导出简历文件到工作空间 exports；失败抛统一业务错误。 */
-export async function ExportResumeFile(resume: { name: string; summary: string; content: string }, format: 'html' | 'pdf' | 'docx' | 'png') {
+export async function ExportResumeFile(resume: import('@avery/contracts').ResumeDocumentInput, format: 'html' | 'pdf' | 'docx' | 'png') {
   return Unwrap(await platformClient.workspace.ExportResume(resume, format));
 }
