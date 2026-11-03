@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { ResumeDataSchema } from './resume-data';
 import { JobSeekingTypeValues } from './enums';
 
 /**
@@ -42,6 +43,8 @@ export const ResumeUpsertSchema = z.object({
   targetRoles: z.array(z.string().max(100)).max(50).optional(),
   summary: z.string().max(20000).optional(),
   content: z.string().max(200000).optional(),
+  data: ResumeDataSchema.optional(),
+  templateId: z.enum(['classic', 'compact']).optional(),
 }).passthrough();
 
 /** 岗位 upsert：id 必需，其余字段类型/长度校验但允许缺省（领域层负责枚举）。 */

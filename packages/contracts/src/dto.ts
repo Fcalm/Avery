@@ -60,6 +60,8 @@ export interface ResumeDto {
   content: string;
   updatedAt?: number;
   revision?: number;
+  data?: import('./resume-data').ResumeData;
+  templateId?: import('./resume-data').ResumeTemplateId;
 }
 
 /** 岗位 DTO：payload_json 即页面 Job ViewModel；枚举使用稳定英文值。 */

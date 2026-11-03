@@ -416,6 +416,8 @@ export interface ResumeSnapshot {
   revision?: number;
   targetRoles?: string[];
   summary?: string;
+  data?: import('./resume').ResumeData;
+  templateId?: import('./resume').ResumeTemplateId;
 }
 
 /** 个人档案只读快照项。 */

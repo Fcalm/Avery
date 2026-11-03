@@ -1,9 +1,10 @@
 /** agent-sdk：Agent 模块化 SDK——六槽接口、窄 Port、Manifest、Tool 契约与 Kernel 接口的唯一来源；零运行时依赖。 */
 export { AgentSdkContractVersion, SlotOrder } from './manifest';
+export type { ResumeData, ResumeTemplateId } from './resume';
 export type { ModuleManifest, SlotName } from './manifest';
 export { SlotToModuleKey } from './modules';
 export { JobLibraryReadLimits } from './tools';
-export type { AgentModules, CompactionModule, ContextBuilderModule, InteractionModule, ModelProviderModule, ObservabilityModule, ProviderRequestSnapshot, SessionContextSnapshot, SessionContextSource, ToolsModule } from './modules';
+export type { AgentModules, CompactionModule, ContextBuilderModule, InteractionModule, ModelProviderModule, ObservabilityModule, ProviderRequestSnapshot, ProviderRecoveryEvent, SessionContextSnapshot, SessionContextSource, ToolsModule } from './modules';
 export type { AgentStreamEvent } from './events';
 export type { ProviderAmount, ProviderQuotaWindow, ProviderAccountUsage, ProviderUsageSnapshot } from './provider-usage';
 export { ApplyConversationActivity, CreateConversationPresentation, GetConversationResult, GetConversationArtifacts, IsConversationPresentation, MatchConversationResourceHref } from './conversation';

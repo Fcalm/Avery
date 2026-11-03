@@ -2,10 +2,14 @@
  * 简历正文的跨端模板：Renderer 预览与桌面端导出共用相同的结构，
  * 只接受文本和受限的 Markdown 行内标记，避免把简历内容作为可执行 HTML 注入。
  */
+import { type ResumeData, type ResumeTemplateId } from './resume-data';
+
 export interface ResumeDocumentInput {
   name: string;
   summary: string;
   content: string;
+  data?: ResumeData;
+  templateId?: ResumeTemplateId;
 }
 
 const CommonSectionTitles = new Set([
@@ -44,8 +48,16 @@ function NormalizeResumeLines(content: string) {
 function ToInlineHtml(value: string) {
   let html = EscapeHtml(value);
   html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
-  html = html.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noreferrer">$1</a>');
+  html = html.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, (_match, label: string, href: string) => `<a href="${href}" target="_blank" rel="noreferrer">${IsGithubLink(href) ? GithubIconMarkup : ''}${label}</a>`);
   return html;
+}
+
+/** 使用项目已有 Phosphor GitHub 字形；导出窗口嵌入同一字体，离线打印不会丢图标。 */
+const GithubIconMarkup = '<span class="resume-github-icon" aria-hidden="true">&#xe576;</span>';
+function IsGithubLink(value: string) { return /^https?:\/\/(?:www\.)?github\.com(?:\/|$)/i.test(value); }
+function ContactHtml(value: string) {
+  const href = /^https?:\/\//i.test(value) ? value : `https://${value}`;
+  return IsGithubLink(href) ? `<a class="resume-github-link" href="${EscapeHtml(href)}" target="_blank" rel="noreferrer">${GithubIconMarkup}${EscapeHtml(value)}</a>` : ToInlineHtml(value);
 }
 
 /** 姓名只有被内容明确标记为加粗时才使用强调字号，避免普通个人信息行喧宾夺主。 */
@@ -70,7 +82,7 @@ function ToProjectLink(value: string) {
   const label = value.trim();
   const href = /^https?:\/\//i.test(label) ? label : `https://${label}`;
   if (!/^(?:https?:\/\/)?(?:www\.)?(?:github\.com|gitlab\.com|gitee\.com)\//i.test(label)) return null;
-  return `<a class="resume-project-link" href="${EscapeHtml(href)}" target="_blank" rel="noreferrer">${ToInlineHtml(label)}</a>`;
+  return `<a class="resume-project-link" href="${EscapeHtml(href)}" target="_blank" rel="noreferrer">${IsGithubLink(href) ? GithubIconMarkup : ''}${ToInlineHtml(label)}</a>`;
 }
 
 /**
@@ -78,6 +90,7 @@ function ToProjectLink(value: string) {
  * 支持常见 Markdown 标题与列表，便于 Agent 后续直接生成结构化内容。
  */
 export function CreateResumeDocumentMarkup(resume: ResumeDocumentInput) {
+  if (resume.data?.mode === 'structured') return CreateStructuredMarkup(resume.data, resume.templateId ?? 'classic');
   const sections: string[] = [];
   let currentTitle = '';
   let currentBlocks: string[] = [];
@@ -136,8 +149,23 @@ export function CreateResumeDocumentMarkup(resume: ResumeDocumentInput) {
   const firstHeaderLine = headerLines.shift() ?? '';
   const headerParts = firstHeaderLine.split(/[|｜]/).map((part) => part.trim()).filter(Boolean);
   const title = headerParts.shift() || resume.name.trim() || '未命名简历';
-  const contact = headerParts.map(ToInlineHtml).join('<span class="resume-header-separator">|</span>');
+  const contact = headerParts.map(ContactHtml).join('<span class="resume-header-separator">|</span>');
   const education = headerLines.filter(Boolean).map(ToInlineHtml).join(' ');
   const nameClass = HasBoldMarkdown(title) ? ' class="is-emphasized"' : '';
-  return `<article class="resume-document"><header class="resume-document-header"><div class="resume-document-identity"><h1${nameClass}>${ToInlineHtml(title)}</h1>${contact ? `<span class="resume-document-contact">${contact}</span>` : ''}</div>${education ? `<p class="resume-document-education">${education}</p>` : ''}</header><div class="resume-document-body">${sections.join('') || '<section class="resume-document-section"><p>暂未填写简历内容。</p></section>'}</div></article>`;
+  return `<article class="resume-document${resume.templateId === 'compact' ? ' resume-template-compact' : ''}"><header class="resume-document-header"><div class="resume-document-identity"><h1${nameClass}>${ToInlineHtml(title)}</h1>${contact ? `<span class="resume-document-contact">${contact}</span>` : ''}</div>${education ? `<p class="resume-document-education">${education}</p>` : ''}</header><div class="resume-document-body">${sections.join('') || '<section class="resume-document-section"><p>暂未填写简历内容。</p></section>'}</div></article>`;
+}
+
+/** 新模板直接消费同一份数据，不依赖对 Markdown 的逆向解析；所有用户文本先转义。 */
+function CreateStructuredMarkup(data: ResumeData, template: ResumeTemplateId): string {
+  const Text = (value: string) => ToInlineHtml(value).replace(/\n/g, '<br>');
+  const Heading = (title: string, row: { start: string; end: string }) => `<div class="resume-entry-heading"><h3>${Text(title)}</h3><span class="resume-entry-period">${Text(row.start)} – ${Text(row.end)}</span></div>`;
+  const List = (items: string[]) => `<ul>${items.map((line) => `<li>${Text(line)}</li>`).join('')}</ul>`;
+  const Section = (title: string, content: string) => `<section class="resume-document-section"><h2>${Text(title)}</h2>${content}</section>`;
+  const education = data.education.length ? Section('教育经历', data.education.map((row) => `<div class="resume-entry">${Heading(`${row.school} · ${row.degree} · ${row.major}`, row)}</div>`).join('')) : '';
+  const work = data.work.length ? Section('工作经历', data.work.map((row) => `<div class="resume-entry">${Heading(`${row.company}${row.project ? ` · ${row.project}` : ''} · ${row.role}`, row)}${List(row.descriptions)}</div>`).join('')) : '';
+  const projects = data.projects.length ? Section('项目经历', data.projects.map((row) => `<div class="resume-entry">${Heading(`${row.name} · ${row.role}`, row)}${List(row.descriptions)}</div>`).join('')) : '';
+  // 旧原文经既有安全渲染器展示，既不丢换行/列表，也不让历史 HTML 获得执行能力。
+  const legacy = data.legacyContent ? Section('保留的旧版内容', `<div class="resume-legacy-content">${EscapeHtml(data.legacyContent).replace(/\n/g, '<br>')}</div>`) : '';
+  const contacts = [data.personal.email, data.personal.phone, data.personal.github].filter(Boolean).map(ContactHtml).join('<span class="resume-header-separator">|</span>');
+  return `<article class="resume-document resume-template-${template === 'compact' ? 'compact' : 'classic'}"><header class="resume-document-header"><h1 class="is-emphasized">${Text(data.personal.name)}</h1><div class="resume-document-contact">${contacts}</div></header><div class="resume-document-body">${education}${work}${projects}${data.sections.map((row) => Section(row.title, List(row.items))).join('')}${legacy}</div></article>`;
 }

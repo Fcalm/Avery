@@ -26,12 +26,20 @@ export interface SessionContextSnapshot {
   compiledHash: string;
 }
 
+/** 当前模型步骤的有界恢复状态；不代表业务工具已重试或执行。 */
+export interface ProviderRecoveryEvent {
+  attempt: number; maxAttempts: number; delayMs: number; mode: 'stream' | 'nonstream'; code: string;
+}
+
 /** Provider 即将发出的真实消息快照；仅用于 Trace，不包含凭据和请求头。 */
 export interface ProviderRequestSnapshot {
   kind: 'completion' | 'summary';
   model: string;
   messages: Array<Record<string, unknown>>;
   toolCount: number;
+  /** 同一模型步骤的网络尝试编号；每次尝试独立进入 Trace。 */
+  attempt?: number;
+  mode?: 'stream' | 'nonstream';
 }
 
 /** 模型 Provider 槽：配置、连通性、请求级模型解析、流式补全、摘要与规模估算。 */
@@ -65,6 +73,8 @@ export interface ModelProviderModule extends ModuleManifest {
     tools: RegisteredAgentTool[];
     signal: AbortSignal;
     onDelta: (delta: ModelDelta) => void;
+    /** 宿主先撤回本次未完成的增量；重连只重发模型请求，不能重放工具。 */
+    onRecovery?: (recovery: ProviderRecoveryEvent) => void;
     /** 调用方提供时，Provider 必须在实际网络请求前回报最终序列化后的 messages，供 Trace 按 API 请求还原。 */
     onRequest?: (snapshot: ProviderRequestSnapshot) => void;
     /** 运行前由 Prompt Compiler 编译的指令；Provider 不再持有业务 System Prompt 所有权。 */

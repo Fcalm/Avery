@@ -284,7 +284,8 @@ export interface WorkspaceBridge {
   GetResumeRevision: (resumeId: string, revisionId: string) => Promise<ResumeRevisionDocumentDto>;
   RestoreResumeRevision: (resumeId: string, revisionId: string, expectedRevision?: number, options?: WriteCommandOptions) => Promise<{ id: string; revision: number; restoredFromRevision: number; resume: ResumeDto }>;
   DeleteResumeRevision: (resumeId: string, revisionId: string, options?: WriteCommandOptions) => Promise<{ id: string }>;
-  ExportResume: (resume: { name: string; summary: string; content: string }, format: 'html' | 'pdf' | 'docx' | 'png') => Promise<{ fileName: string; exported: boolean }>;
+  ExportResume: (resume: import('./resume-template').ResumeDocumentInput, format: 'html' | 'pdf' | 'docx' | 'png') => Promise<{ fileName: string; exported: boolean }>;
+  PreviewResumePdf: (resume: import('./resume-template').ResumeDocumentInput) => Promise<{ base64: string }>;
   Migrate: () => Promise<WorkspaceStatusDto & { migration: unknown }>;
 }
 
@@ -307,7 +308,7 @@ export const BridgeNamespaces = {
     'MoveApplicationStatus', 'DeleteApplication', 'GetProfiles', 'SaveProfiles', 'ReloadProfiles',
     'ImportAttachment', 'CleanupAttachments', 'GetRecoveryStatus', 'RecoverOperations', 'GetDatabaseRecoveryStatus',
     'RestoreLatestBackup', 'RestoreBackup', 'ExportRecoveryDiagnostic', 'CreateBackup', 'GetResumeRevisions', 'GetResumeRevision', 'RestoreResumeRevision', 'DeleteResumeRevision',
-    'ExportResume', 'Migrate',
+    'ExportResume', 'PreviewResumePdf', 'Migrate',
   ] as const,
   evaluation: [
     'CreateProject', 'UpdateProject', 'ReadProject', 'ListProjects', 'DeleteProject',
