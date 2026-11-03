@@ -90,6 +90,7 @@ function RecordProviderRequest(input: KernelRunInput, apiRequestIndex: number, s
     model: snapshot.model,
     messageCount: messages.length,
     toolCount: snapshot.toolCount,
+    ...(snapshot.attempt ? { attempt: snapshot.attempt, mode: snapshot.mode } : {}),
     messages,
   }, EstimateTraceTokens(JSON.stringify(messages)));
 }
@@ -534,6 +535,16 @@ export async function RunAgentLoop(input: KernelRunInput): Promise<KernelRunResu
           if (delta.reasoning) { streamedReasoning += delta.reasoning; reasoningContent += delta.reasoning; emit({ type: 'thinking_delta', requestId, delta: delta.reasoning, activity: { kind: 'reasoning', stepId, partId: PartId('reasoning'), delta: delta.reasoning } }); }
           if (delta.content) { streamedText += delta.content; assistantContent += delta.content; emit({ type: 'content_delta', requestId, delta: delta.content, activity: { kind: 'text', stepId, partId: PartId('text'), delta: delta.content } }); }
         },
+        onRecovery: (recovery) => {
+          if (!acceptsProviderDelta || signal.aborted) return;
+          assistantContent = assistantContent.slice(0, assistantContent.length - streamedText.length);
+          reasoningContent = reasoningContent.slice(0, reasoningContent.length - streamedReasoning.length);
+          streamedText = ''; streamedReasoning = ''; currentPartKind = ''; partIndex = 0;
+          const message = `模型响应异常，${Math.ceil(recovery.delayMs / 1000)} 秒后重连（${recovery.attempt}/${recovery.maxAttempts}）`;
+          emit({ type: 'conversation_activity', requestId, content: assistantContent, thinkingContent: reasoningContent,
+            activity: { kind: 'step', stepId, reset: true, summary: message } });
+          modules.observability.AppendTraceEvent(requestId, 'provider_recovery', recovery);
+        },
       }).finally(() => { acceptsProviderDelta = false; });
       ThrowIfRunCancelled(signal);
       // 部分 Provider 只返回完整正文，或最后一段未走流回调；只补齐已收到前缀的尾部，避免重复。
@@ -607,22 +618,43 @@ export async function RunAgentLoop(input: KernelRunInput): Promise<KernelRunResu
     emit({ type: 'completed', requestId, content: assistantContent, thinkingContent: reasoningContent });
     return { outcome: 'completed', disposition: 'completed', transcript: HistorySnapshot(transcript), inputTokens, compressionCount };
   } catch (error) {
+    // 失败收尾不能再次被同一存储故障打断，否则 Trace 与界面会永久停在 running。
+    // 尽力补齐工具协议，但绝不能重放工具，也不能把未落盘的数据描述为已保存。
+    try {
+      if (signal.aborted && transcript.length) {
+        transcript = RecoverInterruptedTools(transcript);
+        await CommitHistory(input, transcript);
+      } else if (transcript.some((item) => item.tool_calls?.length)) {
+        const recovered = RecoverInterruptedTools(transcript);
+        if (recovered !== transcript) { transcript = recovered; await CommitHistory(input, transcript); }
+      }
+    } catch (persistenceError) {
+      const detail = ScrubTraceContent(persistenceError instanceof Error ? persistenceError.message : '历史恢复保存失败');
+      modules.observability.RecordLog('ERROR', 'conversation.history_persistence_failed', detail);
+      modules.observability.AppendTraceEvent(requestId, 'history_persistence_failed', { message: detail });
+    }
     if (signal.aborted) {
       // 取消前已构建的用户输入、已完成的模型回复和工具结果仍属于会话事实；取消前尚未建好 transcript 时保留旧历史。
-      if (transcript.length) { transcript = RecoverInterruptedTools(transcript); await CommitHistory(input, transcript); }
       modules.observability.FinishTrace(requestId, 'cancelled', 'Cancelled by user.');
       emit({ type: 'cancelled', requestId });
       return { outcome: 'cancelled', disposition: 'cancelled', transcript: HistorySnapshot(transcript), inputTokens, compressionCount };
     }
     const message = error instanceof Error ? error.message : 'Agent request failed.';
-    if (transcript.some((item) => item.tool_calls?.length)) {
-      const recovered = RecoverInterruptedTools(transcript);
-      if (recovered !== transcript) { transcript = recovered; await CommitHistory(input, transcript); }
-    }
     const compressionExhausted = error instanceof ContextCompactionError;
     modules.observability.RecordLog('ERROR', 'conversation.failed', message);
     const errorText = ScrubTraceContent(message);
-    modules.observability.AppendTraceEvent(requestId, 'error', { message: errorText }, EstimateTraceTokens(errorText));
+    const detail = error && typeof error === 'object' ? error as { code?: unknown; status?: unknown; retryable?: unknown; cause?: unknown } : {};
+    const causeCodes: string[] = [];
+    let cause: unknown = detail.cause;
+    for (let depth = 0; depth < 4 && cause && typeof cause === 'object'; depth++) {
+      const record = cause as { code?: unknown; cause?: unknown };
+      if (typeof record.code === 'string' && /^[A-Z0-9_:-]{1,80}$/.test(record.code)) causeCodes.push(record.code);
+      cause = record.cause;
+    }
+    modules.observability.AppendTraceEvent(requestId, 'error', { message: errorText,
+      code: ScrubTraceContent(detail.code ?? ''), status: detail.status, retryable: detail.retryable,
+      causeCode: causeCodes[0] ?? '', causeCodes,
+    }, EstimateTraceTokens(errorText));
     if (compressionExhausted) {
       // 压缩只在完整工具批次之间运行。此处暂停不创建待确认检查点，Host 保留浏览器任务供用户续轮。
       modules.observability.FinishTrace(requestId, 'paused', 'context_compaction');
@@ -631,6 +663,6 @@ export async function RunAgentLoop(input: KernelRunInput): Promise<KernelRunResu
     }
     modules.observability.FinishTrace(requestId, 'failed', message);
     emit({ type: 'error', requestId, message: message.slice(0, 500) });
-    throw new Error(message);
+    throw error instanceof Error ? error : new Error(message);
   }
 }

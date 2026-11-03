@@ -4,6 +4,7 @@ import { AgentDefaultPorts, ProviderConfig } from './ports';
 import { RequireString } from './helpers';
 import { SummaryPrompt } from './prompts';
 import { QueryProviderAccountUsage } from './provider-usage';
+import { DefaultProviderTransportPolicy, ProtocolError, ProviderAttempt, ProviderTransportError, WithProviderRecovery, type ProviderTransportPolicy } from './provider-transport';
 
 // 保留既有导出，供扩展模块和既有调用方兼容；实际定义集中在 prompts.ts。
 export { SummaryPrompt } from './prompts';
@@ -30,7 +31,12 @@ async function ProviderRequestError(response: Response, label: string, apiKey: s
         .replace(/[\r\n]+/g, ' ').slice(0, 600);
     }
   } catch { /* 无结构化消息时保留状态码，不转发原始响应正文。 */ }
-  return new Error(`${label} (${response.status}).${detail ? ` ${detail}` : ''}`);
+  const retryAfter = response.headers?.get('retry-after');
+  const retryAfterMs = retryAfter ? (/^\d+(?:\.\d+)?$/.test(retryAfter) ? Number(retryAfter) * 1000 : Math.max(0, Date.parse(retryAfter) - Date.now())) : undefined;
+  return new ProviderTransportError('PROVIDER_HTTP_ERROR', `${label} (${response.status}).${detail ? ` ${detail}` : ''}`, {
+    status: response.status, retryable: response.status === 408 || response.status === 429 || response.status >= 500,
+    ...(Number.isFinite(retryAfterMs) ? { retryAfterMs } : {}),
+  });
 }
 /** 自定义上下文限制的允许区间：与模型配置弹窗一致，用户新填写的值必须落在区间内。 */
 const MinimumConfigurableContextLimit = 128_000;
@@ -120,17 +126,28 @@ function NormalizeMimoModel(model: unknown) {
 }
 
 /** 将 SSE 读取块拆为完整的数据行。 */
-function CreateSseParser(onData: (value: string) => void) {
+function CreateSseParser(onData: (value: string) => void, onDone: () => void) {
   let buffer = '';
-  return (chunk: string) => {
+  let dataLines: string[] = [];
+  let finished = false;
+  const FlushEvent = () => {
+    if (finished || !dataLines.length) return;
+    const value = dataLines.join('\n').trim(); dataLines = [];
+    if (value === '[DONE]') { finished = true; onDone(); }
+    else if (value) onData(value);
+  };
+  return (chunk: string, final = false) => {
     buffer += chunk;
     const lines = buffer.split(/\r?\n/);
     buffer = lines.pop() || '';
+    if (final && buffer) { lines.push(buffer); buffer = ''; }
     for (const line of lines) {
-      if (!line.startsWith('data:')) continue;
-      const value = line.slice(5).trim();
-      if (value && value !== '[DONE]') onData(value);
+      if (finished) break;
+      if (!line) FlushEvent();
+      else if (line.startsWith('data:')) dataLines.push(line.slice(5).trimStart());
     }
+    // 最后一个完整 JSON 事件可能没有尾部空行；先交给整体终止校验，不能静默丢弃。
+    if (final) FlushEvent();
   };
 }
 
@@ -222,13 +239,124 @@ function EstimateProviderTokens(value: unknown): number {
   return Math.ceil(units) + inlineImageCount * 384;
 }
 
+function CheckFinishReason(reason: unknown): void {
+  if (reason === 'length') throw new ProviderTransportError('PROVIDER_OUTPUT_TRUNCATED', '模型回复达到输出上限，未执行未完成的工具调用。');
+  if (reason !== undefined && reason !== null && !['stop', 'tool_calls', 'function_call'].includes(String(reason))) {
+    throw new ProviderTransportError('PROVIDER_RESPONSE_STOPPED', `模型未能正常完成回复（${String(reason).slice(0, 60)}）。`);
+  }
+}
+
+function RejectResponseError(value: unknown): never {
+  const error = value && typeof value === 'object' ? value as { code?: unknown; type?: unknown; status?: unknown } : {};
+  const kind = `${String(error.code ?? '')} ${String(error.type ?? '')}`;
+  if ([400, 401, 403, 404].includes(Number(error.status)) || /invalid_request|invalid_api_key|authentication|permission_denied|insufficient_quota|content_filter/i.test(kind)) {
+    throw new ProviderTransportError('PROVIDER_REQUEST_REJECTED', '模型拒绝请求，请检查模型权限、额度或请求参数。');
+  }
+  throw ProtocolError('PROTOCOL_PROVIDER_ERROR', '模型在响应中返回暂时性错误。');
+}
+
+/** 所有工具必须整体完整，不能因第一项完整而丢弃后续半截调用。 */
+function ValidateCompletion(content: string, reasoningContent: string, calls: Array<{ id: string; type: 'function'; function: { name: string; arguments: string } }>, usage?: ModelUsage, finishReason?: unknown): ModelCompletion {
+  if (typeof content !== 'string' || typeof reasoningContent !== 'string' || !Array.isArray(calls)) throw ProtocolError('PROTOCOL_INVALID_COMPLETION', '模型答复格式无效。');
+  if ((finishReason === 'tool_calls' || finishReason === 'function_call') && !calls.length) throw ProtocolError('PROTOCOL_INCOMPLETE_TOOL_CALL', '模型声明工具调用结束，但未返回完整调用。');
+  const ids = new Set<string>();
+  for (const call of calls) {
+    if (!call || typeof call.id !== 'string' || !call.id || call.type !== 'function' || typeof call.function?.name !== 'string' || !call.function.name
+      || typeof call.function.arguments !== 'string' || ids.has(call.id)) throw ProtocolError('PROTOCOL_INCOMPLETE_TOOL_CALL', '模型返回了不完整或重复的工具调用。');
+    ids.add(call.id);
+    let args: unknown;
+    try { args = JSON.parse(call.function.arguments || '{}'); }
+    catch { throw ProtocolError('PROTOCOL_INCOMPLETE_TOOL_CALL', '模型工具参数未完整返回。'); }
+    if (!args || typeof args !== 'object' || Array.isArray(args)) throw ProtocolError('PROTOCOL_INCOMPLETE_TOOL_CALL', '模型工具参数必须是完整对象。');
+    call.function.arguments ||= '{}';
+  }
+  if (!content.trim() && !calls.length) throw ProtocolError('PROTOCOL_EMPTY_COMPLETION', '模型没有返回有效答复。');
+  return { content, reasoningContent, toolCalls: calls, ...(usage ? { usage } : {}) };
+}
+
+async function ReadCompletion(response: Response, scope: ProviderAttempt, policy: ProviderTransportPolicy, provider: string,
+  mode: 'stream' | 'nonstream', onDelta: (delta: ModelDelta) => void): Promise<ModelCompletion> {
+  if (mode === 'nonstream') {
+    scope.Arm(policy.nonstreamTimeoutMs, 'PROVIDER_IDLE_TIMEOUT');
+    let json: { choices?: Array<{ message?: { content?: string; reasoning_content?: string; tool_calls?: ModelCompletion['toolCalls'] }; finish_reason?: string }>; usage?: unknown; error?: unknown };
+    try { json = await scope.Wait(() => response.json()) as typeof json; }
+    catch (error) { if (scope.signal.aborted) throw scope.signal.reason; throw ProtocolError('PROTOCOL_INVALID_JSON', '模型未返回完整 JSON 响应。', error); }
+    if (json?.error) RejectResponseError(json.error);
+    if (!json?.choices?.[0]?.message) throw ProtocolError('PROTOCOL_PROVIDER_ERROR', '模型缺少有效答复。');
+    const choice = json.choices[0]; CheckFinishReason(choice.finish_reason);
+    const message = choice.message!;
+    const completion = ValidateCompletion(message.content ?? '', message.reasoning_content ?? '', message.tool_calls ?? [], NormalizeModelUsage(json.usage), choice.finish_reason);
+    if (completion.reasoningContent) onDelta({ reasoning: completion.reasoningContent, content: '' });
+    if (completion.content) onDelta({ reasoning: '', content: completion.content });
+    return completion;
+  }
+  if (!response.body) throw ProtocolError('PROTOCOL_EMPTY_STREAM', '模型响应缺少数据流。');
+  const decoder = new TextDecoder();
+  const calls: ModelCompletion['toolCalls'] = [];
+  let content = '', reasoningContent = '', done = false, terminal = false, usage: ModelUsage | undefined, usageSeen = false;
+  let finishReason: unknown;
+  const parse = CreateSseParser(data => {
+    let record: Record<string, unknown>;
+    try { record = JSON.parse(data); } catch (error) { throw ProtocolError('PROTOCOL_INVALID_SSE_JSON', 'PROTOCOL_INVALID_SSE_JSON: 模型流式数据损坏。', error); }
+    if (!record || typeof record !== 'object' || Array.isArray(record)) throw ProtocolError('PROTOCOL_INVALID_SSE_SHAPE', '模型流式数据格式无效。');
+    if (record.error) RejectResponseError(record.error);
+    const choices = Array.isArray(record.choices) ? record.choices as Array<Record<string, unknown>> : null;
+    if (!choices) throw ProtocolError('PROTOCOL_INVALID_SSE_SHAPE', '模型流缺少 choices。');
+    if (record.usage !== undefined && record.usage !== null) {
+      if (provider === 'DeepSeek' && usageSeen) throw ProtocolError('PROTOCOL_DUPLICATE_USAGE', 'PROTOCOL_DUPLICATE_USAGE: 模型重复返回用量块。');
+      if (provider === 'DeepSeek' && !IsDeepSeekUsageChunk(choices)) throw ProtocolError('PROTOCOL_INVALID_USAGE_CHUNK', 'PROTOCOL_INVALID_USAGE_CHUNK: 模型用量块格式无效。');
+      usageSeen = true; usage = NormalizeModelUsage(record.usage);
+    }
+    const choice = choices[0]; if (!choice) return;
+    CheckFinishReason(choice.finish_reason);
+    if (choice.finish_reason) { terminal = true; finishReason = choice.finish_reason; }
+    const delta = choice.delta as Record<string, unknown> | undefined;
+    if (delta !== undefined && delta !== null && (typeof delta !== 'object' || Array.isArray(delta))) throw ProtocolError('PROTOCOL_INVALID_SSE_SHAPE', '模型增量格式无效。');
+    if (delta?.tool_calls != null && !Array.isArray(delta.tool_calls)) throw ProtocolError('PROTOCOL_INVALID_SSE_SHAPE', '模型工具调用增量必须是数组。');
+    if ((delta?.content != null && typeof delta.content !== 'string') || (delta?.reasoning_content != null && typeof delta.reasoning_content !== 'string')) throw ProtocolError('PROTOCOL_INVALID_SSE_SHAPE', '模型文本增量必须是字符串。');
+    for (const raw of Array.isArray(delta?.tool_calls) ? delta.tool_calls : []) {
+      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw ProtocolError('PROTOCOL_INVALID_SSE_SHAPE', '模型工具调用增量无效。');
+      const item = raw as { index?: number; id?: string; function?: { name?: string; arguments?: string | object } };
+      const index = item?.index ?? 0;
+      if (!Number.isSafeInteger(index) || index < 0 || index > 127) throw ProtocolError('PROTOCOL_INVALID_SSE_SHAPE', '工具调用索引无效。');
+      const call = calls[index] ?? { id: '', type: 'function', function: { name: '', arguments: '' } };
+      call.id += typeof item.id === 'string' ? item.id : '';
+      call.function.name += typeof item.function?.name === 'string' ? item.function.name : '';
+      if (typeof item.function?.arguments === 'string') call.function.arguments += item.function.arguments;
+      else if (item.function?.arguments && !call.function.arguments) call.function.arguments = JSON.stringify(item.function.arguments);
+      calls[index] = call;
+    }
+    const reasoning = typeof delta?.reasoning_content === 'string' ? delta.reasoning_content : '';
+    const text = typeof delta?.content === 'string' ? delta.content : '';
+    if (reasoning) { reasoningContent += reasoning; onDelta({ reasoning, content: '' }); }
+    if (text) { content += text; onDelta({ reasoning: '', content: text }); }
+  }, () => { done = true; });
+  const reader = response.body.getReader();
+  try {
+    while (!done) {
+      scope.Arm(policy.idleTimeoutMs, 'PROVIDER_IDLE_TIMEOUT');
+      const chunk = await scope.Wait(() => reader.read());
+      if (chunk.done) { parse(decoder.decode(), true); break; }
+      parse(decoder.decode(chunk.value, { stream: true }));
+    }
+    if (!done && !terminal) throw ProtocolError('PROTOCOL_INCOMPLETE_STREAM', '模型响应在完成前中断。');
+    if (calls.filter(Boolean).length !== calls.length) throw ProtocolError('PROTOCOL_INCOMPLETE_TOOL_CALL', '模型工具调用序列不完整。');
+    return ValidateCompletion(content, reasoningContent, calls, usage, finishReason);
+  } finally {
+    // 不等待失效连接的取消回执；native fetch 同时会在尝试结束时被 abort。
+    void reader.cancel().catch(() => undefined);
+    try { reader.releaseLock(); } catch { /* 尚未结束的 read 由 scope 取消。 */ }
+  }
+}
+
 /** 默认模型 Provider 模块：配置、连通性、请求级模型解析、流式补全、摘要与规模估算；API Key 经宿主端口存取。 */
-export function CreateProviderModule(ports: AgentDefaultPorts): ModelProviderModule {
+export function CreateProviderModule(ports: AgentDefaultPorts, transportPolicy: Partial<ProviderTransportPolicy> = {}): ModelProviderModule {
   const defaultConfig: ProviderConfig = { provider: 'DeepSeek', baseUrl: DefaultBaseUrl, model: 'deepseek-v4-flash', thinkingEnabled: true, contextLimit: DefaultContextLimit, contextLimitMode: 'default', compressionThreshold: 80, apiKey: '' };
   let config: ProviderConfig = defaultConfig;
   const configs = new Map<SupportedProvider, ProviderConfig>([['DeepSeek', defaultConfig]]);
   let configLoadPromise: Promise<void> | null = null;
   const providerFetch = globalThis.fetch;
+  const policy = { ...DefaultProviderTransportPolicy, ...transportPolicy };
 
   /** 惰性加载宿主私有配置；并发入口共享同一个 Promise，不能在凭据尚未读完时误用默认配置。 */
   async function EnsureConfig() {
@@ -514,76 +642,25 @@ export function CreateProviderModule(ports: AgentDefaultPorts): ModelProviderMod
         ...(maxTokens ? (selected.provider === 'MIMO' ? { max_completion_tokens: maxTokens } : { max_tokens: maxTokens }) : {}),
         messages: providerMessages, tools: request.tools.map((tool) => tool.definition), tool_choice: 'auto',
       }, selected.provider === 'DeepSeek');
-      request.onRequest?.({ kind: 'completion', model: requestModel, messages: providerMessages, toolCount: request.tools.length });
-      const response = await providerFetch(`${selected.baseUrl}/chat/completions`, {
-        method: 'POST',
-        signal: request.signal,
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${selected.apiKey}` },
-        body,
-      });
-      if (!response.ok) throw await ProviderRequestError(response, 'Model request failed', selected.apiKey);
-      if (!response.body) throw new Error(`Model request failed (${response.status}).`);
-      const decoder = new TextDecoder();
-      const toolCalls: Array<{ id: string; type: 'function'; function: { name: string; arguments: string } }> = [];
-      let content = '';
-      let reasoningContent = '';
-      let usage: ModelUsage | undefined;
-      let usageChunkSeen = false;
-      const parse = CreateSseParser((data) => {
-        let payload: unknown;
-        try {
-          payload = JSON.parse(data);
-        } catch {
-          throw new Error('PROTOCOL_INVALID_SSE_JSON: Provider sent a malformed SSE data block.');
-        }
-        const record = payload && typeof payload === 'object' ? payload as Record<string, unknown> : null;
-        if (!record) throw new Error('PROTOCOL_INVALID_SSE_JSON: Provider SSE data is not an object.');
-        const choices = Array.isArray(record.choices) ? record.choices as Array<Record<string, unknown>> : null;
-        if (record.choices !== undefined && !Array.isArray(record.choices)) throw new Error('PROTOCOL_INVALID_SSE_SHAPE: Provider delta shape is invalid.');
-        if (record.usage !== undefined && record.usage !== null) {
-          if (selected.provider === 'DeepSeek' && usageChunkSeen) {
-            throw new Error('PROTOCOL_DUPLICATE_USAGE: DeepSeek sent more than one non-null usage chunk.');
-          }
-          if (selected.provider === 'DeepSeek' && !IsDeepSeekUsageChunk(choices)) {
-            throw new Error('PROTOCOL_INVALID_USAGE_CHUNK: DeepSeek usage must be in an empty choices chunk or a terminal-only choice.');
-          }
-          usageChunkSeen = true;
-          const reportedUsage = NormalizeModelUsage(record.usage);
-          if (reportedUsage) usage = reportedUsage;
-        }
-        const choice = choices?.[0] && typeof choices[0] === 'object' ? choices[0].delta as Record<string, unknown> | undefined : undefined;
-        const reasoning = typeof choice?.reasoning_content === 'string' ? choice.reasoning_content : '';
-        const deltaContent = typeof choice?.content === 'string' ? choice.content : '';
-        for (const deltaCall of Array.isArray(choice?.tool_calls) ? choice.tool_calls : []) {
-          const deltaRecord = deltaCall && typeof deltaCall === 'object' ? deltaCall as Record<string, unknown> : null;
-          if (!deltaRecord) throw new Error('PROTOCOL_INVALID_SSE_SHAPE: Tool call delta is not an object.');
-          const index = Number(deltaRecord.index ?? 0);
-          if (!Number.isSafeInteger(index) || index < 0 || index > 127) throw new Error('PROTOCOL_INVALID_SSE_SHAPE: Tool call index is invalid.');
-          const call = toolCalls[index] ?? { id: '', type: 'function', function: { name: '', arguments: '' } };
-          const fn = deltaRecord.function && typeof deltaRecord.function === 'object' ? deltaRecord.function as Record<string, unknown> : null;
-          call.id += typeof deltaRecord.id === 'string' ? deltaRecord.id : '';
-          call.function.name += typeof fn?.name === 'string' ? fn.name : '';
-          if (typeof fn?.arguments === 'string') call.function.arguments += fn.arguments;
-          else if (fn?.arguments && typeof fn.arguments === 'object' && !call.function.arguments) call.function.arguments = JSON.stringify(fn.arguments);
-          toolCalls[index] = call;
-        }
-        if (reasoning) request.onDelta({ reasoning, content: '' });
-        if (deltaContent) request.onDelta({ reasoning: '', content: deltaContent });
-        reasoningContent += reasoning;
-        content += deltaContent;
-      });
-      const reader = response.body.getReader();
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        parse(decoder.decode(value, { stream: true }));
-      }
-      const completedCalls = toolCalls.filter((call) => call.id && call.function.name);
-      const incomplete = toolCalls.find((call) => call.id || call.function.name || call.function.arguments);
-      if (incomplete && !completedCalls.some((call) => call.id === incomplete.id)) {
-        throw new Error('PROTOCOL_INCOMPLETE_TOOL_CALL: Provider finished without completing a tool call.');
-      }
-      return { content, reasoningContent, toolCalls: completedCalls, ...(usage ? { usage } : {}) };
+      return WithProviderRecovery(async (scope, mode, attempt) => {
+        const deltas: ModelDelta[] = [];
+        const emitDelta = (delta: ModelDelta) => {
+          if (request.onRecovery) request.onDelta(delta);
+          else deltas.push(delta);
+        };
+        scope.Arm(mode === 'stream' ? policy.connectionTimeoutMs : policy.nonstreamTimeoutMs, 'PROVIDER_CONNECTION_TIMEOUT');
+        request.onRequest?.({ kind: 'completion', model: requestModel, messages: providerMessages, toolCount: request.tools.length, attempt, mode });
+        const response = await scope.Wait(() => providerFetch(`${selected.baseUrl}/chat/completions`, {
+          method: 'POST', signal: scope.signal,
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${selected.apiKey}` },
+          body: mode === 'stream' ? body : SerializeCompletionBody({ ...JSON.parse(body), stream: false, stream_options: undefined, tool_stream: undefined }, selected.provider === 'DeepSeek'),
+        }));
+        if (!response.ok) throw await scope.Wait(() => ProviderRequestError(response, 'Model request failed', selected.apiKey));
+        const completion = await ReadCompletion(response, scope, policy, selected.provider, mode, emitDelta);
+        // 未声明撤回能力的外置调用方只接收已校验成功那次的增量，避免失败重试重复输出。
+        for (const delta of deltas) request.onDelta(delta);
+        return completion;
+      }, { signal: request.signal, policy, stream: true, onRecovery: request.onRecovery });
     },
     /** 通过不带工具的非流式模型调用生成可替换历史的应用摘要。 */
     async CreateSummary(provider, model, messages, onRequest, options = {}) {
@@ -616,19 +693,26 @@ export function CreateProviderModule(ports: AgentDefaultPorts): ModelProviderMod
         ...(selected.provider === 'MIMO' ? { max_completion_tokens: maxOutput } : { max_tokens: maxOutput }),
       }, selected.provider === 'DeepSeek');
       if (EstimateProviderTokens(providerMessages) >= selected.contextLimit - Math.min(8192, selected.contextLimit * 0.1)) throw new Error('Summary input exceeds the model budget.');
-      onRequest?.({ kind: 'summary', model: requestModel, messages: providerMessages, toolCount: 0 });
-      const response = await providerFetch(`${selected.baseUrl}/chat/completions`, {
-        method: 'POST',
-        signal: options.signal ? AbortSignal.any([options.signal, AbortSignal.timeout(120000)]) : AbortSignal.timeout(120000),
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${selected.apiKey}` },
-        body,
-      });
-      if (!response.ok) throw await ProviderRequestError(response, 'Summary request failed', selected.apiKey);
-      const json = (await response.json()) as { choices?: Array<{ message?: { content?: unknown }; finish_reason?: string }>; usage?: unknown };
-      if (json.choices?.[0]?.finish_reason === 'length') throw new Error('Summary output was truncated.');
-      const content = json?.choices?.[0]?.message?.content;
-      const usage = NormalizeModelUsage(json?.usage);
-      return { content: RequireString(content, 'summary', 16000), ...(usage ? { usage } : {}) };
+      return WithProviderRecovery(async (scope, mode, attempt) => {
+        scope.Arm(policy.nonstreamTimeoutMs, 'PROVIDER_CONNECTION_TIMEOUT');
+        onRequest?.({ kind: 'summary', model: requestModel, messages: providerMessages, toolCount: 0, attempt, mode });
+        const response = await scope.Wait(() => providerFetch(`${selected.baseUrl}/chat/completions`, {
+          method: 'POST', signal: scope.signal,
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${selected.apiKey}` }, body,
+        }));
+        if (!response.ok) throw await scope.Wait(() => ProviderRequestError(response, 'Summary request failed', selected.apiKey));
+        scope.Arm(policy.nonstreamTimeoutMs, 'PROVIDER_IDLE_TIMEOUT');
+        let json: { choices?: Array<{ message?: { content?: unknown }; finish_reason?: string }>; usage?: unknown; error?: unknown };
+        try { json = await scope.Wait(() => response.json()) as typeof json; }
+        catch (error) { if (scope.signal.aborted) throw scope.signal.reason; throw ProtocolError('PROTOCOL_INVALID_JSON', '摘要响应未完整返回。', error); }
+        if (json?.error) RejectResponseError(json.error);
+        if (!json?.choices?.[0]?.message) throw ProtocolError('PROTOCOL_PROVIDER_ERROR', '摘要模型缺少完整答复。');
+        if (json.choices?.[0]?.finish_reason === 'length') throw new ProviderTransportError('PROVIDER_OUTPUT_TRUNCATED', 'Summary output was truncated.');
+        const content = json?.choices?.[0]?.message?.content;
+        if (typeof content !== 'string' || !content.trim()) throw ProtocolError('PROTOCOL_EMPTY_COMPLETION', '摘要模型没有返回有效内容。');
+        const usage = NormalizeModelUsage(json?.usage);
+        return { content: RequireString(content, 'summary', 16000), ...(usage ? { usage } : {}) };
+      }, { signal: options.signal, policy, stream: false });
     },
     /** 估算 Provider 请求输入规模；仅用于触发阈值与界面提示，不用于计费。 */
     EstimateTokens(value) { return EstimateProviderTokens(value); },

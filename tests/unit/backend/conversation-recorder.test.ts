@@ -1,8 +1,30 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { AgentStreamEvent, ConversationPresentation } from '../../../packages/agent-sdk/src';
 import { ConversationRecorder } from '../../../apps/backend/src/electron/backend/conversation-recorder';
+afterEach(() => vi.useRealTimers());
 
 describe('会话过程持久化屏障', () => {
+  it('保存卡住时在期限内失败，重复 Flush 不再等待同一份已失败快照', async () => {
+    vi.useFakeTimers(); const events: AgentStreamEvent[] = [];
+    const recorder = new ConversationRecorder('timeout', 'session', () => new Promise(() => {}), event => events.push(event), undefined, 50);
+    recorder.Accept({ type: 'completed' });
+    const flush = recorder.Flush().catch(error => error);
+    await vi.advanceTimersByTimeAsync(51);
+    expect((await flush).message).toContain('保存超时');
+    await expect(recorder.Flush()).rejects.toThrow('保存超时');
+    expect(events.map(event => event.type)).toEqual(['conversation_save_error']);
+  });
+  it('慢盘期间合并排队快照，终态仍包含全部内容', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const snapshots: ConversationPresentation[] = [];
+    const recorder = new ConversationRecorder('slow', 'session', async (_id, snapshot) => { snapshots.push(snapshot); if (snapshots.length === 1) await gate; return { saved: true }; }, () => {});
+    for (let i = 0; i < 50; i++) recorder.Accept({ type: 'conversation_activity', activity: { kind: 'tool', toolCallId: `c${i}`, name: 'Read', toolStatus: 'succeeded' } });
+    recorder.Accept({ type: 'completed' }); const flush = recorder.Flush(); release(); await flush;
+    expect(snapshots).toHaveLength(2);
+    expect(snapshots.at(-1)).toMatchObject({ status: 'completed', parts: expect.any(Array) });
+    expect(snapshots.at(-1)?.parts).toHaveLength(50);
+  });
   it('浏览器接管原因持久保留在等待状态，不能只剩通用等待提示', async () => {
     const snapshots: ConversationPresentation[] = [];
     const recorder = new ConversationRecorder('browser-wait', 'session1', async (_id, snapshot) => { snapshots.push(snapshot); return { saved: true }; }, () => {});

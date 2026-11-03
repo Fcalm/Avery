@@ -30,6 +30,85 @@ afterEach(async () => {
 });
 
 describe('BrowserExtensionBridge', () => {
+  it.each([0, 20])('旧协议状态不能阻断升级后 Worker 的重新配对（握手延迟 %i ms）', async (handshakeDelay) => {
+    const root = await mkdtemp(join(tmpdir(), 'avery-extension-repair-pairing-'));
+    roots.push(root);
+    const statePath = join(root, 'bridge.json');
+    let updatedHandshake: Promise<void> | undefined;
+    const launchBrowser = vi.fn(async (engine: string) => {
+      expect(engine).toBe('ego');
+      expect(bridge.Status()).toMatchObject({ connected: false, state: 'stale' });
+      updatedHandshake = (async () => {
+        if (handshakeDelay) await new Promise((resolveWait) => setTimeout(resolveWait, handshakeDelay));
+        expect((await PostBridge(bridge, statePath, '/bridge/hello', {
+          version: '0.2.0', protocolRevision: BrowserExtensionProtocolRevision,
+        }, 'worker-updated')).status).toBe(200);
+      })();
+      if (!handshakeDelay) await updatedHandshake;
+    });
+    const bridge = new BrowserExtensionBridge({ statePath, browserPaths: { ego: process.execPath }, port: 0, launchBrowser });
+    try {
+      await bridge.Start();
+      expect((await PostBridge(bridge, statePath, '/bridge/hello', {
+        version: '0.2.0', protocolRevision: 'avery-browser-extension-bridge-v2',
+      }, 'worker-before-update')).status).toBe(409);
+      await bridge.EnsureConnected('ego', { deadline: Date.now() + 1_000 });
+      await updatedHandshake;
+      expect(launchBrowser).toHaveBeenCalledOnce();
+      expect(bridge.Status()).toMatchObject({ connected: true, state: 'online', actualProtocolRevision: BrowserExtensionProtocolRevision, activeWorkerInstanceId: 'worker-updated' });
+    } finally { await updatedHandshake?.catch(() => undefined); await bridge.Close(); }
+  });
+
+  it('没有新握手时重新配对只打开一次，并在 deadline 内保持旧协议门禁', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'avery-extension-repair-no-handshake-'));
+    roots.push(root);
+    const statePath = join(root, 'bridge.json');
+    const launchBrowser = vi.fn(async () => undefined);
+    const bridge = new BrowserExtensionBridge({ statePath, browserPaths: { ego: process.execPath }, port: 0, launchBrowser });
+    try {
+      await bridge.Start();
+      await PostBridge(bridge, statePath, '/bridge/hello', { version: '0.2.0', protocolRevision: 'avery-browser-extension-bridge-v2' });
+      await expect(bridge.EnsureConnected('ego', { deadline: Date.now() + 50 })).rejects.toMatchObject({ code: 'BROWSER_EXTENSION_STALE' });
+      expect(launchBrowser).toHaveBeenCalledOnce();
+      expect(bridge.Status()).toMatchObject({ connected: false, state: 'stale', actualProtocolRevision: 'avery-browser-extension-bridge-v2' });
+    } finally { await bridge.Close(); }
+  });
+
+  it('重新配对仍返回旧协议时继续拒绝，不把打开配对页当作连接成功', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'avery-extension-repair-still-stale-'));
+    roots.push(root);
+    const statePath = join(root, 'bridge.json');
+    const launchBrowser = vi.fn(async () => {
+      expect((await PostBridge(bridge, statePath, '/bridge/hello', {
+        version: '0.2.0', protocolRevision: 'avery-browser-extension-bridge-v2',
+      }, 'worker-still-outdated')).status).toBe(409);
+    });
+    const bridge = new BrowserExtensionBridge({ statePath, browserPaths: { ego: process.execPath }, port: 0, launchBrowser });
+    try {
+      await bridge.Start();
+      await PostBridge(bridge, statePath, '/bridge/hello', { version: '0.2.0', protocolRevision: 'avery-browser-extension-bridge-v2' });
+      await expect(bridge.EnsureConnected('ego', { deadline: Date.now() + 1_000 })).rejects.toMatchObject({ code: 'BROWSER_EXTENSION_STALE' });
+      expect(launchBrowser).toHaveBeenCalledOnce();
+      expect(bridge.Status()).toMatchObject({ connected: false, state: 'stale' });
+    } finally { await bridge.Close(); }
+  });
+
+  it('旧协议重新配对等待支持取消，不重新发送历史命令', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'avery-extension-repair-cancel-'));
+    roots.push(root);
+    const statePath = join(root, 'bridge.json');
+    const controller = new AbortController();
+    const launchBrowser = vi.fn(async () => { controller.abort(); });
+    const bridge = new BrowserExtensionBridge({ statePath, browserPaths: { ego: process.execPath }, port: 0, launchBrowser });
+    try {
+      await bridge.Start();
+      await PostBridge(bridge, statePath, '/bridge/hello', { version: '0.2.0', protocolRevision: 'avery-browser-extension-bridge-v2' });
+      await expect(bridge.EnsureConnected('ego', { signal: controller.signal, deadline: Date.now() + 1_000 })).rejects.toMatchObject({ code: 'CANCELLED' });
+      expect(launchBrowser).toHaveBeenCalledOnce();
+      expect(bridge.Status().connected).toBe(false);
+    } finally { await bridge.Close(); }
+  });
+
   it('请求在 deadline 已过期时不会启动 Bridge 或 Launch 浏览器', async () => {
     const root = await mkdtemp(join(tmpdir(), 'avery-extension-bridge-expired-'));
     roots.push(root);

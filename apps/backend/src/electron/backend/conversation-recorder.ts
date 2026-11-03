@@ -15,6 +15,9 @@ export class ConversationRecorder {
   private failure: Error | undefined;
   private disposed = false;
   private browserWaitMessage: string | undefined;
+  private pendingSnapshot: ConversationPresentation | undefined;
+  private draining = false;
+  private attemptedSequence = -1;
   get Status(): ConversationPresentation['status'] { return this.presentation.status; }
 
   constructor(
@@ -22,6 +25,7 @@ export class ConversationRecorder {
     private readonly save: (sessionId: string, presentation: ConversationPresentation) => Promise<{ saved: boolean }>,
     private readonly publish: (event: AgentStreamEvent) => void,
     initial?: ConversationPresentation,
+    private readonly saveTimeoutMs = 5_000,
   ) {
     this.sessionId = sessionId;
     this.presentation = initial ?? CreateConversationPresentation(requestId);
@@ -68,21 +72,43 @@ export class ConversationRecorder {
 
   private Enqueue(): void {
     if (this.disposed) return;
-    const snapshot = this.presentation;
-    this.queue = this.queue.then(async () => {
-      if (this.disposed) return;
-      const result = await this.save(this.sessionId, snapshot);
-      this.failure = undefined;
-      if (result.saved && !this.disposed) this.publish({ type: 'conversation_updated', requestId: this.requestId, sessionId: this.sessionId, presentation: snapshot });
-    }).catch((error: unknown) => {
-      this.failure = error instanceof Error ? error : new Error('会话过程保存失败');
-      this.publish({ type: 'conversation_save_error', requestId: this.requestId, sessionId: this.sessionId, message: '会话过程保存失败：' + this.failure.message });
+    if (this.failure && !this.draining && this.attemptedSequence === this.presentation.sequence) return;
+    // 投影是包含全部步骤的不可变快照；只保留一个在途写入和最新候选，避免慢盘堆积数百次全量写入。
+    this.pendingSnapshot = this.presentation;
+    if (this.draining) return;
+    this.draining = true;
+    this.queue = this.Drain().finally(() => {
+      this.draining = false;
+      if (this.pendingSnapshot && !this.disposed) this.Enqueue();
     });
+    void this.queue.catch(() => undefined);
+  }
+
+  private async Drain(): Promise<void> {
+    while (this.pendingSnapshot && !this.disposed) {
+      const snapshot = this.pendingSnapshot; this.pendingSnapshot = undefined;
+      this.attemptedSequence = snapshot.sequence;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        const timeout = new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(() => reject(new Error('会话过程保存超时，保存结果尚未确认')), this.saveTimeoutMs);
+        });
+        const result = await Promise.race([this.save(this.sessionId, snapshot), timeout]);
+        this.failure = undefined;
+        if (result.saved && !this.disposed) this.publish({ type: 'conversation_updated', requestId: this.requestId, sessionId: this.sessionId, presentation: snapshot });
+      } catch (error) {
+        this.failure = error instanceof Error ? error : new Error('会话过程保存失败');
+        this.pendingSnapshot = undefined;
+        if (!this.disposed) this.publish({ type: 'conversation_save_error', requestId: this.requestId, sessionId: this.sessionId, message: '会话过程保存失败：' + this.failure.message });
+        return;
+      } finally { clearTimeout(timer); }
+    }
   }
 
   /** 删除会话时取消尚未派发的批次；已进入数据库的请求由消息存在性检查阻止复活。 */
   Dispose(): void {
     this.disposed = true;
+    this.pendingSnapshot = undefined;
     clearTimeout(this.timer);
     this.timer = undefined;
   }
@@ -90,7 +116,8 @@ export class ConversationRecorder {
   /** Send 释放请求和确认返回前等待持久化，避免用户切换或退出时丢失终态。 */
   async Flush(): Promise<void> {
     clearTimeout(this.timer); this.timer = undefined; this.Enqueue();
-    await this.queue;
+    let pending: Promise<void>;
+    do { pending = this.queue; await pending; } while (pending !== this.queue);
     if (this.failure) throw this.failure;
   }
 }

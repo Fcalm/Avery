@@ -9,6 +9,18 @@ function Project(activities: ConversationActivity[]) {
 }
 
 describe('会话展示投影', () => {
+  it('重连只撤回当前模型步骤的未完成文本，保留历史工具与产物', () => {
+    const value = Project([
+      { kind: 'text', stepId: 'old', partId: 'old-text', delta: '已完成的内容' },
+      { kind: 'tool', stepId: 'old', toolCallId: 'saved', name: 'Read', toolStatus: 'succeeded' },
+      { kind: 'text', stepId: 'new', partId: 'partial', delta: '失败半截' },
+      { kind: 'step', stepId: 'new', reset: true, summary: '正在重连' },
+    ]);
+    expect(value.status).toBe('running'); expect(value.statusMessage).toBe('正在重连');
+    expect(value.parts).toHaveLength(2); expect(value.parts[0]).toMatchObject({ text: '已完成的内容' });
+    const recovered = ApplyConversationActivity(value, { kind: 'text', stepId: 'new', partId: 'partial', delta: '新回复' }, value.sequence + 1, 200);
+    expect(recovered.statusMessage).toBeUndefined(); expect(recovered.parts.at(-1)).toMatchObject({ text: '新回复' });
+  });
   it('暂停和等待冻结用时，静态工具更新不延长暂停时间，恢复运行后清除冻结点', () => {
     const initial = ApplyConversationActivity(CreateConversationPresentation('timing'), { kind: 'step' }, 1, 1000);
     const paused = ApplyConversationActivity(initial, { kind: 'status', status: 'paused', summary: '请登录' }, 2, 2000);

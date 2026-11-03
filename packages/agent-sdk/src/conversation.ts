@@ -44,6 +44,8 @@ export interface ConversationActivity {
   resource?: ConversationResource;
   status?: ConversationRunStatus;
   error?: string;
+  /** 仅撤回当前模型步骤的未完成文本，不影响已执行工具和既有产物。 */
+  reset?: boolean;
 }
 
 export function CreateConversationPresentation(requestId: string): ConversationPresentation {
@@ -57,6 +59,7 @@ export function ApplyConversationActivity(
   if (sequence <= current.sequence) return current;
   let parts = current.parts;
   const stepId = activity.stepId ?? parts.at(-1)?.stepId ?? current.requestId;
+  if (activity.kind === 'step' && activity.reset) parts = parts.filter(part => part.stepId !== stepId || (part.type !== 'text' && part.type !== 'reasoning'));
   if ((activity.kind === 'text' || activity.kind === 'reasoning') && activity.partId && activity.delta) {
     const existing = parts.find((part) => part.id === activity.partId);
     parts = existing
@@ -96,7 +99,8 @@ export function ApplyConversationActivity(
   const status = activity.kind === 'status' ? activity.status ?? current.status : current.status;
   const statusMessage = activity.kind === 'status'
     ? status === 'waiting' || status === 'paused' ? activity.summary ?? current.statusMessage : undefined
-    : current.statusMessage;
+    : activity.kind === 'step' ? activity.summary
+      : activity.kind === 'text' || activity.kind === 'reasoning' || activity.kind === 'tool' ? undefined : current.statusMessage;
   if (activity.kind === 'status' && status !== 'running') {
     parts = parts.map((part) => part.type === 'tool' && part.status === 'running'
       ? { ...part, status: status === 'waiting' ? 'waiting' : status === 'cancelled' ? 'cancelled' : status === 'completed' ? 'skipped' : status === 'paused' ? 'paused' : 'failed', completedAt: now }

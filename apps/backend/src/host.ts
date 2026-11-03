@@ -17,8 +17,12 @@ export interface BackendHostOptions {
 interface PendingCommand {
   resolve: (value: unknown) => void;
   reject: (reason: Error) => void;
-  timer: NodeJS.Timeout;
+  timer?: NodeJS.Timeout;
 }
+
+// 这些调用返回整轮运行结果，等待期由模型/工具截止时间、取消与进程退出管理。
+// 普通 IPC 的固定超时不能在前台结束后，留下仍执行外部动作的后台 Run。
+const LongRunningAgentChannels = new Set(['agent:send', 'agent:respond-interaction', 'agent:compact-session']);
 
 /** 管理 Backend Utility Process 生命周期：fork、握手、健康检查、请求超时、取消、崩溃退避重启与在途拒绝。 */
 export function CreateBackendHost({ appContext, desktopCapabilities = {}, onEvent }: BackendHostOptions) {
@@ -155,19 +159,23 @@ export function CreateBackendHost({ appContext, desktopCapabilities = {}, onEven
       if (state !== 'ready') throw Object.assign(new Error(`Backend is ${state}.`), { code: 'INTERNAL_ERROR', retryable: true, details: { backendState: state } });
       if (!channels.includes(channel)) throw Object.assign(new Error(`Unknown IPC channel: ${channel}.`), { code: 'INTERNAL_ERROR' });
       const requestId = `req-${commandSessionId}-${nextRequestId++}`;
-      const timeout = channel === 'cron:run-due' ? 30 * 60 * 1000
-        : channel === 'agent:send' ? 10 * 60 * 1000
+      const timeout = LongRunningAgentChannels.has(channel) ? undefined
+        : channel === 'cron:run-due' ? 30 * 60 * 1000
         : channel === 'workspace:migrate' ? 2 * 60 * 1000
           : 30000;
       return new Promise((resolve, reject) => {
-        const timer = setTimeout(() => {
+        const timer = timeout === undefined ? undefined : setTimeout(() => {
           if (pending.has(requestId)) {
             pending.delete(requestId);
             reject(Object.assign(new Error('Backend request timed out.'), { code: 'INTERNAL_ERROR', retryable: true, details: { backendState: state } }));
           }
         }, timeout);
         pending.set(requestId, { resolve, reject, timer });
-        child?.postMessage({ kind: 'command', requestId, idempotencyKey, channel, payload: args });
+        try { child?.postMessage({ kind: 'command', requestId, idempotencyKey, channel, payload: args }); }
+        catch (error) {
+          pending.delete(requestId); clearTimeout(timer);
+          reject(error instanceof Error ? error : new Error('Backend command could not be sent.'));
+        }
       });
     },
     Shutdown(): void {

@@ -2027,6 +2027,11 @@ export class AgentHost {
       const completion = await this.modules.modelProvider.StreamCompletion({ requestId, provider, model, reasoningEffort, instructions, modelConfiguration,
         history: translationHistory, tools: [tool], signal: AbortSignal.any([signal, AbortSignal.timeout(120000)]), maxTokens: 12288,
         onRequest: requestTrace,
+        onRecovery: (recovery: import('@avery/agent-sdk').ProviderRecoveryEvent) => {
+          if (signal.aborted || !acceptsTranslationDelta) return;
+          activity({ kind: 'step', stepId, reset: true, summary: `模型响应异常，正在重连（${recovery.attempt}/${recovery.maxAttempts}）` });
+          this.modules.observability.AppendTraceEvent(requestId, 'provider_recovery', recovery);
+        },
         onDelta: (delta: import('@avery/agent-sdk').ModelDelta) => {
           if (signal.aborted || !acceptsTranslationDelta) return;
           if (delta.reasoning) activity({ kind: 'reasoning', partId: `${stepId}:reasoning`, delta: delta.reasoning });
@@ -2644,7 +2649,8 @@ export class AgentHost {
       return { accepted: true, ...(result.outcome === 'cancelled' ? { cancelled: true } : {}) };
     } catch (error) {
       RestoreSkillState();
-      this.SaveState();
+      try { this.SaveState(); }
+      catch (saveError) { this.modules.observability.RecordLog('ERROR', 'conversation.state_save_failed', saveError instanceof Error ? saveError.message : '运行状态保存失败'); }
       throw error;
     } finally {
       this.controllers.delete(requestId);
@@ -2670,6 +2676,7 @@ export class AgentHost {
       }
       // waiting_* 只表示 Kernel 停止调度；必须在 Host 锁与运行资源清理后再允许 Renderer 发起续轮。
       try { await this.conversationRecorders.get(requestId)?.Flush(); }
+      catch (saveError) { this.modules.observability.RecordLog('ERROR', 'conversation.final_flush_failed', saveError instanceof Error ? saveError.message : '会话终态保存失败'); }
       finally {
         this.Emit({ type: 'run_released', requestId, sessionId, ...(cleanupOutcomes.length ? { cleanupOutcomes } : {}) });
         const recorded = this.conversationRecorders.get(requestId);

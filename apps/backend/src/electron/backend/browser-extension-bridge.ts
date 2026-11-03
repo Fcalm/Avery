@@ -623,8 +623,12 @@ export class BrowserExtensionBridge {
     if (this.now() >= end) throw new BrowserExtensionBridgeError('BROWSER_COMMAND_TIMEOUT', 'Browser extension connection timed out.');
     await this.Start();
     if (this.now() >= end) throw new BrowserExtensionBridgeError('BROWSER_COMMAND_TIMEOUT', 'Browser extension connection timed out.');
-    if (this.CurrentConnectionState() === 'stale') throw this.StaleProtocolError();
+    if (this.CurrentConnectionState() === 'stale' && options.launch === false) throw this.StaleProtocolError();
     if (this.ProtocolReady()) return;
+    // stale 记录的是上次握手；更新扩展或切换浏览器后可能已丢失配对配置。
+    // 显式连接仍须允许打开一次配对页，不能让历史错误阻断恢复；等待期间
+    // 保留 stale 门禁，仅新握手通过后才能派发命令，不重放历史操作。
+    const epochBeforeLaunch = this.connectionEpoch;
     if (options.launch !== false) {
       if (options.signal?.aborted) throw new BrowserExtensionBridgeError('CANCELLED', 'Browser extension connection was cancelled.');
       if (this.now() >= end) throw new BrowserExtensionBridgeError('BROWSER_COMMAND_TIMEOUT', 'Browser extension connection timed out.');
@@ -632,7 +636,8 @@ export class BrowserExtensionBridge {
     }
     while (!this.ProtocolReady() && this.now() < end) {
       if (options.signal?.aborted) throw new BrowserExtensionBridgeError('CANCELLED', 'Browser extension connection was cancelled.');
-      if (this.CurrentConnectionState() === 'stale') throw this.StaleProtocolError();
+      // 新握手再次失败时立即报告；没有新握手则按原 deadline 等待更新后的 Worker。
+      if (this.CurrentConnectionState() === 'stale' && this.connectionEpoch !== epochBeforeLaunch) throw this.StaleProtocolError();
       const waitMs = Math.max(1, Math.min(100, end - this.now()));
       await new Promise<void>((resolveWait, rejectWait) => {
         let timer: NodeJS.Timeout | null = null;
