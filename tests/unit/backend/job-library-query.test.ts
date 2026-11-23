@@ -15,7 +15,7 @@ function Fixture() {
   databases.push(db);
   db.exec(`
     CREATE TABLE jobs(id TEXT PRIMARY KEY, payload_json TEXT NOT NULL, is_favorite INTEGER NOT NULL,
-      channel TEXT NOT NULL, match_score REAL, deadline INTEGER, revision INTEGER, created_at INTEGER, updated_at INTEGER, deleted_at INTEGER);
+      channel TEXT NOT NULL, deadline INTEGER, revision INTEGER, created_at INTEGER, updated_at INTEGER, deleted_at INTEGER);
     CREATE TABLE applications(id TEXT PRIMARY KEY, job_id TEXT, status TEXT);
     CREATE TABLE audit_events(id TEXT PRIMARY KEY, actor_type TEXT, action TEXT, entity_type TEXT, entity_id TEXT, metadata_json TEXT, created_at INTEGER);
   `);
@@ -25,7 +25,7 @@ function Fixture() {
       experience: '3 到 5 年', education: '本科及以上', companySize: '100-499人', channel: 'company_website',
       jobSeekingType: 'social_recruitment', favorite: false, jd: '负责 Agent 研发', ...changes };
     repository.Upsert(job);
-    // 固定时间以证明同分同时间分页仍稳定。
+    // 固定时间以证明同时间分页仍稳定。
     db.prepare('UPDATE jobs SET created_at = 1000 WHERE id = ?').run(id);
     return job;
   }
@@ -114,9 +114,9 @@ describe('岗位库共享查询', () => {
     expect(Ids({ view: 'applied' })).toEqual(['boss']);
   });
 
-  it('同分同时间稳定分页，空末页回到有效页，不遗漏不重复', () => {
+  it('同时间稳定分页，空末页回到有效页，不遗漏不重复', () => {
     const { Add, repository } = Fixture();
-    for (let i = 24; i >= 0; i--) Add(`job-${String(i).padStart(2, '0')}`, { matchScore: 90 });
+    for (let i = 24; i >= 0; i--) Add(`job-${String(i).padStart(2, '0')}`);
     const pages = [1, 2, 3].map((page) => repository.Query({ page, pageSize: 10 }));
     expect(pages.map((result) => [result.total, result.pageCount, result.items.length])).toEqual([[25, 3, 10], [25, 3, 10], [25, 3, 5]]);
     const ids = pages.flatMap((result) => result.items.map((job) => job.id));
@@ -128,17 +128,13 @@ describe('岗位库共享查询', () => {
     expect(repository.Query({ keyword: 'no-result', page: 999 })).toMatchObject({ total: 0, items: [], page: 1, pageCount: 0 });
   });
 
-  it('分数降序、未知分数置后，按入库时间排序；排除到期与已删除岗位', () => {
+  it('默认按入库时间降序；排除到期与已删除岗位', () => {
     const { Add, Ids, db, repository } = Fixture();
-    Add('low', { matchScore: 20 });
-    Add('high', { matchScore: 95 });
-    Add('unknown');
-    Add('expired', { deadline: Date.now() - 1000 });
-    Add('deleted');
+    Add('older'); Add('newer'); Add('expired', { deadline: Date.now() - 1000 }); Add('deleted');
     repository.Delete('deleted');
-    db.prepare('UPDATE jobs SET created_at = 2000 WHERE id = ?').run('unknown');
-    expect(Ids()).toEqual(['high', 'low', 'unknown']);
-    expect(Ids({ sort: 'created' })).toEqual(['unknown', 'high', 'low']);
+    db.prepare('UPDATE jobs SET created_at = 2000 WHERE id = ?').run('newer');
+    expect(Ids()).toEqual(['newer', 'older']);
+    expect(Ids({ sort: 'created', sortDirection: 'asc' })).toEqual(['older', 'newer']);
     expect(repository.FindById('expired')).toMatchObject({ id: 'expired' });
   });
 
@@ -153,19 +149,6 @@ describe('岗位库共享查询', () => {
     expect(repository.Query({ view: 'favorites' }).items[0]).toMatchObject({ favorite: true, sourceId: 'source-a', platform: 'beisen', revision: 2 });
     repository.Delete('a');
     expect(Ids()).toEqual([]);
-  });
-
-  it('分数与入库时间支持双向排序，未知分数始终置后，零分保持有效', () => {
-    const { Add, Ids, db } = Fixture();
-    Add('zero', { matchScore: 0 });
-    Add('high', { matchScore: 95 });
-    Add('unknown');
-    db.prepare('UPDATE jobs SET created_at = 2000 WHERE id = ?').run('high');
-    db.prepare('UPDATE jobs SET created_at = 3000 WHERE id = ?').run('unknown');
-    expect(Ids({ sort: 'score', sortDirection: 'asc' })).toEqual(['zero', 'high', 'unknown']);
-    expect(Ids({ sort: 'score', sortDirection: 'desc' })).toEqual(['high', 'zero', 'unknown']);
-    expect(Ids({ sort: 'created', sortDirection: 'asc' })).toEqual(['zero', 'high', 'unknown']);
-    expect(Ids({ sort: 'created', sortDirection: 'desc' })).toEqual(['unknown', 'high', 'zero']);
   });
 
   it('薪资按月薪下限全库排序后分页，同薪资结果稳定，非月薪与面议始终置后', () => {
@@ -240,9 +223,9 @@ describe('月薪解析与岗位查询契约', () => {
   ])('月薪 %s => %s', (input, expected) => expect(MonthlySalaryMinimum(input)).toBe(expected));
 
   it('查询有确定默认值，拒绝非法枚举、页码、页大小与未知字段', () => {
-    expect(ParseJobQuery({})).toMatchObject({ page: 1, pageSize: 20, sort: 'score', sortDirection: 'desc', view: 'all', channels: [] });
+    expect(ParseJobQuery({})).toMatchObject({ page: 1, pageSize: 20, sort: 'created', sortDirection: 'desc', view: 'all', channels: [] });
     expect(() => ParseJobQuery({ sortDirection: 'DESC; DROP TABLE jobs' })).toThrow('岗位筛选参数无效');
-    for (const input of [{ page: 0 }, { page: 1.5 }, { pageSize: 101 }, { channels: ['invalid'] }, { keyword: 5 }, { keyword: 'x'.repeat(501) }, { view: 'unknown' }, { sort: 'arbitrary SQL' }, { foo: true }]) {
+    for (const input of [{ page: 0 }, { page: 1.5 }, { pageSize: 101 }, { channels: ['invalid'] }, { keyword: 5 }, { keyword: 'x'.repeat(501) }, { view: 'unknown' }, { sort: 'arbitrary SQL' }, { sort: 'score' }, { foo: true }]) {
       expect(() => ParseJobQuery(input)).toThrow('岗位筛选参数无效');
     }
   });

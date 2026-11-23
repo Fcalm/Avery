@@ -18,7 +18,7 @@ test('岗位分页 IPC 经生产业务 Worker 查询，写入与投递变更后�
     for (let i = 0; i < 23; i++) {
       await business.UpsertJob({ id: `job-${String(i).padStart(2, '0')}`, company: '测试企业', title: `Agent 工程师 ${i}`,
         city: '上海', salary: '25-35K', experience: '3-5年', education: '本科', companySize: '100-499人',
-        channel: 'company_website', jobSeekingType: 'social_recruitment', jd: 'Agent 研发', favorite: false, matchScore: 80 });
+        channel: 'company_website', jobSeekingType: 'social_recruitment', jd: 'Agent 研发', favorite: false });
     }
     const backend = CreateBackend({ container: { jobs: {
       QueryJobs: (input) => business.QueryJobs(input),
@@ -66,16 +66,16 @@ test('岗位筛选 IPC 保留多选条件与双向排序，跨页按完整岗位
   try {
     await business.ready;
     const jobs = [
-      { id: 'low', salary: '15-25K', matchScore: 20, companySize: '20-99人' },
-      { id: 'high', salary: '3-4万/月', matchScore: 90, companySize: '100-499人' },
+      { id: 'low', salary: '15-25K', companySize: '20-99人' },
+      { id: 'high', salary: '3-4万/月', companySize: '100-499人' },
       { id: 'unknown', salary: '面议', companySize: '20-99人' },
-      { id: 'excluded', salary: '50-60K', matchScore: 99, companySize: '1000人以上' },
+      { id: 'excluded', salary: '50-60K', companySize: '1000人以上' },
     ];
     for (const job of jobs) await business.UpsertJob({ company: '测试企业', title: '工程师', city: '上海',
       experience: '', channel: 'company_website', jd: '', ...job });
     const backend = CreateBackend({ container: { jobs: { QueryJobs: (input) => business.QueryJobs(input) } } });
     const filters = { companySizes: ['20-99', '100-499'] };
-    for (const sort of ['score', 'salary']) {
+    for (const sort of ['salary']) {
       for (const sortDirection of ['asc', 'desc']) {
         const ids = [];
         for (let page = 1; page <= 3; page++) {

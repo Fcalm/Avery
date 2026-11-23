@@ -11,7 +11,7 @@ function CreateDatabase() {
   db.exec(`
     CREATE TABLE jobs(
       id TEXT PRIMARY KEY, payload_json TEXT NOT NULL, is_favorite INTEGER NOT NULL DEFAULT 0,
-      channel TEXT NOT NULL, match_score REAL, deadline INTEGER, revision INTEGER NOT NULL DEFAULT 1,
+      channel TEXT NOT NULL, deadline INTEGER, revision INTEGER NOT NULL DEFAULT 1,
       created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, deleted_at INTEGER
     );
     CREATE TABLE audit_events(

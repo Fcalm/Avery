@@ -33,7 +33,7 @@ async function Fixture(overrides: Partial<ConstructorParameters<typeof JobLibrar
   const root = await mkdtemp(join(tmpdir(), 'avery-agent-job-library-'));
   close.push(() => rm(root, { recursive: true, force: true }));
   const db = new Database(':memory:'); close.push(() => db.close());
-  db.exec(`CREATE TABLE jobs(id TEXT PRIMARY KEY, payload_json TEXT NOT NULL, is_favorite INTEGER NOT NULL, channel TEXT NOT NULL, match_score REAL, deadline INTEGER, revision INTEGER, created_at INTEGER, updated_at INTEGER, deleted_at INTEGER);
+  db.exec(`CREATE TABLE jobs(id TEXT PRIMARY KEY, payload_json TEXT NOT NULL, is_favorite INTEGER NOT NULL, channel TEXT NOT NULL, deadline INTEGER, revision INTEGER, created_at INTEGER, updated_at INTEGER, deleted_at INTEGER);
     CREATE TABLE applications(id TEXT PRIMARY KEY, job_id TEXT, status TEXT);
     CREATE TABLE audit_events(id TEXT PRIMARY KEY, actor_type TEXT, action TEXT, entity_type TEXT, entity_id TEXT, metadata_json TEXT, created_at INTEGER);`);
   const repo = new JobRepository({ db });
@@ -65,10 +65,12 @@ describe('Agent持久岗位库端口', () => {
     const ids = [...first.items, ...second.items, ...third.items].map((job: any) => job.jobId);
     expect(new Set(ids).size).toBe(12);
     expect(first.items[0].jd.length).toBe(300); expect(first.truncated).toBe(true);
+    expect(first.items[0]).not.toHaveProperty('matchScore');
     expect(first.items[0].truncatedFields).toContain('jd');
     db.prepare('INSERT INTO applications VALUES (?, ?, ?)').run('application-1', ids[0], '已投递');
     const detail = await port.Read({ jobId: ids[0] }) as any;
     expect(detail.items).toHaveLength(1); expect(detail.items[0].applicationStatuses).toEqual(['applied']);
+    expect(detail.items[0]).not.toHaveProperty('matchScore');
     expect(detail.items[0].jd.length).toBe(8000); expect(detail.items[0].truncatedFields).toContain('jd');
     let text = detail.items[0].jd, cursor = detail.nextCursor;
     while (cursor) {

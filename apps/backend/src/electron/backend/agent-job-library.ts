@@ -68,7 +68,6 @@ export function CreateAgentJobLibrary(input: {
           jobId: job.id, title: Text('title', job.title, 200), company: Text('company', job.company, 120), channel: job.channel,
           city: Text('city', job.city, 100), salary: Text('salary', job.salary, 60),
           experience: Text('experience', job.experience, 100), education: Text('education', job.education, 100), jobSeekingType: job.jobSeekingType,
-          matchScore: job.matchScore,
         };
         let detail: Record<string, unknown> = {};
         if (detailLevel !== 'brief') {

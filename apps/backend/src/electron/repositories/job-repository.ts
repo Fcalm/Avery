@@ -30,7 +30,7 @@ export class JobRepository {
       .map(ToJobViewModel);
   }
 
-  /** 在业务 Worker 内完成筛选和分页；仅返回当前页，排序始终以 ID 破除同分同时间歧义。 */
+  /** 在业务 Worker 内完成筛选和分页；仅返回当前页，排序始终以 ID 破除同时间歧义。 */
   Query(input: JobQueryInput): JobQueryResult {
     const query = ParseJobQuery(input);
     if (!this.queryFunctionsRegistered) {
@@ -42,14 +42,12 @@ export class JobRepository {
     }
     this.DeleteExpired();
     const { sql, values } = BuildJobQueryWhere(query);
-    // 方向经共享枚举校验；未知分数和不可解析月薪在两个方向都置后，同值以入库时间和 ID 保持分页稳定。
+    // 方向经共享枚举校验；不可解析月薪在两个方向都置后，同值以入库时间和 ID 保持分页稳定。
     const direction = query.sortDirection === 'asc' ? 'ASC' : 'DESC';
     const salary = "avery_job_monthly_salary(json_extract(j.payload_json, '$.salary'))";
-    const order = query.sort === 'score'
-      ? `(j.match_score IS NULL) ASC, j.match_score ${direction}, j.created_at DESC, j.id ASC`
-      : query.sort === 'salary'
-        ? `(${salary} IS NULL) ASC, ${salary} ${direction}, j.created_at DESC, j.id ASC`
-        : `j.created_at ${direction}, j.id ASC`;
+    const order = query.sort === 'salary'
+      ? `(${salary} IS NULL) ASC, ${salary} ${direction}, j.created_at DESC, j.id ASC`
+      : `j.created_at ${direction}, j.id ASC`;
     // 总数与页内容在同一读事务中产生，避免其他连接的写入使一次响应自相矛盾。
     return this.db.transaction(() => {
       const total = this.db.prepare(`SELECT COUNT(*) AS total FROM jobs j WHERE ${sql}`).get(...values).total as number;
@@ -161,8 +159,8 @@ export class JobRepository {
     const existing = this.db.prepare('SELECT revision FROM jobs WHERE id = ?').get(job.id);
     if (existing) AssertRevision(existing, expectedRevision, 'job', job.id);
     const nextRevision = existing ? existing.revision + 1 : 1;
-    this.db.prepare('INSERT INTO jobs(id, payload_json, is_favorite, channel, match_score, deadline, revision, created_at, updated_at, deleted_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, NULL) ON CONFLICT(id) DO UPDATE SET payload_json = excluded.payload_json, is_favorite = excluded.is_favorite, channel = excluded.channel, match_score = excluded.match_score, deadline = excluded.deadline, revision = excluded.revision, updated_at = excluded.updated_at, deleted_at = NULL')
-      .run(job.id, JSON.stringify(storageJob), storageJob.favorite ? 1 : 0, storageJob.channel, storageJob.matchScore ?? null, storageJob.deadline ?? null, nextRevision, now, now);
+    this.db.prepare('INSERT INTO jobs(id, payload_json, is_favorite, channel, deadline, revision, created_at, updated_at, deleted_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, NULL) ON CONFLICT(id) DO UPDATE SET payload_json = excluded.payload_json, is_favorite = excluded.is_favorite, channel = excluded.channel, deadline = excluded.deadline, revision = excluded.revision, updated_at = excluded.updated_at, deleted_at = NULL')
+      .run(job.id, JSON.stringify(storageJob), storageJob.favorite ? 1 : 0, storageJob.channel, storageJob.deadline ?? null, nextRevision, now, now);
     WriteAudit(this.db, 'user', 'save', 'job', job.id, {});
     return { id: job.id, revision: nextRevision };
   }
@@ -173,7 +171,7 @@ export class JobRepository {
     const existing = this.db.prepare('SELECT payload_json, revision FROM jobs WHERE id = ?').get(id);
     if (!existing) throw new Error('Job was not found.');
     AssertRevision(existing, expectedRevision, 'job', id);
-    const payload = JSON.parse(existing.payload_json);
+    const payload = JobToStorage(JSON.parse(existing.payload_json));
     payload.favorite = Boolean(favorite);
     const nextRevision = existing.revision + 1;
     this.db.prepare('UPDATE jobs SET is_favorite = ?, payload_json = ?, revision = ?, updated_at = ? WHERE id = ?').run(favorite ? 1 : 0, JSON.stringify(payload), nextRevision, GetNow(), id);
