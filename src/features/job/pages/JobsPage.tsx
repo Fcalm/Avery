@@ -7,8 +7,7 @@ import { platformClient, Unwrap } from '../../../shared/platform/platformClient'
 import { ChannelLabel, FormatDateTime, FormatRelativeTime, FromDateTimeLocalValue, JobSeekingTypeLabel, ToDateTimeLocalValue } from '../../../shared/utils/format';
 import { CreateEntityId } from '../../workspace/api/workspaceData';
 import { useDeleteJob, useDeleteJobs, useJobLibraryQuery, useSetJobFavorite, useUpsertJob } from '../api/jobQueries';
-import { BuildJobLibraryQuery, DefaultJobConditions, GetJobConditionValues, JobConditionGroups, LoadJobConditions, SaveJobConditions, ToggleJobCondition, type JobConditions } from '../api/jobConditions';
-import { ScoreRing } from '../components/ScoreRing';
+import { BuildJobLibraryQuery, DefaultJobConditions, GetJobConditionValues, JobCityMaxLength, JobCityOptions, JobConditionGroups, LoadJobConditions, SaveJobConditions, ToggleJobCondition, type JobConditionKey, type JobConditions } from '../api/jobConditions';
 import { JobCollectionPanel } from '../components/JobCollectionPanel';
 import { useJobCollection } from '../api/jobCollection';
 import { GetJobFormErrors } from '../jobForm';
@@ -36,7 +35,6 @@ function ToForm(job: Job): JobForm {
 
 /** 排序只作用于已入库岗位；目前没有可靠的源站发布时间，明确显示入库时间。 */
 const SortOptions: Array<{ value: SortMode; label: string }> = [
-  { value: 'score', label: '分数' },
   { value: 'salary', label: '薪资' },
   { value: 'created', label: '入库时间' },
 ];
@@ -52,7 +50,7 @@ function JobSelection({ checked, mixed = false, disabled, label, showLabel = fal
 }) {
   const ref = useRef<HTMLInputElement>(null);
   useEffect(() => { if (ref.current) ref.current.indeterminate = mixed; }, [mixed]);
-  return <label className="job-selection" title={label}>
+  return <label className="job-selection" data-native-title="true" title={label}>
     <input ref={ref} className="job-selection-circle" type="checkbox" checked={checked} disabled={disabled} aria-label={label} onChange={onChange} />
     {showLabel && <span>{label}</span>}
   </label>;
@@ -61,7 +59,7 @@ function JobSelection({ checked, mixed = false, disabled, label, showLabel = fal
 /** 应用不允许在窗口内跳转外部站点，因此岗位链接只提供只读文本与复制入口。 */
 function JobUrlLink({ url, onCopy }: { url: string; onCopy: (url: string) => void }) {
   return <span className="kv-link">
-    <span title={url}>{url}</span>
+    <span data-native-title="true" title={url}>{url}</span>
     <button type="button" aria-label="复制岗位链接" title="复制岗位链接" onClick={() => onCopy(url)}><Icon name="copy" size={13} /></button>
   </span>;
 }
@@ -82,7 +80,7 @@ function JobReadView({ job, onCopyUrl }: { job: Job; onCopyUrl: (url: string) =>
   ];
   return <>
     <section className="sec job-facts">
-      <ul className="job-fact-tags" aria-label="岗位基本信息">{facts.map((fact) => <li className="job-fact-tag" key={fact.label} title={`${fact.label}：${fact.detail || fact.value}`}>#{fact.value}</li>)}</ul>
+      <ul className="job-fact-tags" aria-label="岗位基本信息">{facts.map((fact) => <li className="job-fact-tag" key={fact.label} data-native-title="true" title={`${fact.label}：${fact.detail || fact.value}`}>#{fact.value}</li>)}</ul>
       <div className="job-fact-link"><span>岗位链接</span>{job.url ? <JobUrlLink url={job.url} onCopy={onCopyUrl} /> : <span>未填写</span>}</div>
     </section>
     <section className="sec job-description">
@@ -102,10 +100,11 @@ function JobsPage(_props: { onGoAssistant: () => void }) {
   const deleteJobs = useDeleteJobs({ onFailure: (message) => ShowNotice(`批量删除失败：${message}`, "error") });
 
   const [conditions, setConditions] = useState<JobConditions>(() => LoadJobConditions());
-  const [sortMode, setSortMode] = useState<SortMode>('score');
+  const [sortMode, setSortMode] = useState<SortMode>('created');
   const [sortDirection, setSortDirection] = useState<JobQuery['sortDirection']>('desc');
   const [view, setView] = useState<JobLibraryView>('all');
   const [draftConditions, setDraftConditions] = useState<JobConditions>(conditions);
+  const [customCityOpen, setCustomCityOpen] = useState(false);
   const [draftView, setDraftView] = useState<JobLibraryView>('all');
   const [page, setPage] = useState(1);
   const [filterOpen, setFilterOpen] = useState(false);
@@ -153,7 +152,8 @@ function JobsPage(_props: { onGoAssistant: () => void }) {
   // 翻页、排序保留选择；筛选范围变化后清空，避免误删隐藏在旧条件下的岗位。
   function UpdateConditions(next: JobConditions) { setConditions(next); setPage(1); setCheckedIds(new Set()); }
   const activeFilterCount = JobConditionGroups.filter((group) => GetJobConditionValues(conditions[group.key]).length > 0).length + (view === 'all' ? 0 : 1);
-  const draftFilterCount = JobConditionGroups.filter((group) => GetJobConditionValues(draftConditions[group.key]).length > 0).length + (draftView === 'all' ? 0 : 1);
+  const draftCity = draftConditions.city.trim() || DefaultJobConditions.city;
+  const draftFilterCount = JobConditionGroups.filter((group) => GetJobConditionValues(group.key === 'city' ? draftCity : draftConditions[group.key]).length > 0).length + (draftView === 'all' ? 0 : 1);
   function CloseFilters() { setFilterOpen(false); filterButtonRef.current?.focus({ preventScroll: true }); }
   function CloseFiltersOnEscape(event: ReactKeyboardEvent<HTMLElement>) {
     if (event.key !== 'Escape' || !filterOpen) return;
@@ -162,12 +162,27 @@ function JobsPage(_props: { onGoAssistant: () => void }) {
   function ToggleFilters() {
     if (filterOpen) { CloseFilters(); return; }
     setDraftConditions({ ...conditions, companySize: [...conditions.companySize] });
+    setCustomCityOpen(!JobCityOptions.some((option) => option.value === conditions.city));
     setDraftView(view); setFilterOpen(true);
   }
-  function ClearFilters() { setDraftConditions({ ...DefaultJobConditions, keyword: conditions.keyword }); setDraftView('all'); }
+  function SelectFilterOption(key: JobConditionKey, value: string) {
+    if (key === 'city') setCustomCityOpen(false);
+    setDraftConditions((current) => key === 'city' && customCityOpen
+      ? { ...current, city: value }
+      : ToggleJobCondition(current, key, value));
+  }
+  function ToggleCustomCity() {
+    setCustomCityOpen(!customCityOpen);
+    setDraftConditions((current) => ({ ...current, city: customCityOpen ? DefaultJobConditions.city : '' }));
+  }
+  function ClearFilters() {
+    setDraftConditions({ ...DefaultJobConditions, keyword: conditions.keyword });
+    setCustomCityOpen(false);
+    setDraftView('all');
+  }
   function ConfirmFilters() {
     // 标签选择与缓存、查询分离；确认时使用当前搜索词，避免面板打开期间的搜索被旧草稿覆盖。
-    UpdateConditions({ ...draftConditions, keyword: conditions.keyword });
+    UpdateConditions({ ...draftConditions, city: draftCity, keyword: conditions.keyword });
     setView(draftView); CloseFilters();
   }
   function UpdateSort(next: SortMode) {
@@ -264,7 +279,7 @@ function JobsPage(_props: { onGoAssistant: () => void }) {
               const nextDirection = option.value === 'created' ? descending ? '旧到新' : '新到旧' : descending ? '低到高' : '高到低';
               const label = `${option.label}：${active ? `当前${direction}，点击切换为${nextDirection}` : `点击按${direction}排序`}${option.value === 'salary' ? '；按月薪下限比较，面议及非月薪置后' : ''}`;
               return <button key={option.value} className={`job-sort-btn${active ? ' is-active' : ''}`} type="button" aria-pressed={active} aria-label={label} title={label} onClick={() => UpdateSort(option.value)}>
-                {option.label}<Icon name="arrow-up" size={13} className={descending ? 'is-descending' : ''} />
+                {option.label}<Icon name={descending ? 'caret-double-down' : 'caret-double-up'} size={13} />
               </button>;
             })}
           </div>
@@ -277,16 +292,23 @@ function JobsPage(_props: { onGoAssistant: () => void }) {
 
     <div className="jlib">
       {filterOpen && <div className="job-filter-panel" id={filterPanelId} role="region" aria-label="更多岗位筛选" onKeyDown={CloseFiltersOnEscape}>
-        <div className="job-filter-panel-head"><span>筛选条件</span><button type="button" className="job-filter-reset" disabled={!draftFilterCount} onClick={ClearFilters}>清空筛选</button></div>
+        <div className="job-filter-panel-head"><span>筛选条件</span><button type="button" className="job-filter-reset" disabled={!draftFilterCount && !customCityOpen} onClick={ClearFilters}>清空筛选</button></div>
         <div className="job-filter-groups">
           {JobConditionGroups.map((group) => {
             const selected = GetJobConditionValues(draftConditions[group.key]);
+            const isCity = group.key === 'city';
             return <div className="job-filter-row" key={group.key} role="group" aria-label={`${group.label}${group.multiple ? '（可多选）' : ''}`}>
               <span className="job-filter-label">{group.label}{group.multiple && <small>可多选</small>}</span>
-              <div className="job-filter-tags">{group.options.map((option) => {
-                const active = option.value === 'any' ? !selected.length : selected.includes(option.value);
-                return <button key={option.value} type="button" className={`job-filter-tag${active ? ' is-active' : ''}`} aria-pressed={active} onClick={() => setDraftConditions((current) => ToggleJobCondition(current, group.key, option.value))}>{option.label}</button>;
-              })}</div>
+              <div className="job-filter-tags">
+                {group.options.map((option) => {
+                  const active = !(isCity && customCityOpen) && (option.value === 'any' ? !selected.length : selected.includes(option.value));
+                  return <button key={option.value} type="button" className={`job-filter-tag${active ? ' is-active' : ''}`} aria-pressed={active} onClick={() => SelectFilterOption(group.key, option.value)}>{option.label}</button>;
+                })}
+                {isCity && <>
+                  <button type="button" className={`job-filter-tag${customCityOpen ? ' is-active' : ''}`} aria-expanded={customCityOpen} onClick={ToggleCustomCity}>其他</button>
+                  {customCityOpen && <input className="job-filter-city-input" type="text" aria-label="自定义城市" placeholder="输入城市" value={draftConditions.city} maxLength={JobCityMaxLength} autoFocus onChange={(event) => setDraftConditions((current) => ({ ...current, city: event.target.value }))} />}
+                </>}
+              </div>
             </div>;
           })}
           <div className="job-filter-row" role="group" aria-label="岗位视图">
@@ -303,14 +325,13 @@ function JobsPage(_props: { onGoAssistant: () => void }) {
               {selecting && <JobSelection checked={checkedIds.has(job.id)} disabled={deleteJobs.isPending} label={`选择岗位：${job.company} · ${job.title}`} onChange={() => ToggleJob(job.id)} />}
               <button className="jrow-open" type="button" aria-pressed={selectedJob?.id === job.id} onClick={() => setSelectedJobId(job.id)}>
                 <span className="jr-main">
-                  <span className="jr-heading"><span className="jr-role" title={job.title}>{job.title}</span><span className="jr-salary" title={job.salary || '薪资面议'}>{job.salary || '薪资面议'}</span></span>
-                  <span className="jr-co" title={job.company}>{job.company}</span>
+                  <span className="jr-heading"><span className="jr-role" data-native-title="true" title={job.title}>{job.title}</span><span className="jr-salary" data-native-title="true" title={job.salary || '薪资面议'}>{job.salary || '薪资面议'}</span></span>
+                  <span className="jr-co" data-native-title="true" title={job.company}>{job.company}</span>
                   <span className="jr-tags">
                     <span className="jtag">{job.city || '城市不限'}</span>
                     <span className="jtag">{ChannelLabel[job.channel]}</span>
                   </span>
                 </span>
-                <ScoreRing score={job.matchScore} />
               </button>
             </div>)
             : <div className="jrow-empty">{jobQuery.isPending ? '正在加载岗位…' : '没有匹配的岗位。可清空筛选，或手动添加、采集岗位。'}</div>}
@@ -330,12 +351,11 @@ function JobsPage(_props: { onGoAssistant: () => void }) {
               <div className="jd-salary">{selectedJob.salary || '薪资面议'}</div>
               <div className="jd-co">{selectedJob.company}</div>
             </div>
-            <ScoreRing score={selectedJob.matchScore} size="detail" />
             <div className="jd-actions">
-              <button className={`ghost-btn${selectedJob.favorite ? ' on' : ''}`} type="button" aria-pressed={selectedJob.favorite} onClick={() => ToggleFavorite(selectedJob)}>
-                <Icon name="heart" size={14} />{selectedJob.favorite ? '已收藏' : '收藏'}
+              <button className="icon-btn sm jd-favorite" type="button" aria-pressed={selectedJob.favorite} aria-label="收藏岗位" title={selectedJob.favorite ? '取消收藏' : '收藏岗位'} onClick={() => ToggleFavorite(selectedJob)}>
+                <Icon name="heart" size={16} weight={selectedJob.favorite ? 'fill' : 'regular'} />
               </button>
-              <button className="ghost-btn" type="button" onClick={() => OpenEdit(selectedJob)}><Icon name="pencil-simple" size={14} />编辑</button>
+              <button className="icon-btn sm" type="button" aria-label="编辑岗位" title="编辑岗位" onClick={() => OpenEdit(selectedJob)}><Icon name="pencil-simple" size={16} /></button>
             </div>
           </div>
           <JobReadView key={selectedJob.id} job={selectedJob} onCopyUrl={CopyJobUrl} />

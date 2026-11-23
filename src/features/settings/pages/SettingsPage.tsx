@@ -13,13 +13,16 @@ import { Icon } from '../../../shared/components/Icon';
 import { platformClient, Unwrap } from '../../../shared/platform/platformClient';
 import type { SettingsDraft } from '../../../types/domain';
 import type { AgentBrowserRuntimeStatus, AgentModuleConfiguration, BrowserExtensionSetup, CronBrowserAccessStatus } from '@avery/contracts';
+import { ArchivedConversationsPage } from './ArchivedConversationsPage';
+import { GoalModelTiersPanel } from '../components/GoalModelTiersPanel';
 
-export type SettingTab = 'general' | 'persona' | 'api' | 'browser' | 'developer';
+export type SettingTab = 'general' | 'persona' | 'api' | 'browser' | 'archive' | 'developer';
 export const SettingsTabs: Array<{ id: SettingTab; label: string }> = [
   { id: 'general', label: '常规' },
   { id: 'persona', label: '个性化' },
   { id: 'api', label: '模型配置' },
   { id: 'browser', label: '浏览器控制' },
+  { id: 'archive', label: '管理归档对话' },
   { id: 'developer', label: '开发者模式' },
 ];
 /** 浏览器显示名与后端引擎枚举一致，三者共用扩展接入流程。 */
@@ -30,12 +33,10 @@ const ProviderGroups = ['推荐', '自定义供应商'];
 /** 模型标记：与原型一致，推荐供应商用字母，自定义供应商用加号。 */
 /** 供应商标记：品牌供应商用品牌图标（mask 随文字色），自定义无品牌保留加号字符。 */
 const ProviderMarks: Record<SettingsDraft['provider'], ReactNode> = { DeepSeek: <Icon name="deepseek" size={13} />, 'Z.AI': <Icon name="zai" size={13} />, MIMO: <Icon name="mimo" size={13} />, '自定义': '+' };
-/** 个性化页选项：与原型 avery-settings.html 的 AV_STYLES / SIZES / ACCENTS / RESUMES 一一对应。 */
+/** 个性化页的头像底色选项。 */
 export const AvatarStyles = [{ key: 'default', label: '默认底色' }, { key: 'accent', label: '主题色' }, { key: 'ink', label: '反色' }] as const;
 /** 回复字号档位：默认档必须等于当前正文的 14px，「默认」才与实际渲染一致；App 用它给聊天气泡挂 CSS 变量。 */
 export const ChatFontSizes = [{ key: 'sm', label: '小', px: 13 }, { key: 'md', label: '默认', px: 14 }, { key: 'lg', label: '大', px: 16 }] as const;
-const AccentColors = [{ key: 'pine', label: '松绿', hex: '#17654f' }, { key: 'indigo', label: '靛蓝', hex: '#3f5bd6' }, { key: 'plum', label: '茄紫', hex: '#7a4fd0' }, { key: 'amber', label: '琥珀', hex: '#b45309' }] as const;
-const ResumeTemplates = [{ key: 'classic', label: '经典单栏' }, { key: 'compact', label: '双栏紧凑' }, { key: 'timeline', label: '时间线' }] as const;
 /** 自定义上下文的字数上限，与原型 CTX_MAX 一致。 */
 const ContextMax = 500;
 
@@ -113,7 +114,7 @@ function RenderGeneralSwitch({ label, description, checked, disabled = false, on
   </div>;
 }
 
-function SettingsPage({ onNavigateDeveloper, tab, requestedTab, tabRequestVersion, onTabChange }: { onNavigateDeveloper: () => void; tab: SettingTab; requestedTab: SettingTab; tabRequestVersion: number; onTabChange: (tab: SettingTab) => void }) {
+function SettingsPage({ onNavigateDeveloper, onClose, tab, onTabChange }: { onNavigateDeveloper: () => void; onClose: () => void; tab: SettingTab; onTabChange: (tab: SettingTab) => void }) {
   const { ShowNotice } = useUiStore();
   const queryClient = useQueryClient();
   const { settings, setSettings, saveSettingsNow } = useSettingsStore();
@@ -121,7 +122,7 @@ function SettingsPage({ onNavigateDeveloper, tab, requestedTab, tabRequestVersio
   const [refreshingModels, setRefreshingModels] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [showLeave, setShowLeave] = useState(false);
-  const [nextTab, setNextTab] = useState<SettingTab | null>(null);
+  const [nextTab, setNextTab] = useState<SettingTab | 'close' | 'open-developer' | null>(null);
   const [showClear, setShowClear] = useState(false);
   const [showMigrate, setShowMigrate] = useState(false);
   const [showResetModules, setShowResetModules] = useState(false);
@@ -223,32 +224,31 @@ function SettingsPage({ onNavigateDeveloper, tab, requestedTab, tabRequestVersio
   /** 写入本地模型目录并同步落缓存；目录是对话页过滤可选模型的依据。写入前清洗跨供应商残留模型。 */
   function UpdateCatalog(next: ModelCatalog): void {
     const sanitized = SanitizeModelCatalog(next);
+    if (JSON.stringify(sanitized) === JSON.stringify(catalogRef.current)) return;
     catalogRef.current = sanitized;
     setCatalog(sanitized);
     SaveModelCatalog(sanitized);
   }
   /** 从官方 /models 同步供应商模型列表（DeepSeek 与 MiMo）；结果并入本地目录，不覆盖用户编辑过的模型。 */
-  async function RefreshProviderModels(provider: ModelCatalogProviderId, manual = false) {
+  async function RefreshProviderModels(provider: ModelCatalogProviderId) {
     if (!IsDesktopAgentAvailable()) return;
     setRefreshingModels(true);
     try {
       const result = await GetProviderModels(provider);
       // 结果必须来自请求的供应商：不一致时（例如后端是没有转发 provider 参数的旧版本）丢弃而不是并入。
       if (!IsSyncedModelsTrusted(provider, result)) {
-        if (manual) ShowNotice('模型列表与所选供应商不一致，已忽略本次结果；请重启应用后重试', "error");
+        ShowNotice('模型列表与所选供应商不一致，已忽略本次结果；请重启应用后重试', "error");
         return;
       }
       if (result.models.length) UpdateCatalog(MergeModelConfigurations(MergeProviderModels(catalogRef.current, provider, result.models), provider, result.modelConfigurations ?? []));
-      if (manual) ShowNotice(result.models.length ? '已同步最新模型列表' : '未获取到可用模型，已保留现有列表', result.models.length ? 'success' : 'info');
+      ShowNotice(result.models.length ? '已同步最新模型列表' : '未获取到可用模型，已保留现有列表', result.models.length ? 'success' : 'info');
     } catch (error) {
-      if (manual) ShowNotice(error instanceof Error ? error.message : '模型列表刷新失败', "error");
+      ShowNotice(error instanceof Error ? error.message : '模型列表刷新失败', "error");
     } finally {
       setRefreshingModels(false);
     }
   }
-  useEffect(() => {
-    if (tab === 'api' && (draft.provider === 'DeepSeek' || draft.provider === 'MIMO')) void RefreshProviderModels(draft.provider);
-  }, [tab, draft.provider]);
+  // 进入页签或切换厂商只读取已保存配置；向厂商同步模型列表必须由用户手动触发。
   /** 读取主进程侧的供应商目录与当前生效配置；进入页签与页头刷新按钮共用同一份逻辑。 */
   async function LoadProviderConfiguration() {
     const previousCatalog = catalogRef.current;
@@ -278,8 +278,7 @@ function SettingsPage({ onNavigateDeveloper, tab, requestedTab, tabRequestVersio
     setProviderConfigurations(Object.fromEntries(backendCatalog.providers.filter((item) => item.configured).map((item) => [item.provider, item])));
     const status = await GetAgentStatus();
     const runtimeProvider = status.provider === '自定义' ? '自定义' : status.provider === 'Z.AI' ? 'Z.AI' : status.provider === 'MIMO' ? 'MIMO' : 'DeepSeek';
-    // 宿主目录只提供供应商与可用模型：已有的本地模型不被覆盖，重新加载还能找回被删掉的官方供应商；
-    // 宿主返回的上下文窗口与思考模式是当前生效值，要回写到对应模型，避免进入设置页就把用户配置重置成默认值。
+    // 回读本地能力与生效值；初始化后的模型列表由用户维护。
     const merged = MergeBackendProviders(catalogRef.current, backendCatalog.providers);
     const runtimeEntry = backendCatalog.providers.find((item) => item.provider === runtimeProvider);
     UpdateCatalog(ApplyModelRuntime(merged, runtimeProvider, status.model, { contextWindow: status.contextLimit, thinking: runtimeEntry?.thinkingEnabled }));
@@ -354,7 +353,7 @@ function SettingsPage({ onNavigateDeveloper, tab, requestedTab, tabRequestVersio
     setDirty(true);
   }
   // 只剩模型配置页还走显式保存：常规/个性化/浏览器控制/开发者页都是即改即存，不经过这里。
-  async function SaveSettings() {
+  async function SaveSettings(customContext = draft.customContext) {
     const activeParameters = ResolveActiveModelParameters();
     if (!activeParameters) { ShowNotice('请先在模型列表里添加或选择一个模型', "error"); return false; }
     ShowNotice('正在保存 API 配置…', 'pending');
@@ -380,7 +379,7 @@ function SettingsPage({ onNavigateDeveloper, tab, requestedTab, tabRequestVersio
     // API Key 只保留在当前表单内存与主进程 safeStorage，不能写入全局工作空间缓存。
     const { apiKey: _apiKey, ...safeDraft } = draft;
     try {
-      await saveSettingsNow({ ...safeDraft, apiKey: '' });
+      await saveSettingsNow({ ...safeDraft, customContext, apiKey: '' });
     } catch (error) {
       ShowNotice(error instanceof Error ? error.message : '设置持久化失败', 'error');
       return false;
@@ -388,13 +387,24 @@ function SettingsPage({ onNavigateDeveloper, tab, requestedTab, tabRequestVersio
     setDirty(false); ShowNotice('API 配置与上下文限制已保存', 'success');
     return true;
   }
-  function CommitTab(target: SettingTab) { onTabChange(target); }
+  function CommitTab(target: SettingTab | 'close' | 'open-developer') {
+    if (target === 'close') onClose();
+    else if (target === 'open-developer') onNavigateDeveloper();
+    else onTabChange(target);
+  }
   // 个性化页的自定义上下文是显式保存的草稿：与手动保存页签一起纳入离开确认。
-  function SwitchTab(target: SettingTab) { if (target === tab) return; if (!dirty && !contextDirty) { CommitTab(target); return; } setNextTab(target); setShowLeave(true); }
+  function SwitchTab(target: SettingTab | 'close' | 'open-developer') { if (target === tab) return; if (!dirty && !contextDirty) { CommitTab(target); return; } setNextTab(target); setShowLeave(true); }
   function DiscardAndSwitch() { if (!nextTab) return; setDraft(NormalizeProviderSettings(settings)); setContextDraft(settings.customContext ?? ''); setDirty(false); CommitTab(nextTab); setNextTab(null); setShowLeave(false); }
-  useEffect(() => {
-    if (tabRequestVersion > 0) SwitchTab(requestedTab);
-  }, [tabRequestVersion]);
+  async function SaveAndLeave() {
+    // 关闭弹窗前等待落盘，避免防抖保存尚未完成就丢掉草稿。
+    if (dirty) { if (!await SaveSettings(contextDraft)) return; }
+    else if (contextDirty) {
+      try { await saveSettingsNow({ ...settings, customContext: contextDraft }); }
+      catch (error) { ShowNotice(error instanceof Error ? error.message : '设置保存失败', 'error'); return; }
+    }
+    if (nextTab) CommitTab(nextTab);
+    setNextTab(null); setShowLeave(false);
+  }
   async function ClearDeveloperObservability() {
     if (IsDesktopAgentAvailable()) await ClearAgentObservability();
     setShowClear(false);
@@ -513,6 +523,17 @@ function SettingsPage({ onNavigateDeveloper, tab, requestedTab, tabRequestVersio
     try {
       // 选择项使用防抖保存；进入安装流程前先落盘，后续检测才能使用同一个引擎。
       await saveSettingsNow(settings);
+      if (engine === 'ego') {
+        const setup = await Unwrap(platformClient.desktop.OpenEgoBrowserSetup());
+        setBrowserSetup(null);
+        if (setup.action === 'download_opened') ShowNotice('已打开 ego lite 下载页，安装并完成首次引导后再接入。', 'info');
+        else {
+          setBrowserRuntime(setup.status);
+          const connected = setup.status.running && setup.status.state === 'ready';
+          ShowNotice(connected ? 'ego lite 连接成功，执行网页任务时会自动创建工作区。' : setup.status.message ?? '请完成 ego lite 首次引导后重新检测。', connected ? 'success' : 'error');
+        }
+        return;
+      }
       const setup = await Unwrap(platformClient.desktop.OpenBrowserExtensionSetup(engine));
       setBrowserSetup(setup);
     } catch (error) { ShowNotice(error instanceof Error ? error.message : '无法打开浏览器接入引导', 'error'); }
@@ -753,7 +774,7 @@ function SettingsPage({ onNavigateDeveloper, tab, requestedTab, tabRequestVersio
             <div className="set-field">
               <span className="lb">API 格式</span>
               {/* 推荐供应商固定使用 Chat Completions：选择器保留展示但不可操作。 */}
-              {provider.custom ? <div className="menu-wrap" ref={apiFormatRef}>
+              {provider.custom ? <div className="menu-wrap" ref={apiFormatRef} onKeyDown={(event) => { if (event.key === 'Escape' && apiFormatOpen) { event.preventDefault(); event.stopPropagation(); setApiFormatOpen(false); } }}>
                 <button className="sel-btn menu-trigger" type="button" aria-expanded={apiFormatOpen} aria-haspopup="true" onClick={() => setApiFormatOpen((current) => !current)}>
                   <span className="v">{apiFormatLabel}</span>
                   <Icon name="chevron-down" className="chev" size={11} />
@@ -764,7 +785,7 @@ function SettingsPage({ onNavigateDeveloper, tab, requestedTab, tabRequestVersio
                     <Icon name="check" size={14} className="tick" />
                   </button>)}
                 </div>}
-              </div> : <button className="sel-btn" type="button" disabled aria-disabled="true" title="推荐供应商固定使用 Chat Completions，不能修改接口格式">
+              </div> : <button className="sel-btn" type="button" disabled aria-disabled="true" title="推荐供应商不可修改接口格式">
                 <span className="v">{apiFormatLabel}</span>
                 <Icon name="chevron-down" className="chev" size={11} />
               </button>}
@@ -779,7 +800,7 @@ function SettingsPage({ onNavigateDeveloper, tab, requestedTab, tabRequestVersio
             <div className="set-field">
               <span className="lb-row">
                 <span className="lb">模型列表</span>
-                <button className={`icon-btn sm lb-get${refreshingModels ? ' is-spinning' : ''}`} type="button" aria-label="获取模型列表" title={canSyncModels ? '获取模型列表' : '仅 DeepSeek 与 MiMo 支持从官方接口同步模型列表'} disabled={!canSyncModels || refreshingModels} onClick={() => void RefreshProviderModels(provider.id, true)}><Icon name="recovery" size={14} /></button>
+                <button className={`icon-btn sm lb-get${refreshingModels ? ' is-spinning' : ''}`} type="button" aria-label="获取模型列表" title={canSyncModels ? '获取模型列表' : '仅 DeepSeek / MiMo 可同步'} disabled={!canSyncModels || refreshingModels} onClick={() => void RefreshProviderModels(provider.id)}><Icon name="recovery" size={14} /></button>
               </span>
               <div className="set-models">
                 {provider.models.length ? provider.models.map((model, index) => {
@@ -800,6 +821,12 @@ function SettingsPage({ onNavigateDeveloper, tab, requestedTab, tabRequestVersio
               </div>
               <button className="quiet-btn set-add" type="button" onClick={() => OpenModelDialog(-1)}><Icon name="plus" size={15} />添加模型</button>
             </div>
+            {IsDesktopAgentAvailable() && <GoalModelTiersPanel reload={providerReloading} models={catalog.providers.flatMap(item => {
+              const saved = providerConfigurations[item.id];
+              return !saved || !item.enabled ? [] : item.models.map(model => ({
+                provider: item.id, model: model.id, baseUrl: saved.baseUrl,
+              }));
+            })} />}
           </div>
         </div>
       </div>
@@ -883,10 +910,10 @@ function SettingsPage({ onNavigateDeveloper, tab, requestedTab, tabRequestVersio
       footer={<>
         <DialogButton onClick={() => setShowLeave(false)}>继续编辑</DialogButton>
         <DialogButton onClick={DiscardAndSwitch}>放弃修改</DialogButton>
-        <DialogButton tone="accent" onClick={async () => { if (contextDirty) CommitContext(); if (await SaveSettings() && nextTab) CommitTab(nextTab); setNextTab(null); setShowLeave(false); }}>保存并切换</DialogButton>
+        <DialogButton tone="accent" onClick={() => void SaveAndLeave()}>{nextTab === 'close' ? '保存并关闭' : '保存并切换'}</DialogButton>
       </>}
     >
-      切换设置项前，请选择如何处理当前修改。
+      {nextTab === 'close' ? '关闭设置前，请选择如何处理当前修改。' : '切换设置项前，请选择如何处理当前修改。'}
     </Modal>;
   }
 
@@ -894,253 +921,260 @@ function SettingsPage({ onNavigateDeveloper, tab, requestedTab, tabRequestVersio
   // 个性化页：上下文是否相对已保存值有改动；预览字号取当前档位的像素值。
   const contextDirty = contextDraft !== (settings.customContext ?? '');
   const replyFontSizePx = (ChatFontSizes.find((size) => size.key === (settings.chatFontSize ?? 'md')) ?? ChatFontSizes[1]).px;
-  // 常规与个性化与模型配置同一版式：set-root 自带留白与最大宽度，标题行右侧放常规页的恢复默认。
-  if (tab === 'general' || tab === 'persona') {
-    return <div className="settings-page is-set-page"><div className="set-root">
-      <div className="set-head">
-        <h1>{current.label}</h1>
-        {tab === 'general' && <button className="quiet-btn gn-reset" type="button" onClick={() => void ResetGeneralDefaults()}><Icon name="recovery" size={14} />恢复默认</button>}
-      </div>
-      {tab === 'general' ? <div className="gn-card">
-        <div className="gn-cap">通用</div>
-        <div className="gn-row">
-          <div className="gn-txt"><span className="gn-t">语言</span><span className="gn-d">当前提供简体中文，英文界面待支持。</span></div>
-          {/* 展示实际支持的中文，不自动覆盖磁盘中尚未生效的其他语言偏好。 */}
-          <div className="gn-ctl"><Select value="zh" onChange={() => ApplySettings({ language: 'zh' })} ariaLabel="语言" options={[{ value: 'zh', label: '简体中文' }, { value: 'en', label: 'English（待支持）', disabled: true }]} /></div>
+  function RenderSettingsContent() {
+    if (tab === 'archive') return <ArchivedConversationsPage />;
+    // 常规与个性化与模型配置同一版式：set-root 自带留白与最大宽度，标题行右侧放常规页的恢复默认。
+    if (tab === 'general' || tab === 'persona') {
+      return <div className="settings-page is-set-page"><div className="set-root">
+        <div className="set-head">
+          <h1>{current.label}</h1>
+          {tab === 'general' && <button className="quiet-btn gn-reset" type="button" onClick={() => void ResetGeneralDefaults()}><Icon name="recovery" size={14} />恢复默认</button>}
         </div>
-        <div className="gn-row">
-          <div className="gn-txt"><span className="gn-t">启动时打开</span><span className="gn-d">每次打开应用先停在哪里。</span></div>
-          <div className="gn-ctl"><Select value={settings.startPage ?? 'last'} onChange={(value) => ApplySettings({ startPage: value as 'last' | 'home' })} ariaLabel="启动时打开" options={[{ value: 'last', label: '恢复上次的对话' }, { value: 'home', label: '打开工作区首页' }]} /></div>
+        {tab === 'general' ? <div className="gn-card">
+          <div className="gn-cap">通用</div>
+          <div className="gn-row">
+            <div className="gn-txt"><span className="gn-t">语言</span><span className="gn-d">当前提供简体中文，英文界面待支持。</span></div>
+            {/* 展示实际支持的中文，不自动覆盖磁盘中尚未生效的其他语言偏好。 */}
+            <div className="gn-ctl"><Select value="zh" onChange={() => ApplySettings({ language: 'zh' })} ariaLabel="语言" options={[{ value: 'zh', label: '简体中文' }, { value: 'en', label: 'English（待支持）', disabled: true }]} /></div>
+          </div>
+          <div className="gn-row">
+            <div className="gn-txt"><span className="gn-t">启动时打开</span><span className="gn-d">每次打开应用先停在哪里。</span></div>
+            <div className="gn-ctl"><Select value={settings.startPage ?? 'last'} onChange={(value) => ApplySettings({ startPage: value as 'last' | 'home' })} ariaLabel="启动时打开" options={[{ value: 'last', label: '恢复上次的对话' }, { value: 'home', label: '打开工作区首页' }]} /></div>
+          </div>
+          <div className="gn-cap">工作空间</div>
+          <div className="gn-row">
+            <div className="gn-txt">
+              <span className="gn-line"><span className="gn-t">内容存放路径</span>{workspacePath && <span className="gn-path" data-native-title="true" title={workspacePath}>{workspacePath}</span>}</span>
+              <span className="gn-d">对话记录、附件和导出的文件都放在这个目录下；更改会走工作空间迁移流程。</span>
+            </div>
+            <div className="gn-ctl">
+              <button className="icon-btn" type="button" aria-label="打开目录" title="打开目录" onClick={() => void OpenWorkspaceDirectoryHandler()}><Icon name="folder-open" size={16} /></button>
+              <button className="quiet-btn" type="button" onClick={() => setShowMigrate(true)}><Icon name="folder-simple" size={15} />更改</button>
+            </div>
+          </div>
+          <div className="gn-cap">通知</div>
+          <RenderGeneralSwitch label="任务通知" description="应用未聚焦时，提醒任务完成、待确认和待回答的问题。" checked={settings.notifyOnComplete ?? true} onToggle={() => ApplySettings({ notifyOnComplete: !(settings.notifyOnComplete ?? true) })} />
+          <RenderGeneralSwitch label="通知提示音" description="通知出现时播放柔和短音，关闭任务通知后不播放。" checked={settings.notifySound ?? true} disabled={!(settings.notifyOnComplete ?? true)} onToggle={() => ApplySettings({ notifySound: !(settings.notifySound ?? true) })} />
+          <div className="gn-cap">更新</div>
+          <RenderGeneralSwitch label="自动下载更新" description="发现新版本后在后台下载，由你确认重启安装。" checked={settings.autoUpdate ?? true} onToggle={() => ApplySettings({ autoUpdate: !(settings.autoUpdate ?? true) })} />
+          <div className="gn-row">
+            <div className="gn-txt"><span className="gn-t">当前版本</span><span className="gn-d">Avery {__APP_VERSION__}</span></div>
+            <div className="gn-ctl"><button className="quiet-btn" type="button" onClick={CheckForUpdatesNotice}><Icon name="refresh" size={14} />检查更新</button></div>
+          </div>
+          <div className="gn-cap">系统</div>
+          <RenderGeneralSwitch label="开机时自动启动" description="登录系统后在后台启动，随时可以唤起。" checked={settings.autoLaunch ?? false} onToggle={() => void ToggleAutoLaunch()} />
+          <RenderGeneralSwitch label="关闭主窗口时最小化到托盘" description="点关闭按钮不退出应用，正在跑的任务继续。" checked={settings.closeToTray ?? true} onToggle={() => ApplySettings({ closeToTray: !(settings.closeToTray ?? true) })} />
+        </div> : <div className="gn-card">
+          <div className="gn-cap">头像与昵称</div>
+          <div className="gn-row">
+            <span className="avatar lg persona-avatar" data-av={settings.avatarStyle ?? 'default'} aria-hidden="true">{settings.avatarImage ? <img src={settings.avatarImage} alt="" /> : InitialOf(settings.nickname)}</span>
+            <div className="gn-txt">
+              <span className="gn-t">头像</span>
+              <span className="gn-d">不上传图片时，用昵称的首个字做默认头像，挑一套底色就行。</span>
+            </div>
+            <div className="gn-ctl pf-avs">
+              {AvatarStyles.map((style) => <button key={style.key} className="av-sw" type="button" data-av={style.key} aria-pressed={style.key === (settings.avatarStyle ?? 'default')} aria-label={style.label} title={style.label} onClick={() => ApplySettings({ avatarStyle: style.key })} />)}
+              <button className="quiet-btn" type="button" onClick={() => avatarFileRef.current?.click()}><Icon name="upload-simple" size={14} />上传图片</button>
+              {settings.avatarImage ? <button className="quiet-btn" type="button" onClick={() => ApplySettings({ avatarImage: '' })}>移除</button> : null}
+            </div>
+            <input ref={avatarFileRef} type="file" accept="image/*" className="pf-file" aria-hidden="true" tabIndex={-1} onChange={(event) => { void UploadAvatarHandler(event.target.files?.[0]); event.target.value = ''; }} />
+          </div>
+          <div className="gn-row">
+            <div className="gn-txt">
+              <span className="gn-t">昵称</span>
+              <span className="gn-d">侧边栏和欢迎页显示的名字，改完即生效。</span>
+            </div>
+            <div className="gn-ctl"><input className="set-inp pf-name" value={settings.nickname} maxLength={20} spellCheck={false} autoComplete="off" aria-label="昵称" onChange={(event) => ApplySettings({ nickname: event.target.value })} /></div>
+          </div>
+          <div className="gn-cap">自定义上下文</div>
+          <div className="gn-row stack">
+            <div className="gn-txt">
+              <span className="gn-t">语气与说话方式</span>
+              <span className="gn-d">写下希望 Avery 保持的语气、称呼和回答习惯，每次聊天都会带上这段内容。最多 {ContextMax} 字。</span>
+            </div>
+            <textarea className="set-inp pf-ctx" maxLength={ContextMax} rows={6} aria-label="自定义上下文" placeholder="例如：先给结论，再讲理由，语气像一个熟悉的同事。" value={contextDraft} onChange={(event) => setContextDraft(event.target.value)} onKeyDown={(event) => { if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') { event.preventDefault(); CommitContext(); } }} />
+            <div className="pf-ctx-foot">
+              <span className={`pf-count${contextDraft.length >= ContextMax ? ' full' : ''}`}>{contextDraft.length} / {ContextMax}</span>
+              <span className={`pf-state${contextDirty ? ' dirty' : ''}`}>{contextDirty ? '有改动还没保存' : '已保存'}</span>
+              <button className="pf-save" type="button" disabled={!contextDirty} onClick={CommitContext}>保存</button>
+            </div>
+          </div>
+          <div className="gn-cap">外观</div>
+          <div className="gn-row">
+            <div className="gn-txt"><span className="gn-t">字号大小</span><span className="gn-d">对话里 Avery 回复的字号，选完下面的预览跟着变。</span></div>
+            <div className="gn-ctl">
+              <div className="seg pf-seg" role="radiogroup" aria-label="字号大小">
+                {ChatFontSizes.map((size) => <button key={size.key} className={`seg-i${size.key === (settings.chatFontSize ?? 'md') ? ' sel' : ''}`} type="button" role="radio" aria-checked={size.key === (settings.chatFontSize ?? 'md')} aria-label={size.label} onClick={() => ApplySettings({ chatFontSize: size.key })}>{size.label}</button>)}
+              </div>
+            </div>
+          </div>
+          <div className="gn-preview" style={{ '--gp-fs': `${replyFontSizePx}px` } as CSSProperties}>
+            <div className="gp-head"><span className="lb">预览</span><span className="gp-size">{replyFontSizePx}px</span></div>
+            <div className="gp-msg">
+              <span className="avatar" aria-hidden="true">{InitialOf(settings.nickname)}</span>
+              <p>我把这份简历的实习经历按时间倒序重排了一遍，删掉了两处重复的描述。要我再压到一页吗？</p>
+            </div>
+          </div>
+        </div>}
+        {/* 迁移确认弹窗跟着常规页渲染：触发按钮在常规页的工作空间行，此前被留在旧版最终 return 里导致点「更改」无响应。 */}
+        <Modal
+          open={showMigrate}
+          title="确认迁移工作空间？"
+          onClose={() => setShowMigrate(false)}
+          footer={<>
+            <DialogButton onClick={() => setShowMigrate(false)}>取消</DialogButton>
+            <DialogButton tone="accent" onClick={() => void MigrateWorkspaceHandler()}>确认迁移</DialogButton>
+          </>}
+        >
+          将复制并校验数据后切换到目标空目录，原工作空间会保留。Agent 运行期间无法迁移。
+        </Modal>
+      </div></div>;
+    }
+    if (tab === 'browser') {
+      // 旧设置值统一按 Edge 兜底。
+      const engine = settings.browserEngine === 'ego' ? 'ego' : settings.browserEngine === 'chrome' ? 'chrome' : 'edge';
+      const engineLabel = BrowserEngineLabels[engine];
+      const needCopy = engine === 'ego' ? '打开 ego lite 并完成首次引导，再点击“检测状态”；执行网页任务时会自动创建独立工作区。'
+        : `在 ${engineLabel} 里加载 Avery Browser 扩展，再点击“检测状态”；Avery 只操作自己创建的任务标签页，不读取其他个人页面，关闭任务也不会关闭浏览器。`;
+      let statusCopy: string;
+      let pill: 'busy' | 'on' | 'off' | 'undetected';
+      if (browserSetupBusy) { statusCopy = engine === 'ego' ? '正在启动并连接 ego lite。' : `正在打开 ${engineLabel} 的扩展接入引导。`; pill = 'busy'; }
+      else if (browserRuntimeBusy) { statusCopy = `正在检测 ${engineLabel} 连接。`; pill = 'busy'; }
+      else if (!browserRuntime) { statusCopy = `还没有检测过。${needCopy}`; pill = 'undetected'; }
+      else if (browserRuntime.running && browserRuntime.state === 'ready') { statusCopy = `已连接。${browserRuntime.currentUrl || `已经连上 ${BrowserEngineLabels[browserRuntime.engine]}，可以执行网页任务。`}`; pill = 'on'; }
+      else if (browserRuntime.state === 'not_installed') { statusCopy = `没有连上。${BrowserEngineLabels[browserRuntime.engine]} 未安装或无法启动。`; pill = 'off'; }
+      else if (browserRuntime.state === 'unhealthy') { statusCopy = `连接异常。${browserRuntime.message || '可以再检测一次。'}`; pill = 'off'; }
+      else { statusCopy = `还没有连接。${browserRuntime.message || needCopy}`; pill = 'off'; }
+      const pillClass = pill === 'on' ? 'on' : pill === 'busy' ? 'busy' : 'off';
+      const pillText = pill === 'busy' ? '检测中' : pill === 'on' ? '已连接' : pill === 'undetected' ? '未检测' : '未连接';
+      return <div className="settings-page is-set-page"><div className="set-root">
+        <div className="set-head"><h1>浏览器控制</h1></div>
+        <div className="gn-card browser-settings-card">
+          <div className="gn-cap">浏览器</div>
+          <div className="gn-row">
+            <div className="gn-txt"><span className="gn-t">使用的浏览器</span><span className="gn-d">执行网页任务时打开哪一个，切换后立刻生效。</span></div>
+            <div className="gn-ctl"><Select className="browser-engine-select" value={engine} disabled={browserSetupBusy} onChange={(value) => {
+              // 切换引擎后旧状态不再代表当前选择：作废在途刷新并把状态复位为未检测。
+              browserRuntimeRequest.current += 1;
+              setBrowserRuntimeBusy(false);
+              ApplySettings({ browserEngine: value as 'chrome' | 'edge' | 'ego' });
+              setBrowserRuntime(null);
+              setBrowserSetup(null);
+            }} ariaLabel="使用的浏览器" options={(['chrome', 'edge', 'ego'] as const).map((value) => ({ value, label: value === 'ego' ? 'ego lite（推荐）' : BrowserEngineLabels[value] }))} /></div>
+          </div>
+          <div className="gn-row">
+            <div className="gn-txt"><span className="gn-t">{engine === 'ego' ? '接入 ego lite' : '接入 Avery 扩展'}</span><span className="gn-d">{engine === 'ego' ? '启动 ego lite 并检测连接，网页任务会在专属工作区中执行。' : `打开 ${engineLabel} 的扩展管理页和随附扩展目录，按提示完成安装。`}</span></div>
+            <div className="gn-ctl"><button className="quiet-btn" type="button" disabled={browserSetupBusy || browserRuntimeBusy} onClick={() => void StartBrowserSetup()}><Icon name={browserSetupBusy ? 'loading' : 'plugs-connected'} size={14} />{browserSetupBusy ? '正在接入' : '一键接入'}</button></div>
+          </div>
+          {browserSetup && browserSetup.engine === engine && !(browserRuntime?.running && browserRuntime.state === 'ready') && <div className="gn-row stack" role="region" aria-label="扩展安装步骤">
+            <div className="gn-txt"><span className="gn-t">在 {engineLabel} 中完成安装</span>
+              <span className="gn-d">① 开启「开发者模式」。</span>
+              <span className="gn-d">② 点击「{engine === 'edge' ? '加载解压缩的扩展' : '加载已解压的扩展程序'}」，选择下方目录。</span>
+              <span className="gn-d">③ 安装 Avery Browser 后，回到这里点击「检测状态」完成连接。</span>
+              {!browserSetup.directoryOpened && <span className="gn-d">扩展目录未能自动打开，请复制路径并粘贴到文件夹选择窗口。</span>}
+            </div>
+            <div className="gn-line"><span className="gn-path">{browserSetup.extensionDirectory}</span><button className="quiet-btn" type="button" onClick={() => void CopyExtensionDirectory()}>复制目录</button></div>
+          </div>}
+          <div className="gn-row">
+            <div className="gn-txt"><span className="gn-t">连接状态</span><span className="gn-d">{statusCopy}</span></div>
+            <div className="gn-ctl">
+              <span className={`pill ${pillClass}`}>{pill === 'busy' && <Icon name="loading" size={13} />}{pillText}</span>
+              <button className="quiet-btn" type="button" disabled={browserRuntimeBusy || browserSetupBusy} onClick={() => void RefreshBrowserRuntime(true)}><Icon name="plugs-connected" size={14} />检测状态</button>
+            </div>
+          </div>
+          <div className="gn-cap">行为</div>
+          <RenderGeneralSwitch label="任务结束后自动关闭标签页" description="对新浏览器任务生效：开启则结束后关闭任务页面；关闭则保留并交还你操作。" checked={settings.closeTaskTabs ?? true} onToggle={() => ApplySettings({ closeTaskTabs: !(settings.closeTaskTabs ?? true) })} />
         </div>
-        <div className="gn-cap">工作空间</div>
-        <div className="gn-row">
-          <div className="gn-txt">
-            <span className="gn-line"><span className="gn-t">内容存放路径</span>{workspacePath && <span className="gn-path" title={workspacePath}>{workspacePath}</span>}</span>
-            <span className="gn-d">对话记录、附件和导出的文件都放在这个目录下；更改会走工作空间迁移流程。</span>
-          </div>
-          <div className="gn-ctl">
-            <button className="icon-btn" type="button" aria-label="打开目录" title="打开目录" onClick={() => void OpenWorkspaceDirectoryHandler()}><Icon name="folder-open" size={16} /></button>
-            <button className="quiet-btn" type="button" onClick={() => setShowMigrate(true)}><Icon name="folder-simple" size={15} />更改</button>
-          </div>
-        </div>
-        <div className="gn-cap">通知</div>
-        <RenderGeneralSwitch label="任务完成通知" description="长任务跑完后弹一条系统通知，切到别的窗口也不会错过。" checked={settings.notifyOnComplete ?? true} onToggle={() => ApplySettings({ notifyOnComplete: !(settings.notifyOnComplete ?? true) })} />
-        <RenderGeneralSwitch label="完成时播放提示音" description="通知出现时带一声轻提示。关掉上面的通知，这一项也不再生效。" checked={settings.notifySound ?? true} disabled={!(settings.notifyOnComplete ?? true)} onToggle={() => ApplySettings({ notifySound: !(settings.notifySound ?? true) })} />
-        <div className="gn-cap">更新</div>
-        <RenderGeneralSwitch label="自动下载更新" description="发现新版本后在后台下载，由你确认重启安装。" checked={settings.autoUpdate ?? true} onToggle={() => ApplySettings({ autoUpdate: !(settings.autoUpdate ?? true) })} />
-        <div className="gn-row">
-          <div className="gn-txt"><span className="gn-t">当前版本</span><span className="gn-d">Avery {__APP_VERSION__}</span></div>
-          <div className="gn-ctl"><button className="quiet-btn" type="button" onClick={CheckForUpdatesNotice}><Icon name="refresh" size={14} />检查更新</button></div>
-        </div>
-        <div className="gn-cap">系统</div>
-        <RenderGeneralSwitch label="开机时自动启动" description="登录系统后在后台启动，随时可以唤起。" checked={settings.autoLaunch ?? false} onToggle={() => void ToggleAutoLaunch()} />
-        <RenderGeneralSwitch label="关闭主窗口时最小化到托盘" description="点关闭按钮不退出应用，正在跑的任务继续。" checked={settings.closeToTray ?? true} onToggle={() => ApplySettings({ closeToTray: !(settings.closeToTray ?? true) })} />
-      </div> : <div className="gn-card">
-        <div className="gn-cap">头像与昵称</div>
-        <div className="gn-row">
-          <span className="avatar lg persona-avatar" data-av={settings.avatarStyle ?? 'default'} aria-hidden="true">{settings.avatarImage ? <img src={settings.avatarImage} alt="" /> : InitialOf(settings.nickname)}</span>
-          <div className="gn-txt">
-            <span className="gn-t">头像</span>
-            <span className="gn-d">不上传图片时，用昵称的首个字做默认头像，挑一套底色就行。</span>
-          </div>
-          <div className="gn-ctl pf-avs">
-            {AvatarStyles.map((style) => <button key={style.key} className="av-sw" type="button" data-av={style.key} aria-pressed={style.key === (settings.avatarStyle ?? 'default')} aria-label={style.label} title={style.label} onClick={() => ApplySettings({ avatarStyle: style.key })} />)}
-            <button className="quiet-btn" type="button" onClick={() => avatarFileRef.current?.click()}><Icon name="upload-simple" size={14} />上传图片</button>
-            {settings.avatarImage ? <button className="quiet-btn" type="button" onClick={() => ApplySettings({ avatarImage: '' })}>移除</button> : null}
-          </div>
-          <input ref={avatarFileRef} type="file" accept="image/*" className="pf-file" aria-hidden="true" tabIndex={-1} onChange={(event) => { void UploadAvatarHandler(event.target.files?.[0]); event.target.value = ''; }} />
-        </div>
-        <div className="gn-row">
-          <div className="gn-txt">
-            <span className="gn-t">昵称</span>
-            <span className="gn-d">侧边栏和欢迎页显示的名字，改完即生效。</span>
-          </div>
-          <div className="gn-ctl"><input className="set-inp pf-name" value={settings.nickname} maxLength={20} spellCheck={false} autoComplete="off" aria-label="昵称" onChange={(event) => ApplySettings({ nickname: event.target.value })} /></div>
-        </div>
-        <div className="gn-cap">自定义上下文</div>
-        <div className="gn-row stack">
-          <div className="gn-txt">
-            <span className="gn-t">语气与说话方式</span>
-            <span className="gn-d">写下希望 Avery 保持的语气、称呼和回答习惯，每次聊天都会带上这段内容。最多 {ContextMax} 字。</span>
-          </div>
-          <textarea className="set-inp pf-ctx" maxLength={ContextMax} rows={6} aria-label="自定义上下文" placeholder="例如：先给结论，再讲理由，语气像一个熟悉的同事。" value={contextDraft} onChange={(event) => setContextDraft(event.target.value)} onKeyDown={(event) => { if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') { event.preventDefault(); CommitContext(); } }} />
-          <div className="pf-ctx-foot">
-            <span className={`pf-count${contextDraft.length >= ContextMax ? ' full' : ''}`}>{contextDraft.length} / {ContextMax}</span>
-            <span className={`pf-state${contextDirty ? ' dirty' : ''}`}>{contextDirty ? '有改动还没保存' : '已保存'}</span>
-            <button className="pf-save" type="button" disabled={!contextDirty} onClick={CommitContext}>保存</button>
-          </div>
-        </div>
-        <div className="gn-cap">外观</div>
-        <div className="gn-row">
-          <div className="gn-txt"><span className="gn-t">字号大小</span><span className="gn-d">对话里 Avery 回复的字号，选完下面的预览跟着变。</span></div>
-          <div className="gn-ctl">
-            <div className="seg pf-seg" role="radiogroup" aria-label="字号大小">
-              {ChatFontSizes.map((size) => <button key={size.key} className={`seg-i${size.key === (settings.chatFontSize ?? 'md') ? ' sel' : ''}`} type="button" role="radio" aria-checked={size.key === (settings.chatFontSize ?? 'md')} aria-label={size.label} onClick={() => ApplySettings({ chatFontSize: size.key })}>{size.label}</button>)}
+        <div className="gn-card">
+          <div className="gn-cap">定时任务授权</div>
+          <div className="gn-row stack">
+            <div className="gn-txt"><span className="gn-t">投递定时任务的浏览器授权</span><span className="gn-d">创建投递场景定时任务时，确认弹窗会同时授予该任务个人浏览器权限。到期后 Avery 可在后台启动浏览器并创建任务标签页；BOSS 或企业官网登录失效、验证码或站点风控仍会暂停任务。</span></div>
+            <div className="gn-ctl">
+              <Select value={cronBrowserTaskId} onChange={setCronBrowserTaskId} ariaLabel="查看投递定时任务授权" options={cronBrowserAccess?.tasks.length ? cronBrowserAccess.tasks.map((task) => ({
+                value: task.id,
+                label: `${task.browserAuthorized ? `已授权 · ${task.browserTaskGrant ? BrowserGrantPurposeLabels[task.browserTaskGrant.purpose] : '旧任务'}` : '未授权'} · ${task.title}`,
+              })) : [{ value: '', label: '暂无活动的投递定时任务' }]} />
+              {cronBrowserAccess?.tasks.find((task) => task.id === cronBrowserTaskId)?.browserAuthorized && <button className="quiet-btn danger" type="button" disabled={browserRuntimeBusy} onClick={() => void RevokeCronBrowserAccessHandler()}>撤销该任务授权</button>}
             </div>
           </div>
         </div>
-        <div className="gn-preview" style={{ '--gp-fs': `${replyFontSizePx}px` } as CSSProperties}>
-          <div className="gp-head"><span className="lb">预览</span><span className="gp-size">{replyFontSizePx}px</span></div>
-          <div className="gp-msg">
-            <span className="avatar" aria-hidden="true">{InitialOf(settings.nickname)}</span>
-            <p>我把这份简历的实习经历按时间倒序重排了一遍，删掉了两处重复的描述。要我再压到一页吗？</p>
+      </div></div>;
+    }
+    if (tab === 'api') return <div className="settings-page is-model-set">{RenderModelConfiguration()}</div>;
+    if (tab === 'developer') {
+      return <div className="settings-page is-set-page"><div className="set-root">
+        <div className="set-head"><h1>开发者模式</h1></div>
+        <div className="gn-card">
+          <div className="gn-cap">开发者工具</div>
+          <RenderGeneralSwitch label="启用开发者模式" description="开启后在侧边栏显示本地开发者工具。" checked={settings.developerMode} onToggle={() => ApplySettings({ developerMode: !settings.developerMode })} />
+          <div className="gn-row">
+            <div className="gn-txt"><span className="gn-t">打开开发者工具</span><span className="gn-d">查看本地日志、Trace 轨迹与上下文用量界面。</span></div>
+            <div className="gn-ctl"><button className="quiet-btn" type="button" disabled={!settings.developerMode} onClick={() => SwitchTab('open-developer')}><Icon name="developer-mode" size={14} />打开</button></div>
+          </div>
+          <div className="gn-cap">Trace 与上下文</div>
+          <div className="bw-hint"><Icon name="info" size={14} /><span>真实 Trace 可能包含简历、JD 与附件片段，仅保存在本机；关闭开发者模式后不再新增 Trace。</span></div>
+          <div className="gn-row">
+            <div className="gn-txt"><span className="gn-t">Trace 保留数量</span><span className="gn-d">默认 50，最多保留 100 条本地 Trace，失焦或回车保存。</span></div>
+            <div className="gn-ctl"><input className="gn-num" type="number" min="1" max="100" value={traceDraft} aria-label="Trace 保留数量" onChange={(event) => setTraceDraft(event.target.value)} onBlur={() => void CommitTraceRetention()} onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); void CommitTraceRetention(); } }} /></div>
+          </div>
+          <div className="gn-row">
+            <div className="gn-txt"><span className="gn-t">自动压缩阈值</span><span className="gn-d">按 System、Tools 和 Messages 的完整输入计算，只能配置为 1–80 的整数。</span></div>
+            <div className="gn-ctl"><div className="gn-num-wrap"><input className="gn-num" type="number" min="1" max="80" value={thresholdDraft} aria-label="自动压缩阈值" onChange={(event) => setThresholdDraft(event.target.value)} onBlur={CommitCompressionThreshold} onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); CommitCompressionThreshold(); } }} /><span className="gn-num-suffix">%</span></div></div>
+          </div>
+          <div className="gn-cap">本地模块</div>
+          <div className="gn-row stack">
+            <div className="gn-txt"><span className="gn-t">本地模块目录</span><span className="gn-d">{moduleConfiguration?.status === 'active' ? `已启用：${moduleConfiguration.directoryName ?? '已选择目录'}。模块仅在启动会话前校验。` : '当前使用官方默认模块。选择本地模块目录前，请确认其来源可信。'}</span></div>
+            <div className="gn-ctl">
+              <button className="quiet-btn" type="button" disabled={updatingModules} onClick={() => void SelectUserModules()}><Icon name="folder-open" size={14} />{updatingModules ? '处理中…' : '选择本地模块'}</button>
+              <button className="quiet-btn danger" type="button" disabled={updatingModules || moduleConfiguration?.status !== 'active'} onClick={() => setShowResetModules(true)}>恢复官方默认模块</button>
+            </div>
+          </div>
+          <div className="gn-cap">危险操作</div>
+          <div className="gn-row">
+            <div className="gn-txt"><span className="gn-t">清空 Trace</span><span className="gn-d">删除所有本地 Trace，不可撤销。</span></div>
+            <div className="gn-ctl"><button className="quiet-btn danger" type="button" onClick={() => setShowClear(true)}><Icon name="trash-simple" size={14} />一键清空</button></div>
           </div>
         </div>
-        <div className="gn-row">
-          <div className="gn-txt"><span className="gn-t">主题颜色 <span className="setting-unavailable">待支持</span></span><span className="gn-d">主题配色切换暂未开放。</span></div>
-          <div className="gn-ctl pf-accs">
-            {AccentColors.map((color) => <button key={color.key} className="acc-sw" type="button" disabled style={{ background: color.hex }} aria-pressed={color.key === (settings.accentColor ?? 'pine')} aria-label={`${color.label}（待支持）`} title={`${color.label}（待支持）`} />)}
-          </div>
-        </div>
-        <div className="gn-row">
-          <div className="gn-txt"><span className="gn-t">简历模板 <span className="setting-unavailable">待支持</span></span><span className="gn-d">简历模板切换暂未开放。</span></div>
-          <div className="gn-ctl"><Select disabled value={settings.resumeTemplate ?? 'classic'} onChange={() => undefined} ariaLabel="简历模板（待支持）" dropUp options={ResumeTemplates.map((item) => ({ value: item.key, label: item.label }))} /></div>
-        </div>
-      </div>}
-      {/* 迁移确认弹窗跟着常规页渲染：触发按钮在常规页的工作空间行，此前被留在旧版最终 return 里导致点「更改」无响应。 */}
-      <Modal
-        open={showMigrate}
-        title="确认迁移工作空间？"
-        onClose={() => setShowMigrate(false)}
-        footer={<>
-          <DialogButton onClick={() => setShowMigrate(false)}>取消</DialogButton>
-          <DialogButton tone="accent" onClick={() => void MigrateWorkspaceHandler()}>确认迁移</DialogButton>
-        </>}
-      >
-        将复制并校验数据后切换到目标空目录，原工作空间会保留。Agent 运行期间无法迁移。
-      </Modal>
-    </div>{RenderLeaveDialog()}</div>;
+        <Modal
+          open={showResetModules}
+          title="恢复官方默认模块？"
+          onClose={() => setShowResetModules(false)}
+          footer={<>
+            <DialogButton onClick={() => setShowResetModules(false)}>取消</DialogButton>
+            <DialogButton tone="danger" disabled={updatingModules} onClick={() => void ConfirmResetModules()}>确认恢复默认</DialogButton>
+          </>}
+        >
+          当前本地模块配置将被移除，后续新会话将使用内置模块。运行中的助手任务不会被中断。
+        </Modal>
+        <Modal
+          open={showClear}
+          title="确认清空全部 Trace？"
+          onClose={() => setShowClear(false)}
+          footer={<>
+            <DialogButton onClick={() => setShowClear(false)}>取消</DialogButton>
+            <DialogButton tone="danger" onClick={() => void ClearDeveloperObservability()}>确认清空</DialogButton>
+          </>}
+        >
+          将删除本地全部运行日志、Trace 索引和事件。此操作不可撤销。
+        </Modal>
+      </div></div>;
+    }
+    // 页签是封闭联合，全部在前置分支返回；走到这里说明状态异常，不渲染内容。
+    return null;
   }
-  if (tab === 'browser') {
-    // 旧设置值统一按 Edge 兜底。
-    const engine = settings.browserEngine === 'ego' ? 'ego' : settings.browserEngine === 'chrome' ? 'chrome' : 'edge';
-    const engineLabel = BrowserEngineLabels[engine];
-    const needCopy = `在 ${engineLabel} 里加载 Avery Browser 扩展，再点击“检测状态”；Avery 只操作自己创建的任务标签页，不读取其他个人页面，关闭任务也不会关闭浏览器。`;
-    let statusCopy: string;
-    let pill: 'busy' | 'on' | 'off' | 'undetected';
-    if (browserSetupBusy) { statusCopy = `正在打开 ${engineLabel} 的扩展接入引导。`; pill = 'busy'; }
-    else if (browserRuntimeBusy) { statusCopy = `正在检测 ${engineLabel} 连接。`; pill = 'busy'; }
-    else if (!browserRuntime) { statusCopy = `还没有检测过。${needCopy}`; pill = 'undetected'; }
-    else if (browserRuntime.running && browserRuntime.state === 'ready') { statusCopy = `已连接。${browserRuntime.currentUrl || `已经连上 ${BrowserEngineLabels[browserRuntime.engine]}，可以执行网页任务。`}`; pill = 'on'; }
-    else if (browserRuntime.state === 'not_installed') { statusCopy = `没有连上。${BrowserEngineLabels[browserRuntime.engine]} 未安装或无法启动。`; pill = 'off'; }
-    else if (browserRuntime.state === 'unhealthy') { statusCopy = `连接异常。${browserRuntime.message || '可以再检测一次。'}`; pill = 'off'; }
-    else { statusCopy = `还没有连接。${browserRuntime.message || needCopy}`; pill = 'off'; }
-    const pillClass = pill === 'on' ? 'on' : pill === 'busy' ? 'busy' : 'off';
-    const pillText = pill === 'busy' ? '检测中' : pill === 'on' ? '已连接' : pill === 'undetected' ? '未检测' : '未连接';
-    return <div className="settings-page is-set-page"><div className="set-root">
-      <div className="set-head"><h1>浏览器控制</h1></div>
-      <div className="gn-card browser-settings-card">
-        <div className="gn-cap">浏览器</div>
-        <div className="gn-row">
-          <div className="gn-txt"><span className="gn-t">使用的浏览器</span><span className="gn-d">执行网页任务时打开哪一个，切换后立刻生效。</span></div>
-          <div className="gn-ctl"><Select className="browser-engine-select" value={engine} disabled={browserSetupBusy} onChange={(value) => {
-            // 切换引擎后旧状态不再代表当前选择：作废在途刷新并把状态复位为未检测。
-            browserRuntimeRequest.current += 1;
-            setBrowserRuntimeBusy(false);
-            ApplySettings({ browserEngine: value as 'chrome' | 'edge' | 'ego' });
-            setBrowserRuntime(null);
-            setBrowserSetup(null);
-          }} ariaLabel="使用的浏览器" options={(['chrome', 'edge', 'ego'] as const).map((value) => ({ value, label: value === 'ego' ? 'ego lite（推荐）' : BrowserEngineLabels[value] }))} /></div>
-        </div>
-        <div className="gn-row">
-          <div className="gn-txt"><span className="gn-t">接入 Avery 扩展</span><span className="gn-d">{`打开 ${engineLabel} 的扩展管理页和随附扩展目录，按提示完成安装。`}</span></div>
-          <div className="gn-ctl"><button className="quiet-btn" type="button" disabled={browserSetupBusy || browserRuntimeBusy} onClick={() => void StartBrowserSetup()}><Icon name={browserSetupBusy ? 'loading' : 'plugs-connected'} size={14} />{browserSetupBusy ? '正在接入' : '一键接入'}</button></div>
-        </div>
-        {browserSetup && browserSetup.engine === engine && !(browserRuntime?.running && browserRuntime.state === 'ready') && <div className="gn-row stack" role="region" aria-label="扩展安装步骤">
-          <div className="gn-txt"><span className="gn-t">在 {engineLabel} 中完成安装</span>
-            <span className="gn-d">① 开启「开发者模式」。</span>
-            <span className="gn-d">② 点击「{engine === 'edge' ? '加载解压缩的扩展' : '加载已解压的扩展程序'}」，选择下方目录。</span>
-            <span className="gn-d">③ 安装 Avery Browser 后，回到这里点击「检测状态」完成连接。</span>
-            {!browserSetup.directoryOpened && <span className="gn-d">扩展目录未能自动打开，请复制路径并粘贴到文件夹选择窗口。</span>}
-          </div>
-          <div className="gn-line"><span className="gn-path">{browserSetup.extensionDirectory}</span><button className="quiet-btn" type="button" onClick={() => void CopyExtensionDirectory()}>复制目录</button></div>
-        </div>}
-        <div className="gn-row">
-          <div className="gn-txt"><span className="gn-t">连接状态</span><span className="gn-d">{statusCopy}</span></div>
-          <div className="gn-ctl">
-            <span className={`pill ${pillClass}`}>{pill === 'busy' && <Icon name="loading" size={13} />}{pillText}</span>
-            <button className="quiet-btn" type="button" disabled={browserRuntimeBusy || browserSetupBusy} onClick={() => void RefreshBrowserRuntime(true)}><Icon name="plugs-connected" size={14} />检测状态</button>
-          </div>
-        </div>
-        <div className="gn-cap">行为</div>
-        <RenderGeneralSwitch label="任务结束后自动关闭标签页" description="对新浏览器任务生效：开启则结束后关闭任务页面；关闭则保留并交还你操作。" checked={settings.closeTaskTabs ?? true} onToggle={() => ApplySettings({ closeTaskTabs: !(settings.closeTaskTabs ?? true) })} />
-      </div>
-      <div className="gn-card">
-        <div className="gn-cap">定时任务授权</div>
-        <div className="gn-row stack">
-          <div className="gn-txt"><span className="gn-t">投递定时任务的浏览器授权</span><span className="gn-d">创建投递场景定时任务时，确认弹窗会同时授予该任务个人浏览器权限。到期后 Avery 可在后台启动浏览器并创建任务标签页；BOSS 或企业官网登录失效、验证码或站点风控仍会暂停任务。</span></div>
-          <div className="gn-ctl">
-            <Select value={cronBrowserTaskId} onChange={setCronBrowserTaskId} ariaLabel="查看投递定时任务授权" options={cronBrowserAccess?.tasks.length ? cronBrowserAccess.tasks.map((task) => ({
-              value: task.id,
-              label: `${task.browserAuthorized ? `已授权 · ${task.browserTaskGrant ? BrowserGrantPurposeLabels[task.browserTaskGrant.purpose] : '旧任务'}` : '未授权'} · ${task.title}`,
-            })) : [{ value: '', label: '暂无活动的投递定时任务' }]} />
-            {cronBrowserAccess?.tasks.find((task) => task.id === cronBrowserTaskId)?.browserAuthorized && <button className="quiet-btn danger" type="button" disabled={browserRuntimeBusy} onClick={() => void RevokeCronBrowserAccessHandler()}>撤销该任务授权</button>}
-          </div>
-        </div>
-      </div>
-    </div></div>;
-  }
-  if (tab === 'api') return <div className="settings-page is-model-set">{RenderModelConfiguration()}{RenderLeaveDialog()}</div>;
-  if (tab === 'developer') {
-    return <div className="settings-page is-set-page"><div className="set-root">
-      <div className="set-head"><h1>开发者模式</h1></div>
-      <div className="gn-card">
-        <div className="gn-cap">开发者工具</div>
-        <RenderGeneralSwitch label="启用开发者模式" description="开启后在侧边栏显示本地开发者工具。" checked={settings.developerMode} onToggle={() => ApplySettings({ developerMode: !settings.developerMode })} />
-        <div className="gn-row">
-          <div className="gn-txt"><span className="gn-t">打开开发者工具</span><span className="gn-d">查看本地日志、Trace 轨迹与上下文用量界面。</span></div>
-          <div className="gn-ctl"><button className="quiet-btn" type="button" disabled={!settings.developerMode} onClick={onNavigateDeveloper}><Icon name="developer-mode" size={14} />打开</button></div>
-        </div>
-        <div className="gn-cap">Trace 与上下文</div>
-        <div className="bw-hint"><Icon name="info" size={14} /><span>真实 Trace 可能包含简历、JD 与附件片段，仅保存在本机；关闭开发者模式后不再新增 Trace。</span></div>
-        <div className="gn-row">
-          <div className="gn-txt"><span className="gn-t">Trace 保留数量</span><span className="gn-d">默认 50，最多保留 100 条本地 Trace，失焦或回车保存。</span></div>
-          <div className="gn-ctl"><input className="gn-num" type="number" min="1" max="100" value={traceDraft} aria-label="Trace 保留数量" onChange={(event) => setTraceDraft(event.target.value)} onBlur={() => void CommitTraceRetention()} onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); void CommitTraceRetention(); } }} /></div>
-        </div>
-        <div className="gn-row">
-          <div className="gn-txt"><span className="gn-t">自动压缩阈值</span><span className="gn-d">按 System、Tools 和 Messages 的完整输入计算，只能配置为 1–80 的整数。</span></div>
-          <div className="gn-ctl"><div className="gn-num-wrap"><input className="gn-num" type="number" min="1" max="80" value={thresholdDraft} aria-label="自动压缩阈值" onChange={(event) => setThresholdDraft(event.target.value)} onBlur={CommitCompressionThreshold} onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); CommitCompressionThreshold(); } }} /><span className="gn-num-suffix">%</span></div></div>
-        </div>
-        <div className="gn-cap">本地模块</div>
-        <div className="gn-row stack">
-          <div className="gn-txt"><span className="gn-t">本地模块目录</span><span className="gn-d">{moduleConfiguration?.status === 'active' ? `已启用：${moduleConfiguration.directoryName ?? '已选择目录'}。模块仅在启动会话前校验。` : '当前使用官方默认模块。选择本地模块目录前，请确认其来源可信。'}</span></div>
-          <div className="gn-ctl">
-            <button className="quiet-btn" type="button" disabled={updatingModules} onClick={() => void SelectUserModules()}><Icon name="folder-open" size={14} />{updatingModules ? '处理中…' : '选择本地模块'}</button>
-            <button className="quiet-btn danger" type="button" disabled={updatingModules || moduleConfiguration?.status !== 'active'} onClick={() => setShowResetModules(true)}>恢复官方默认模块</button>
-          </div>
-        </div>
-        <div className="gn-cap">危险操作</div>
-        <div className="gn-row">
-          <div className="gn-txt"><span className="gn-t">清空 Trace</span><span className="gn-d">删除所有本地 Trace，不可撤销。</span></div>
-          <div className="gn-ctl"><button className="quiet-btn danger" type="button" onClick={() => setShowClear(true)}><Icon name="trash-simple" size={14} />一键清空</button></div>
-        </div>
-      </div>
-      <Modal
-        open={showResetModules}
-        title="恢复官方默认模块？"
-        onClose={() => setShowResetModules(false)}
-        footer={<>
-          <DialogButton onClick={() => setShowResetModules(false)}>取消</DialogButton>
-          <DialogButton tone="danger" disabled={updatingModules} onClick={() => void ConfirmResetModules()}>确认恢复默认</DialogButton>
-        </>}
-      >
-        当前本地模块配置将被移除，后续新会话将使用内置模块。运行中的助手任务不会被中断。
-      </Modal>
-      <Modal
-        open={showClear}
-        title="确认清空全部 Trace？"
-        onClose={() => setShowClear(false)}
-        footer={<>
-          <DialogButton onClick={() => setShowClear(false)}>取消</DialogButton>
-          <DialogButton tone="danger" onClick={() => void ClearDeveloperObservability()}>确认清空</DialogButton>
-        </>}
-      >
-        将删除本地全部运行日志、Trace 索引和事件。此操作不可撤销。
-      </Modal>
-    </div></div>;
-  }
-  // 页签是封闭联合，全部在前置分支返回；走到这里说明状态异常，不渲染内容。
-  return null;
+
+  return <>
+    <Modal open title="设置" variant="settings" onClose={() => SwitchTab('close')}>
+      <nav className="settings-dialog-nav" aria-label="设置分类">
+        {SettingsTabs.map((item) => <button key={item.id} type="button" className={`settings-dialog-tab${tab === item.id ? ' is-active' : ''}`} aria-current={tab === item.id ? 'page' : undefined} onClick={() => SwitchTab(item.id)}>
+          <Icon name={item.id === 'general' ? 'settings' : item.id === 'persona' ? 'account' : item.id === 'api' ? 'sliders' : item.id === 'browser' ? 'browser' : item.id === 'archive' ? 'archive' : 'developer-mode'} size={17} />
+          <span>{item.label}</span>
+        </button>)}
+      </nav>
+      <section key={tab} className="settings-dialog-content" aria-label={current.label}>{RenderSettingsContent()}</section>
+    </Modal>
+    {RenderLeaveDialog()}
+  </>;
 }
 
 export { SettingsPage };

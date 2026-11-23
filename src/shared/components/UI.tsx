@@ -44,6 +44,15 @@ function useDialogKeyboard(open: boolean, onClose: () => void, containerRef: Ref
     const first = focusable()[0];
     first?.focus();
     function onKeyDown(event: KeyboardEvent) {
+      if (event.defaultPrevented || (event.key !== 'Escape' && event.key !== 'Tab')) return;
+      // 设置弹窗还能打开模型编辑、离开确认等子弹窗；只有最上层处理关闭和焦点循环。
+      const dialogs = Array.from(document.querySelectorAll<HTMLElement>('[role="dialog"][aria-modal="true"]'))
+        .filter((item) => !item.closest('[inert]') && item.getClientRects().length);
+      const top = dialogs.reduce<HTMLElement | null>((current, item) => {
+        const level = (node: HTMLElement) => Number(getComputedStyle(node.closest('[role="presentation"]') ?? node).zIndex) || 0;
+        return !current || level(item) >= level(current) ? item : current;
+      }, null);
+      if (top && top !== container) return;
       if (event.key === 'Escape') { event.preventDefault(); onCloseRef.current(); return; }
       if (event.key !== 'Tab') return;
       const items = focusable();
@@ -79,14 +88,14 @@ function Drawer({ open, title, children, onClose }: { open: boolean; title: stri
   const content = form && actionIndex >= 0
     ? cloneElement(form, { className: `${form.props.className} drawer-form-content` }, formChildren.filter((_, index) => index !== actionIndex))
     : children;
-  return <div className="drawer-layer" role="presentation">
+  return createPortal(<div className="drawer-layer" role="presentation">
     <button className="drawer-backdrop" aria-label="关闭抽屉" onClick={onClose} />
     <aside ref={drawerRef} className="drawer" role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1}>
       <div className="drawer-header"><h2 id={titleId}>{title}</h2><Button variant="quiet" className="icon-close" aria-label="关闭" onClick={onClose}><Icon name="close" size={18} /></Button></div>
       <div className="drawer-content">{content}</div>
       {footer && <div className="drawer-footer">{footer}</div>}
     </aside>
-  </div>;
+  </div>, document.body);
 }
 
 /**
@@ -94,8 +103,9 @@ function Drawer({ open, title, children, onClose }: { open: boolean; title: stri
  * - confirm：avery-prototype 的归档确认（.cf-*，392px）——标题 + 一句话说明 + 底部操作；
  * - dialog：avery-settings 的模型编辑弹窗（.md-*，620px）——标题栏 + 可滚动内容区 + 底部操作；
  *   size 取 sm 时按原型 .cf-modal 收窄到 440px，用于带警示块或多段说明的确认。
+ * - settings：设置专用的左右分栏面板，不继承模型编辑表单的控件覆盖样式。
  */
-type ModalVariant = 'confirm' | 'dialog';
+type ModalVariant = 'confirm' | 'dialog' | 'settings';
 
 function Modal({ open, title, children, onClose, footer, variant = 'confirm', size = 'md' }: {
   open: boolean;
@@ -111,15 +121,16 @@ function Modal({ open, title, children, onClose, footer, variant = 'confirm', si
   useDialogKeyboard(open, onClose, modalRef);
   if (!open) return null;
   const isConfirm = variant === 'confirm';
-  return createPortal(<div className="modal-layer" role="presentation">
+  const isSettings = variant === 'settings';
+  return createPortal(<div className={`modal-layer${isSettings ? ' settings-dialog-layer' : ''}`} role="presentation">
     <button className="scrim" aria-label="关闭弹窗" onClick={onClose} />
-    <section ref={modalRef} className={isConfirm ? 'modal modal-confirm' : `modal modal-dialog is-${size}`} role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1}>
-      <div className={isConfirm ? 'cf-head' : 'md-head'}>
+    <section ref={modalRef} className={isConfirm ? 'modal modal-confirm' : `modal modal-dialog ${isSettings ? 'settings-dialog' : `is-${size}`}`} role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1}>
+      <div className={isConfirm ? 'cf-head' : isSettings ? 'settings-dialog-head' : 'md-head'}>
         <span className={isConfirm ? 'cf-title' : 'md-title'} id={titleId}>{title}</span>
         <button type="button" className={isConfirm ? 'icon-btn sm' : 'icon-btn md-x'} aria-label="关闭" title="关闭" onClick={onClose}><Icon name="close" size={isConfirm ? 14 : 17} /></button>
       </div>
-      {/* 紧凑确认框的正文是单段说明，原型用 .cf-text；编辑弹窗的正文可含表单与列表，用 .md-body */}
-      {isConfirm ? <p className="cf-text">{children}</p> : <div className="md-body">{children}</div>}
+      {/* 设置面板使用独立内容层，避免通用表单样式改变既有设置控件的尺寸。 */}
+      {isConfirm ? <p className="cf-text">{children}</p> : <div className={isSettings ? 'settings-dialog-body' : 'md-body'}>{children}</div>}
       {footer && <div className={isConfirm ? 'cf-foot' : 'md-foot'}>{footer}</div>}
     </section>
   </div>, document.body);

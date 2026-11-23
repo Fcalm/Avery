@@ -1,11 +1,8 @@
-import { useEffect, useState } from 'react';
 import { GetConversationArtifacts, GetConversationResult } from '@avery/agent-sdk';
-import type { ChatMessageDto, ConversationPart, ConversationResource, ConversationToolStatus } from '@avery/contracts';
+import type { ChatMessageDto, ConversationPart, ConversationResource } from '@avery/contracts';
 import { Icon, type IconName } from '../../../shared/components/Icon';
 import { MarkdownText } from '../../../shared/components/MarkdownText';
 import { WorkingIndicator } from './WorkingIndicator';
-import { ConversationProcessSummary } from './ConversationProcessSummary';
-import { GroupConversationProcess } from '../conversationProcessGroups';
 
 const ToolNames: Record<string, string> = {
   CompactContext: '压缩上下文',
@@ -18,88 +15,49 @@ const ToolNames: Record<string, string> = {
   BrowserClick: '点击页面', BrowserUploadFile: '上传资料', BrowserValidateForm: '核对表单',
   CollectJobs: '采集岗位', ContactBossJobs: '联系招聘方', Read: '读取文件', Grep: '搜索文件', Glob: '查找文件', LoadSkill: '加载技能',
 };
-const StatusLabels: Record<ConversationToolStatus, string> = {
-  running: '正在执行', succeeded: '已完成', waiting: '等待确认或回答', paused: '已暂停',
-  failed: '执行失败', cancelled: '已取消', skipped: '未执行',
-};
 const ResourceMeta: Record<ConversationResource['kind'], { label: string; icon: IconName }> = {
   resume: { label: '简历', icon: 'resumes' }, profile: { label: '档案', icon: 'profiles' },
   job: { label: '岗位', icon: 'jobs' }, application: { label: '投递记录', icon: 'applications' }, file: { label: '文件', icon: 'resume' },
 };
-const ToolTimeFormat = new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
-export const ResourceHref = (resource: ConversationResource) => 'avery://' + resource.kind + '/' + encodeURIComponent(resource.id) + (resource.revision ? '?revision=' + resource.revision : '');
+const GoalReviewLabels: Record<Extract<ConversationPart, { type: 'goal_review' }>['status'], string> = {
+  reviewing: '审核中', achieved: '已通过', continue: '继续处理', waiting: '等待补充',
+  paused: '已暂停', blocked: '无法达成', interrupted: '已中断',
+};
 
-/** 整轮过程默认收起；中间正文随一级卡片展示，连续思考与工具另归入二级折叠卡片。 */
+/** 助手消息只保留工作状态、中间正文和最终报告；思考与工具轨迹仍由 presentation 携带，不再展开展示。 */
 export function ConversationMessage({ message, onOpenResource, authorizedResources = [], working = false }: { message: ChatMessageDto; onOpenResource: (resource: ConversationResource) => void; authorizedResources?: ConversationResource[]; working?: boolean }) {
   const presentation = message.presentation;
-  const completed = presentation?.status === 'completed';
-  const processActive = presentation?.status === 'running' || presentation?.status === 'waiting' || presentation?.status === 'paused';
-  const [processOpen, setProcessOpen] = useState(false);
-  // 新一轮和任务结束恢复默认折叠；运行与等待之间切换时保留用户的展开选择。
-  useEffect(() => { setProcessOpen(false); }, [presentation?.requestId, processActive]);
   if (!presentation) return <>
     {working && <WorkingIndicator label="正在整理结果" />}
     {message.thinkingContent && <details className="thinking-block"><summary>思考内容</summary><div className="thinking-content conversation-event-scroll" tabIndex={0} role="region" aria-label="思考详情"><MarkdownText content={message.thinkingContent} /></div></details>}
     <MarkdownText content={message.content} />
   </>;
   const { parts, status } = presentation;
+  const completed = status === 'completed';
+  const running = status === 'running';
   const resources = parts.flatMap((part) => part.type === 'resource' ? [part.resource] : []);
   const linkResources = [...resources, ...authorizedResources];
   const artifacts = GetConversationArtifacts(presentation);
   let lastTool = -1;
   parts.forEach((part, index) => { if (part.type === 'tool') lastTool = index; });
-  const process = parts.filter((part, index) => part.type !== 'resource' && (!completed || part.type !== 'text' || index <= lastTool));
-  const blocks = GroupConversationProcess(process);
-  const renderPart = (part: ConversationPart) => {
-    if (part.type === 'resource') return null;
-    if (part.type === 'text') return <div key={part.id} className="conversation-process-text"><MarkdownText content={part.text} resources={linkResources} onOpenResource={onOpenResource} /></div>;
-    if (part.type === 'reasoning') return <details key={part.id} className="conversation-reason">
-      <summary><Icon name="brain" size={14} /><span>深度思考</span><Icon name="chevron-right" className="conversation-chevron" size={10} /></summary>
-      <div className="conversation-reason-body conversation-event-scroll" tabIndex={0} role="region" aria-label="深度思考详情"><MarkdownText content={part.text} /></div>
-    </details>;
-    const icon: IconName = part.status === 'running' ? 'loading' : part.status === 'succeeded' ? 'check' : part.status === 'waiting' ? 'shield-check' : part.status === 'failed' ? 'warning' : 'clock';
-    const toolResources = parts.flatMap((item) => item.type === 'resource' && item.stepId === part.stepId && item.toolCallId === part.toolCallId ? [item.resource] : []);
-    const endLabel = part.status === 'waiting' ? '等待开始' : part.status === 'paused' ? '暂停于' : '结束';
-    return <details key={part.id} className={'conversation-tool is-' + part.status}>
-      <summary><Icon name="wrench" className="conversation-tool-icon" size={14} /><span>{ToolNames[part.name] ?? part.name}</span><Icon name={icon} className="conversation-tool-status" size={12} /><small>{StatusLabels[part.status]}</small><Icon name="chevron-right" className="conversation-chevron" size={10} /></summary>
-      <div className="conversation-tool-body conversation-event-scroll" tabIndex={0} role="region" aria-label={`${ToolNames[part.name] ?? part.name}详情`}>
-        <div className="conversation-tool-heading"><code>{part.name}</code><span>{StatusLabels[part.status]}</span></div>
-        <pre className="conversation-tool-output">{part.summary || StatusLabels[part.status]}</pre>
-        {/* 仅展示投影已授权的资料信息；工具详情不再承担打开侧栏的入口。 */}
-        {toolResources.length > 0 && <section className="conversation-tool-resources" aria-label="关联资料">
-          <h4>关联资料 · {toolResources.length}</h4>
-          <ul>{toolResources.map((resource) => <li key={ResourceHref(resource)}>
-            <span>{ResourceMeta[resource.kind].label}</span><div>{resource.title}{resource.revision !== undefined && <small>版本 {resource.revision}</small>}{resource.fileName && resource.fileName !== resource.title && <small>{resource.fileName}</small>}</div>
-          </li>)}</ul>
-        </section>}
-        <dl className="conversation-tool-meta">
-          <div><dt>开始</dt><dd><time dateTime={new Date(part.startedAt).toISOString()}>{ToolTimeFormat.format(part.startedAt)}</time></dd></div>
-          {part.completedAt !== undefined && <>
-            <div><dt>{endLabel}</dt><dd><time dateTime={new Date(part.completedAt).toISOString()}>{ToolTimeFormat.format(part.completedAt)}</time></dd></div>
-            <div><dt>阶段用时</dt><dd>{((part.completedAt - part.startedAt) / 1000).toFixed(1)} 秒</dd></div>
-          </>}
-        </dl>
-      </div>
-    </details>;
-  };
+  // 最终报告之前的正文继续按原顺序展示；已完成时只排除最后一段报告。
+  const intermediate = parts.flatMap((part, index) => part.type === 'goal_review' || (part.type === 'text' && (part.intermediate || !completed || index <= lastTool)) ? [part] : []);
   const lastPart = [...parts].reverse().find((part) => part.type !== 'resource');
-  const workingLabel = lastPart?.type === 'tool' ? ToolNames[lastPart.name] ?? '正在执行工具' : lastPart?.type === 'reasoning' ? '正在梳理与分析' : '正在整理结果';
+  const workingLabel = lastPart?.type === 'goal_review' && lastPart.status === 'reviewing' ? '正在审核目标'
+    : lastPart?.type === 'tool' ? ToolNames[lastPart.name] ?? '正在执行工具' : lastPart?.type === 'reasoning' ? '正在梳理与分析' : '正在整理结果';
+  // 结束后使用落盘时间定格，避免计时器停留在最后一次 100ms 刷新的近似值。
+  const startedAt = presentation.startedAt ?? message.createdAt;
+  const endedAt = running ? undefined : presentation.completedAt ?? presentation.pausedAt ?? message.updatedAt;
   return <div className="conversation-response">
-    {/* 动画独立于折叠过程，按整轮状态持续显示，生成最终报告期间也不提前隐藏。 */}
-    {status === 'running' && <WorkingIndicator label={presentation.statusMessage ?? workingLabel} />}
+    {/* 运行、等待和结束共用同一条状态行，动画收起后计时器留在原处并过渡到左顶格。 */}
+    <WorkingIndicator label={presentation.statusMessage ?? workingLabel} running={running} startedAt={startedAt} endedAt={endedAt} />
     {(status === 'waiting' || status === 'paused') && <p className="conversation-run-note" role="status">{presentation.statusMessage ?? (status === 'waiting' ? '等待你的确认或回答，处理过程已保留。' : '任务已暂停，处理过程已保留。')}</p>}
-    {(blocks.length > 0 || processActive) && <details className="conversation-process" open={processOpen} onToggle={(event) => setProcessOpen(event.currentTarget.open)}>
-      <ConversationProcessSummary presentation={presentation} messageCreatedAt={message.createdAt} messageUpdatedAt={message.updatedAt} />
-      <div className="conversation-process-body conversation-process-timeline">{blocks.map((block) => {
-        if (block.type === 'text') return renderPart(block);
-        const reasoningCount = block.events.filter((event) => event.type === 'reasoning').length;
-        const toolCount = block.events.length - reasoningCount;
-        return <details key={block.id} className="conversation-process-card">
-          <summary><Icon name="trace" size={14} /><span>处理过程</span><small>{[reasoningCount ? `${reasoningCount} 段思考` : '', toolCount ? `${toolCount} 项工具` : ''].filter(Boolean).join(' · ')}</small><Icon name="chevron-right" className="conversation-chevron" size={12} /></summary>
-          <div className="conversation-process-body">{block.events.map(renderPart)}</div>
-        </details>;
-      })}</div>
-    </details>}
+    {intermediate.map((part) => part.type === 'goal_review'
+      ? <details key={part.id} className="thinking-block">
+        <summary>{part.phase === 'resume' ? '续跑审核' : '交付审核'} · {GoalReviewLabels[part.status]}</summary>
+        <div className="thinking-content">{part.summary}</div>
+      </details>
+      : <div key={part.id} className="conversation-process-text"><MarkdownText content={part.text} resources={linkResources} onOpenResource={onOpenResource} /></div>)}
     {completed && <MarkdownText content={GetConversationResult(presentation)} resources={linkResources} onOpenResource={onOpenResource} />}
     {completed && artifacts.length > 0 && <div className="conversation-artifacts" aria-label="本轮产物">
       {artifacts.map((resource) => <button key={JSON.stringify([resource.kind, resource.id])} className="conversation-resource" type="button" onClick={() => onOpenResource(resource)} aria-label={`查看${ResourceMeta[resource.kind].label}：${resource.title}${resource.revision ? `，版本 ${resource.revision}` : ''}`}>

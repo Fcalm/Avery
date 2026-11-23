@@ -5,6 +5,8 @@
 .ph-codesandbox-logo::before { content: "\ea06"; }
 .ph-infinity::before { content: "\e634"; }
 .ph-bell-simple-ringing::before { content: "\e5ea"; }
+.ph-arrow-counter-clockwise::before { content: "\e038"; }
+.ph-floppy-disk::before { content: "\e248"; }
 @font-face {
   font-family: "Phosphor";
   src: url("/fonts/phosphor/Phosphor-Regular.woff2") format("woff2");
@@ -58,6 +60,8 @@
 .ph-caret-down::before { content: "\e136"; }
 .ph-caret-up::before { content: "\e13c"; }
 .ph-caret-right::before { content: "\e13a"; }
+.ph-caret-double-down::before { content: "\e126"; }
+.ph-caret-double-up::before { content: "\e12c"; }
 .ph-dots-three::before { content: "\e1fe"; }
 .ph-pencil-simple::before { content: "\e3b4"; }
 .ph-trash::before { content: "\e4a6"; }
@@ -93,6 +97,7 @@
 .ph-arrow-up::before { content: "\e08e"; }
 .ph-arrow-bend-down-left::before { content: "\e018"; }
 .ph-check-circle::before { content: "\e184"; }
+.ph-calendar-check::before { content: "\e712"; }
 .ph-folder-open::before { content: "\e256"; }
 .ph-sliders-horizontal::before { content: "\e434"; }
 .ph-user-circle::before { content: "\e4c4"; }
@@ -133,6 +138,7 @@
 .ph-scales::before { content: "\e750"; }
 .ph-selection::before { content: "\e69a"; }
 .ph-play::before { content: "\e3d0"; }
+.ph-pause::before { content: "\e39e"; }
 .ph-hash::before { content: "\e2a2"; }
 .ph-warning-circle::before { content: "\e4e2"; }
 .ph-seal-check::before { content: "\e606"; }

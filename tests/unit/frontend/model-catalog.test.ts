@@ -114,6 +114,18 @@ describe('模型目录的应用内缓存', () => {
     expect(ApplyModelCatalogToProviders(CreateDefaultModelCatalog(), BackendSnapshots as Array<{ provider: 'DeepSeek' | 'Z.AI' | 'MIMO' | '自定义'; model: string; models: string[] }>)).toEqual(BackendSnapshots);
   });
 
+  it('重新读取本地供应商配置时保留已删除模型，手动同步可以补回', () => {
+    StubStorage();
+    const seeded = MergeBackendProviders(CreateDefaultModelCatalog(), BackendSnapshots);
+    const edited = { ...seeded, providers: seeded.providers.map(provider => provider.id === 'DeepSeek'
+      ? { ...provider, models: provider.models.filter(model => model.id !== 'deepseek-v4-pro') } : provider) };
+
+    SaveModelCatalog(edited);
+    const reloaded = MergeBackendProviders(LoadModelCatalog(), BackendSnapshots);
+    expect(FindCatalogModel(reloaded, 'DeepSeek', 'deepseek-v4-pro')).toBeUndefined();
+    expect(FindCatalogModel(MergeProviderModels(reloaded, 'DeepSeek', ['deepseek-v4-pro']), 'DeepSeek', 'deepseek-v4-pro')).toBeDefined();
+  });
+
   it('保存目录后通知订阅者，供对话页重新裁剪模型选择', () => {
     StubStorage();
     const listener = vi.fn();

@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type CSSProperties } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type CSSProperties, type ReactNode } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useLayoutEffect } from 'react';
-import type { AgentObservability, AgentStreamEvent, BrowserActionState, ConfirmationMode, ConversationResource, ReasoningEffort } from '@avery/contracts';
+import type { AgentGoalState, AgentObservability, AgentStreamEvent, BrowserActionState, ConfirmationMode, ConversationResource, ReasoningEffort } from '@avery/contracts';
 import { useUiStore } from '../../../app/UiStore';
 import { WORKSPACE_QUERY_KEY, type WorkspaceData } from '../../../features/workspace/api/workspaceData';
 import { LoadWorkspaceData } from '../../../features/workspace/api/useWorkspaceData';
@@ -33,7 +33,10 @@ import { ConversationMessage } from '../components/ConversationMessage';
 import { ConversationScrollToBottom } from '../components/ConversationScrollToBottom';
 import { ComposerInput } from '../components/ComposerInput';
 import { ModelPickerMenu } from '../components/ModelPickerMenu';
+import { GoalPanel } from '../components/GoalPanel';
+import { TodoPanel } from '../components/TodoPanel';
 import type { ComposerCommand, ComposerMode } from '../composerCommands';
+import { ModeOfScenario, ScenarioOfMode } from '../../conversation/workspaceMode';
 
 // 保持旧场景 ID 以兼容会话与定时任务；能力边界与后端白名单一致。
 const ScenarioOptions: Array<{ id: 'default' | 'application'; label: string; icon: IconName; description: string }> = [
@@ -47,10 +50,10 @@ const ReasoningEffortLabels: Record<ReasoningEffort, string> = {
   low: '低', medium: '中', high: '高', xhigh: '超高', max: '最高',
 };
 // 确认档位不授予工具权限；读取与写入能力由当前场景决定。
-const ConfirmationOptions: Array<{ id: ConfirmationMode; label: string; description: string; note: string; icon: IconName }> = [
-  { id: 'always_confirm', label: '始终确认', description: '当前场景内的业务写入和外部动作先征求确认，读取无需确认。', note: '始终确认：业务写入和外部动作执行前请你确认', icon: 'shield-check' },
-  { id: 'allow_low_risk', label: '低风险自动', description: '低风险操作自动执行，其他业务写入和外部动作仍按工具策略确认。', note: '低风险自动：其他操作仍按工具策略确认', icon: 'pencil-simple' },
-  { id: 'fully_trusted', label: '完全信任', description: '自动执行当前场景内已授权的操作；工具强制确认、文件授权和站点限制仍有效。', note: '完全信任：不扩大场景能力，强制确认仍有效', icon: 'robot' },
+const ConfirmationOptions: Array<{ id: ConfirmationMode; label: string; description: string; icon: IconName }> = [
+  { id: 'always_confirm', label: '始终确认', description: '当前场景内的业务写入和外部动作先征求确认，读取无需确认。', icon: 'shield-check' },
+  { id: 'allow_low_risk', label: '低风险自动', description: '低风险操作自动执行，其他业务写入和外部动作仍按工具策略确认。', icon: 'pencil-simple' },
+  { id: 'fully_trusted', label: '完全信任', description: '自动执行当前场景内已授权的操作；工具强制确认、文件授权和站点限制仍有效。', icon: 'robot' },
 ];
 /** 思考强度菜单的档位说明；强度越高推理越深，耗时与 token 消耗随之增加。 */
 const ReasoningEffortDescriptions: Record<ReasoningEffort, string> = {
@@ -105,19 +108,12 @@ function GetDefaultReasoningEffort(options: ReasoningEffort[]) {
 type ComposerAttachment =
   | { id: string; name: string; status: 'uploading' }
   | { id: string; name: string; path: string; status: 'ready' };
-interface AgentTodo { id: string; title: string; description: string; status: string; }
+type AgentTodo = NonNullable<AgentStreamEvent['task']>;
 /** 单个会话的 Todo 状态：todos 是该会话已创建的条目，active 表示该会话已有带 Todo 的运行。 */
 interface AgentTaskState { todos: AgentTodo[]; active: boolean; }
 const EmptyAgentTaskState: AgentTaskState = { todos: [], active: false };
 type SupportedProvider = 'DeepSeek' | 'Z.AI' | 'MIMO' | '自定义';
 type ProviderCatalogEntry = { provider: SupportedProvider; configured: boolean; model: string; models: string[] };
-
-function GetTodoPresentation(status: string) {
-  if (status === 'cancelled' || status === 'deleted') return { className: 'is-deleted', symbol: '×', label: '已删除' };
-  if (status === 'completed') return { className: 'is-completed', symbol: '✓', label: '已完成' };
-  if (status === 'inProgress' || status === 'in_progress') return { className: 'is-in-progress', symbol: '●', label: '进行中' };
-  return { className: 'is-pending', symbol: '○', label: '待办' };
-}
 
 /**
  * 会话级 UI 配置暂存于 Renderer 本地存储：用于在切换会话或重新进入页面时恢复选择。
@@ -168,8 +164,8 @@ function WriteConversationComposerStates(states: Record<string, StoredConversati
   }
 }
 
-function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
-  const { activeConversationId, setActiveConversationId, currentResumeId, setCurrentResumeId, resumePanelOpen, setResumePanelOpen, assistantView, ShowNotice, composerSeed, setComposerSeed } = useUiStore();
+function AssistantPage({ onNavigate, toolbar }: { onNavigate: (page: PageId) => void; toolbar?: ReactNode }) {
+  const { activeConversationId, setActiveConversationId, currentResumeId, setCurrentResumeId, resumePanelOpen, setResumePanelOpen, assistantView, ShowNotice, composerSeed, setComposerSeed, workspaceMode, setWorkspaceMode } = useUiStore();
   const conversations = useConversations();
   const resumes = useResumes();
   const settings = useSettings();
@@ -188,6 +184,7 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
   const [reloadCommandTrigger, setReloadCommandTrigger] = useState(0);
   const [selectedSkill, setSelectedSkill, setSelectedSkillForSession] = useSessionValue<ComposerCommand | null>(activeConversationId, null);
   const [composerMode, setComposerMode, setComposerModeForSession] = useSessionValue<ComposerMode | null>(activeConversationId, null);
+  const [goal, , setGoalForSession, goalVersions] = useSessionValue<AgentGoalState | undefined>(activeConversationId, undefined);
   const composerDraftRef = useRef(composer);
   composerDraftRef.current = composer;
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
@@ -199,7 +196,6 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
   const [showModel, setShowModel] = useState(false);
   const [showReasoningEffort, setShowReasoningEffort] = useState(false);
   const [showScenario, setShowScenario] = useState(false);
-  const [scenarioId, setScenarioId] = useState<'default' | 'application'>('default');
   const [provider, setProvider] = useState<SupportedProvider>(settings.provider);
   const [model, setModel] = useState(ResolveProviderModel(settings.provider, settings.model));
   const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>('medium');
@@ -209,6 +205,7 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
   const [panelWidth, setPanelWidth] = useState(430);
   const [isComposerCompact, setIsComposerCompact] = useState(false);
   const [isComposerMultiline, setIsComposerMultiline] = useState(false);
+  const [composerDockHeight, setComposerDockHeight] = useState(0);
   const [editing, setEditing] = useState(false);
   const resumeEditor = useResumeDraft();
   const [resourcePreview, setResourcePreview] = useState<{ sessionId: string; resource: ConversationResource } | null>(null);
@@ -227,6 +224,7 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
   const [observability, setObservability] = useState<AgentObservability | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const composerRef = useRef<HTMLDivElement>(null);
+  const composerDockRef = useRef<HTMLDivElement>(null);
   const composerSettingsRef = useRef<HTMLDivElement>(null);
   const composerSettingsBarRef = useRef<HTMLDivElement>(null);
   const composerInputRef = useRef<HTMLSpanElement>(null);
@@ -247,7 +245,6 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
   const activeConversationRef = useRef(activeConversationId);
   const assistantViewRef = useRef(assistantView);
   const conversationsRef = useRef(conversations);
-  const nextDraftScenarioRef = useRef<'default' | 'application' | null>(null);
   const sessionLoadVersionRef = useRef(0);
   const workspaceRefreshVersionRef = useRef(0);
   const [scrollToBottomRequest, setScrollToBottomRequest] = useState(0);
@@ -299,6 +296,14 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
   }, [activeConversationId, assistantView, RefreshConversationTrace]);
 
   const conversation = useMemo(() => conversations.find((item) => item.id === activeConversationId), [conversations, activeConversationId]);
+  const isNewThread = !conversation?.messages.length;
+  // 已打开的会话沿用创建时冻结的场景；只有新对话跟随顶栏模式，避免发送时改写既有会话的场景。
+  const scenarioId = conversation?.scenarioId ?? ScenarioOfMode(workspaceMode);
+
+  // 打开既有会话时让模式跟随其场景，保证侧栏过滤与当前内容一致。
+  useEffect(() => {
+    if (conversation?.scenarioId) setWorkspaceMode(ModeOfScenario(conversation.scenarioId));
+  }, [conversation?.id, conversation?.scenarioId, setWorkspaceMode]);
   const conversationResources = useMemo(() => conversation?.messages.flatMap((message) => message.presentation?.parts.flatMap((part) => part.type === 'resource' ? [part.resource] : []) ?? []) ?? [], [conversation]);
   const resume = resumes.find((item) => item.id === currentResumeId);
   const usagePresentation = CreateSessionUsagePresentation({
@@ -313,7 +318,6 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
   // 只有当前会话自己的 Todo 参与渲染：新建会话页（无会话 id）与未产生 Todo 的会话都不显示任务条。
   const agentTasks = (activeConversationId && tasksBySession[activeConversationId]) || EmptyAgentTaskState;
   const agentTodos = agentTasks.todos;
-  const activeTodo = agentTodos.find((item) => GetTodoPresentation(item.status).className === 'is-in-progress') ?? agentTodos.find((item) => GetTodoPresentation(item.status).className === 'is-pending') ?? agentTodos.at(-1);
   const PersistConversationComposerState = useCallback((conversationId: string | null, patch: Partial<StoredConversationComposerState>) => {
     if (!conversationId) return;
     const states = ReadConversationComposerStates();
@@ -438,7 +442,29 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
     document.fonts.addEventListener('loadingdone', ScheduleUpdate);
     void document.fonts.ready.then(() => { if (!disposed) ScheduleUpdate(); });
     return () => { disposed = true; cancelAnimationFrame(frame); observer.disconnect(); document.fonts.removeEventListener('loadingdone', ScheduleUpdate); };
-  }, [assistantView, !conversation?.messages.length, Boolean(pendingQuestions || pendingEdit || pendingCronTask || pendingBrowserAction), model, provider, permission, reasoningEffort]);
+  }, [assistantView, isNewThread, Boolean(pendingQuestions || pendingEdit || pendingCronTask || pendingBrowserAction), model, provider, permission, reasoningEffort]);
+
+  /**
+   * 已有会话里输入框底座浮在消息区之上，消息列表按底座实测高度预留底部空间，
+   * 滚动条才能一直延伸到应用底部。底座因附件、任务条或确认卡变高时，仍贴底的视图继续贴底。
+   */
+  useEffect(() => {
+    const dock = composerDockRef.current;
+    if (!dock || isNewThread) return undefined;
+    let frame = 0;
+    const Measure = () => {
+      frame = 0;
+      const list = messageListRef.current;
+      const atBottom = Boolean(list && list.scrollHeight - list.scrollTop - list.clientHeight <= 24);
+      setComposerDockHeight(Math.round(dock.getBoundingClientRect().height));
+      if (atBottom) setScrollToBottomRequest((current) => current + 1);
+    };
+    const ScheduleMeasure = () => { if (!frame) frame = requestAnimationFrame(Measure); };
+    Measure();
+    const observer = new ResizeObserver(ScheduleMeasure);
+    observer.observe(dock);
+    return () => { cancelAnimationFrame(frame); observer.disconnect(); };
+  }, [assistantView, conversation?.id, isNewThread]);
 
   useEffect(() => {
     if (!showPermission && !showScenario && !showModel && !showReasoningEffort) return undefined;
@@ -508,10 +534,12 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
     setProjectEnvironment(null);
     const taskVersion = taskVersions.current[sessionId] ?? 0;
     const runVersion = runVersions.current[sessionId] ?? 0;
+    const goalVersion = goalVersions.current[sessionId] ?? 0;
     const interactionVersions = [pendingEditVersions, pendingBrowserActionVersions, pendingCronTaskVersions, pendingQuestionsVersions].map((ref) => ref.current[sessionId] ?? 0);
     try {
       const next = await GetSessionAssistantState(sessionId);
       if (version !== sessionLoadVersionRef.current || activeConversationRef.current !== sessionId) return;
+      if ((goalVersions.current[sessionId] ?? 0) === goalVersion) setGoalForSession(sessionId, next.goal);
       setUsage({
         contextPending: next.usage.contextPending,
         percent: Math.min(100, Math.round((next.usage.inputTokens / Math.max(1, next.usage.contextLimit)) * 100)),
@@ -534,8 +562,6 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
         if (index >= 0 && interactionVersions[index] === 0 && ([pendingEditVersions, pendingBrowserActionVersions, pendingCronTaskVersions, pendingQuestionsVersions][index].current[sessionId] ?? 0) === 0) ApplyPendingEvent(event);
       }
       setProjectEnvironment(next.project);
-      // 新会话可能尚未运行过 Agent，后端内存中还没有场景快照；使用已落库的会话场景。
-      setScenarioId(conversationsRef.current.find((item) => item.id === sessionId)?.scenarioId ?? next.scenarioId);
       // 本地选择可能比后端上一次发送快照更新；仅在本地缓存缺失时使用后端恢复值。
       // 这样页面重进不覆盖尚未发送的新选择，清理缓存后仍可由后端恢复。
       const localComposerState = ReadConversationComposerStates()[sessionId];
@@ -552,7 +578,7 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
         ShowNotice('会话状态恢复失败，当前 usage 未知', "error");
       }
     }
-  }, [PersistConversationComposerState, ShowNotice, settings.provider, UpdateSessionTasks, SetSessionRun, ApplyPendingEvent, pendingEditVersions, pendingBrowserActionVersions, pendingCronTaskVersions, pendingQuestionsVersions]);
+  }, [PersistConversationComposerState, ShowNotice, settings.provider, UpdateSessionTasks, SetSessionRun, ApplyPendingEvent, pendingEditVersions, pendingBrowserActionVersions, pendingCronTaskVersions, pendingQuestionsVersions, setGoalForSession, goalVersions]);
 
   useEffect(() => { void RefreshSessionAssistantState(activeConversationId); }, [activeConversationId, RefreshSessionAssistantState]);
 
@@ -562,8 +588,6 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
     setComposer('');
     setAttachments([]);
     setProjectEnvironment(null);
-    setScenarioId(nextDraftScenarioRef.current ?? 'default');
-    nextDraftScenarioRef.current = null;
     setPendingEdit(null);
     setPendingBrowserAction(null);
     setPendingCronTask(null);
@@ -620,6 +644,10 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
   useEffect(() => SubscribeAgentStream((event: AgentStreamEvent) => {
     if (event.type === 'conversation_save_error') { ShowNotice(event.message ?? '会话过程保存失败', "error"); return; }
     const owner = event.sessionId ?? (event.requestId ? activePlaceholdersRef.current.get(event.requestId)?.conversationId : undefined);
+    if (event.type === 'goal_updated' && owner) {
+      setGoalForSession(owner, event.goal);
+      return;
+    }
     if (event.type === 'run_resumed' && owner && event.requestId) {
       const requestId = event.requestId;
       const existing = conversationsRef.current.find((item) => item.id === owner)?.messages.find((message) => message.id === 'reply-' + requestId);
@@ -709,7 +737,7 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
       if (event.cleanupOutcomes?.some((outcome) => outcome.status === 'status_unknown')) ShowNotice('浏览器任务页面清理状态未知；后续任务会使用新的隔离页面。', "error");
       else if (event.cleanupOutcomes?.some((outcome) => outcome.status === 'failed')) ShowNotice('浏览器任务页面清理失败；后续任务会使用新的隔离页面。', "error");
     }
-  }), [ShowNotice, currentResumeId, SetSessionRun, UpdateSessionTasks, RefreshSessionAssistantState, RefreshWorkspacePreservingMessages, RefreshConversationTrace, ApplyPendingEvent, setPendingBrowserActionForSession, setCurrentResumeId]);
+  }), [ShowNotice, currentResumeId, SetSessionRun, UpdateSessionTasks, RefreshSessionAssistantState, RefreshWorkspacePreservingMessages, RefreshConversationTrace, ApplyPendingEvent, setPendingBrowserActionForSession, setCurrentResumeId, setGoalForSession]);
 
   async function HandleReloadContext(): Promise<boolean> {
     if (compactingRef.current) return false;
@@ -726,10 +754,20 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
     finally { setIsReloadingContext(false); }
   }
 
-  async function HandleSend() {
+  async function HandleSend(continueGoal = false) {
     if (isComposerComposing || isReloadingContext || compactingRef.current) return;
-    const text = composer.trim();
-    const compactFocus = ParseCompactCommand(composer);
+    const raw = continueGoal ? '/goal continue ' + composer.trim() : composer.trim();
+    const goalCommand = /^\/goal(?:\s+([\s\S]*))?$/.exec(raw);
+    const continuation = goalCommand?.[1]?.trim().match(/^continue(?:\s+([\s\S]*))?$/);
+    const ordinary = goal?.status === 'waiting' ? /^\/chat(?:\s+([\s\S]*))?$/.exec(raw) : null;
+    const replyToGoal = goal?.status === 'waiting' && goal.canContinue && Boolean(raw) && !raw.startsWith('/') && !selectedSkill;
+    const goalAction = continuation ? 'continue' : ordinary ? undefined : goalCommand || composerMode === 'goal' ? 'start' : replyToGoal ? 'continue' : undefined;
+    const text = continuation ? continuation[1]?.trim() ?? '' : goalCommand ? goalCommand[1]?.trim() ?? '' : ordinary ? ordinary[1]?.trim() ?? '' : raw;
+    if (goalAction === 'start' && !text) { ShowNotice('请填写要达成的目标。', "info"); return; }
+    if (goalAction === 'continue' && (!activeConversationId || !goal?.canContinue)) {
+      ShowNotice('当前没有可继续的目标。', "info"); return;
+    }
+    const compactFocus = continueGoal ? null : ParseCompactCommand(composer);
     if (compactFocus !== null) {
       const owner = activeConversationId;
       if (!owner) { ShowNotice('请先发送消息建立会话，再压缩上下文。', "info"); return; }
@@ -783,7 +821,7 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
       return;
     }
     const readyAttachments = attachments.filter((attachment): attachment is Extract<ComposerAttachment, { status: 'ready' }> => attachment.status === 'ready');
-    if (!text && readyAttachments.length === 0) return;
+    if (!text && readyAttachments.length === 0 && goalAction !== 'continue') return;
     const sendKey = activeConversationId ?? '__draft__';
     if (sendInFlightRef.current.has(sendKey)) return;
     sendInFlightRef.current.add(sendKey);
@@ -804,21 +842,22 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
       }
     }
     const requestId = `request-${crypto.randomUUID()}`;
-    const message: ChatMessage = {
-      id: `message-${Date.now()}`, role: 'user', content: text || '请分析我上传的文件', createdAt: Date.now(),
+    const message: ChatMessage | undefined = goalAction === 'continue' && !text && !readyAttachments.length ? undefined : {
+      id: `message-${requestId}`, role: 'user', content: text || (goalAction === 'continue' ? '' : '请分析我上传的文件'), createdAt: Date.now(),
       ...(readyAttachments.length ? { attachments: readyAttachments.map(({ name, path }) => ({ name, path })) } : {}),
-      ...(selectedSkill?.skillId ? { skill: { id: selectedSkill.skillId, label: selectedSkill.label } } : {}),
+      ...(goalAction !== 'continue' && selectedSkill?.skillId ? { skill: { id: selectedSkill.skillId, label: selectedSkill.label } } : {}),
     };
     const placeholder: ChatMessage = { id: `reply-${requestId}`, role: 'assistant', content: '', thinkingContent: '', createdAt: Date.now() };
+    const newMessages = message ? [message, placeholder] : [placeholder];
     // 停止可能已携带旧消息快照的查询；即使底层 IPC 无法中止，React Query 也不会再提交其结果。
     await queryClient.cancelQueries({ queryKey: WORKSPACE_QUERY_KEY });
-    patchConversations((current) => current.some((item) => item.id === targetId) ? current.map((item) => item.id === targetId ? { ...item, updatedAt: Date.now(), messages: [...item.messages, message, placeholder] } : item) : [{ id: targetId, title: text.slice(0, 18) || '新的求职会话', updatedAt: Date.now(), messages: [message, placeholder] }, ...current]);
+    patchConversations((current) => current.some((item) => item.id === targetId) ? current.map((item) => item.id === targetId ? { ...item, updatedAt: Date.now(), messages: [...item.messages, ...newMessages] } : item) : [{ id: targetId, title: text.slice(0, 18) || '新的求职会话', updatedAt: Date.now(), messages: newMessages }, ...current]);
     try {
       // 对话记录先落库再启动 Agent；确认答案不能只存在于 Trace 或 Renderer 内存中。
-      await appendMessages.mutateAsync({ conversationId: targetId, messages: [message, placeholder] });
+      await appendMessages.mutateAsync({ conversationId: targetId, messages: newMessages });
     } catch {
       patchConversations((current) => current.map((item) => item.id === targetId
-        ? { ...item, messages: item.messages.filter((itemMessage) => itemMessage.id !== message.id && itemMessage.id !== placeholder.id) }
+        ? { ...item, messages: item.messages.filter((itemMessage) => itemMessage.id !== message?.id && itemMessage.id !== placeholder.id) }
         : item));
       return;
     }
@@ -844,7 +883,7 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
         if (activeConversationRef.current === targetId) setProjectEnvironment(boundProject);
       }
       activePlaceholdersRef.current.set(requestId, { conversationId: targetId, requestId, content: '', thinkingContent: '' });
-      await SendAgentRequest({ requestId, sessionId: targetId, content: message.content, provider, model, reasoningEffort, confirmationMode: permission, attachments: readyAttachments.map(({ name, path }) => ({ name, path })), projectId: boundProject?.projectId ?? undefined, scenarioId, ...(selectedSkill?.skillId ? { selectedSkillId: selectedSkill.skillId } : {}) });
+      await SendAgentRequest({ requestId, sessionId: targetId, content: message?.content ?? '', provider, model, reasoningEffort, confirmationMode: permission, attachments: readyAttachments.map(({ name, path }) => ({ name, path })), projectId: boundProject?.projectId ?? undefined, scenarioId, ...(goalAction ? { goal: goalAction } : {}), ...(goalAction === 'continue' ? { goalRequestId: goal?.requestId } : {}), ...(goalAction !== 'continue' && selectedSkill?.skillId ? { selectedSkillId: selectedSkill.skillId } : {}) });
     } catch (error) {
       // 启动失败只恢复仍停留在发送会话的空草稿，不覆盖用户随后输入或切换会话的内容。
       if (activeConversationRef.current === targetId && !composerDraftRef.current) {
@@ -873,7 +912,6 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
 
   const visibleRequestId = activeConversationId ? runsBySession[activeConversationId] : undefined;
   function HandleStop() { if (compacting) compactCancelRef.current = true; const id = compacting?.requestId ?? visibleRequestId; if (id) void CancelAgentRequest(id); }
-
   function OpenConversationResource(resource: ConversationResource) {
     if (!activeConversationId) return;
     if (editing) { ShowNotice('请先保存或取消当前简历编辑，再查看产物。', "info"); return; }
@@ -1018,10 +1056,9 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
   function HandleScenarioChange(nextScenarioId: 'default' | 'application') {
     if (nextScenarioId === scenarioId) { setShowScenario(false); return; }
     if (activeConversationId && activeRequestsRef.current.has(activeConversationId)) { ShowNotice('Agent 正在执行任务，请停止或等待本轮结束后再切换场景', "info"); return; }
-    nextDraftScenarioRef.current = activeConversationId ? nextScenarioId : null;
     setActiveConversationId(null);
     setShowScenario(false);
-    setScenarioId(nextScenarioId);
+    setWorkspaceMode(ModeOfScenario(nextScenarioId));
     // 场景切换会建立新会话；确认权限不得跨场景沿用，尤其不能把完全信任隐式带入真实网站投递。
     setPermission('always_confirm');
     onNavigate('assistant');
@@ -1094,9 +1131,8 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
     SubmitQuestionAnswers();
   }
 
-  const isEmptyConversation = !conversation?.messages.length;
-  const isNewThread = isEmptyConversation;
-  const shouldShowTodo = !isEmptyConversation && agentTasks.active && agentTodos.length > 0;
+  const shouldShowGoal = goal && activeConversationId && goal.status !== 'cancelled';
+  const shouldShowTodo = !isNewThread && agentTasks.active && agentTodos.length > 0;
   const hasComposerBlocker = Boolean(pendingQuestions || pendingEdit || pendingCronTask || pendingBrowserAction);
   const reasoningEffortOptions = GetReasoningEffortOptions(model);
   const CurrentConfirmation = ConfirmationOptions.find((item) => item.id === permission) ?? ConfirmationOptions[0];
@@ -1121,7 +1157,7 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
       {showModel && <ModelPickerMenu providers={providerCatalog} provider={provider} model={model} onSelect={HandleSelectModel} />}
     </div>
     <div className="menu-wrap">
-      <button className="cmp-btn reasoning-effort-button" type="button" disabled={Boolean(compacting)} aria-label={`思考强度：${ReasoningEffortLabels[reasoningEffort]}`} title={`思考强度：${ReasoningEffortLabels[reasoningEffort]}；按会话保存，在下一轮模型请求生效`} aria-haspopup="true" aria-expanded={showReasoningEffort} onClick={() => setShowReasoningEffort((value) => !value)}><Icon name="brain" size={15} /><span className="cmp-label">思考 {ReasoningEffortLabels[reasoningEffort]}</span><Icon name="chevron-up" className="chev" size={10} /></button>
+      <button className="cmp-btn reasoning-effort-button" type="button" disabled={Boolean(compacting)} aria-label={`思考强度：${ReasoningEffortLabels[reasoningEffort]}`} title={`思考强度：${ReasoningEffortLabels[reasoningEffort]}`} aria-haspopup="true" aria-expanded={showReasoningEffort} onClick={() => setShowReasoningEffort((value) => !value)}><Icon name="brain" size={15} /><span className="cmp-label">思考 {ReasoningEffortLabels[reasoningEffort]}</span><Icon name="chevron-up" className="chev" size={10} /></button>
       {showReasoningEffort && <div className="menu pop" role="menu" aria-label="思考强度">
         <div className="menu-label">思考强度</div>
         <div className="seg" role="radiogroup" aria-label="思考强度">
@@ -1161,52 +1197,72 @@ function AssistantPage({ onNavigate }: { onNavigate: (page: PageId) => void }) {
     <button className="cmp-btn icon-only" type="button" disabled={Boolean(compacting)} aria-label="上传文件" title="上传文件" onClick={() => inputRef.current?.click()}><Icon name="plus" size={15} /></button>
   </>;
   const sendButton = visibleRequestId || compacting ? <button className="send is-stop" type="button" onClick={HandleStop} aria-label="停止生成"><Icon name="stop" size={16} /></button> : <button className="send" type="button" disabled={isComposerComposing || isReloadingContext || (!composer.trim() && attachments.length === 0) || attachments.some((attachment) => attachment.status === 'uploading')} onClick={() => void HandleSend()} aria-label="发送消息" title="发送消息"><Icon name="arrow-bend-down-left" size={16} /></button>;
+  const composerExtras = <>
+    {(shouldShowGoal || shouldShowTodo) && <div className="composer-col composer-task-row">
+      {shouldShowGoal && <GoalPanel
+        key={`${activeConversationId}:${goal.requestId}`}
+        sessionId={activeConversationId}
+        goal={goal}
+        running={visibleRequestId === goal.requestId || goal.activeSince !== undefined}
+        busy={Boolean(compacting || (visibleRequestId && visibleRequestId !== goal.requestId))}
+        waitingForInput={hasComposerBlocker}
+        onContinue={() => void HandleSend(true)}
+      />}
+      {shouldShowTodo && <TodoPanel key={activeConversationId} todos={agentTodos} />}
+    </div>}
+    {!hasComposerBlocker && attachments.length > 0 && <div className="composer-col"><div className="ctx">{attachments.map((attachment) => <span className="ctx-item" key={attachment.id} aria-busy={attachment.status === 'uploading'}>{AttachmentUploadStatus(attachment)}<span className="ctx-name">{attachment.name}</span><button className="ctx-x" type="button" aria-label={`移除 ${attachment.name}`} onClick={() => RemoveAttachment(attachment.id)}><Icon name="close" size={11} /></button></span>)}</div></div>}
+  </>;
   return <div className={`assistant-layout ${isComposerCompact ? 'is-composer-compact' : ''}`} style={{ '--assistant-main-min-width': `${ASSISTANT_MAIN_MIN_WIDTH}px` } as CSSProperties}>
-    {assistantView === 'trace' ? <section className="assistant-main assistant-trace" aria-label="当前对话轨迹"><ConversationTrace traces={(observability?.traces ?? []).filter((trace) => trace.sessionId === activeConversationId)} sessionTokenUsage={sessionTokenUsage} title={conversation?.title ?? '新对话'} onSelectTrace={GetAgentTraceEvents} /></section> : <section className={`assistant-main ${isNewThread ? 'is-new-thread' : ''}`}>
-      {conversation?.messages.length ? <div key={conversation.id} ref={messageListRef} className="message-list"><div className="message-thread">{conversation.messages.map((message) => <article key={message.id} className={`chat-message ${message.role}`}>{message.role === 'assistant' ? <ConversationMessage message={message} working={compacting?.sessionId === conversation.id && message.id === `reply-${compacting.requestId}`} authorizedResources={conversationResources} onOpenResource={OpenConversationResource} /> : message.role === 'user' ? <UserMessage message={message} /> : <MarkdownText content={message.content} />}</article>)}</div></div> : <EmptyAssistant name={settings.nickname} />}
-      <div className="composer-dock">
-        {!isEmptyConversation && <ConversationScrollToBottom key={conversation.id} scrollContainerRef={messageListRef} onScrollToBottom={() => setScrollToBottomRequest((current) => current + 1)} />}
-        {shouldShowTodo && <div className="task-dock"><div className="task-summary"><span className={`task-status-icon ${GetTodoPresentation(activeTodo?.status ?? 'pending').className}`} aria-hidden="true">{GetTodoPresentation(activeTodo?.status ?? 'pending').symbol}</span><span className="task-summary-copy">{activeTodo?.title ?? '正在处理任务'}</span><span className={`task-summary-status ${GetTodoPresentation(activeTodo?.status ?? 'pending').className}`}>{GetTodoPresentation(activeTodo?.status ?? 'pending').label}</span></div><div className="task-card" aria-label="Todo 列表"><div className="task-card-heading">Todo · {agentTodos.length} 项</div><div className="task-list">{agentTodos.map((todo) => { const presentation = GetTodoPresentation(todo.status); return <div key={todo.id} className={`task-list-item ${presentation.className}`}><span className="task-status-icon" aria-hidden="true">{presentation.symbol}</span><span className="task-list-title">{todo.title}</span><span className="task-list-status">{presentation.label}</span></div>; })}</div></div></div>}
-        {pendingQuestions ? <QuestionComposer questions={pendingQuestions.questions} answers={questionAnswers} otherAnswers={otherAnswers} questionIndex={pendingQuestionIndex} onAnswer={(questionId, answer) => setQuestionAnswers((current) => ({ ...current, [questionId]: answer }))} onOtherAnswer={(questionId, answer) => setOtherAnswers((current) => ({ ...current, [questionId]: answer }))} onPrevious={() => setPendingQuestionIndex((current) => Math.max(0, current - 1))} onCancel={CancelPendingQuestions} onContinue={ContinuePendingQuestions} /> : pendingEdit ? <ConfirmationComposer title="确认 Agent 修改简历" description={pendingEdit.reason} preview={pendingEdit.content} confirmLabel="确认并保存" onCancel={() => void HandlePendingEdit(false)} onConfirm={() => void HandlePendingEdit(true)} /> : pendingCronTask ? <ConfirmationComposer title="确认创建无人值守定时任务" description={`${pendingCronTask.summary}\n任务消息：${pendingCronTask.message}`} preview={JSON.stringify(pendingCronTask.schedule, null, 2)} confirmLabel="确认整个周期" onCancel={() => void HandlePendingCronTask(false)} onConfirm={() => void HandlePendingCronTask(true)} /> : pendingBrowserAction ? <ConfirmationComposer title="确认浏览器外部动作" description={`${pendingBrowserAction.summary ?? pendingBrowserAction.toolName}${pendingBrowserAction.url ? `\n目标网站：${pendingBrowserAction.url}` : ''}\n风险级别：${pendingBrowserAction.risk === 'high' ? '高风险' : pendingBrowserAction.risk === 'medium' ? '中风险' : '低风险'}`} confirmLabel="确认执行" onCancel={() => void HandlePendingBrowserAction(false)} onConfirm={() => void HandlePendingBrowserAction(true)} /> : <div className="composer-col">
-          {attachments.length > 0 && <div className="ctx">{attachments.map((attachment) => <span className="ctx-item" key={attachment.id} aria-busy={attachment.status === 'uploading'}>{AttachmentUploadStatus(attachment)}<span className="ctx-name">{attachment.name}</span><button className="ctx-x" type="button" aria-label={`移除 ${attachment.name}`} onClick={() => RemoveAttachment(attachment.id)}><Icon name="close" size={11} /></button></span>)}</div>}
-          <div ref={composerRef} className={`composer${isNewThread ? '' : ` is-inline${isComposerMultiline ? ' is-multiline' : ''}`}`}>
-            {!isNewThread && attachmentButton}
-            <ComposerInput key={activeConversationId ?? '__draft__'} inputRef={composerInputRef} value={composer} onChange={setComposer} sessionId={activeConversationId} scenarioId={scenarioId} busy={Boolean(visibleRequestId) || isReloadingContext || Boolean(compacting)} skill={selectedSkill} mode={composerMode} onSkillChange={setSelectedSkill} onModeChange={setComposerMode} onSend={() => void HandleSend()} onReload={HandleReloadContext} reloadTrigger={reloadCommandTrigger} onCompositionChange={setIsComposerComposing} onMultilineChange={isNewThread ? undefined : setIsComposerMultiline} placeholder={scenarioId === 'application' ? '让 Avery 帮你工作…' : '输入消息…'} />
-            {isNewThread ? <div className="cmp-bar">
-              <div className="cmp-tools">{attachmentButton}{composerSettings}</div>
-              <div className="cmp-right">{sendButton}</div>
-            </div> : sendButton}
-          </div>
-          {!conversation?.messages.length && <div className="nv-bar">
-            <div className="nv-slot">
-              <button className="nv-btn" type="button" title="选择一个文件夹作为项目空间" onClick={() => void HandleSelectProject()}>
-                <Icon name="folder-simple" size={15} />
-                <span>{projectEnvironment ? projectEnvironment.name : '项目空间'}</span>
-              </button>
-              {projectEnvironment && <button className="nv-x" type="button" aria-label="移除项目空间" title="移除项目空间" onClick={() => setProjectEnvironment(null)}><Icon name="close" size={13} /></button>}
+    {assistantView === 'trace' ? <section className="assistant-main assistant-trace" aria-label="当前对话轨迹">{toolbar}<ConversationTrace traces={(observability?.traces ?? []).filter((trace) => trace.sessionId === activeConversationId)} sessionTokenUsage={sessionTokenUsage} title={conversation?.title ?? '新对话'} onSelectTrace={GetAgentTraceEvents} /></section> : <section className={`assistant-main ${isNewThread ? 'is-new-thread' : ''}`} style={{ '--composer-dock-height': `${composerDockHeight}px` } as CSSProperties}>
+      {toolbar}
+      {conversation?.messages.length ? <div className="conversation-viewport" key={conversation.id}>
+        <div ref={messageListRef} className="message-list" tabIndex={-1}><div className="message-thread">{conversation.messages.map((message) => <article key={message.id} className={`chat-message ${message.role}`}>{message.role === 'assistant' ? <ConversationMessage message={message} working={compacting?.sessionId === conversation.id && message.id === `reply-${compacting.requestId}`} authorizedResources={conversationResources} onOpenResource={OpenConversationResource} /> : message.role === 'user' ? <UserMessage message={message} /> : <MarkdownText content={message.content} />}</article>)}</div></div>
+        <div className="conversation-edge-haze is-top" aria-hidden="true" />
+        <ConversationScrollToBottom scrollContainerRef={messageListRef} onScrollToBottom={() => setScrollToBottomRequest((current) => current + 1)} />
+      </div> : null}
+      <div className="composer-dock" ref={composerDockRef}>
+        {isNewThread ? <div className="new-thread-intro">
+          <h1 className="new-thread-greeting">{settings.nickname ? `你好${settings.nickname}，需要什么帮助？` : '你好，需要什么帮助？'}</h1>
+          {composerExtras}
+        </div> : composerExtras}
+        <div className="composer-input-area">
+          {!isNewThread && <div className="conversation-edge-haze is-bottom" aria-hidden="true" />}
+          {pendingQuestions ? <QuestionComposer questions={pendingQuestions.questions} answers={questionAnswers} otherAnswers={otherAnswers} questionIndex={pendingQuestionIndex} onAnswer={(questionId, answer) => setQuestionAnswers((current) => ({ ...current, [questionId]: answer }))} onOtherAnswer={(questionId, answer) => setOtherAnswers((current) => ({ ...current, [questionId]: answer }))} onPrevious={() => setPendingQuestionIndex((current) => Math.max(0, current - 1))} onCancel={CancelPendingQuestions} onContinue={ContinuePendingQuestions} /> : pendingEdit ? <ConfirmationComposer title="确认 Agent 修改简历" description={pendingEdit.reason} preview={pendingEdit.content} confirmLabel="确认并保存" onCancel={() => void HandlePendingEdit(false)} onConfirm={() => void HandlePendingEdit(true)} /> : pendingCronTask ? <ConfirmationComposer title="确认创建无人值守定时任务" description={`${pendingCronTask.summary}\n任务消息：${pendingCronTask.message}`} preview={JSON.stringify(pendingCronTask.schedule, null, 2)} confirmLabel="确认整个周期" onCancel={() => void HandlePendingCronTask(false)} onConfirm={() => void HandlePendingCronTask(true)} /> : pendingBrowserAction ? <ConfirmationComposer title="确认浏览器外部动作" description={`${pendingBrowserAction.summary ?? pendingBrowserAction.toolName}${pendingBrowserAction.url ? `\n目标网站：${pendingBrowserAction.url}` : ''}\n风险级别：${pendingBrowserAction.risk === 'high' ? '高风险' : pendingBrowserAction.risk === 'medium' ? '中风险' : '低风险'}`} confirmLabel="确认执行" onCancel={() => void HandlePendingBrowserAction(false)} onConfirm={() => void HandlePendingBrowserAction(true)} /> : <div className="composer-col">
+            <div ref={composerRef} className={`composer${isNewThread ? '' : ` is-inline${isComposerMultiline ? ' is-multiline' : ''}`}`}>
+              {!isNewThread && attachmentButton}
+              <ComposerInput key={activeConversationId ?? '__draft__'} inputRef={composerInputRef} value={composer} onChange={setComposer} sessionId={activeConversationId} scenarioId={scenarioId} busy={Boolean(visibleRequestId) || isReloadingContext || Boolean(compacting)} skill={selectedSkill} mode={composerMode} onSkillChange={setSelectedSkill} onModeChange={setComposerMode} onSend={() => void HandleSend()} onReload={HandleReloadContext} reloadTrigger={reloadCommandTrigger} onCompositionChange={setIsComposerComposing} onMultilineChange={isNewThread ? undefined : setIsComposerMultiline} placeholder={goal?.status === 'waiting' && goal.canContinue && !composerMode && !selectedSkill ? '回复并继续目标…' : scenarioId === 'application' ? '让 Avery 帮你工作…' : '输入消息…'} />
+              {isNewThread ? <div className="cmp-bar">
+                <div className="cmp-tools">{attachmentButton}{composerSettings}</div>
+                <div className="cmp-right">{sendButton}</div>
+              </div> : sendButton}
             </div>
-            <div className="menu-wrap">
-              <button className="nv-btn scenario-button" type="button" aria-label={`场景：${CurrentScenario.label}`} aria-haspopup="true" aria-expanded={showScenario} disabled={Boolean(visibleRequestId)} onClick={() => setShowScenario((value) => !value)}>
-                <Icon name={CurrentScenario.icon} size={15} />
-                <span>{CurrentScenario.label}</span>
-                <Icon name="chevron-up" className="chev" size={9} />
-              </button>
-              {showScenario && <div className="menu pop nv-menu" role="menu" aria-label="场景选择">
-                <div className="menu-label">场景</div>
-                {ScenarioOptions.map((item) => <button key={item.id} type="button" role="menuitemradio" aria-checked={item.id === scenarioId} className={item.id === scenarioId ? 'menu-item sel' : 'menu-item'} onClick={() => HandleScenarioChange(item.id)}>
-                  <Icon name={item.icon} size={16} />
-                  <span><span className="mt">{item.label}</span><span className="md">{item.description}</span></span>
-                  <Icon name="check" className="tick" size={14} />
-                </button>)}
-                <div className="menu-foot">场景在整段对话里生效，开始对话后不再显示这两个按钮。</div>
-              </div>}
-            </div>
+            {!isNewThread && <div ref={composerSettingsBarRef} className="composer-settings-bar" role="group" aria-label="会话设置">{composerSettings}{contextUsage}</div>}
           </div>}
-          {isNewThread ? <div className="composer-foot">
-            <span>Enter 发送</span><span className="kbd-hint">Shift + Enter</span><span>换行</span>
-            <span className="sep" />
-            <span>{CurrentConfirmation.note}</span>
-          </div> : <div ref={composerSettingsBarRef} className="composer-settings-bar" role="group" aria-label="会话设置">{composerSettings}{contextUsage}</div>}
+        </div>
+        {isNewThread && !hasComposerBlocker && <div className="composer-col nv-bar">
+          <div className="nv-slot">
+            <button className="nv-btn" type="button" title="选择项目文件夹" onClick={() => void HandleSelectProject()}>
+              <Icon name="folder-simple" size={15} />
+              <span>{projectEnvironment ? projectEnvironment.name : '项目空间'}</span>
+            </button>
+            {projectEnvironment && <button className="nv-x" type="button" aria-label="移除项目空间" title="移除项目空间" onClick={() => setProjectEnvironment(null)}><Icon name="close" size={13} /></button>}
+          </div>
+          <div className="menu-wrap">
+            <button className="nv-btn scenario-button" type="button" aria-label={`场景：${CurrentScenario.label}`} aria-haspopup="true" aria-expanded={showScenario} disabled={Boolean(visibleRequestId)} onClick={() => setShowScenario((value) => !value)}>
+              <Icon name={CurrentScenario.icon} size={15} />
+              <span>{CurrentScenario.label}</span>
+              <Icon name="chevron-up" className="chev" size={9} />
+            </button>
+            {showScenario && <div className="menu pop nv-menu" role="menu" aria-label="场景选择">
+              <div className="menu-label">场景</div>
+              {ScenarioOptions.map((item) => <button key={item.id} type="button" role="menuitemradio" aria-checked={item.id === scenarioId} className={item.id === scenarioId ? 'menu-item sel' : 'menu-item'} onClick={() => HandleScenarioChange(item.id)}>
+                <Icon name={item.icon} size={16} />
+                <span><span className="mt">{item.label}</span><span className="md">{item.description}</span></span>
+                <Icon name="check" className="tick" size={14} />
+              </button>)}
+              <div className="menu-foot">场景在整段对话里生效，开始对话后不再显示这两个按钮。</div>
+            </div>}
+          </div>
         </div>}
       </div>
     </section>}
@@ -1239,6 +1295,9 @@ interface PendingQuestion {
   options: string[];
 }
 
+/** 单选后先展示选中态，再自动进入下一题。 */
+const QuestionAdvanceDelayMs = 450;
+
 /** Agent 等待用户输入时，使用输入区原位卡片阻断普通消息，避免答复串入另一条任务。 */
 function QuestionComposer({ questions, answers, otherAnswers, questionIndex, onAnswer, onOtherAnswer, onPrevious, onCancel, onContinue }: {
   questions: PendingQuestion[];
@@ -1251,19 +1310,94 @@ function QuestionComposer({ questions, answers, otherAnswers, questionIndex, onA
   onCancel: () => void;
   onContinue: () => void;
 }) {
+  const questionRefs = useRef<(HTMLDivElement | null)[]>([]);
+  const advanceTimer = useRef<number | null>(null);
+  const [viewportHeight, setViewportHeight] = useState<number | undefined>(undefined);
+  const [trackOffset, setTrackOffset] = useState(0);
   const question = questions[questionIndex];
+
+  const CancelAdvance = () => {
+    if (advanceTimer.current === null) return;
+    window.clearTimeout(advanceTimer.current);
+    advanceTimer.current = null;
+  };
+
+  /** 所有题目排在同一条滑轨上，按当前题的实测高度和位移切换，避免面板跳动。 */
+  useLayoutEffect(() => {
+    const block = questionRefs.current[questionIndex];
+    if (!block) return;
+    setViewportHeight(block.offsetHeight);
+    setTrackOffset(block.offsetTop);
+  }, [questionIndex, answers, questions]);
+
+  /** 宽度变化会改变题目换行后的高度，只观察当前题并重新贴合滑轨。 */
+  useEffect(() => {
+    const block = questionRefs.current[questionIndex];
+    if (!block) return undefined;
+    const observer = new ResizeObserver(() => {
+      setViewportHeight(block.offsetHeight);
+      setTrackOffset(block.offsetTop);
+    });
+    observer.observe(block);
+    return () => observer.disconnect();
+  }, [questionIndex, questions]);
+
+  /** 切题后旧题会被移出交互树，把焦点交给新题的第一个选项，避免焦点停在隐藏内容上。 */
+  useLayoutEffect(() => {
+    const active = document.activeElement;
+    const current = questionRefs.current[questionIndex];
+    if (!(active instanceof HTMLElement) || !current || current.contains(active)) return;
+    const insidePrevious = questionRefs.current.some((block) => block !== current && Boolean(block?.contains(active)));
+    if (insidePrevious) current.querySelector<HTMLElement>('[data-question-option]')?.focus({ preventScroll: true });
+  }, [questionIndex]);
+
+  /** 切题或卸载时取消尚未触发的自动跳题，避免重复推进。 */
+  useEffect(() => () => {
+    if (advanceTimer.current !== null) window.clearTimeout(advanceTimer.current);
+    advanceTimer.current = null;
+  }, [questionIndex]);
+
   if (!question) return null;
-  const selectedAnswer = answers[question.id] ?? question.options[0] ?? '其他';
-  const needsOtherText = selectedAnswer === '其他';
-  const canContinue = !needsOtherText || Boolean(otherAnswers[question.id]?.trim());
+  const picked = answers[question.id];
+  const needsOtherText = picked === '其他';
+  const canContinue = Boolean(picked) && (!needsOtherText || Boolean(otherAnswers[question.id]?.trim()));
   const isFinalQuestion = questionIndex === questions.length - 1;
+
+  const SelectOption = (target: PendingQuestion, option: string, index: number) => {
+    if (index !== questionIndex) return;
+    onAnswer(target.id, option);
+    CancelAdvance();
+    // 「其他」需要等用户补全文字；最后一题留给显式确认，避免选择后直接提交。
+    if (option === '其他' || index === questions.length - 1) return;
+    advanceTimer.current = window.setTimeout(() => {
+      advanceTimer.current = null;
+      onContinue();
+    }, QuestionAdvanceDelayMs);
+  };
+
   return <section className="composer confirmation-composer question-composer" aria-label="请先回答 Agent 的问题" aria-live="assertive">
-    <header><h2>{question.question}</h2></header>
-    <div key={question.id} className="question-choice-list" role="radiogroup" aria-label={question.question}>{question.options.map((option) => <div key={option} className={`question-choice-row${option === '其他' ? ' is-other' : ''}`}>
-      <button type="button" role="radio" aria-checked={selectedAnswer === option} className={selectedAnswer === option ? 'selected' : ''} onClick={() => onAnswer(question.id, option)}><span className="question-choice-mark" aria-hidden="true" /><span className="question-choice-label">{option}</span></button>
-      {option === '其他' && needsOtherText && <input autoFocus aria-label="其他答案" placeholder="请输入其他答案" value={otherAnswers[question.id] ?? ''} onChange={(event) => onOtherAnswer(question.id, event.target.value)} />}
-    </div>)}</div>
-    <footer><div className="confirmation-stepper"><button type="button" disabled={questionIndex === 0} aria-label="上一题" onClick={onPrevious}><Icon name="chevron-up" size={15} /></button><span>{questionIndex + 1}/{questions.length}</span><button type="button" disabled={isFinalQuestion} aria-label="下一题" onClick={onContinue}><Icon name="chevron-down" size={15} /></button></div><div><Button onClick={onCancel}>取消</Button><Button variant="primary" disabled={!canContinue} onClick={onContinue}>{isFinalQuestion ? '确认' : '继续'}</Button></div></footer>
+    <div className="question-viewport" style={{ height: viewportHeight }}>
+      <div className="question-track" style={{ transform: `translate3d(0, ${-trackOffset}px, 0)` }}>
+        {questions.map((item, index) => {
+          const active = index === questionIndex;
+          const itemPicked = answers[item.id];
+          return <div key={item.id} ref={(element) => { questionRefs.current[index] = element; }} className={`question-block${active ? ' is-active' : ''}`} aria-hidden={active ? undefined : true} inert={active ? undefined : true}>
+            <h2>{item.question}</h2>
+            <div className="question-choice-list" role="radiogroup" aria-label={item.question}>{item.options.map((option) => <div key={option} className={`question-choice-row${option === '其他' ? ' is-other' : ''}`}>
+              {option === '其他' ? <input aria-label="其他答案" placeholder="其他" className={itemPicked === '其他' ? 'selected' : ''} tabIndex={active ? 0 : -1} data-question-option value={otherAnswers[item.id] ?? ''} onFocus={() => {
+                CancelAdvance();
+                if (otherAnswers[item.id]?.trim()) onAnswer(item.id, '其他');
+              }} onChange={(event) => {
+                CancelAdvance();
+                onAnswer(item.id, '其他');
+                onOtherAnswer(item.id, event.target.value);
+              }} /> : <button type="button" role="radio" aria-checked={itemPicked === option} tabIndex={active ? 0 : -1} data-question-option className={itemPicked === option ? 'selected' : ''} onClick={() => SelectOption(item, option, index)}><span className="question-choice-mark" aria-hidden="true" /><span className="question-choice-label">{option}</span></button>}
+            </div>)}</div>
+          </div>;
+        })}
+      </div>
+    </div>
+    <footer><div className="confirmation-stepper"><button type="button" disabled={questionIndex === 0} aria-label="上一题" onClick={() => { CancelAdvance(); onPrevious(); }}><Icon name="chevron-up" size={15} /></button><span>{questionIndex + 1}/{questions.length}</span><button type="button" disabled={isFinalQuestion} aria-label="下一题" onClick={() => { CancelAdvance(); onContinue(); }}><Icon name="chevron-down" size={15} /></button></div><div><Button onClick={() => { CancelAdvance(); onCancel(); }}>取消</Button><Button variant="primary" disabled={!canContinue} onClick={() => { CancelAdvance(); onContinue(); }}>{isFinalQuestion ? '确认' : '继续'}</Button></div></footer>
   </section>;
 }
 
@@ -1275,11 +1409,6 @@ function ConfirmationComposer({ title, description, preview, confirmLabel, onCan
     {preview && <pre>{preview}</pre>}
     <footer><span>请确认或取消后再继续对话。</span><div><Button onClick={onCancel}>取消</Button><Button variant="primary" onClick={onConfirm}>{confirmLabel}</Button></div></footer>
   </section>;
-}
-
-/** 新建对话界面：两个场景统一使用原型问候语，与输入框一起垂直居中。 */
-function EmptyAssistant({ name }: { name: string }) {
-  return <div className="empty"><h1><span>{name ? `你好${name}，需要什么帮助？` : '你好，需要什么帮助？'}</span></h1></div>;
 }
 
 export { AssistantPage };

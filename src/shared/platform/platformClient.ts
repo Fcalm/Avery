@@ -68,6 +68,10 @@ function ResolveWriteOptions(options?: WriteCommandOptions): WriteCommandOptions
 /** 统一平台客户端：页面与 feature api 层访问桌面 Bridge 的唯一入口，全部返回统一结果信封。 */
 export const platformClient = {
   desktop: {
+    OpenEgoBrowserSetup: () => CallBridge(() => {
+      if (!window.averyWindow?.OpenEgoBrowserSetup) throw new AppError(ErrorCode.INTERNAL_ERROR, '请重启 Avery 桌面客户端后接入 ego lite。');
+      return Unwrap(window.averyWindow.OpenEgoBrowserSetup());
+    }),
     /** 固定的扩展安装入口，不接受自定义 URL 或本地路径。 */
     OpenBrowserExtensionSetup: (engine: import('@avery/contracts').ExtensionBrowserEngine) => CallBridge(() => {
       if (!window.averyWindow?.OpenBrowserExtensionSetup) throw new AppError(ErrorCode.INTERNAL_ERROR, '请重启 Avery 桌面客户端后接入浏览器。');
@@ -107,6 +111,9 @@ export const platformClient = {
     GetProviderCatalog: () => CallBridge(() => RequireAgent().GetProviderCatalog()),
     GetModelConfiguration: (input: Parameters<DesktopAgentBridge['GetModelConfiguration']>[0]) => CallBridge(() => RequireAgent().GetModelConfiguration(input)),
     SaveModelConfiguration: (input: Parameters<DesktopAgentBridge['SaveModelConfiguration']>[0]) => CallBridge(() => RequireAgent().SaveModelConfiguration(input)),
+    GetGoalModelTiers: () => CallBridge(() => RequireAgent().GetGoalModelTiers()),
+    SaveGoalModelTiers: (input: Parameters<DesktopAgentBridge['SaveGoalModelTiers']>[0]) => CallBridge(() => RequireAgent().SaveGoalModelTiers(input)),
+    ChangeGoal: (input: Parameters<DesktopAgentBridge['ChangeGoal']>[0]) => CallBridge(() => RequireAgent().ChangeGoal(input)),
     Send: (request: Parameters<DesktopAgentBridge['Send']>[0]) => CallBridge(() => RequireAgent().Send(request)),
     Cancel: (requestId: string) => CallBridge(() => RequireAgent().Cancel(requestId)),
     UpdateConfirmationMode: (requestId: string, confirmationMode: Parameters<DesktopAgentBridge['UpdateConfirmationMode']>[1]) => CallBridge(() => RequireAgent().UpdateConfirmationMode(requestId, confirmationMode)),
@@ -154,6 +161,8 @@ export const platformClient = {
     SetConversationPinned: (id: string, pinned: boolean, expectedRevision?: number, options?: WriteCommandOptions) => CallBridge(() => RequireWorkspace().SetConversationPinned(id, pinned, expectedRevision, ResolveWriteOptions(options))),
     SetConversationArchived: (id: string, archived: boolean, expectedRevision?: number, options?: WriteCommandOptions) => CallBridge(() => RequireWorkspace().SetConversationArchived(id, archived, expectedRevision, ResolveWriteOptions(options))),
     DeleteConversation: (id: string, options?: WriteCommandOptions) => CallBridge(() => RequireWorkspace().DeleteConversation(id, ResolveWriteOptions(options))),
+    DeleteArchivedConversations: (items: import('@avery/contracts').ArchivedConversationSelection[], options?: WriteCommandOptions) => CallBridge(() => RequireWorkspace().DeleteArchivedConversations(items, ResolveWriteOptions(options))),
+    OnConversationsChanged: (listener: () => void) => RequireWorkspace().OnConversationsChanged(listener),
     AppendConversationMessages: (conversationId: string, messages: Parameters<WorkspaceBridge['AppendConversationMessages']>[1], options?: WriteCommandOptions) => CallBridge(() => RequireWorkspace().AppendConversationMessages(conversationId, messages, ResolveWriteOptions(options))),
     CompleteConversationMessage: (conversationId: string, messageId: string, content: string, thinkingContent?: string, options?: WriteCommandOptions) => CallBridge(() => RequireWorkspace().CompleteConversationMessage(conversationId, messageId, content, thinkingContent, ResolveWriteOptions(options))),
     RemoveConversationMessage: (conversationId: string, messageId: string, options?: WriteCommandOptions) => CallBridge(() => RequireWorkspace().RemoveConversationMessage(conversationId, messageId, ResolveWriteOptions(options))),
@@ -188,6 +197,7 @@ export const platformClient = {
     Migrate: () => CallBridge(() => RequireWorkspace().Migrate()),
   },
   evaluation: {
+    PreviewDatasetImport: (id: string, jsonl: string) => CallBridge(() => RequireEvaluation().PreviewDatasetImport(id, jsonl)),
     CreateProject: (input: Parameters<DesktopEvaluationBridge['CreateProject']>[0]) => CallBridge(() => RequireEvaluation().CreateProject(input)),
     UpdateProject: (id: string, input: Parameters<DesktopEvaluationBridge['UpdateProject']>[1], revision: number) => CallBridge(() => RequireEvaluation().UpdateProject(id, input, revision)),
     ReadProject: (id: string) => CallBridge(() => RequireEvaluation().ReadProject(id)),

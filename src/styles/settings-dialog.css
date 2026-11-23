@@ -1,0 +1,44 @@
+/* 设置独立于工作区页面，子确认框仍使用通用弹窗层，避免被设置面板遮挡。 */
+.settings-dialog-layer { z-index: 68; }
+.modal.settings-dialog {
+  --settings-dialog-gap: clamp(36px, calc((100dvh - 760px) / 2), 12vw);
+  width: calc(100vw - 2 * var(--settings-dialog-gap));
+  height: calc(100dvh - 2 * var(--settings-dialog-gap));
+  max-height: none;
+  border: 1px solid var(--border);
+  overflow: hidden;
+  background: var(--panel);
+}
+.settings-dialog-head { display: flex; align-items: center; flex: none; gap: 12px; height: 39.2px; padding: 0 20px 0 24px; border-bottom: 1px solid var(--border); }
+.settings-dialog-head .md-title { font-size: 13px; }
+.settings-dialog-body { display: flex; flex: 1; min-width: 0; min-height: 0; }
+.settings-dialog-nav { display: flex; flex: 0 0 172px; flex-direction: column; gap: 4px; padding: 12px; overflow-y: auto; background: var(--surface); }
+.settings-dialog-tab { display: flex; flex: none; align-items: center; gap: 9px; min-height: 36px; border: 0; border-radius: var(--r-control); padding: 0 10px; color: var(--text-2); font-size: 13px; font-weight: 400; text-align: left; cursor: pointer; transition: background-color .16s var(--ease), color .16s var(--ease); }
+.settings-dialog-tab .ph { flex: none; }
+.settings-dialog-tab:hover, .settings-dialog-tab:focus-visible { background: var(--nav-hover-bg); color: var(--text); outline: none; box-shadow: none; }
+.settings-dialog-tab.is-active { background: var(--nav-selected-bg); color: var(--text); }
+.settings-dialog-tab.is-active:is(:hover, :focus-visible) { background: var(--nav-selected-focus-bg); }
+/* 滚动槽位始终成对保留；正文沿用 set-root 的左右留白，不因切换分类产生位移。 */
+.settings-dialog-content { flex: 1; min-width: 0; min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable both-edges; container-type: inline-size; }
+.settings-dialog .gn-card { max-width: none; }
+.settings-dialog .model-set-scope .set-card { grid-template-columns: 180px minmax(0, 1fr); }
+.settings-dialog .model-set-scope .set-pane { padding: 16px 24px 24px; }
+.settings-dialog .set-head h1 { font-size: 24px; }
+@container (max-width: 660px) {
+  .settings-dialog .model-set-scope .set-card { grid-template-columns: minmax(0, 1fr); }
+  .settings-dialog .model-set-scope .set-side { border-right: 0; border-bottom: 1px solid var(--border); border-radius: calc(var(--r-card) - 1px) calc(var(--r-card) - 1px) 0 0; }
+  .settings-dialog .model-set-scope .set-pane { padding: 20px 18px 24px; }
+  .settings-dialog .gn-row:not(.stack) { flex-wrap: wrap; gap: 12px; }
+  .settings-dialog .gn-txt { flex-basis: 180px; }
+  .settings-dialog .gn-ctl { max-width: 100%; flex-wrap: wrap; }
+}
+@media (max-width: 680px) {
+  .modal.settings-dialog { --settings-dialog-gap: 12px; }
+  .settings-dialog-nav { flex-basis: 148px; padding: 8px; }
+  .settings-dialog-head .md-title { font-size: 12px; }
+  .settings-dialog-tab { gap: 7px; padding-inline: 8px; font-size: 12px; white-space: nowrap; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .settings-dialog { animation: none; }
+  .settings-dialog-tab { transition: none; }
+}

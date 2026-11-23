@@ -4,7 +4,7 @@ import { type ResumeRevisionDocumentDto } from '@avery/contracts';
 import { useUiStore } from '../../../app/UiStore';
 import { useDeleteResume, useResumes, useRestoreResumeRevision, useUpsertResume, LoadResumeRevisions, LoadResumeRevision, ExportResumeFile } from '../../../features/resume/api/resumeQueries';
 import { AcquireResumeEditLock, ReleaseResumeEditLock } from '../../assistant/api/agentQueries';
-import { DialogButton, Modal } from '../../../shared/components/UI';
+import { DialogButton, Modal, Select } from '../../../shared/components/UI';
 import { Icon } from '../../../shared/components/Icon';
 import { FormatTime } from '../../../shared/utils/format';
 import type { Resume } from '../../../types/domain';
@@ -19,9 +19,6 @@ interface ResumeRevisionRow {
   createdAt: number;
   isCurrent: boolean;
 }
-
-/** 版本来源的用户可读标签；后端目前只有保存与还原两种来源。 */
-const RevisionSourceLabels: Record<string, string> = { user: '保存的版本', restore: '版本还原' };
 
 /** 行描述与抽屉 meta 共用：有目标岗位写「针对 X 定制」，否则为通用版本。 */
 function ResumeTargetText(resume: Resume): string {
@@ -199,53 +196,39 @@ function ResumesPage({ onGoAssistant }: { onGoAssistant: () => void }) {
       <aside className="dw-drawer is-resume" role="dialog" aria-modal="true" aria-labelledby="resume-drawer-title" tabIndex={-1} ref={drawerRef}>
         <div className="dw-head">
           <div className="dw-head-main">
-            <div className="dw-title" id="resume-drawer-title">{drawerResume.name}</div>
-            <div className="dw-meta">
-              <span>{drawerResume.targetRoles.length ? `针对 ${drawerResume.targetRoles.join('、')}` : '通用版本'}</span>
-              {Boolean(drawerResume.updatedAt) && <span>{FormatTime(drawerResume.updatedAt)} 修改</span>}
-              {viewingRevision && <span>正在查看 v{viewingRevision.revision}（只读）</span>}
-              {editing && <span>正在编辑</span>}
-            </div>
+            <div className="dw-title" id="resume-drawer-title">简历</div>
           </div>
           <button className="icon-btn" type="button" aria-label="关闭详情" title="关闭详情" autoFocus onClick={RequestClose}><Icon name="close" size={16} /></button>
         </div>
-        <div className="dw-body" ref={bodyRef}>
-          {editing ? <ResumeEditor value={editor.draft} onChange={editor.Change} validationAttempt={editor.validationAttempt} disabled={upsertResume.isPending} /> : <>
-            {viewingRevision && <div className="note plain">
-              <Icon name="info" size={15} />
-              <span>正在查看 v{viewingRevision.revision} 历史版本，内容不可编辑。</span>
-              <button className="note-act" type="button" onClick={ReturnToCurrent}>返回当前版本</button>
-            </div>}
-            <ResumePdfPreview resume={viewingRevision?.document ?? drawerResume} />
-            <section className="sec rev-sec">
-              <div className="sec-h">版本历史</div>
-              {revisions.length ? revisions.map((revision) => <div className="rev-row" key={revision.id}>
-                <span className="rev-label">v{revision.revision}{revision.isCurrent ? ' · 当前版本' : ` · ${RevisionSourceLabels[revision.source] ?? revision.source}`}</span>
-                <span className="rev-time">{FormatTime(revision.createdAt)}</span>
-                {!revision.isCurrent && <span className="rev-acts">
-                  <button className="rev-act" type="button" onClick={() => void PreviewRevision(revision)}>查看</button>
-                  <button className="rev-act" type="button" onClick={() => SetRestoreTarget(revision)}>还原</button>
-                </span>}
-              </div>) : <p className="rev-none">暂无历史版本记录。</p>}
-            </section>
-          </>}
+        <div className={`dw-body${!editing ? ' is-resume-preview' : ''}`} ref={bodyRef}>
+          {editing ? <ResumeEditor value={editor.draft} onChange={editor.Change} validationAttempt={editor.validationAttempt} disabled={upsertResume.isPending} />
+            : <ResumePdfPreview resume={viewingRevision?.document ?? drawerResume} fill />}
         </div>
-        <div className="dw-foot">
+        <div className="dw-foot resume-preview-foot">
           {/* 编辑态换用侧边栏同款按钮组：取消 / 撤销 / 保存；阅读态保留删除、编辑、导出与设为当前。 */}
           {editing ? <>
-            <button className="ghost-btn" type="button" disabled={upsertResume.isPending} onClick={CancelEdit}><Icon name="close" size={14} />取消</button>
-            <button className="ghost-btn" type="button" disabled={!editor.canUndo || upsertResume.isPending} onClick={editor.Undo}><Icon name="recovery" size={14} />撤销</button>
-            <button className="btn-accent" type="button" disabled={upsertResume.isPending} onClick={() => void SaveEdit()}><Icon name="check-circle" size={14} />{upsertResume.isPending ? '保存中…' : '保存'}</button>
+            <button className="ghost-btn" type="button" aria-label="取消编辑" title="取消编辑" disabled={upsertResume.isPending} onClick={CancelEdit}><Icon name="close" size={14} /></button>
+            <button className="ghost-btn" type="button" aria-label="撤销修改" title="撤销修改" disabled={!editor.canUndo || upsertResume.isPending} onClick={editor.Undo}><Icon name="arrow-counter-clockwise" size={14} /></button>
+            <button className="btn-accent" type="button" aria-label={upsertResume.isPending ? '保存中…' : '保存简历'} title={upsertResume.isPending ? '保存中…' : '保存简历'} aria-busy={upsertResume.isPending} disabled={upsertResume.isPending} onClick={() => void SaveEdit()}><Icon name="floppy-disk" size={14} /></button>
           </> : <>
-            <button className="ghost-btn is-danger" type="button" onClick={() => SetDeleteTarget(drawerResume)}><Icon name="delete" size={14} />删除</button>
-            <button className="ghost-btn" type="button" disabled={Boolean(viewingRevision)} title={viewingRevision ? '历史版本只读，返回当前版本后可编辑' : undefined} onClick={() => void StartEdit()}>
-              <Icon name="pencil-simple" size={14} />编辑
+            <button className="ghost-btn is-danger" type="button" aria-label="删除简历" title="删除简历" onClick={() => SetDeleteTarget(drawerResume)}><Icon name="delete" size={14} /></button>
+            <button className="ghost-btn" type="button" aria-label="编辑简历" disabled={Boolean(viewingRevision)} title={viewingRevision ? '历史版本只读' : '编辑简历'} onClick={() => void StartEdit()}>
+              <Icon name="pencil-simple" size={14} />
             </button>
-            <button className="ghost-btn" type="button" onClick={() => void DownloadPdf()}><Icon name="download-simple" size={14} />下载 PDF</button>
-            <button className="btn-accent" type="button" disabled={drawerResume.id === currentResumeId} onClick={() => SetCurrentResume(drawerResume)}>
-              <Icon name="check-circle" size={14} />{drawerResume.id === currentResumeId ? '已是当前版本' : '设为当前版本'}
+            <button className="ghost-btn" type="button" aria-label="下载 PDF" title="下载 PDF" onClick={() => void DownloadPdf()}><Icon name="download-simple" size={14} /></button>
+            <button className="btn-accent" type="button" aria-label={drawerResume.id === currentResumeId ? '已是当前简历' : '设为当前简历'} title={drawerResume.id === currentResumeId ? '已是当前简历' : '设为当前简历'} disabled={drawerResume.id === currentResumeId} onClick={() => SetCurrentResume(drawerResume)}>
+              <Icon name="check-circle" size={14} />
             </button>
           </>}
+          {viewingRevision && <button className="ghost-btn" type="button" aria-label={`还原 v${viewingRevision.revision}`} title={`还原 v${viewingRevision.revision}`} onClick={() => SetRestoreTarget(revisions.find((revision) => revision.id === viewingRevision.id) ?? null)}><Icon name="recovery" size={14} /></button>}
+          <Select className="resume-version-select" ariaLabel="选择简历版本" disabled={editing} dropUp value={viewingRevision?.id ?? 'current'} options={[
+            { value: 'current', label: `v${drawerResume.revision ?? revisions.find((revision) => revision.isCurrent)?.revision ?? 1}` },
+            ...revisions.filter((revision) => !revision.isCurrent).map((revision) => ({ value: revision.id, label: `v${revision.revision}` })),
+          ]} onChange={(id) => {
+            if (id === 'current') { ReturnToCurrent(); return; }
+            const revision = revisions.find((item) => item.id === id);
+            if (revision) void PreviewRevision(revision);
+          }} />
         </div>
       </aside>
     </div>, document.body)}

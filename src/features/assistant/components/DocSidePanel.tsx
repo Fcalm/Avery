@@ -250,9 +250,7 @@ function DocSidePanelContent({ resourceSelection = null, onClearResourceSelectio
   };
   const meta = selectedKind === 'resume' || selectedKind === 'profile' ? KindMeta[selectedKind] : selectedKind ? linkedMeta[selectedKind] : null;
   const pickerMeta = selectedKind === 'resume' || selectedKind === 'profile' ? KindMeta[selectedKind] : null;
-  const doc: { title: string; meta: string[] } | null = selectedKind === 'resume'
-    ? displayedResume && { title: displayedResume.name, meta: [displayedResume.revision ? `v${displayedResume.revision}${isCurrentResume ? ' · 当前' : ' · 历史版本，只读'}` : '', `${displayedResume.content.length} 字`, displayedResume.updatedAt ? `更新于 ${FormatTime(displayedResume.updatedAt)}` : '尚未保存'] }
-    : selectedKind === 'profile' && profile ? { title: profile.title, meta: [ProfileCategoryLabel[profile.category], profile.updatedAt ? `更新于 ${FormatTime(profile.updatedAt)}` : ''] } : null;
+  const doc = selectedKind === 'profile' && profile ? { title: profile.title, meta: [ProfileCategoryLabel[profile.category], profile.updatedAt ? `更新于 ${FormatTime(profile.updatedAt)}` : ''] } : null;
 
   return <section ref={contentRef} className="rside" style={{ '--panel-width': `${panelWidth}px` } as CSSProperties} onKeyDown={(event) => {
     if (event.key !== 'Escape') return;
@@ -264,6 +262,13 @@ function DocSidePanelContent({ resourceSelection = null, onClearResourceSelectio
     } else if (onClose && !editing) { event.stopPropagation(); onClose(); }
   }}>
     <div className="rs-grip" role="separator" aria-orientation="vertical" aria-label="调整边栏宽度" aria-valuenow={panelWidth} tabIndex={0} onPointerDown={HandleGripPointerDown} onKeyDown={HandleGripKeyDown} />
+    <header className="rs-head">{meta && <>
+      <button className="icon-btn sm" type="button" disabled={editing} aria-label="重新选择类型" title="重新选择类型" onClick={() => { onClearResourceSelection?.(); SetSelection(null); SetOpenMenu(null); }}>
+        <Icon name="arrow-left" size={14} />
+      </button>
+      <Icon name={meta.icon} className="rs-kind" size={16} />
+      <span className="rs-kind-t">{meta.label}</span>
+    </>}{onClose && <button className="icon-btn sm rs-resource-close" type="button" aria-label="关闭资料侧栏" title="关闭资料侧栏" disabled={editing} onClick={onClose}><Icon name="close" size={17} /></button>}</header>
     {!meta ? <div className="rs-body"><div className="rs-pick">
       {(Object.keys(KindMeta) as SideKind[]).map((key) => <button className="rs-pick-btn" type="button" key={key} onClick={() => PickKind(key)}>
         <Icon name={KindMeta[key].icon} size={21} />
@@ -271,29 +276,20 @@ function DocSidePanelContent({ resourceSelection = null, onClearResourceSelectio
         <Icon name="chevron-right" className="rs-pick-go" size={14} />
       </button>)}
     </div></div> : <>
-      <header className="rs-head">
-        <button className="icon-btn sm" type="button" disabled={editing} aria-label="重新选择类型" title="重新选择类型" onClick={() => { onClearResourceSelection?.(); SetSelection(null); SetOpenMenu(null); }}>
-          <Icon name="arrow-left" size={14} />
-        </button>
-        <Icon name={meta.icon} className="rs-kind" size={16} />
-        <span className="rs-kind-t">{meta.label}</span>
-        {onClose && <button className="icon-btn sm rs-resource-close" type="button" aria-label="关闭资料侧栏" disabled={editing} onClick={onClose}><Icon name="close" size={14} /></button>}
-      </header>
-      <div className="rs-body">
+      <div className={`rs-body${selectedKind === 'resume' && !editing ? ' is-resume-preview' : ''}`}>
         {resumeDocument.error && displayedResume && <p className="conversation-run-error" role="alert">版本记录读取失败：{resumeDocument.error}</p>}
         {selectedKind === 'resume' && selection?.id && !resume ? <div className="rs-empty"><p role="alert">简历已删除或不可用，请重新选择。</p></div>
         : (resumeDocument.error && !displayedResume) || resource.error ? <div className="rs-empty"><p role="alert">{resumeDocument.error || resource.error}</p>{selectedKind === 'resume' && (selection?.revision !== undefined ? <button className="ghost-btn" type="button" onClick={() => SelectVersion(undefined)}>查看当前版本</button> : <button className="ghost-btn" type="button" onClick={() => void resumeDocument.Reload()}>重新读取</button>)}</div>
         : (selection?.external && !resource.view) || (resumeDocument.loading && !displayedResume) ? <p role="status">正在读取资料…</p>
+        : selectedKind === 'resume' && displayedResume ? (editing && isCurrentResume
+          ? <ResumeEditor value={resumeDraft} onChange={onEditChange} validationAttempt={validationAttempt} disabled={saving} />
+          : <ResumePdfPreview resume={displayedResume} fill />)
         : doc ? <div className="rs-doc">
           <div className="rs-doc-h">
             <div className="rs-doc-t">{doc.title}</div>
             <div className="rs-doc-m">{doc.meta.filter(Boolean).map((entry) => <span key={entry}>{entry}</span>)}</div>
           </div>
-          {selectedKind === 'resume'
-            ? (editing && isCurrentResume
-              ? <ResumeEditor value={resumeDraft} onChange={onEditChange} validationAttempt={validationAttempt} disabled={saving} />
-              : displayedResume && <ResumePdfPreview resume={displayedResume} />)
-            : profile && <ProfileEntryView item={profile} />}
+          {profile && <ProfileEntryView item={profile} />}
         </div> : resource.view?.format === 'markdown' ? <div className="rs-doc"><MarkdownText content={resource.view.content} /></div>
         : resource.view?.format === 'file' ? resource.view.mimeType === 'image/png'
           ? <img className="rs-resource-image" src={resource.fileUrl} alt={resource.view.resource.title} />
@@ -304,21 +300,21 @@ function DocSidePanelContent({ resourceSelection = null, onClearResourceSelectio
           <div className="d">{pickerMeta?.emptyHint}</div>
         </div>}
       </div>
-      <footer className="rs-foot">
+      <footer className={`rs-foot${selectedKind === 'resume' ? ' resume-preview-foot' : ''}`}>
         {selectedKind === 'resume' && <div className="rs-actions">
-          <button className="ghost-btn" type="button" disabled={!isCurrentResume || saving} aria-label={editing ? '取消编辑' : '编辑简历'} title={!isCurrentResume ? '历史版本只读，请选择当前版本后编辑' : editing ? '取消编辑' : '编辑简历'} onClick={editing ? onCancelEditing : () => { if (!resume) return; SelectDocument('resume', resume.id); onStartEditing(); }}>
-            <Icon name={editing ? 'close' : 'pencil-simple'} size={14} /><span className="btn-txt">{editing ? '取消' : '编辑'}</span>
+          <button className="ghost-btn" type="button" disabled={!isCurrentResume || saving} aria-label={editing ? '取消编辑' : '编辑简历'} title={!isCurrentResume ? '历史版本只读' : editing ? '取消编辑' : '编辑简历'} onClick={editing ? onCancelEditing : () => { if (!resume) return; SelectDocument('resume', resume.id); onStartEditing(); }}>
+            <Icon name={editing ? 'close' : 'pencil-simple'} size={14} />
           </button>
           <button className="ghost-btn" type="button" disabled={!editing || !canUndo || saving} aria-label="撤销修改" title="撤销修改" onClick={onUndo}>
-            <Icon name="recovery" size={14} /><span className="btn-txt">撤销</span>
+            <Icon name="arrow-counter-clockwise" size={14} />
           </button>
-          <button className="btn-accent" type="button" disabled={!editing || saving} aria-label="保存简历" title="保存简历" onClick={onSaveResume}>
-            <Icon name="check-circle" size={14} /><span className="btn-txt">{saving ? '保存中…' : '保存'}</span>
+          <button className="btn-accent" type="button" disabled={!editing || saving} aria-busy={saving} aria-label={saving ? '保存中…' : '保存简历'} title={saving ? '保存中…' : '保存简历'} onClick={onSaveResume}>
+            <Icon name="floppy-disk" size={14} />
           </button>
         </div>}
         {selectedKind === 'resume' && resume && <div className="menu-wrap rs-resource-version-wrap" ref={versionMenuWrapRef} onKeyDown={HandleVersionMenuKeyDown} onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) SetOpenMenu((current) => current === 'versions' ? null : current); }}>
           <button className="tb-txt-btn menu-trigger rs-resource-version" type="button" aria-label="选择简历版本" title="选择简历版本" disabled={editing || resumeDocument.loading} aria-expanded={openMenu === 'versions'} aria-haspopup="menu" aria-controls="rs-version-menu" onClick={() => SetOpenMenu((current) => current === 'versions' ? null : 'versions')}>
-            <span>{selection?.revision === undefined ? '当前' : `v${selection.revision}`}</span><Icon name="chevron-down" className="chev" size={10} />
+            <span>v{selection?.revision ?? currentRevision ?? 1}</span><Icon name="chevron-down" className="chev" size={10} />
           </button>
           {openMenu === 'versions' && <div className="menu pop open rs-version-menu" id="rs-version-menu" role="menu" aria-label="简历版本">
             <div className="menu-label">简历版本</div>
@@ -333,10 +329,10 @@ function DocSidePanelContent({ resourceSelection = null, onClearResourceSelectio
         {(displayedResume || profile || resource.view) && <button className="ghost-btn rs-resource-download" type="button" aria-label={downloadLabel} title={downloadLabel} onClick={DownloadDocument}><Icon name="download-simple" size={14} /></button>}
         {pickerMeta && <div className="menu-wrap" ref={menuWrapRef}>
           <button className="tb-txt-btn menu-trigger" type="button" disabled={editing} aria-label={pickerMeta.picker} title={pickerMeta.picker} aria-expanded={openMenu === 'documents'} aria-haspopup="true" aria-controls="rs-menu" onClick={() => SetOpenMenu((current) => current === 'documents' ? null : 'documents')}>
-            <Icon name="list-bullets" size={14} /><span className="btn-txt">{pickerMeta.picker}</span><Icon name="chevron-down" className="chev" size={10} />
+            <Icon name="list-bullets" size={14} />{selectedKind !== 'resume' && <span className="btn-txt">{pickerMeta.picker}</span>}<Icon name="chevron-down" className="chev" size={10} />
           </button>
           {openMenu === 'documents' && <div className="menu pop lg open" id="rs-menu" role="menu" aria-label={pickerMeta.menuLabel}>
-            {selectedKind === 'resume' && resumes.map((item) => <button className={`menu-item ${item.id === selection?.id ? 'sel' : ''}`} type="button" key={item.id} role="menuitemradio" aria-checked={item.id === selection?.id} title={item.name} onClick={() => SelectDocument('resume', item.id)}>
+            {selectedKind === 'resume' && resumes.map((item) => <button className={`menu-item ${item.id === selection?.id ? 'sel' : ''}`} type="button" key={item.id} role="menuitemradio" aria-checked={item.id === selection?.id} data-native-title="true" title={item.name} onClick={() => SelectDocument('resume', item.id)}>
               <Icon name="resumes" size={16} />
               <span><span className="mt">{item.name}</span><span className="md">{item.updatedAt ? `更新于 ${FormatTime(item.updatedAt)}` : '尚未保存'}</span></span>
               <Icon name="check" className="tick" size={14} />
@@ -344,7 +340,7 @@ function DocSidePanelContent({ resourceSelection = null, onClearResourceSelectio
             {selectedKind === 'resume' && !resumes.length && <div className="menu-label">还没有简历</div>}
             {selectedKind === 'profile' && groupedProfiles.map((group) => <div key={group.category}>
               <div className="menu-label">{ProfileCategoryLabel[group.category]}</div>
-              {group.items.map((item) => <button className={`menu-item ${item.id === profileId ? 'sel' : ''}`} type="button" key={item.id} role="menuitemradio" aria-checked={item.id === profileId} title={item.title} onClick={() => SelectDocument('profile', item.id)}>
+              {group.items.map((item) => <button className={`menu-item ${item.id === profileId ? 'sel' : ''}`} type="button" key={item.id} role="menuitemradio" aria-checked={item.id === profileId} data-native-title="true" title={item.title} onClick={() => SelectDocument('profile', item.id)}>
                 <Icon name="profiles" size={16} />
                 <span><span className="mt">{item.title}</span><span className="md">{GetProfileSummary(item.content)}</span></span>
                 <Icon name="check" className="tick" size={14} />
@@ -371,7 +367,7 @@ function DocSidePanel({ open, ...props }: DocSidePanelProps) {
   }, [open]);
 
   if (!open && !retained) return null;
-  return <div className={`rs-presence${open ? ' is-open' : ''}`} inert={!open} aria-hidden={!open}
+  return <div id="assistant-resource-panel" className={`rs-presence${open ? ' is-open' : ''}`} inert={!open} aria-hidden={!open}
     style={{ '--panel-width': `${props.panelWidth}px`, '--rs-transition-duration': `${SidePanelTransitionMs}ms` } as CSSProperties}>
     <DocSidePanelContent {...props} />
   </div>;

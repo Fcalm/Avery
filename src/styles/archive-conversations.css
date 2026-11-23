@@ -1,0 +1,94 @@
+/* 归档原型的内容区；沿用设置页留白、主题和控件，不复制原型外壳。 */
+.archive-settings { container-type: inline-size; }
+.archive-heading { justify-content: space-between; gap: 16px; margin-bottom: 25px; }
+.archive-heading-left { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.archive-count { flex: none; border-radius: 999px; padding: 1px 8px; color: var(--text-2); background: var(--surface-2); font-size: 12px; font-variant-numeric: tabular-nums; }
+.archive-retention { display: inline-flex; align-items: center; gap: 6px; flex: none; color: var(--text-2); font-size: 12px; white-space: nowrap; }
+.archive-toolbar { display: flex; align-items: center; gap: 8px; margin-bottom: 16px; }
+.archive-search { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 100px; height: 36px; border: 1px solid var(--border); border-radius: 10px; padding: 0 10px; background: var(--raised); transition: background-color .16s var(--ease); }
+.archive-search > .ph { flex: none; color: var(--text-3); }
+.archive-settings .archive-search > input { width: 100%; min-width: 0; height: 100%; border: 0; border-radius: 0; padding: 0; color: var(--text); background: transparent; font: inherit; font-size: 12.5px; box-shadow: none; }
+.archive-search > input::placeholder { color: var(--text-3); }
+.archive-search:focus-within { background: var(--control-focus-surface); }
+:root .archive-search > input:focus { background: transparent; }
+.archive-toolbar .custom-select { flex: 0 1 160px; min-width: 110px; width: auto; }
+.archive-toolbar .custom-select-trigger { height: 36px; min-height: 36px; border-color: var(--border); border-radius: 10px; padding: 0 10px; background: var(--raised); font-size: 12px; }
+.archive-toolbar .custom-select-trigger:is(:hover, :focus, [aria-expanded="true"]) { background: var(--control-focus-surface); }
+.archive-delete-all { display: inline-flex; align-items: center; justify-content: center; gap: 6px; flex: none; min-height: 36px; border: 1px solid var(--border); border-radius: 10px; padding: 0 11px; color: var(--danger); font-size: 12px; white-space: nowrap; }
+.archive-delete-all:hover:not(:disabled), .archive-delete-all:focus-visible { background: var(--danger-soft, rgba(180,65,60,.08)); }
+.archive-settings button:disabled { cursor: default; opacity: .5; }
+.archive-table-wrap { border: 1px solid var(--border); border-radius: 14px; overflow: hidden; }
+.archive-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+.archive-table th { height: 39px; color: var(--text-2); background: var(--surface); text-align: left; font-size: 11.5px; font-weight: 500; }
+.archive-table :is(th, td) { padding: 0 16px; }
+.archive-table th:first-child { width: 42%; }
+.archive-table th:nth-child(2) { width: 22%; }
+.archive-table th:nth-child(3) { width: 19%; }
+.archive-table th:last-child { width: 17%; text-align: right; }
+.archive-table td { height: 70px; border-top: 1px solid var(--border); font-size: 12.5px; }
+.archive-table tbody tr { transition: background-color .16s var(--ease); }
+.archive-table tbody tr:hover { background: var(--surface); }
+.archive-title-cell { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.archive-title-cell > .ph { flex: none; color: var(--text-3); }
+.archive-title { display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow-wrap: anywhere; font-size: 13px; font-weight: 500; line-height: 1.65; }
+.archive-project { display: flex; align-items: center; gap: 6px; min-width: 0; color: var(--text-2); font-size: 12px; }
+.archive-project > .ph { flex: none; }
+.archive-project > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.archive-project.is-missing { color: var(--text-3); }
+.archive-deadline { color: var(--text-2); font-size: 12px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.archive-deadline.is-urgent { color: var(--danger); font-weight: 500; }
+.archive-deadline.is-urgent::before { content: ""; display: inline-block; width: 5px; height: 5px; margin-right: 6px; border-radius: 999px; vertical-align: 2px; background: var(--danger); }
+.archive-actions { display: flex; align-items: center; justify-content: flex-end; gap: 3px; white-space: nowrap; }
+.archive-action { display: inline-flex; align-items: center; gap: 5px; border-radius: 10px; padding: 6px; color: var(--text-2); font-size: 12px; }
+.archive-action.is-restore:is(:hover, :focus-visible) { color: var(--accent); background: var(--accent-soft); }
+.archive-action.is-delete:is(:hover, :focus-visible) { color: var(--danger); background: var(--danger-soft, rgba(180,65,60,.08)); }
+.archive-empty { padding: 64px 16px; text-align: center; }
+.archive-empty > .ph { margin-bottom: 12px; color: var(--text-3); }
+.archive-empty p { margin: 0 0 12px; color: var(--text-2); font-size: 13px; }
+.archive-empty button { color: var(--accent); font-size: 12px; }
+.archive-settings :is(button, input):focus-visible, .modal:has(.archive-confirm-content) button:focus-visible { outline: none; box-shadow: none; }
+.archive-empty button:focus-visible, .modal:has(.archive-confirm-content) button:focus-visible { background: var(--control-focus-surface); }
+.archive-settings .custom-select-menu { font-size: 12px; }
+.modal:has(.archive-confirm-content) .btn-accent:focus-visible { background: var(--brand-primary-hover); }
+.modal:has(.archive-confirm-content) .btn-danger:focus-visible { background: var(--danger); box-shadow: inset 0 0 0 2px var(--text-3); }
+.archive-confirm-content { display: block; color: var(--text-2); font-size: 12.5px; line-height: 1.7; }
+.modal:has(.archive-confirm-content) .cf-text { margin: 0; }
+.archive-confirm-content:not(:has(.archive-confirm-subject)) { margin-top: 12px; }
+.archive-confirm-subject { display: block; margin: 13px 0 10px; border: 1px solid var(--border); border-radius: 10px; padding: 11px 12px; background: var(--surface); }
+.archive-confirm-subject > strong { display: block; color: var(--text); font-size: 13px; font-weight: 500; overflow-wrap: anywhere; }
+.archive-confirm-subject > .archive-project { margin-top: 5px; }
+.archive-confirm-text { display: block; }
+
+/* 窄内容区保留完整操作点击面积，极窄时切为列表卡片，不产生横向滚动。 */
+@container (max-width: 840px) {
+  .archive-table :is(th, td) { padding-left: 12px; padding-right: 12px; }
+  .archive-table th:first-child { width: 40%; }
+  .archive-table th:nth-child(2) { width: 24%; }
+  .archive-table th:nth-child(3) { width: 20%; }
+  .archive-table th:last-child { width: 16%; }
+  .archive-actions { gap: 0; }
+  .archive-action { justify-content: center; width: 28px; height: 30px; padding: 0; }
+  .archive-action > span { display: none; }
+  .archive-retention { font-size: 11px; }
+}
+@container (max-width: 650px) {
+  .archive-heading { flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+  .archive-toolbar { flex-wrap: wrap; }
+  .archive-search { flex-basis: 100%; }
+  .archive-toolbar .custom-select { flex: 1; min-width: 0; }
+  .archive-table thead { display: none; }
+  .archive-table, .archive-table tbody { display: block; }
+  .archive-table tr { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 7px 12px; border-bottom: 1px solid var(--border); padding: 14px 12px; }
+  .archive-table tr:last-child { border-bottom: 0; }
+  .archive-table td { display: block; height: auto; border: 0; padding: 0; }
+  .archive-table td:first-child { grid-column: 1; grid-row: 1; }
+  .archive-table td:nth-child(2) { grid-column: 1; grid-row: 2; padding-left: 27px; }
+  .archive-table td:nth-child(3) { grid-column: 1; grid-row: 3; padding-left: 27px; }
+  .archive-table td:last-child { grid-column: 2; grid-row: 1 / 4; align-self: center; }
+  .archive-actions { flex-direction: column; gap: 5px; }
+  .archive-action { width: auto; height: 28px; padding: 4px 6px; }
+  .archive-action > span { display: inline; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .archive-settings *, .archive-settings *::before { transition: none !important; }
+}

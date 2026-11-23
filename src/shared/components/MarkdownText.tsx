@@ -39,7 +39,7 @@ function MarkdownCodeBlock({ text, language }: { text: string; language: string 
 
   return <div className="markdown-code-block">
     <div className="markdown-code-header">
-      <span className="markdown-code-language" title={language || '文本'}>{language || '文本'}</span>
+      <span className="markdown-code-language" data-native-title="true" title={language || '文本'}>{language || '文本'}</span>
       <button type="button" className="markdown-code-copy" disabled={copying || copied || !text} onClick={() => void Copy()} aria-label={copied ? '已复制代码块内容' : '复制代码块内容'}>
         <Icon name={copied ? 'check' : 'copy'} size={14} /><span aria-live="polite">{copied ? '已复制' : copying ? '复制中' : '复制'}</span>
       </button>

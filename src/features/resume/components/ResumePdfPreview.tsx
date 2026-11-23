@@ -8,7 +8,7 @@ import '../../../styles/resume-pdf.css';
 interface PreviewState { key: string; document?: PDFDocumentProxy; error?: string }
 
 /** 三处预览共用同一个 PDF 管线；内容变化立即隐藏旧页，延迟请求并忽略迟到结果。 */
-export function ResumePdfPreview({ resume }: { resume: ResumeDocumentInput }) {
+export function ResumePdfPreview({ resume, fill = false }: { resume: ResumeDocumentInput; fill?: boolean }) {
   const key = useMemo(() => JSON.stringify({ name: resume.name, summary: resume.summary, content: resume.content, data: resume.data, templateId: resume.templateId }), [resume.name, resume.summary, resume.content, resume.data, resume.templateId]);
   const [state, SetState] = useState<PreviewState>({ key: '' });
   const [retry, SetRetry] = useState(0);
@@ -41,8 +41,8 @@ export function ResumePdfPreview({ resume }: { resume: ResumeDocumentInput }) {
   }, [key, retry]);
   const current = state.key === key ? state : undefined;
   const document = current?.document;
-  return <section className="resume-pdf-preview" aria-label="简历 PDF 预览">
-    <div className="resume-pdf-toolbar"><span>PDF 预览</span>{document && <div className="resume-pdf-zoom"><button className="icon-btn" type="button" aria-label="缩小 PDF" disabled={zoom === .25} onClick={() => ChangeZoom(-1)}><Icon name="window-minimize" size={12} /></button><button className="resume-pdf-fit" type="button" title="适应宽度" onClick={() => SetZoom('fit')}>{zoom === 'fit' ? '适宽' : `${Math.round(zoom * 100)}%`}</button><button className="icon-btn" type="button" aria-label="放大 PDF" disabled={zoom === 2} onClick={() => ChangeZoom(1)}><Icon name="plus" size={12} /></button></div>}<span className="resume-pdf-count" role="status">{document ? `共 ${document.numPages} 页` : current?.error ? '生成失败' : '正在生成…'}</span></div>
+  return <section className={`resume-pdf-preview${fill ? ' is-fill' : ''}`} aria-label="简历 PDF 预览">
+    <div className="resume-pdf-toolbar"><span className="resume-pdf-title" data-native-title="true" title={resume.name}>{resume.name}</span>{document && <div className="resume-pdf-zoom"><button className="icon-btn" type="button" aria-label="缩小 PDF" disabled={zoom === .25} onClick={() => ChangeZoom(-1)}><Icon name="window-minimize" size={12} /></button><button className="resume-pdf-fit" type="button" title="适应宽度" onClick={() => SetZoom('fit')}>{zoom === 'fit' ? '适宽' : `${Math.round(zoom * 100)}%`}</button><button className="icon-btn" type="button" aria-label="放大 PDF" disabled={zoom === 2} onClick={() => ChangeZoom(1)}><Icon name="plus" size={12} /></button></div>}<span className="resume-pdf-count" role="status">{document ? `共 ${document.numPages} 页` : current?.error ? '生成失败' : '正在生成…'}</span></div>
     {current?.error ? <div className="resume-pdf-status"><p role="alert">{current.error}</p><button className="ghost-btn" type="button" onClick={() => { SetState({ key: '' }); SetRetry((value) => value + 1); }}><Icon name="refresh" size={14} />重新生成</button></div>
       : !document ? <div className="resume-pdf-status" role="status"><Icon name="loading" className="spin" size={18} />正在生成 PDF 预览</div>
         : <div className="resume-pdf-viewport" ref={viewportRef} style={{ '--pdf-page-width': zoom === 'fit' ? '100%' : `${794 * zoom}px`, '--pdf-page-max-width': zoom === 'fit' ? '794px' : 'none' } as import('react').CSSProperties} tabIndex={0} aria-label={`简历 PDF，共 ${document.numPages} 页`}>{Array.from({ length: document.numPages }, (_, i) => <PdfPage key={`${document.fingerprints[0]}-${i}`} document={document} number={i + 1} />)}</div>}
@@ -94,7 +94,7 @@ function PdfPage({ document, number }: { document: PDFDocumentProxy; number: num
   }, [document, number, visible, width]);
   return <figure className="resume-pdf-page"><div className="resume-pdf-sheet" ref={root}>
     <canvas ref={canvas} role="img" aria-label={`简历第 ${number} 页`} />
-    {links.map((link, index) => <a key={index} className="resume-pdf-link" href={link.href} target="_blank" rel="noreferrer" aria-label={link.href} title={link.href} style={{ left: link.left, top: link.top, width: link.width, height: link.height }} />)}
+    {links.map((link, index) => <a key={index} className="resume-pdf-link" href={link.href} target="_blank" rel="noreferrer" aria-label={link.href} data-native-title="true" title={link.href} style={{ left: link.left, top: link.top, width: link.width, height: link.height }} />)}
     {error && <p className="resume-pdf-page-error" role="alert">{error}</p>}
   </div><figcaption>第 {number} / {document.numPages} 页</figcaption></figure>;
 }

@@ -23,6 +23,9 @@ const agentBridge = {
     GetProviderCatalog: () => invoke('agent:get-provider-catalog'),
     GetModelConfiguration: (input) => invoke('agent:get-model-configuration', input),
     SaveModelConfiguration: (input) => invoke('agent:save-model-configuration', input),
+    GetGoalModelTiers: () => invoke('agent:get-goal-model-tiers'),
+    SaveGoalModelTiers: (input) => invoke('agent:save-goal-model-tiers', input),
+    ChangeGoal: (input) => invokeAgentWrite('agent:change-goal', [input]),
     Send: (request) => invoke('agent:send', request),
     RespondToInteraction: (response) => invokeAgentWrite('agent:respond-interaction', [response]),
     Cancel: (requestId) => invoke('agent:cancel', requestId),
@@ -69,6 +72,12 @@ const workspaceBridge = {
     SetConversationPinned: (id, pinned, revision, options) => invokeWorkspaceWrite('workspace:conversations-set-pinned', [id, pinned, revision], options),
     SetConversationArchived: (id, archived, revision, options) => invokeWorkspaceWrite('workspace:conversations-set-archived', [id, archived, revision], options),
     DeleteConversation: (id, options) => invokeWorkspaceWrite('workspace:conversations-delete', [id], options),
+    DeleteArchivedConversations: (items, options) => invokeWorkspaceWrite('workspace:conversations-delete-archived', [items], options),
+    OnConversationsChanged: (listener) => {
+        const handler = () => listener();
+        electron_1.ipcRenderer.on('workspace:conversations-changed', handler);
+        return () => { electron_1.ipcRenderer.removeListener('workspace:conversations-changed', handler); };
+    },
     AppendConversationMessages: (id, messages, options) => invokeWorkspaceWrite('workspace:conversations-append-messages', [id, messages], options),
     CompleteConversationMessage: (id, messageId, content, thinking, options) => invokeWorkspaceWrite('workspace:conversations-complete-message', [id, messageId, content, thinking], options),
     RemoveConversationMessage: (id, messageId, options) => invokeWorkspaceWrite('workspace:conversations-remove-message', [id, messageId], options),
@@ -115,6 +124,7 @@ const evaluationBridge = {
     ListProjects: () => invoke('evaluation:projects-list'),
     DeleteProject: (id) => invokeEvaluationWrite('evaluation:project-delete', [id]),
     ImportDataset: (id, jsonl, rubric, revision) => invokeEvaluationWrite('evaluation:dataset-import', [id, jsonl, rubric, revision]),
+    PreviewDatasetImport: (id, jsonl) => invoke('evaluation:dataset-preview', id, jsonl),
     ListDatasetVersions: (id) => invoke('evaluation:dataset-versions-list', id),
     SelectDatasetVersion: (id, version, revision) => invokeEvaluationWrite('evaluation:dataset-version-select', [id, version, revision]),
     DeleteDatasetVersion: (id, version, revision) => invokeEvaluationWrite('evaluation:dataset-version-delete', [id, version, revision]),
@@ -148,6 +158,12 @@ const updateBridge = {
 };
 electron_1.contextBridge.exposeInMainWorld('averyUpdates', updateBridge);
 electron_1.contextBridge.exposeInMainWorld('averyWindow', {
+    OnTaskNotificationOpen: (listener) => {
+        const handler = (_event, sessionId) => { if (typeof sessionId === 'string' && sessionId)
+            listener(sessionId); };
+        electron_1.ipcRenderer.on('app:task-notification-open', handler);
+        return () => electron_1.ipcRenderer.removeListener('app:task-notification-open', handler);
+    },
     /** 仅查询/订阅宿主客户区尺寸，Renderer 不直接访问窗口或屏幕 API。 */
     GetFrameSize: () => invoke('window:get-frame-size'),
     OnFrameSizeChange: (listener) => {
@@ -167,6 +183,7 @@ electron_1.contextBridge.exposeInMainWorld('averyWindow', {
     OpenProviderDashboard: (provider) => invoke('app:open-provider-dashboard', provider),
     /** 只传浏览器枚举；安装页、扩展目录及启动方式由 Main 决定。 */
     OpenBrowserExtensionSetup: (engine) => invoke('app:open-browser-extension-setup', engine),
+    OpenEgoBrowserSetup: () => invoke('app:open-ego-browser-setup'),
     ReadMimoAccountUsage: () => invoke('app:mimo-account-usage'),
     OpenMimoAccountLogin: () => invoke('app:mimo-account-login'),
     DisconnectMimoAccount: () => invoke('app:mimo-account-disconnect'),

@@ -54,6 +54,16 @@ export async function GetModelConfiguration(input: Parameters<import('@avery/con
 export async function SaveModelConfiguration(input: Parameters<import('@avery/contracts').DesktopAgentBridge['SaveModelConfiguration']>[0]) {
   return Unwrap(await platformClient.agent.SaveModelConfiguration(input));
 }
+export async function GetGoalModelTiers() {
+  return Unwrap(await platformClient.agent.GetGoalModelTiers());
+}
+export async function SaveGoalModelTiers(input: import('@avery/contracts').SaveGoalModelTiersInput) {
+  return Unwrap(await platformClient.agent.SaveGoalModelTiers(input));
+}
+
+export async function ChangeAgentGoal(input: import('@avery/contracts').AgentGoalChange) {
+  return Unwrap(await platformClient.agent.ChangeGoal(input));
+}
 
 /** 提交一轮真实 Agent 请求；简历由 ReadResume 渐进加载，用户消息不再自动携带当前简历正文。 */
 export async function SendAgentRequest(request: AgentSendRequest) {

@@ -8,7 +8,7 @@ export interface ComposerCommand {
   label: string;
   description: string;
   icon: IconName;
-  action: 'reload' | 'compact' | 'placeholder' | 'skill';
+  action: 'reload' | 'compact' | 'goal' | 'skill';
   mode?: ComposerMode;
   skillId?: string;
   keywords?: string;
@@ -18,7 +18,7 @@ export interface ComposerCommand {
 export const ComposerCommands: readonly ComposerCommand[] = [
   { id: 'reload', kind: 'command', token: '/reload', label: '重载上下文', description: '更新当前会话的上下文配置', icon: 'refresh', action: 'reload', keywords: '重载 刷新 上下文' },
   { id: 'compact', kind: 'command', token: '/compact', label: '压缩上下文', description: '可在命令后填写希望保留的重点', icon: 'infinity', action: 'compact', keywords: '压缩 精简 上下文 compact compress' },
-  { id: 'goal', kind: 'command', token: '/goal', label: '目标模式', description: '围绕明确目标，持续推进任务', icon: 'target', action: 'placeholder', mode: 'goal', keywords: '目标 模式' },
+  { id: 'goal', kind: 'command', token: '/goal', label: '目标模式', description: '执行并审核目标是否达成', icon: 'target', action: 'goal', mode: 'goal', keywords: '目标 模式' },
 ];
 const SkillLabels: Record<string, [string, string]> = {
   'job-discovery': ['岗位发现', '搜索、筛选和比较招聘岗位'],

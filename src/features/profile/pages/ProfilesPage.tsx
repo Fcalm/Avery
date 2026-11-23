@@ -1,4 +1,4 @@
-import { type ChangeEvent, useEffect, useMemo, useRef, useState } from 'react';
+import { type ChangeEvent, type TextareaHTMLAttributes, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useUiStore } from '../../../app/UiStore';
 import { useProfiles, useSaveProfiles } from '../../../features/profile/api/profileQueries';
@@ -25,6 +25,35 @@ const Categories: ProfileCategory[] = ['application', 'education', 'work', 'job_
 
 /** 抽屉的两种形态：阅读态只渲染内容，编辑态才出现输入框（对应原型 dw-foot 的按钮切换）。 */
 type ProfileDrawer = { mode: 'view'; item: ProfileItem } | { mode: 'edit'; item: ProfileItem | null };
+
+/** 内容变化时按实际高度展开；CSS 限制最大高度后由输入框自身滚动。 */
+function ResizeProfileTextarea(element: HTMLTextAreaElement) {
+  const scrollTop = element.scrollTop;
+  element.style.height = 'auto';
+  const style = getComputedStyle(element);
+  const borders = parseFloat(style.borderTopWidth) + parseFloat(style.borderBottomWidth);
+  element.style.height = `${element.scrollHeight + borders}px`;
+  element.scrollTop = scrollTop;
+}
+
+function ProfileTextarea(props: TextareaHTMLAttributes<HTMLTextAreaElement>) {
+  const ref = useRef<HTMLTextAreaElement>(null);
+  useLayoutEffect(() => { if (ref.current) ResizeProfileTextarea(ref.current); }, [props.value]);
+  useEffect(() => {
+    const element = ref.current;
+    if (!element) return;
+    let width = element.getBoundingClientRect().width;
+    const observer = new ResizeObserver(() => {
+      const nextWidth = element.getBoundingClientRect().width;
+      if (nextWidth === width) return;
+      width = nextWidth;
+      ResizeProfileTextarea(element);
+    });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
+  return <textarea ref={ref} rows={3} {...props} />;
+}
 
 function ProfileTemplateForm({
   category,
@@ -60,7 +89,7 @@ function ProfileTemplateForm({
           return <label className={`application-profile-field ${field.multiline ? 'is-multiline' : ''}`} htmlFor={fieldId} key={fieldId}>
             <span>{field.required && <i className="profile-field-required" aria-hidden="true">*</i>}{field.label}：</span>
             {/* 下拉选项统一走共享 Select 的自定义浮层，避免原生 select 的系统菜单破坏视觉一致性。 */}
-            {field.options ? <Select id={fieldId} value={fieldValue} ariaLabel={field.label} ariaRequired={Boolean(field.required)} ariaInvalid={Boolean(error)} ariaDescribedBy={error ? `${fieldId}-error` : undefined} options={[{ value: '', label: '请选择' }, ...field.options.map((option) => ({ value: option, label: option }))]} onChange={(value) => onFieldChange(section.title, field.label, value)} /> : field.multiline ? <textarea rows={3} {...common} /> : <input {...common} />}
+            {field.options ? <Select id={fieldId} value={fieldValue} ariaLabel={field.label} ariaRequired={Boolean(field.required)} ariaInvalid={Boolean(error)} ariaDescribedBy={error ? `${fieldId}-error` : undefined} options={[{ value: '', label: '请选择' }, ...field.options.map((option) => ({ value: option, label: option }))]} onChange={(value) => onFieldChange(section.title, field.label, value)} /> : field.multiline ? <ProfileTextarea {...common} /> : <input {...common} />}
             {error && <small className="profile-field-error" id={`${fieldId}-error`}>{error}</small>}
           </label>;
         })}
@@ -171,7 +200,6 @@ function ProfilesPage() {
       ? drawer.item.title
       : draft.title?.trim() || (drawer.item ? drawer.item.title : '新建条目')
     : '';
-  const drawerCategory = drawer ? (drawer.mode === 'view' ? drawer.item.category : draft.category ?? 'project') : 'project';
   return <div className="profile-view">
     <div className="view-h">
       <h1>档案</h1>
@@ -187,16 +215,14 @@ function ProfilesPage() {
     </div>)}
     {!profiles.length && <div className="profile-view-empty">还没有档案条目。点右上角「添加条目」，把项目、工作、教育和技能资料沉淀下来。</div>}
 
-    {/* 抽屉经 portal 挂到 body：玻璃背景等祖先带动画/滤镜时 fixed 会退化为相对祖先定位，
-        脱离该子树后，由共用容器将抽屉及外部点击关闭区域限制在顶部栏下方。 */}
+    {/* 抽屉经 portal 挂到 body，避免祖先的动画或滤镜影响浮动定位。 */}
     {drawer && createPortal(<div className="dw-layer" role="presentation">
       <div className="dw-scrim" onClick={() => SetDrawer(null)} />
       <aside className="dw-drawer" role="dialog" aria-modal="true" aria-labelledby="profile-drawer-title" tabIndex={-1} ref={drawerRef}>
         <div className="dw-head">
-          <div className="dw-head-main">
+          <div className="dw-head-main profile-drawer-heading">
             <div className="dw-title" id="profile-drawer-title">{drawerTitle}</div>
             <div className="dw-meta">
-              <span>{ProfileCategoryLabel[drawerCategory]}</span>
               {drawer.mode === 'view'
                 ? <span>更新于 {FormatTime(drawer.item.updatedAt) || '未知时间'}</span>
                 : <span>{editingItem ? '修改后尚未保存' : '尚未保存'}</span>}

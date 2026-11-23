@@ -1,5 +1,5 @@
-import { Fragment, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type RefObject } from 'react';
-import { CjkTextIcon, Icon } from '../../../shared/components/Icon';
+import { Fragment, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type MouseEvent, type RefObject } from 'react';
+import { CjkTextIcon } from '../../../shared/components/Icon';
 import { DialogButton, Modal } from '../../../shared/components/UI';
 import { useUiStore } from '../../../app/UiStore';
 import { platformClient, Unwrap } from '../../../shared/platform/platformClient';
@@ -44,13 +44,12 @@ export function ComposerInput({ value, onChange, inputRef, sessionId, scenarioId
   const [catalogRevision, setCatalogRevision] = useState(0);
   const [pendingReload, setPendingReload] = useState<SlashContext | null>(null);
   const [reloading, setReloading] = useState(false);
-  const [placeholderMode, setPlaceholderMode] = useState<ComposerMode | null>(null);
   const lastContext = useRef<SlashContext | null>(null);
   if (context) lastContext.current = context;
   const query = context?.query ?? lastContext.current?.query ?? '';
   const commands = useMemo(() => [...ComposerCommands, ...skills], [skills]);
   const matches = useMemo(() => FilterComposerCommands(commands, query), [commands, query]);
-  const open = context !== null && !busy && !pendingReload && !reloading && !placeholderMode;
+  const open = context !== null && !busy && !pendingReload && !reloading;
   const current = matches[Math.min(active, Math.max(0, matches.length - 1))];
   const { prefix: commandPrefix, text: editorValue } = SplitCompactCommandDraft(value);
   const compactCommand = commandPrefix ? ComposerCommands.find((command) => command.action === 'compact') : undefined;
@@ -85,6 +84,36 @@ export function ComposerInput({ value, onChange, inputRef, sessionId, scenarioId
     const selection = window.getSelection(); selection?.removeAllRanges(); selection?.addRange(range);
     if (offset === 0) { const editor = root.current?.querySelector('.slash-editor-line'); if (editor) editor.scrollTop = 0; }
   }, [inputRef]);
+
+  function PlaceCaretOnBlank(event: MouseEvent<HTMLDivElement>) {
+    const input = inputRef.current;
+    const selection = window.getSelection();
+    // 拖选越过正文边缘时，click 可能落在外层容器上，保留浏览器建立的选区。
+    if (event.target !== event.currentTarget || !input || !selection?.isCollapsed || reloading || composing.current) return;
+    if (!editorValue) { Caret(0); return; }
+
+    let line: DOMRect | undefined;
+    let distance = Infinity;
+    for (const rect of input.getClientRects()) {
+      const verticalDistance = Math.abs(event.clientY - (rect.top + rect.bottom) / 2);
+      if (rect.height && verticalDistance < distance) {
+        line = rect;
+        distance = verticalDistance;
+      }
+    }
+    if (!line) return;
+
+    const afterLine = event.clientX >= line.right && line.width > 0;
+    const inset = Math.min(1, line.width / 2);
+    const x = afterLine ? line.left + inset : Math.max(line.left + inset, Math.min(event.clientX, line.right - inset));
+    const hit = document.caretPositionFromPoint(x, (line.top + line.bottom) / 2);
+    if (!hit || !input.contains(hit.offsetNode)) return;
+
+    input.focus({ preventScroll: true });
+    selection.collapse(hit.offsetNode, hit.offset);
+    // 从目标行内部移到行末，保留自动换行边界的光标方向。
+    if (afterLine) selection.modify('move', 'forward', 'lineboundary');
+  }
 
   const Update = useCallback((force = false) => {
     const input = inputRef.current, selection = Selection();
@@ -241,10 +270,7 @@ export function ComposerInput({ value, onChange, inputRef, sessionId, scenarioId
     if (command.action === 'reload') { setPendingReload(context); Dismiss(); return; }
     if (!Consume(context)) return;
     if (command.action === 'skill') onSkillChange(command);
-    if (command.action === 'placeholder') {
-      if (command.mode) { onModeChange(command.mode); setPlaceholderMode(command.mode); }
-      else ShowNotice(`${command.label}功能暂未接入，当前仅为占位。`, "info");
-    }
+    if (command.action === 'goal') onModeChange('goal');
   }
   function Insert(text: string) {
     const selection = Selection() ?? { start: editorValue.length, end: editorValue.length };
@@ -270,8 +296,8 @@ export function ComposerInput({ value, onChange, inputRef, sessionId, scenarioId
   }
 
   const chips = [
-    ...(mode ? [{ key: 'mode', token: `/${mode}`, icon: 'target' as const, label: '目标模式（功能未完善）', remove: () => onModeChange(null) }] : []),
-    ...(skill ? [{ key: 'skill', token: skill.token, icon: skill.icon, label: skill.label, remove: () => onSkillChange(null) }] : []),
+    ...(mode ? [{ key: 'mode', token: `/${mode}`, icon: 'target' as const }] : []),
+    ...(skill ? [{ key: 'skill', token: skill.token, icon: skill.icon }] : []),
   ];
   return <div ref={root} className="slash-input-root">
     {phase !== 'closed' && <div className={`slash-palette is-${phase}`} aria-hidden={!open}>
@@ -279,7 +305,7 @@ export function ComposerInput({ value, onChange, inputRef, sessionId, scenarioId
         {matches.map((command, index) => <Fragment key={command.id}>
           {(index === 0 || matches[index - 1].kind !== command.kind) && <div className="slash-group" role="presentation">{command.kind === 'skill' ? '技能 · 指定调用' : '命令'}</div>}
           <button id={`${id}-${command.id}`} className="slash-option" type="button" role="option" aria-selected={current?.id === command.id} tabIndex={-1}
-            title={`${command.label} · ${command.description} (${command.token})`} onPointerDown={(event) => event.preventDefault()} onPointerMove={() => setActive(index)} onClick={() => Choose(command)}>
+            data-native-title="true" title={`${command.label} · ${command.description} (${command.token})`} onPointerDown={(event) => event.preventDefault()} onPointerMove={() => setActive(index)} onClick={() => Choose(command)}>
             <span className="slash-option-main"><span className="slash-option-title"><CjkTextIcon name={command.icon} className="slash-glyph" size={15} />{command.label}</span><span className="slash-description">{command.description}</span><span className="slash-token">{command.token}</span></span><span className="slash-enter" aria-hidden="true">↵</span>
           </button>
         </Fragment>)}
@@ -288,30 +314,33 @@ export function ComposerInput({ value, onChange, inputRef, sessionId, scenarioId
         {!matches.length && skillState === 'ready' && <div className="slash-empty">没有匹配的命令或技能<small>继续修改关键词，或按 Esc 保留输入并收起</small></div>}
       </div>
     </div>}
-    <div className="slash-editor-line" onClick={(event) => { if (event.target === event.currentTarget) Caret(editorValue.length); }}>
-      <span className="slash-chips" aria-label="当前模式与技能">{chips.map((chip) => <span key={chip.key} className="slash-chip" title={chip.key === 'skill' ? `${chip.label} · 在正文开头按 Backspace 或 Delete 移除` : chip.label}>
-        <CjkTextIcon name={chip.icon} size={16} /><span>{chip.token}</span>{chip.key === 'mode' && <button type="button" aria-label={`移除${chip.label}`} disabled={busy || reloading} onClick={() => { chip.remove(); Caret(Selection()?.end ?? 0); }}><Icon name="close" size={11} /></button>}
+    <div className="slash-editor-line" onClick={PlaceCaretOnBlank}>
+      <span className="slash-chips" aria-label="当前模式与技能">{chips.map((chip) => <span key={chip.key} className="slash-chip" title="按 Backspace 移除">
+        <CjkTextIcon name={chip.icon} size={16} /><span>{chip.token}</span>
       </span>)}</span>
-      {compactCommand && <span className="slash-chip" title="压缩上下文 · 在正文开头按 Backspace 或 Delete 整体移除"><CjkTextIcon name={compactCommand.icon} size={16} /><span>{compactCommand.token}</span></span>}
+      {compactCommand && <span className="slash-chip" title="按 Backspace 移除"><CjkTextIcon name={compactCommand.icon} size={16} /><span>{compactCommand.token}</span></span>}
       <span ref={inputRef} className={`slash-editor${!editorValue ? ' is-empty' : ''}`} contentEditable={reloading ? false : 'plaintext-only'} suppressContentEditableWarning role="combobox" aria-label="消息输入框" aria-placeholder={placeholder} aria-multiline="true" aria-autocomplete="list" aria-haspopup="listbox" aria-controls={`${id}-commands`} aria-expanded={open} aria-activedescendant={open && current ? `${id}-${current.id}` : undefined} aria-disabled={reloading} spellCheck={false}
-        onInput={(event) => { dismissed.current = null; ChangeEditor(event.currentTarget.textContent ?? ''); Update(); }} onFocus={() => Update()} onClick={() => Update()} onKeyUp={() => Update()} onBlur={() => { if (!pendingReload && !placeholderMode) Dismiss(); }}
+        onInput={(event) => { dismissed.current = null; ChangeEditor(event.currentTarget.textContent ?? ''); Update(); }} onFocus={() => Update()} onClick={() => Update()} onKeyUp={() => Update()} onBlur={() => { if (!pendingReload) Dismiss(); }}
         onCompositionStart={() => { composing.current = true; onCompositionChange(true); setContext(null); }} onCompositionEnd={(event) => { composing.current = false; onCompositionChange(false); dismissed.current = null; ChangeEditor(event.currentTarget.textContent ?? ''); Update(); }}
         onPaste={(event) => { event.preventDefault(); Insert(event.clipboardData.getData('text/plain')); }}
         onKeyDown={(event) => {
           if (event.nativeEvent.isComposing || composing.current || event.keyCode === 229) return;
           if (reloading) { event.preventDefault(); return; }
-          // 压缩标签不在可编辑 DOM 中，只在正文句首消费删除键，保留后缀及其原生删除行为。
-          if (compactCommand && !busy && !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey && (event.key === 'Backspace' || event.key === 'Delete')) {
+          // 正文开头没有选区时，从右往左逐个移除标签，保留正文。
+          if ((compactCommand || skill || mode) && !busy && !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey && (event.key === 'Backspace' || event.key === 'Delete')) {
             const selection = Selection();
             if (selection?.start === 0 && selection.end === 0) {
-              event.preventDefault(); event.stopPropagation(); Write(editorValue, 0); setContext(null); return;
-            }
-          }
-          // 技能位于正文之前：仅在正文句首且没有文本选区时消费删除键，不吞掉正文删除操作。
-          if (skill && !busy && !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey && (event.key === 'Backspace' || event.key === 'Delete')) {
-            const selection = Selection();
-            if (selection?.start === 0 && selection.end === 0) {
-              event.preventDefault(); event.stopPropagation(); onSkillChange(null); Caret(0); return;
+              event.preventDefault();
+              event.stopPropagation();
+              if (compactCommand) {
+                Write(editorValue, 0);
+                setContext(null);
+              } else {
+                if (skill) onSkillChange(null);
+                else onModeChange(null);
+                Caret(0);
+              }
+              return;
             }
           }
           if (event.key === 'Escape' && open) { event.preventDefault(); event.stopPropagation(); Dismiss(); return; }
@@ -324,9 +353,6 @@ export function ComposerInput({ value, onChange, inputRef, sessionId, scenarioId
     </div>
     <Modal open={pendingReload !== null} title="重载当前会话上下文？" onClose={CloseReload} footer={<><DialogButton id={`${id}-reload-cancel`} disabled={reloading} onClick={CloseReload}>取消</DialogButton><DialogButton tone="accent" disabled={reloading} onClick={() => void Reload()}>{reloading ? '正在重载…' : '确认重载'}</DialogButton></>}>
       更新当前会话的上下文配置与技能索引。消息和草稿正文会保留，不会重新加载应用。
-    </Modal>
-    <Modal open={placeholderMode !== null} title="目标模式尚未完善" onClose={() => { setPlaceholderMode(null); Caret(0); }} footer={<DialogButton tone="accent" onClick={() => { setPlaceholderMode(null); Caret(0); }}>我知道了</DialogButton>}>
-      当前版本仅提供模式占位标签，暂未启用对应执行能力。发送消息后仍按普通模式处理，你可以点击标签旁的 × 移除。
     </Modal>
   </div>;
 }

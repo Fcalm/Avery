@@ -1,21 +1,24 @@
-import { useEffect, useMemo, useRef, useState, type DragEvent, type KeyboardEvent as ReactKeyboardEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { createPortal } from 'react-dom';
-import type { EvalCaseRun, EvalCaseRunDetail, EvalComparison, EvalDatasetVersion, EvalEvent, EvalPromptCandidate, EvalPromptPreview, EvalRunDetail } from '@avery/contracts';
+import type { EvalCaseRun, EvalCaseRunDetail, EvalComparison, EvalDatasetVersion, EvalDatasetImportPreview, EvalEvent, EvalProvider, EvalPromptCandidate, EvalPromptPreview, EvalRunDetail } from '@avery/contracts';
 import { useUiStore } from '../../../app/UiStore';
 import { Button, DialogButton, FormField, Modal, Select } from '../../../shared/components/UI';
 import { Icon } from '../../../shared/components/Icon';
+import { AppError } from '../../../shared/platform/platformClient';
 import { GetProviderCatalog } from '../../assistant/api/agentQueries';
 import { useDeveloperConsole } from './DeveloperConsoleContext';
 import { FormatDuration, FormatTime, RunStatusText, ShortHash, TerminalStatuses } from './evaluationDisplay';
 import {
   CancelEvalRun, CompareEvalRuns, DeleteEvalDatasetVersion, ImportEvalDataset, ListEvalDatasetVersions,
-  PreviewEvalProject, ReadEvalCaseResult, ReadEvalRun, SelectEvalDatasetVersion, StartEvalRun, SubscribeEvalEvents, UpdateEvalProject, ValidateEvalProject,
+  PreviewEvalProject, PreviewEvalDatasetImport, ReadEvalCaseResult, ReadEvalRun, SelectEvalDatasetVersion, StartEvalRun, SubscribeEvalEvents, UpdateEvalProject, ValidateEvalProject,
 } from '../api/evaluationQueries';
 
 /** Judge 返回的维度键 → 界面中文标签；未知键按原文展示，不虚构。 */
 const DimensionLabels: Record<string, string> = {
   taskCompletion: '任务完成', instructionFollowing: '指令遵循', safety: '安全性', responseQuality: '内容质量',
 };
+
+const DefaultRubricDimensions = [{ id: 'taskCompletion', label: '任务完成', weight: 25 }, { id: 'instructionFollowing', label: '指令遵循', weight: 25 }, { id: 'safety', label: '安全性', weight: 25 }, { id: 'responseQuality', label: '内容质量', weight: 25 }];
 
 const FragmentLabels: Record<string, string> = {
   'runtime/invariants': '运行时硬约束',
@@ -105,13 +108,13 @@ function EvaluationKeyValue({ value }: { value: unknown }) {
   return <div className="ev-kv-wrap"><EvaluationValue value={value} /></div>;
 }
 
-function TextFileUpload({ label, accept, hint, maxBytes, onLoad, onError }: { label: string; accept: string; hint: string; maxBytes: number; onLoad: (content: string, name: string) => void; onError: (message: string) => void }) {
+function TextFileUpload({ label, accept, hint, maxBytes, onLoad, onError, disabled = false }: { label: string; accept: string; hint: string; maxBytes: number; onLoad: (content: string, name: string) => void; onError: (message: string) => void; disabled?: boolean }) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [dragging, setDragging] = useState(false);
   const [fileName, setFileName] = useState('');
 
   async function ReadFile(file?: File) {
-    if (!file) return;
+    if (!file || disabled) return;
     if (file.size > maxBytes) { onError(`${file.name} 超过允许的文件大小`); return; }
     try {
       const content = await file.text();
@@ -127,24 +130,24 @@ function TextFileUpload({ label, accept, hint, maxBytes, onLoad, onError }: { la
   }
 
   function HandleKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
-    if (event.key !== 'Enter' && event.key !== ' ') return;
+    if (disabled || (event.key !== 'Enter' && event.key !== ' ')) return;
     event.preventDefault();
     inputRef.current?.click();
   }
 
   return <div className="ev-upload-field">
     <span>{label}</span>
-    <div className={`ev-dropzone ${dragging ? 'is-dragging' : ''}`} role="button" tabIndex={0} onClick={() => inputRef.current?.click()} onKeyDown={HandleKeyDown} onDragOver={(event) => { event.preventDefault(); setDragging(true); }} onDragLeave={() => setDragging(false)} onDrop={HandleDrop}>
+    <div className={`ev-dropzone ${dragging ? 'is-dragging' : ''}`} role="button" aria-disabled={disabled} tabIndex={disabled ? -1 : 0} onClick={() => { if (!disabled) inputRef.current?.click(); }} onKeyDown={HandleKeyDown} onDragOver={(event) => { event.preventDefault(); if (!disabled) setDragging(true); }} onDragLeave={() => setDragging(false)} onDrop={HandleDrop}>
       <Icon name="database" size={18} />
       <b>{fileName || '拖动文件到这里，或点击选择'}</b>
       <small>{hint}</small>
-      <input ref={inputRef} type="file" accept={accept} tabIndex={-1} onChange={(event) => void ReadFile(event.target.files?.[0])} />
+      <input ref={inputRef} type="file" disabled={disabled} accept={accept} tabIndex={-1} onChange={(event) => void ReadFile(event.target.files?.[0])} />
     </div>
   </div>;
 }
 
 /** 单题展开正文：左侧评估模型结果，右侧评判/断言，与原型的两栏证据语法一致。 */
-function EvaluationCaseBody({ summary, detail, runnerType, onShowTrace, traceVisible }: { summary: EvalCaseRun; detail?: EvalCaseRunDetail; runnerType: 'prompt' | 'browser'; onShowTrace: () => void; traceVisible: boolean }) {
+function EvaluationCaseBody({ summary, detail, runnerType }: { summary: EvalCaseRun; detail?: EvalCaseRunDetail; runnerType: 'prompt' | 'browser' }) {
   const score = detail?.score ?? summary.score;
   const metrics = summary.metrics ?? {};
   const tokens = typeof metrics.totalTokens === 'number' ? metrics.totalTokens : null;
@@ -153,7 +156,6 @@ function EvaluationCaseBody({ summary, detail, runnerType, onShowTrace, traceVis
   const dimensions = Object.entries(score?.dimensions ?? {});
   const requirements = score?.requirementResults ?? [];
   const assertions = score?.assertionResults ?? [];
-  const trace = detail?.trace ?? [];
   const benchmark = score?.benchmark;
 
   return <div className="ev-case-b">
@@ -167,10 +169,6 @@ function EvaluationCaseBody({ summary, detail, runnerType, onShowTrace, traceVis
         <span><Icon name="refresh" size={12} />{turns === null ? '—' : `${turns} 轮`}</span>
       </div>
       {summary.error && <div className="ev-req is-fail"><Icon name="warning" size={14} /><span className="ev-req-b"><b>执行失败</b><small>{summary.error.code} · {summary.error.message}</small></span></div>}
-      <div className="ev-case-foot">
-        <Button variant="quiet" aria-expanded={traceVisible} onClick={onShowTrace}><Icon name="trace" size={13} />{traceVisible ? '收起本题轨迹' : '查看本题轨迹'}</Button>
-      </div>
-      {traceVisible && (detail ? <div className="ev-trace-list">{trace.map((node) => <details key={node.id}><summary><time>{new Date(node.createdAt).toLocaleTimeString('zh-CN', { hour12: false })}</time><code>{node.kind}</code><span>{node.title}</span><b>{node.status ?? ''}</b></summary><EvaluationKeyValue value={node.details ?? {}} /></details>)}{trace.length === 0 && <span className="ev-trace-empty">没有轨迹节点。</span>}</div> : <span className="ev-trace-empty">正在读取轨迹…</span>)}
     </div>
     <div className="ev-sub">
       <div className="ev-sub-h"><Icon name="brain" size={14} /><span>{runnerType === 'prompt' ? '评判模型 judgement' : '确定性断言'}</span>
@@ -199,8 +197,14 @@ function EvaluationCaseBody({ summary, detail, runnerType, onShowTrace, traceVis
 
 /** 应用内测评控制台：侧栏在应用壳层（评测记录属于开发者页侧栏），这里只渲染配置栏与结果/对比视图。 */
 export function EvaluationConsole() {
+  const { selectedProject } = useDeveloperConsole();
+  return <EvaluationProjectConsole key={selectedProject?.id ?? 'empty'} />;
+}
+
+/** 项目级组件独立生命周期，旧项目请求的结果不能写入新项目视图。 */
+function EvaluationProjectConsole() {
   const { ShowNotice } = useUiStore();
-  const { projects, runs, selectedProject: selected, view, Refresh, OpenCreate } = useDeveloperConsole();
+  const { projects, runs, selectedProject: selected, view, Refresh, refreshing, refreshError, OpenCreate } = useDeveloperConsole();
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [runDetail, setRunDetail] = useState<EvalRunDetail | null>(null);
   const [caseDetails, setCaseDetails] = useState<Record<string, EvalCaseRunDetail>>({});
@@ -211,10 +215,35 @@ export function EvaluationConsole() {
   const [selectedCandidateId, setSelectedCandidateId] = useState<string | null>(null);
   const [providers, setProviders] = useState<Array<{ provider: string; configured: boolean; models: string[] }>>([]);
   const [busy, setBusy] = useState(false);
+  const [toolDraft, setToolDraft] = useState<string[]>([]);
+  const [runError, setRunError] = useState('');
+  const [runLoading, setRunLoading] = useState(false);
+  const [previewError, setPreviewError] = useState('');
+  const [providersError, setProvidersError] = useState('');
+  const [caseErrors, setCaseErrors] = useState<Record<string, string>>({});
+  const [refreshTick, setRefreshTick] = useState(0);
+  const [caseTick, setCaseTick] = useState(0);
+  const runRequest = useRef(0);
+  const previewRequest = useRef(0);
+  const caseEpoch = useRef(0);
+  const caseLoading = useRef(new Set<string>());
+  const mounted = useRef(true);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
+  const [repeatDraft, setRepeatDraft] = useState(1);
+  const [turnsDraft, setTurnsDraft] = useState(30);
+  const [simulatorDraft, setSimulatorDraft] = useState('approve_valid');
+  const [dimensionsDraft, setDimensionsDraft] = useState<Array<{ id: string; label: string; weight: number }>>([]);
 
   const [showStop, setShowStop] = useState(false);
   const [showManage, setShowManage] = useState(false);
   const [importJsonl, setImportJsonl] = useState('');
+  const [importPreview, setImportPreview] = useState<EvalDatasetImportPreview | null>(null);
+  const [datasetTemplate, setDatasetTemplate] = useState('');
+  const [versionsLoading, setVersionsLoading] = useState(false);
+  const [versionsError, setVersionsError] = useState('');
+  const projectIdRef = useRef(selected?.id);
+  projectIdRef.current = selected?.id;
+  const versionsRequestRef = useRef(0);
   const [deleteVersion, setDeleteVersion] = useState<string | null>(null);
   const [showPromptDrawer, setShowPromptDrawer] = useState(false);
   const [showJudgeDrawer, setShowJudgeDrawer] = useState(false);
@@ -228,6 +257,8 @@ export function EvaluationConsole() {
   const [leftRunId, setLeftRunId] = useState('');
   const [rightRunId, setRightRunId] = useState('');
   const [showConds, setShowConds] = useState(false);
+  const compareRequest = useRef(0);
+  const revisionRef = useRef(selected?.revision); revisionRef.current = selected?.revision;
 
   const projectRuns = useMemo(() => runs.filter((run) => run.projectId === selected?.id), [runs, selected?.id]);
   const activeRun = projectRuns.find((run) => !TerminalStatuses.has(run.status));
@@ -241,26 +272,64 @@ export function EvaluationConsole() {
   // 控制台每次重新挂载（离开又回到评估/对比视图）都刷新一次，弥补挂载期间错过的事件。
   useEffect(() => { void Refresh().catch((error) => ShowNotice(error instanceof Error ? error.message : '读取评测项目失败', "error")); }, [Refresh, ShowNotice]);
 
-  /** 列表项只有汇总；逐题结果来自完整 Run 详情，切换展示的 Run 时重新读取。 */
+  const displayRunRef = useRef(displayRun?.id);
+  displayRunRef.current = displayRun?.id;
+  const ReloadRun = useCallback(async (id: string) => {
+    const request = ++runRequest.current;
+    setRunLoading(true); setRunError('');
+    try {
+      const detail = await ReadEvalRun(id);
+      if (mounted.current && displayRunRef.current === id && request === runRequest.current) setRunDetail(detail);
+    } catch (error) {
+      if (mounted.current && displayRunRef.current === id && request === runRequest.current) setRunError(error instanceof Error ? error.message : '读取运行结果失败');
+    } finally {
+      if (mounted.current && displayRunRef.current === id && request === runRequest.current) setRunLoading(false);
+    }
+  }, []);
+  const ReloadPreview = useCallback(async (id: string) => {
+    const request = ++previewRequest.current;
+    setPreviewError('');
+    try {
+      const preview = await PreviewEvalProject(id);
+      if (mounted.current && request === previewRequest.current && preview.projectRevision === revisionRef.current) setPromptPreview(preview);
+    } catch (error) {
+      if (mounted.current && request === previewRequest.current) setPreviewError(error instanceof Error ? error.message : '读取提示词预览失败');
+    }
+  }, []);
+  const ReloadProviders = useCallback(async () => {
+    setProvidersError('');
+    try { const catalog = await GetProviderCatalog(); if (mounted.current) setProviders(catalog.providers); }
+    catch (error) { if (mounted.current) setProvidersError(error instanceof Error ? error.message : '读取模型配置失败'); }
+  }, []);
   useEffect(() => {
     if (!displayRun) { setRunDetail(null); return; }
-    let active = true;
-    void ReadEvalRun(displayRun.id).then((detail) => { if (active) setRunDetail(detail); }).catch(() => undefined);
-    return () => { active = false; };
-  }, [displayRun?.id]);
+    void ReloadRun(displayRun.id);
+  }, [displayRun?.id, displayRun?.status, displayRun?.completedAt, refreshTick, ReloadRun]);
+  useEffect(() => { caseEpoch.current += 1; caseLoading.current.clear(); setCaseDetails({}); setCaseErrors({}); setOpenCases(new Set()); }, [displayRun?.id]);
 
-  /** 事件驱动刷新：状态类事件刷新全部，逐题事件节流刷新当前展示的 Run。 */
-  const throttleRef = useRef(0);
-  useEffect(() => SubscribeEvalEvents((event: EvalEvent) => {
-    if (event.type === 'run_status' || event.type === 'error') { void Refresh().catch(() => undefined); return; }
-    const now = Date.now();
-    if (now - throttleRef.current < 800) return;
-    throttleRef.current = now;
-    if (event.runId && (!selectedRunId || event.runId === selectedRunId)) {
-      void ReadEvalRun(event.runId).then((detail) => setRunDetail(detail)).catch(() => undefined);
-      void Refresh().catch(() => undefined);
-    }
-  }), [selectedRunId, Refresh]);
+  // 使用尾随节流保留最后一条事件，终态立即刷新；刷新范围绑定当前 Run。
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const refresh = () => {
+      timer = undefined;
+      setRefreshTick(value => value + 1);
+      void Refresh().catch(error => ShowNotice(error instanceof Error ? error.message : '刷新评测失败', 'error'));
+    };
+    const unsubscribe = SubscribeEvalEvents((event: EvalEvent) => {
+      if (event.runId !== displayRunRef.current) {
+        if (event.type === 'run_status' || event.type === 'error') void Refresh().catch(error => ShowNotice(error instanceof Error ? error.message : '刷新评测失败', 'error'));
+        return;
+      }
+      if (event.type === 'score' || event.type === 'case_status' || event.type === 'run_status' || event.type === 'error') {
+        caseEpoch.current += 1; caseLoading.current.clear(); setCaseDetails({}); setCaseErrors({});
+      }
+      if (event.type === 'run_status' || event.type === 'error' || event.type === 'score') {
+        if (timer) clearTimeout(timer);
+        refresh();
+      } else if (!timer) timer = setTimeout(refresh, 400);
+    });
+    return () => { unsubscribe(); if (timer) clearTimeout(timer); };
+  }, [Refresh, ShowNotice]);
 
   /** 切换评测：重置运行选择、候选选择与对比状态；回到评估视图由 Provider 统一处理。 */
   useEffect(() => {
@@ -270,11 +339,15 @@ export function EvaluationConsole() {
     setCandidateDraft(structuredClone(candidates));
     setSelectedCandidateId(candidates[0]?.id ?? null);
     if (!selected) return;
-    void ListEvalDatasetVersions(selected.id).then(setVersions).catch((error) => ShowNotice(error instanceof Error ? error.message : '读取测试集版本失败', "error"));
-    void PreviewEvalProject(selected.id).then(setPromptPreview).catch(() => undefined);
+    setShowManage(false); setImportPreview(null); setDatasetTemplate('');
+    void ReloadVersions(selected.id).catch(() => undefined);
+    void ReloadPreview(selected.id);
   }, [selected?.id, ShowNotice]);
 
-  useEffect(() => { void GetProviderCatalog().then((catalog) => setProviders(catalog.providers)).catch(() => undefined); }, []);
+  useEffect(() => { void ReloadProviders(); }, [ReloadProviders]);
+  useEffect(() => { if (!selected) return; setRepeatDraft(selected.config.repeatCount); setTurnsDraft(selected.config.maxModelTurns); setSimulatorDraft(selected.config.userSimulator); setDimensionsDraft(structuredClone(selected.config.rubricDimensions ?? DefaultRubricDimensions)); }, [selected?.id, selected?.revision]);
+  useEffect(() => { if (selected) void ReloadPreview(selected.id); }, [selected?.revision, ReloadPreview]);
+  useEffect(() => { setToolDraft([...(selected?.config.toolNames ?? [])]); }, [selected?.id, selected?.revision]);
 
   // 编辑抽屉打开期间 Escape 直接关闭（与投递记录抽屉一致）；草稿未保存会被丢弃，脚注有"未保存"提示兜底。
   useEffect(() => {
@@ -292,7 +365,52 @@ export function EvaluationConsole() {
   const selectedCandidate = selected?.config.candidates.find((candidate) => candidate.id === selectedCandidateId) ?? null;
   const selectedPreview = promptPreview?.candidates.find((candidate) => candidate.id === selectedCandidateId) ?? null;
 
-  const modelOptions = useMemo(() => providers.filter((provider) => provider.configured).flatMap((provider) => provider.models.map((model) => ({ value: model, label: `${provider.provider} · ${model}` }))), [providers]);
+  const modelOptions = useMemo(() => providers.filter((provider) => provider.configured).flatMap((provider) => provider.models.map((model) => ({ value: JSON.stringify([provider.provider, model]), label: `${provider.provider} · ${model}` }))), [providers]);
+  function ModelValue(kind: 'execution' | 'judge') { return JSON.stringify([kind === 'execution' ? selected?.config.executionProvider : selected?.config.judgeProvider, kind === 'execution' ? selected?.config.executionModel : selected?.config.judgeModel]); }
+  function ModelOptions(kind: 'execution' | 'judge') {
+    const value = ModelValue(kind);
+    return modelOptions.some(option => option.value === value) ? modelOptions : [{ value, label: `${kind === 'execution' ? selected?.config.executionProvider : selected?.config.judgeProvider} · ${kind === 'execution' ? selected?.config.executionModel : selected?.config.judgeModel}（未配置或不可用）`, disabled: true }, ...modelOptions];
+  }
+
+  async function SaveExecutionSettings() {
+    if (!selected) return;
+    await WithBusy(async () => {
+      await UpdateEvalProject(selected.id, { name: selected.name, runnerType: selected.runnerType, config: { ...selected.config, repeatCount: repeatDraft, maxModelTurns: turnsDraft, userSimulator: simulatorDraft as typeof selected.config.userSimulator } }, selected.revision);
+      await Refresh(); ShowNotice('运行配置已保存，下次评测生效', 'success');
+    });
+  }
+
+  async function SaveTools() {
+    if (!selected) return;
+    await WithBusy(async () => {
+      await UpdateEvalProject(selected.id, { name: selected.name, runnerType: selected.runnerType, rubric: selected.rubric, config: { ...selected.config, toolNames: toolDraft } }, selected.revision);
+      await Refresh();
+      await ReloadPreview(selected.id);
+      ShowNotice('工具配置已保存，下次评测生效', 'success');
+    });
+  }
+
+  async function ReloadVersions(projectId: string) {
+    const request = ++versionsRequestRef.current;
+    setVersionsLoading(true); setVersionsError('');
+    try {
+      const next = await ListEvalDatasetVersions(projectId);
+      if (projectIdRef.current === projectId && request === versionsRequestRef.current) setVersions(next);
+      return next;
+    } catch (error) {
+      if (projectIdRef.current === projectId && request === versionsRequestRef.current) setVersionsError(error instanceof Error ? error.message : '读取测试集版本失败');
+      throw error;
+    } finally {
+      if (projectIdRef.current === projectId && request === versionsRequestRef.current) setVersionsLoading(false);
+    }
+  }
+
+  function ChangeImportText(content: string) { setImportJsonl(content); setImportPreview(null); }
+
+  async function CheckImport() {
+    if (!selected) return;
+    await WithBusy(async () => setImportPreview(await PreviewEvalDatasetImport(selected.id, importJsonl)));
+  }
 
   async function WithBusy(work: () => Promise<void>) {
     setBusy(true);
@@ -307,7 +425,7 @@ export function EvaluationConsole() {
       await Refresh();
       setCandidateDraft(structuredClone(updated.config.candidates));
       if (!updated.config.candidates.some((candidate) => candidate.id === selectedCandidateId)) setSelectedCandidateId(updated.config.candidates[0]?.id ?? null);
-      void PreviewEvalProject(selected.id).then(setPromptPreview).catch(() => undefined);
+      void ReloadPreview(selected.id);
       ShowNotice('Prompt 候选已保存', "success");
     });
   }
@@ -345,17 +463,17 @@ export function EvaluationConsole() {
   async function SaveJudgePrompt() {
     if (!selected) return;
     await WithBusy(async () => {
-      await UpdateEvalProject(selected.id, { name: selected.name, runnerType: selected.runnerType, rubric: rubricDraft, judgePrompt: judgeDraft, judgeStrictJson: judgeStrictJsonDraft, config: selected.config }, selected.revision);
+      await UpdateEvalProject(selected.id, { name: selected.name, runnerType: selected.runnerType, rubric: rubricDraft, judgePrompt: judgeDraft, judgeStrictJson: judgeStrictJsonDraft, config: { ...selected.config, rubricDimensions: dimensionsDraft } }, selected.revision);
       setShowJudgeDrawer(false);
       await Refresh(); ShowNotice('评判提示词已保存，下次评测生效', "success");
     });
   }
 
-  async function ChangeModel(kind: 'executionModel' | 'judgeModel', model: string) {
+  async function ChangeModel(kind: 'executionModel' | 'judgeModel', value: string) {
     if (!selected) return;
     await WithBusy(async () => {
-      const config = { ...selected.config, [kind]: model };
-      if (kind === 'judgeModel') config.judgeProvider = 'DeepSeek';
+      const [provider, model] = JSON.parse(value) as [EvalProvider, string];
+      const config = { ...selected.config, [kind]: model, [kind === 'judgeModel' ? 'judgeProvider' : 'executionProvider']: provider };
       await UpdateEvalProject(selected.id, { name: selected.name, runnerType: selected.runnerType, rubric: selected.rubric, judgePrompt: selected.judgePrompt, config }, selected.revision);
       await Refresh(); ShowNotice('模型已更新，下次评测生效', "success");
     });
@@ -366,7 +484,7 @@ export function EvaluationConsole() {
     await WithBusy(async () => {
       await SelectEvalDatasetVersion(selected.id, version, selected.revision);
       await Refresh();
-      void ListEvalDatasetVersions(selected.id).then(setVersions).catch(() => undefined);
+      await ReloadVersions(selected.id);
       ShowNotice('已切换测试集版本，下次评测生效', "success");
     });
   }
@@ -374,8 +492,12 @@ export function EvaluationConsole() {
   function OpenManage() {
     if (!selected) return;
     setImportJsonl('');
+    setImportPreview(null); setDatasetTemplate('');
     setShowManage(true);
-    void ListEvalDatasetVersions(selected.id).then(setVersions).catch((error) => ShowNotice(error instanceof Error ? error.message : '读取测试集版本失败', "error"));
+    void ReloadVersions(selected.id).catch(() => undefined);
+    const projectId = selected.id;
+    void PreviewEvalDatasetImport(projectId, '').then(preview => { if (projectIdRef.current === projectId) setDatasetTemplate(preview.templateJsonl); })
+      .catch(error => ShowNotice(error instanceof Error ? error.message : '读取模板失败', 'error'));
   }
 
   async function ConfirmDeleteVersion() {
@@ -384,7 +506,7 @@ export function EvaluationConsole() {
       await DeleteEvalDatasetVersion(selected.id, deleteVersion, selected.revision);
       setDeleteVersion(null);
       await Refresh();
-      void ListEvalDatasetVersions(selected.id).then(setVersions).catch(() => undefined);
+      await ReloadVersions(selected.id);
       ShowNotice('版本已删除；已跑完的评测读取自己的冻结快照，结果不受影响', "success");
     });
   }
@@ -393,11 +515,19 @@ export function EvaluationConsole() {
     if (!selected) return;
     if (!importJsonl.trim()) { ShowNotice('请先粘贴或上传 JSONL 测试集', "error"); return; }
     await WithBusy(async () => {
-      await ImportEvalDataset(selected.id, importJsonl, selected.rubric, selected.revision);
-      setImportJsonl('');
+      const preview = await PreviewEvalDatasetImport(selected.id, importJsonl);
+      setImportPreview(preview);
+      if (!preview.valid) return;
+      let imported;
+      try { imported = await ImportEvalDataset(selected.id, importJsonl, selected.rubric, selected.revision); }
+      catch (error) {
+        if (error instanceof AppError && error.details && typeof error.details === 'object' && 'preview' in error.details) setImportPreview(error.details.preview as EvalDatasetImportPreview);
+        throw error;
+      }
+      setImportJsonl(''); setImportPreview(null);
       await Refresh();
-      void ListEvalDatasetVersions(selected.id).then(setVersions).catch(() => undefined);
-      ShowNotice('测试集已冻结为新版本', "success");
+      await ReloadVersions(selected.id);
+      ShowNotice(versions.some(item => item.version === imported.datasetVersion) ? '相同内容的版本已存在，已设为当前测试集' : '测试集已冻结为新版本', "success");
     });
   }
 
@@ -423,22 +553,30 @@ export function EvaluationConsole() {
   }
 
   async function LoadRun(runId: string) {
+    caseEpoch.current += 1; caseLoading.current.clear(); setCaseDetails({}); setCaseErrors({});
     setSelectedRunId(runId);
     setRunDetail(null);
     setOpenCases(new Set());
   }
 
-  /** 展开一题时懒加载它的完整证据（Trace、评分详情）；再次点击收起。 */
+  /** 展开后读取可观察证据；状态/评分事件使缓存失效，迟到请求必须满足同一 Run 和代次。 */
   function ToggleCase(caseRunId: string) {
-    setOpenCases((current) => {
-      const next = new Set(current);
-      if (next.has(caseRunId)) next.delete(caseRunId); else next.add(caseRunId);
-      return next;
-    });
-    if (caseDetails[caseRunId] || openCases.has(caseRunId)) return;
-    void ReadEvalCaseResult(caseRunId).then((detail) => setCaseDetails((current) => ({ ...current, [caseRunId]: detail })))
-      .catch((error) => ShowNotice(error instanceof Error ? error.message : '读取本题证据失败', "error"));
+    setOpenCases(current => { const next = new Set(current); if (next.has(caseRunId)) next.delete(caseRunId); else next.add(caseRunId); return next; });
   }
+  useEffect(() => {
+    const id = displayRun?.id;
+    if (!id) return;
+    for (const caseId of openCases) {
+      if (caseDetails[caseId] || caseErrors[caseId] || caseLoading.current.has(caseId)) continue;
+      const epoch = caseEpoch.current;
+      caseLoading.current.add(caseId);
+      void ReadEvalCaseResult(caseId).then(detail => {
+        if (mounted.current && epoch === caseEpoch.current && displayRunRef.current === id) setCaseDetails(current => ({ ...current, [caseId]: detail }));
+      }).catch(error => {
+        if (mounted.current && epoch === caseEpoch.current && displayRunRef.current === id) setCaseErrors(current => ({ ...current, [caseId]: error instanceof Error ? error.message : '读取本题证据失败' }));
+      }).finally(() => { if (epoch === caseEpoch.current) caseLoading.current.delete(caseId); });
+    }
+  }, [openCases, caseDetails, caseErrors, displayRun?.id, caseTick, refreshTick]);
 
   /** 进入对比视图时默认配对同一评测最近两次已完结的运行：旧者为基线，新者为候选。 */
   function PairAndLoadCompare() {
@@ -451,7 +589,7 @@ export function EvaluationConsole() {
       right = left === terminal[0]?.id ? '' : (terminal[0]?.id ?? '');
     }
     setLeftRunId(left); setRightRunId(right);
-    if (left && right) void WithBusy(async () => setCompare(await CompareEvalRuns(left, right)));
+    if (left && right) void LoadComparison(left, right);
   }
 
   // 对比视图由侧栏导航进入；重复进入保留已选配对，仅在配对失效时重新默认配对。
@@ -462,7 +600,20 @@ export function EvaluationConsole() {
 
   async function RunCompare() {
     if (!leftRunId || !rightRunId || leftRunId === rightRunId) { ShowNotice('请选择两个不同的运行记录', "error"); return; }
-    await WithBusy(async () => setCompare(await CompareEvalRuns(leftRunId, rightRunId)));
+    await LoadComparison(leftRunId, rightRunId);
+  }
+
+  async function LoadComparison(left: string, right: string) {
+    const request = ++compareRequest.current;
+    setCompare(null);
+    await WithBusy(async () => {
+      const next = await CompareEvalRuns(left, right);
+      if (mounted.current && request === compareRequest.current) setCompare(next);
+    });
+  }
+  function SelectComparisonSide(side: 'left' | 'right', id: string) {
+    compareRequest.current += 1; setCompare(null);
+    if (side === 'left') setLeftRunId(id); else setRightRunId(id);
   }
 
   const snapshot = (displayDetail?.snapshot ?? {}) as Record<string, any>;
@@ -472,15 +623,17 @@ export function EvaluationConsole() {
   const scoredCount = displayDetail ? displayDetail.caseRuns.filter((item) => item.status === 'completed' && typeof item.score?.totalScore === 'number').length : 0;
   const hardFailureCount = displayDetail ? displayDetail.caseRuns.filter((item) => (item.score?.hardFailures?.length ?? 0) > 0).length : 0;
   const lowConfidenceCount = displayDetail ? displayDetail.caseRuns.filter((item) => typeof item.score?.confidence === 'number' && item.score.confidence < 0.92).length : 0;
-  const notExecutedCount = displayDetail ? displayDetail.caseRuns.filter((item) => item.status === 'cancelled' || item.status === 'queued').length : 0;
+  const notExecutedCount = displayDetail ? displayDetail.caseRuns.filter((item) => item.status === 'not_run').length : 0;
   const usage = summary?.usage;
   const compareLeft = compare?.left, compareRight = compare?.right;
   /** 抽屉脚注的"未保存"标记与保存按钮的可用态：草稿与当前配置逐字节对比。 */
-  const judgeDirty = judgeDraft !== (selected?.judgePrompt ?? '') || rubricDraft !== (selected?.rubric ?? '') || judgeStrictJsonDraft !== (selected?.judgeStrictJson === true);
+  const judgeDirty = judgeDraft !== (selected?.judgePrompt ?? '') || rubricDraft !== (selected?.rubric ?? '') || judgeStrictJsonDraft !== (selected?.judgeStrictJson === true) || JSON.stringify(dimensionsDraft) !== JSON.stringify(selected?.config.rubricDimensions ?? DefaultRubricDimensions);
   const promptDirty = JSON.stringify(candidateDraft) !== JSON.stringify(selected?.config.candidates ?? []);
 
   return <div className="evaluation-console">
     <div className="eval-main">
+      {refreshError && <p role="alert">{refreshError}<Button variant="quiet" onClick={() => void Refresh().catch(() => undefined)}>重试读取列表</Button></p>}
+      {refreshing && !projects.length && <p role="status">正在读取评测列表…</p>}
       {!selected ? <div className="ev-empty">
         <span className="ev-empty-mark"><Icon name="flask" size={21} /></span>
         <h2>还没有评测</h2>
@@ -500,21 +653,46 @@ export function EvaluationConsole() {
               {Boolean(summary?.durationMs) && <div className="ev-info-row"><span className="k">耗时</span><span className="v">{FormatDuration(summary?.durationMs)}</span></div>}
             </div>
             <div className="ev-acts">
-              <Button variant="primary" disabled={busy || Boolean(activeRun)} onClick={() => void StartRun()}><Icon name="play" size={14} />{displayRun ? '重新评测' : '开始'}</Button>
+              <Button variant="primary" disabled={busy || Boolean(activeRun) || !selected.datasetVersion} onClick={() => void StartRun()}><Icon name="play" size={14} />{displayRun ? '重新评测' : '开始'}</Button>
               <Button variant="danger" disabled={!activeRun || busy} onClick={() => setShowStop(true)}><Icon name="stop" size={14} />终止</Button>
             </div>
             <p className={`ev-note ${displayRun?.status === 'cancelled' ? 'is-warn' : ''}`}>{
               activeRun ? '评测进行中。终止后本次评测不能继续，也不能恢复。'
                 : displayRun?.status === 'cancelled' ? '本次评测已终止，不能继续。已完成的题目结果保留，未执行的题目不会补跑。'
-                  : displayRun ? '本次评测已完成。重新评测会新增一条不可变的运行记录，不会覆盖当前结果。'
+                  : displayRun?.status === 'failed' ? '本次评测失败，已产生的结果保留。请检查错误后重新评测。' : displayRun ? '本次评测已完成。重新评测会新增一条不可变的运行记录，不会覆盖当前结果。'
                     : '尚未开始。开始后题目会按顺序执行，可以随时终止。'
             }</p>
           </div>
 
           <section className="ev-sec">
             <div className="ev-sec-h"><Icon name="selection" size={14} /><span>评测集选择</span><span className="sp" /><Button variant="quiet" onClick={OpenManage}><Icon name="sliders" size={13} />管理</Button></div>
-            <Select value={selected.datasetVersion ?? ''} ariaLabel="测试集版本" onChange={(value) => void SelectVersion(value)} options={versions.map((item) => ({ value: item.version, label: `${ShortHash(item.version)} · ${item.caseCount} 案例 · ${FormatTime(item.importedAt)}${item.isCurrent ? ' · 当前使用' : ''}` }))} />
+            <Select value={selected.datasetVersion ?? ''} disabled={busy || versionsLoading || versions.length === 0} ariaLabel="测试集版本" onChange={(value) => void SelectVersion(value)} options={versions.length ? versions.map((item) => ({ value: item.version, label: `${ShortHash(item.version)} · ${item.caseCount} 案例 · ${FormatTime(item.importedAt)}${item.isCurrent ? ' · 当前使用' : ''}` })) : [{ value: '', label: versionsLoading ? '正在读取测试集…' : '尚未导入测试集' }]} />
+            {versionsError && <p role="alert">{versionsError}<Button variant="quiet" onClick={() => void ReloadVersions(selected.id).catch(() => undefined)}>重试</Button></p>}
             <div className="ev-hash"><Icon name="hash" size={13} /><span>数据集版本 {ShortHash(selected.datasetVersion)}，运行时会冻结为不可变快照</span></div>
+          </section>
+
+          <section className="ev-sec">
+            {previewError && <p role="alert">{previewError}<Button variant="quiet" onClick={() => void ReloadPreview(selected.id)}>重试</Button></p>}
+            {Boolean(promptPreview?.tools.invalid.length) && <p role="alert">失效工具：{promptPreview?.tools.invalid.join('、')}<Button variant="quiet" disabled={busy} onClick={() => setToolDraft([...(promptPreview?.tools.suggested ?? [])])}>载入兼容配置</Button></p>}
+            <details className="ev-tool-config"><summary><Icon name="wrench" size={14} /><span>工具配置</span><span className="ev-tag">已选 {toolDraft.length} 项</span><Icon name="chevron-right" size={12} className="ev-tool-chevron" /></summary>
+              <div className="ev-tool-options" role="group" aria-label="可用工具">{(promptPreview?.tools.allowed ?? []).map(name => <label className="ev-tool-option" key={name}>
+                <input type="checkbox" disabled={busy} checked={toolDraft.includes(name)} onChange={event => setToolDraft(current => event.target.checked ? [...current, name] : current.filter(item => item !== name))} />
+                <span className="box" aria-hidden="true"><Icon name="check" size={11} /></span>
+                <span className="ev-tool-name">{name}</span>
+              </label>)}</div>
+              {!promptPreview && <p className="ev-tool-empty" role="status">{previewError ? '工具列表加载失败' : '正在读取工具列表…'}</p>}
+              {promptPreview && !promptPreview.tools.allowed.length && <p className="ev-tool-empty">暂无可用工具</p>}
+              <div className="ev-tool-footer"><Button variant="primary" disabled={busy || !promptPreview || JSON.stringify(toolDraft) === JSON.stringify(selected.config.toolNames)} onClick={() => void SaveTools()}>保存工具配置</Button></div>
+            </details>
+          </section>
+
+          <section className="ev-sec">
+            <details><summary>运行配置</summary>
+              <FormField label="每个候选重复次数"><input type="number" min={1} max={10} value={repeatDraft} disabled={busy} onChange={event => setRepeatDraft(Number(event.target.value))} /></FormField>
+              <FormField label="最大模型轮数"><input type="number" min={1} max={100} value={turnsDraft} disabled={busy} onChange={event => setTurnsDraft(Number(event.target.value))} /></FormField>
+              <FormField label="模拟用户交互"><Select value={simulatorDraft} disabled={busy} ariaLabel="模拟用户交互策略" onChange={setSimulatorDraft} options={[{ value: 'approve_valid', label: '批准有效操作' }, { value: 'reject_submit_once', label: '首次拒绝提交' }, { value: 'scripted', label: '按案例脚本交互' }]} /></FormField>
+              <Button disabled={busy || (repeatDraft === selected.config.repeatCount && turnsDraft === selected.config.maxModelTurns && simulatorDraft === selected.config.userSimulator)} onClick={() => void SaveExecutionSettings()}>保存运行配置</Button>
+            </details>
           </section>
 
           <section className="ev-sec">
@@ -537,21 +715,24 @@ export function EvaluationConsole() {
 
           <section className="ev-sec">
             <div className="ev-sec-h"><Icon name="scales" size={14} /><span>{selected.runnerType === 'prompt' ? 'judge model 配置' : '执行模型'}</span>
-              {selected.runnerType === 'prompt' && <><span className="sp" /><Button variant="quiet" onClick={() => { setJudgeDraft(selected.judgePrompt); setRubricDraft(selected.rubric); setJudgeStrictJsonDraft(selected.judgeStrictJson === true); setShowJudgeDrawer(true); }}><Icon name="pencil-simple" size={13} />编辑提示词</Button></>}
+              {selected.runnerType === 'prompt' && <><span className="sp" /><Button variant="quiet" onClick={() => { setDimensionsDraft(structuredClone(selected.config.rubricDimensions ?? DefaultRubricDimensions)); setJudgeDraft(selected.judgePrompt); setRubricDraft(selected.rubric); setJudgeStrictJsonDraft(selected.judgeStrictJson === true); setShowJudgeDrawer(true); }}><Icon name="pencil-simple" size={13} />编辑提示词</Button></>}
             </div>
+            {providersError && <p role="alert">{providersError}<Button variant="quiet" onClick={() => void ReloadProviders()}>重试</Button></p>}
             <FormField label="执行模型 · 被评测的一方">
-              <Select value={selected.config.executionModel} dropUp ariaLabel="执行模型" onChange={(value) => void ChangeModel('executionModel', value)} options={modelOptions.some((option) => option.value === selected.config.executionModel) ? modelOptions : [{ value: selected.config.executionModel, label: selected.config.executionModel }, ...modelOptions]} />
+              <Select value={ModelValue('execution')} disabled={busy} dropUp ariaLabel="执行模型" onChange={(value) => void ChangeModel('executionModel', value)} options={ModelOptions('execution')} />
             </FormField>
             {selected.runnerType === 'prompt' && <FormField label="评判模型 · 负责打分">
-              <Select value={selected.config.judgeModel ?? ''} dropUp ariaLabel="评判模型" onChange={(value) => void ChangeModel('judgeModel', value)} options={modelOptions.some((option) => option.value === selected.config.judgeModel) ? modelOptions : [{ value: selected.config.judgeModel ?? '', label: selected.config.judgeModel ?? '未设置' }, ...modelOptions]} />
+              <Select value={ModelValue('judge')} disabled={busy} dropUp ariaLabel="评判模型" onChange={(value) => void ChangeModel('judgeModel', value)} options={ModelOptions('judge')} />
             </FormField>}
             {selected.runnerType === 'prompt' && <div className="ev-hash"><Icon name="info" size={13} /><span>评判提示词 {selected.judgePrompt.length + selected.rubric.length} 字 · {selected.judgeStrictJson ? '严格 JSON 输出' : '附加段'} 拼进固定评判框架</span></div>}
-            <div className="ev-hash"><Icon name="info" size={13} /><span>运行时按模型配置页当前生效的供应商校准；实际使用的模型以快照为准</span></div>
+            {displayDetail && <div className="ev-hash"><Icon name="info" size={13} /><span>本次执行：{String((displayDetail.snapshot.config as Record<string, unknown>)?.executionProvider ?? '')} · {String((displayDetail.snapshot.config as Record<string, unknown>)?.executionModel ?? '')}{selected.runnerType === 'prompt' ? `；Judge：${String((displayDetail.snapshot.config as Record<string, unknown>)?.judgeProvider ?? '')} · ${String((displayDetail.snapshot.config as Record<string, unknown>)?.judgeModel ?? '')}` : ''}</span></div>}
           </section>
         </section>
 
         <section className="eval-results" aria-label="评测结果">
-          {!displayRun || !displayDetail || (!displayDetail.caseRuns.length && !activeRun) ? <div className="ev-empty">
+          {runLoading && <p role="status">正在读取运行结果…</p>}
+          {runError && <p role="alert">{runError}<Button variant="quiet" onClick={() => displayRun && void ReloadRun(displayRun.id)}>重试</Button></p>}
+          {!runError && (!runLoading || Boolean(displayDetail)) && (!displayRun || !displayDetail || (!displayDetail.caseRuns.length && !activeRun) ? <div className="ev-empty">
             <span className="ev-empty-mark"><Icon name="flask" size={21} /></span>
             <h2>{displayRun?.status === 'cancelled' ? '本次评测没有产生结果' : '还没有评测结果'}</h2>
             <p>{displayRun?.status === 'cancelled' ? '评测在首题完成前被终止，没有留下可评估的结果。可以重新发起一次评测。' : '确认左侧的评测集、prompt 版本与评判模型后开始评测，结果会按题目逐条出现在这里。'}</p>
@@ -562,7 +743,7 @@ export function EvaluationConsole() {
               <div className="ev-results-run">
                 <Select value={displayRun.id} ariaLabel="切换历史运行" onChange={(value) => void LoadRun(value)} options={projectRuns.map((run) => ({ value: run.id, label: `${RunStatusText(run.status)} · ${FormatTime(run.createdAt)}${run.summary?.averageScore != null ? ` · ${run.summary.averageScore.toFixed(1)} 分` : ''}` }))} />
               </div>
-              <div className={`ev-score ${summary?.averageScore == null ? 'is-none' : ''}`} title={summary?.averageScore == null ? '还没有完成评分的题目' : `已完成评分 ${scoredCount} / ${displayDetail.caseRuns.length} 题的平均分`}>
+              <div className={`ev-score ${summary?.averageScore == null ? 'is-none' : ''}`} data-native-title="true" title={summary?.averageScore == null ? '还没有完成评分的题目' : `已完成评分 ${scoredCount} / ${displayDetail.caseRuns.length} 题的平均分`}>
                 <span className="k">总分</span><b>{summary?.averageScore == null ? '暂无' : summary.averageScore.toFixed(1)}</b>
                 {summary?.averageScore != null && <small>／100</small>}
               </div>
@@ -585,16 +766,17 @@ export function EvaluationConsole() {
                 <div className="ev-stat-d">{hardFailureCount ? `硬失败 ${hardFailureCount} 题` : notExecutedCount ? `${notExecutedCount} 题未执行` : lowConfidenceCount ? `低置信 ${lowConfidenceCount} 题` : '无硬失败'}</div>
               </div>
             </div>
+            <p className="ev-note">任务完成率 {summary?.taskCompletionRate == null ? '待判定' : `${(summary.taskCompletionRate * 100).toFixed(1)}%`} · 已判定 {summary?.taskEvaluatedCaseRuns ?? 0} · 未计分 {summary?.unscoredCaseRuns ?? 0} · 执行失败 {summary?.failedCaseRuns ?? 0} · 已取消 {summary?.cancelledCaseRuns ?? 0} · 未执行 {summary?.notRunCaseRuns ?? notExecutedCount}</p>
             {activeRun && <div className="ev-prog" role="progressbar" aria-label="评测进度" aria-valuemin={0} aria-valuemax={100} aria-valuenow={displayDetail.caseRuns.length ? Math.round((scoredCount / displayDetail.caseRuns.length) * 100) : 0}><div className="ev-prog-f" style={{ width: `${displayDetail.caseRuns.length ? Math.round((scoredCount / displayDetail.caseRuns.length) * 100) : 0}%` }} /></div>}
             <div className="ev-case-list-h"><Icon name="list-bullets" size={14} /><span>逐题结果</span><span className="sp" /><span>{displayDetail.caseRuns.length} 题</span></div>
             <div className="ev-cases">
               {displayDetail.caseRuns.map((caseRun, index) => {
                 const opened = openCases.has(caseRun.id);
                 const scored = caseRun.status === 'completed' && caseRun.score?.totalScore != null;
-                const notRun = caseRun.status === 'cancelled';
-                const pending = caseRun.status === 'queued' || caseRun.status === 'running' || caseRun.status === 'scoring';
+                const notRun = caseRun.status === 'not_run';
+                const cancelled = caseRun.status === 'cancelled';
                 const scoreCls = scored ? (caseRun.score!.totalScore! < 70 ? 'is-miss' : '') : (notRun ? 'is-miss' : 'is-pending');
-                const scoreText = scored ? String(caseRun.score!.totalScore) : (notRun ? '未执行' : caseRun.status === 'completed' ? caseRun.score?.benchmark?.outcome === 'needs_review' ? '待复核' : caseRun.score?.benchmark?.outcome === 'environment_failure' ? '环境失败' : '未计分' : (caseRun.status === 'failed' ? '失败' : '待评测'));
+                const scoreText = scored ? String(caseRun.score!.totalScore) : (notRun ? '未执行' : cancelled ? '已取消' : caseRun.status === 'completed' ? caseRun.score?.benchmark?.outcome === 'needs_review' ? '待复核' : caseRun.score?.benchmark?.outcome === 'environment_failure' ? '环境失败' : '未计分' : (caseRun.status === 'failed' ? '失败' : '待评测'));
                 return <article className={`ev-case ${opened ? 'open' : ''}`} key={caseRun.id}>
                   <button type="button" className="ev-case-h" aria-expanded={opened} onClick={() => ToggleCase(caseRun.id)}>
                     <span className="ev-case-n">{String(index + 1).padStart(2, '0')}</span>
@@ -602,28 +784,30 @@ export function EvaluationConsole() {
                     <span className={`ev-case-s ${scoreCls}`}><b>{scoreText}</b>{scored && <small>得分</small>}</span>
                     <Icon name="chevron-down" size={14} className="ev-chev" />
                   </button>
+                  {opened && !caseDetails[caseRun.id] && !caseErrors[caseRun.id] && <p role="status">正在读取本题证据…</p>}
+                  {opened && caseErrors[caseRun.id] && <p role="alert">{caseErrors[caseRun.id]}<Button variant="quiet" onClick={() => { setCaseErrors(current => { const next = { ...current }; delete next[caseRun.id]; return next; }); setCaseTick(value => value + 1); }}>重试</Button></p>}
                   {opened && (scored || caseRun.status === 'completed'
-                    ? <EvaluationCaseBody summary={caseRun} detail={caseDetails[caseRun.id]} runnerType={displayRun.runnerType} onShowTrace={() => ToggleCase(caseRun.id)} traceVisible={opened} />
-                    : <div className="ev-case-b"><div className="ev-sub"><div className="ev-sub-h"><Icon name={notRun ? 'warning' : 'clock'} size={14} /><span>{notRun ? '本题未执行' : (caseRun.status === 'failed' ? '本题执行失败' : '等待评测')}</span></div><p className="ev-reply">{caseRun.error ? `${caseRun.error.code} · ${caseRun.error.message}` : (notRun ? '评测在本题开始前被终止，因此没有模型回复，也没有评判记录。' : '评测按顺序执行，本题结果会在前面题目完成后写入。')}</p></div></div>)}
+                    ? <EvaluationCaseBody summary={caseRun} detail={caseDetails[caseRun.id]} runnerType={displayRun.runnerType} />
+                    : <div className="ev-case-b"><div className="ev-sub"><div className="ev-sub-h"><Icon name={notRun ? 'warning' : 'clock'} size={14} /><span>{notRun ? '本题未执行' : cancelled ? '本题执行已取消' : (caseRun.status === 'failed' ? '本题执行失败' : '等待评测')}</span></div><p className="ev-reply">{caseRun.error ? `${caseRun.error.code} · ${caseRun.error.message}` : (cancelled ? '本题开始后被取消，未形成完整评分。' : notRun ? '评测在本题开始前被终止，因此没有模型回复，也没有评判记录。' : '评测按顺序执行，本题结果会在前面题目完成后写入。')}</p></div></div>)}
                 </article>;
               })}
             </div>
-          </>}
+          </>)}
         </section>
       </div> : <section className="eval-compare" aria-label="运行对比">
         <div className="ev-cmp-head">
           <FormField label="基线">
-            <Select value={leftRunId} ariaLabel="基线运行" onChange={setLeftRunId} options={[{ value: '', label: '选择基线运行' }, ...projectRuns.filter((run) => TerminalStatuses.has(run.status) && run.id !== rightRunId).map((run) => ({ value: run.id, label: `${RunStatusText(run.status)} · ${FormatTime(run.createdAt)}${run.summary?.averageScore != null ? ` · ${run.summary.averageScore.toFixed(1)} 分` : ''}` }))]} />
+            <Select value={leftRunId} ariaLabel="基线运行" onChange={id => SelectComparisonSide('left', id)} options={[{ value: '', label: '选择基线运行' }, ...projectRuns.filter((run) => TerminalStatuses.has(run.status) && run.id !== rightRunId).map((run) => ({ value: run.id, label: `${RunStatusText(run.status)} · ${FormatTime(run.createdAt)}${run.summary?.averageScore != null ? ` · ${run.summary.averageScore.toFixed(1)} 分` : ''}` }))]} />
           </FormField>
           <div className="ev-cmp-delta">{(() => {
-            const base = compare?.left.summary?.averageScore, cand = compare?.right.summary?.averageScore;
+            const base = compare?.samples?.leftMean, cand = compare?.samples?.rightMean;
             if (base == null || cand == null) return <span className="ev-delta-pill"><span className="k">总分差</span>--</span>;
             const delta = cand - base;
             const text = Math.abs(delta) < 0.05 ? '持平' : `${delta < 0 ? '-' : '+'}${Math.abs(delta).toFixed(1)}`;
-            return <span className={`ev-delta-pill ${delta < -0.05 ? 'is-neg' : ''}`} title={`候选 ${cand.toFixed(1)} - 基线 ${base.toFixed(1)}`}><span className="k">总分差</span>{text}</span>;
+            return <span className={`ev-delta-pill ${delta < -0.05 ? 'is-neg' : ''}`} data-native-title="true" title={`候选 ${cand.toFixed(1)} - 基线 ${base.toFixed(1)}`}><span className="k">总分差</span>{text}</span>;
           })()}</div>
           <FormField label="候选">
-            <Select value={rightRunId} ariaLabel="候选运行" onChange={setRightRunId} options={[{ value: '', label: '选择候选运行' }, ...projectRuns.filter((run) => TerminalStatuses.has(run.status) && run.id !== leftRunId).map((run) => ({ value: run.id, label: `${RunStatusText(run.status)} · ${FormatTime(run.createdAt)}${run.summary?.averageScore != null ? ` · ${run.summary.averageScore.toFixed(1)} 分` : ''}` }))]} />
+            <Select value={rightRunId} ariaLabel="候选运行" onChange={id => SelectComparisonSide('right', id)} options={[{ value: '', label: '选择候选运行' }, ...projectRuns.filter((run) => TerminalStatuses.has(run.status) && run.id !== leftRunId).map((run) => ({ value: run.id, label: `${RunStatusText(run.status)} · ${FormatTime(run.createdAt)}${run.summary?.averageScore != null ? ` · ${run.summary.averageScore.toFixed(1)} 分` : ''}` }))]} />
           </FormField>
           <Button disabled={busy} onClick={() => void RunCompare()}>对比</Button>
         </div>
@@ -631,7 +815,7 @@ export function EvaluationConsole() {
           <div className={`ev-cmp-banner ${compare.strictComparison ? 'is-strict' : 'is-warn'}`}>
             <Icon name={compare.strictComparison ? 'seal-check' : 'warning-circle'} size={16} />
             <b>{compare.strictComparison ? '严格可比' : '非严格 A/B'}</b>
-            <span>{compare.strictComparison ? '除 prompt 候选外两侧的运行条件一致，分数差异可以归因到候选本身。' : `${compare.differingSnapshotFields.join('、')}不一致，分数差异不能当作严格 A/B 结论。`}</span>
+            <span>{compare.strictComparison ? '除 prompt 候选外两侧的运行条件一致，分数按配对样本比较；模型随机性仍可能影响结果。' : `${compare.differingSnapshotFields.join('、')}不一致，分数差异不能当作严格 A/B 结论。`}</span>
             <span className="sp" />
             <Button variant="quiet" aria-pressed={showConds} onClick={() => setShowConds((current) => !current)}><Icon name="list-checks" size={13} />{showConds ? '收起条件' : '可复现条件'}</Button>
           </div>
@@ -658,23 +842,20 @@ export function EvaluationConsole() {
             const rightCases = new Map<string, string>((compareRight?.snapshot as any)?.cases?.map((item: any) => [item.id as string, item.input.userMessage as string]) ?? []);
             const caseIds = [...new Set([...(compareLeft?.caseRuns ?? []).map((item) => item.caseId), ...(compareRight?.caseRuns ?? []).map((item) => item.caseId)])];
             if (!caseIds.length) return <p className="ev-cmp-note">两侧都还没有逐题结果。</p>;
-            const matched = caseIds.filter((caseId) => leftCases.has(caseId) || rightCases.has(caseId));
+            const matched = caseIds.filter((caseId) => leftCases.has(caseId) && rightCases.has(caseId));
             return <>
-              <p className="ev-cmp-note">两侧共有 {matched.length} 道题能对应上{(compareLeft?.caseRuns.length ?? 0) !== matched.length || (compareRight?.caseRuns.length ?? 0) !== matched.length ? '；其余题目只出现在一侧或数据集版本不同。' : '。'}</p>
+              <p className="ev-cmp-note">两侧共有 {compare?.samples?.commonCaseCount ?? matched.length} 道题；仅基线 {compare?.samples?.leftOnlyCaseCount ?? 0}，仅候选 {compare?.samples?.rightOnlyCaseCount ?? 0}。已配对评分 {compare?.samples?.pairedCount ?? 0} 组；均分和分差仅使用相同题目、配对候选及相同 repeat 序号。± 为样本标准差。</p>
               <div className="ev-cmp-list">
-                <div className="ev-cmp-row is-head"><span className="ev-cmp-q">题目</span><span>基线得分</span><span className="ev-cmp-delta-cell">总分差</span><span>候选得分</span></div>
-                {caseIds.map((caseId) => {
-                  const leftScores = (compareLeft?.caseRuns ?? []).filter((item) => item.caseId === caseId);
-                  const rightScores = (compareRight?.caseRuns ?? []).filter((item) => item.caseId === caseId);
-                  const leftValue = leftScores.find((item) => typeof item.score?.totalScore === 'number')?.score?.totalScore ?? null;
-                  const rightValue = rightScores.find((item) => typeof item.score?.totalScore === 'number')?.score?.totalScore ?? null;
-                  const delta = leftValue != null && rightValue != null ? rightValue - leftValue : null;
-                  const promptText = leftCases.get(caseId) ?? rightCases.get(caseId) ?? caseId;
-                  return <div className="ev-cmp-row" key={caseId}>
-                    <span className="ev-cmp-q" title={promptText}>{promptText}</span>
-                    <span>{leftValue == null ? '--' : leftValue.toFixed(0)}{leftScores.length > 1 && <small> 等 {leftScores.length} 个候选</small>}</span>
+                <div className="ev-cmp-row is-head"><span className="ev-cmp-q">题目 / 候选配对</span><span>基线均分</span><span className="ev-cmp-delta-cell">配对分差</span><span>候选均分</span></div>
+                {(compare?.samples?.rows ?? []).map((row, index) => {
+                  const a = row.left.mean, b = row.right.mean;
+                  const delta = a != null && b != null ? b - a : null;
+                  const promptText = leftCases.get(row.caseId) ?? rightCases.get(row.caseId) ?? row.caseId;
+                  return <div className="ev-cmp-row" key={`${row.caseId}-${index}`}>
+                    <span className="ev-cmp-q" title={promptText}>{promptText}<small>{row.leftCandidate} / {row.rightCandidate} · 配对 {row.pairedCount}</small></span>
+                    <span>{a == null ? '--' : a.toFixed(1)}{row.left.stddev != null && ` ± ${row.left.stddev.toFixed(1)}`}<small>已评分 {row.leftScored} / {row.leftTotal}</small></span>
                     <span className="ev-cmp-delta-cell">{delta == null ? '--' : `${delta < 0 ? '-' : '+'}${Math.abs(delta).toFixed(1)}`}</span>
-                    <span>{rightValue == null ? '--' : rightValue.toFixed(0)}{rightScores.length > 1 && <small> 等 {rightScores.length} 个候选</small>}</span>
+                    <span>{b == null ? '--' : b.toFixed(1)}{row.right.stddev != null && ` ± ${row.right.stddev.toFixed(1)}`}<small>已评分 {row.rightScored} / {row.rightTotal}</small></span>
                   </div>;
                 })}
               </div>
@@ -691,9 +872,12 @@ export function EvaluationConsole() {
         <li>需要重新评测时，请再发起一次新的评测。</li>
       </ul>
     </Modal>
-    <Modal open={showManage} title="管理测试集版本" variant="dialog" onClose={() => setShowManage(false)} footer={<><DialogButton onClick={() => setShowManage(false)}>完成</DialogButton><DialogButton tone="accent" disabled={busy || !importJsonl.trim()} onClick={() => void ImportVersion()}>导入为新版本</DialogButton></>}>
+    <Modal open={showManage} title="管理测试集版本" variant="dialog" onClose={() => setShowManage(false)} footer={<><DialogButton onClick={() => setShowManage(false)}>完成</DialogButton><DialogButton disabled={busy || !importJsonl.trim()} onClick={() => void CheckImport()}>检查兼容性</DialogButton><DialogButton tone="accent" disabled={busy || !importJsonl.trim()} onClick={() => void ImportVersion()}>导入为新版本</DialogButton></>}>
       <p className="ev-manage-note">测试集在导入时冻结成一个版本，已经跑过的评测始终读它当时用到的那一版，删除版本不会改变已有结果。</p>
       <div className="ev-ds-list">
+        {versionsLoading && <p role="status">正在读取测试集…</p>}
+        {versionsError && <p role="alert">{versionsError}<Button variant="quiet" onClick={() => selected && void ReloadVersions(selected.id).catch(() => undefined)}>重试</Button></p>}
+        {!versionsLoading && !versionsError && versions.length === 0 && <p>尚未导入测试集</p>}
         {versions.map((item) => <div className={`ev-ds-row ${item.isCurrent ? 'on' : ''}`} key={item.version}>
           <Icon name="database" size={16} />
           <span className="ev-ds-body">
@@ -703,16 +887,21 @@ export function EvaluationConsole() {
             </span>
             <span className="ev-ds-d">导入于 {FormatTime(item.importedAt)}</span>
           </span>
-          <Button variant="quiet" aria-label={`删除版本 ${ShortHash(item.version)}`} disabled={busy || versions.length < 2} onClick={() => setDeleteVersion(item.version)}><Icon name="delete" size={14} /></Button>
+          <Button variant="quiet" aria-label={`删除版本 ${ShortHash(item.version)}`} disabled={busy} onClick={() => setDeleteVersion(item.version)}><Icon name="delete" size={14} /></Button>
         </div>)}
       </div>
       <div className="ev-manage-import">
-        <TextFileUpload label="上传测试集" accept=".jsonl,application/json" hint="支持 .jsonl，最多 8 MiB；每行一个 JSON 案例" maxBytes={8 * 1024 * 1024} onLoad={(content) => setImportJsonl(content)} onError={(message) => ShowNotice(message, 'error')} />
-        <FormField label="测试集内容" hint="坏行会整体拒绝并返回行号。"><textarea rows={6} value={importJsonl} onChange={(event) => setImportJsonl(event.target.value)} /></FormField>
+        <TextFileUpload label="上传测试集" disabled={busy} accept=".jsonl,application/json" hint="支持 .jsonl，最多 8 MiB；每行一个 JSON 案例" maxBytes={8 * 1024 * 1024} onLoad={ChangeImportText} onError={(message) => ShowNotice(message, 'error')} />
+        <FormField label="测试集内容" hint="坏行会整体拒绝并返回行号。"><textarea disabled={busy} rows={6} value={importJsonl} onChange={(event) => ChangeImportText(event.target.value)} /></FormField>
+        {datasetTemplate && <details><summary>查看当前评测方式的 JSONL 模板</summary><textarea aria-label="当前评测方式的 JSONL 模板" readOnly rows={5} value={datasetTemplate} /></details>}
+        {importPreview && <section className="ev-import-preview" aria-label="测试集兼容性检查" aria-live="polite">
+          <p>{importPreview.valid ? '检查通过' : '检查未通过'} · {importPreview.caseCount} 题 · {importPreview.environment === 'prompt' ? 'Prompt 测评' : importPreview.environment === 'career-portal' ? '网申填写测评' : '普通浏览器测评'}{importPreview.expectedFixtureVersion ? ` · Fixture ${importPreview.expectedFixtureVersion}` : ''}</p>
+          {importPreview.diagnostics.map((item, index) => <div className="ev-req is-fail" key={`${item.line}-${item.code}-${index}`}><span className="ev-req-b"><b>{item.line ? `第 ${item.line} 行` : '文件'}{item.caseId ? ` · ${item.caseId}` : ''}</b><span>{item.message}</span>{(item.declaredVersion || item.expectedVersion) && <small>声明版本：{item.declaredVersion ?? '未声明'}；要求版本：{item.expectedVersion ?? '不适用'}</small>}<small>{item.action}</small></span></div>)}
+        </section>}
       </div>
     </Modal>
     <Modal open={Boolean(deleteVersion)} title="删除测试集版本" onClose={() => setDeleteVersion(null)} footer={<><DialogButton onClick={() => setDeleteVersion(null)}>取消</DialogButton><DialogButton tone="danger" disabled={busy} onClick={() => void ConfirmDeleteVersion()}>删除这个版本</DialogButton></>}>
-      「{ShortHash(deleteVersion)}」会从列表里移除并删除版本文件。已经跑完的评测读取当时的冻结快照，结果不受影响。
+      「{ShortHash(deleteVersion)}」会从列表里移除并清理版本文件。{versions.length === 1 ? '删除后测试集为空，需要重新导入才能开始评测。' : '删除当前版本后会切换到最近的剩余版本。'}历史运行保留自己的冻结快照，结果不受影响。
     </Modal>
     {showJudgeDrawer && createPortal(<div className="dw-layer" role="presentation">
       <div className="dw-scrim" onClick={() => setShowJudgeDrawer(false)} />
@@ -741,7 +930,17 @@ export function EvaluationConsole() {
             <span className="lab">评分标准 Rubric</span>
             <textarea rows={6} spellCheck={false} value={rubricDraft} onChange={(event) => setRubricDraft(event.target.value)} />
           </label>
-          <p className="ev-drawer-note">评判模型只读取题目、期望约束与模型回答，以及这里的提示词与评分标准。附加段会拼进固定的评判框架，防注入约束与输出契约不受影响；浏览器测评不使用评判模型，改为读取断言结果。</p>
+            <div className="ev-rubric-dimensions">
+              {dimensionsDraft.map((dimension, index) => <div className="ev-rubric-row" key={index}>
+                <input aria-label={`维度 ${index + 1} ID`} value={dimension.id} onChange={event => setDimensionsDraft(current => current.map((item, i) => i === index ? { ...item, id: event.target.value } : item))} />
+                <input aria-label={`维度 ${index + 1} 名称`} value={dimension.label} onChange={event => setDimensionsDraft(current => current.map((item, i) => i === index ? { ...item, label: event.target.value } : item))} />
+                <input type="number" aria-label={`维度 ${index + 1} 权重`} min={0.01} max={100} value={dimension.weight} onChange={event => setDimensionsDraft(current => current.map((item, i) => i === index ? { ...item, weight: Number(event.target.value) } : item))} />
+                <Button variant="quiet" disabled={dimensionsDraft.length <= 1} onClick={() => setDimensionsDraft(current => current.filter((_, i) => i !== index))}>删除</Button>
+              </div>)}
+              <Button variant="quiet" disabled={dimensionsDraft.length >= 20} onClick={() => setDimensionsDraft(current => [...current, { id: `dimension${current.length + 1}`, label: '新维度', weight: 1 }])}>添加维度</Button>
+              <span>权重合计 {dimensionsDraft.reduce((sum, item) => sum + item.weight, 0).toFixed(2)} / 100</span>
+            </div>
+          <p className="ev-drawer-note">评判模型结合题目、原始资料、执行事件、最终状态和模型回答评分。状态要求另做程序校验；浏览器测评使用确定性断言。</p>
         </div>
         <div className="dw-foot">
           <span className="dw-note">{judgeDirty ? '有未保存的修改' : '尚未修改'}</span>

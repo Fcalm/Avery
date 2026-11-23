@@ -83,21 +83,33 @@ function CreateProfileDraft(category: ProfileCategory): Partial<ProfileItem> {
   return { category, title: DefaultProfileTitles[category], content: ProfileTemplateForCategory(category) };
 }
 
+/** 多行字段延续到模板中的下一字段；正文里的冒号、列表和空行不再被截成隐藏内容。 */
+function ProfileFieldPattern(sectionTitle: string, fieldLabel: string): RegExp {
+  const section = Object.values(ProfileTemplateSections).flat().find((item) => item.title === sectionTitle);
+  const prefix = `(^[\\t ]*${EscapeRegularExpression(fieldLabel)}[：:][\\t ]*)`;
+  if (!section?.fields.find((field) => field.label === fieldLabel)?.multiline) return new RegExp(`${prefix}([^\\r\\n]*)`, 'm');
+  const labels = section.fields.map((field) => EscapeRegularExpression(field.label)).join('|');
+  return new RegExp(`${prefix}([^\\r\\n]*(?:\\r?\\n(?![\\t ]*(?:${labels})[：:])[^\\r\\n]*)*)`, 'm');
+}
+
 function GetProfileField(content: string, sectionTitle: string, fieldLabel: string) {
   const sectionPattern = new RegExp(`\\[${EscapeRegularExpression(sectionTitle)}\\]\\s*([\\s\\S]*?)(?=\\r?\\n\\s*\\[[^\\]\\r\\n]+\\]|$)`);
   const sectionMatch = content.match(sectionPattern);
   const section = sectionMatch?.[1] ?? '';
   // 冒号后的空白只能匹配行内空格；\\s 会吞掉换行并把下一字段标签当作当前字段值。
-  const fieldPattern = new RegExp(`^[\\t ]*${EscapeRegularExpression(fieldLabel)}[：:][\\t ]*([^\\r\\n]*)`, 'm');
-  return section.match(fieldPattern)?.[1]?.trim() ?? '';
+  const value = section.match(ProfileFieldPattern(sectionTitle, fieldLabel))?.[2] ?? '';
+  const multiline = Object.values(ProfileTemplateSections).flat().find((item) => item.title === sectionTitle)?.fields.find((field) => field.label === fieldLabel)?.multiline;
+  // 多行输入保留末尾换行，否则输入 Enter 后受控文本框会立即把换行删掉。
+  return multiline ? value : value.trim();
 }
 
 function UpdateProfileField(content: string, sectionTitle: string, fieldLabel: string, value: string) {
   const sectionPattern = new RegExp(`(\\[${EscapeRegularExpression(sectionTitle)}\\]\\s*[\\s\\S]*?)(?=\\r?\\n\\s*\\[[^\\]\\r\\n]+\\]|$)`);
-  const fieldPattern = new RegExp(`(^[\\t ]*${EscapeRegularExpression(fieldLabel)}[：:][\\t ]*)([^\\r\\n]*)`, 'm');
+  const fieldPattern = ProfileFieldPattern(sectionTitle, fieldLabel);
   if (!sectionPattern.test(content)) return `${content.trimEnd()}\n\n[${sectionTitle}]\n${fieldLabel}：${value}`;
   return content.replace(sectionPattern, (section) => {
-    if (fieldPattern.test(section)) return section.replace(fieldPattern, `$1${value}`);
+    // 回调替换避免粘贴文本中的 $&、$1 被解释成正则替换指令。
+    if (fieldPattern.test(section)) return section.replace(fieldPattern, (_match, prefix: string) => `${prefix}${value}`);
     return `${section}${section.endsWith('\n') ? '' : '\n'}${fieldLabel}：${value}`;
   });
 }
@@ -127,7 +139,7 @@ function GetProfileDraftErrors(draft: Partial<ProfileItem>): Record<string, stri
     section.fields.forEach((field, fieldIndex) => {
       const value = GetProfileField(draft.content ?? '', section.title, field.label);
       const fieldId = GetProfileFieldId(category, sectionIndex, fieldIndex);
-      if (field.required && !value) errors[fieldId] = `请填写${field.label}`;
+      if (field.required && !value.trim()) errors[fieldId] = `请填写${field.label}`;
       else if (field.date && value && !IsProfileDateValue(value)) errors[fieldId] = `请使用 ${DatePlaceholder} 格式`;
     });
   });

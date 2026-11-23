@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import type { EvalProject, EvalProjectInput, EvalRun } from '@avery/contracts';
 import { useUiStore } from '../../../app/UiStore';
 import { DialogButton, FormField, Modal, Select } from '../../../shared/components/UI';
@@ -58,9 +58,6 @@ function CreateDefaultInput(name: string, mode: 'prompt' | 'browser' | 'career-p
         { id: 'candidate-a', name: '候选 A · 当前生产版本', promptOverrides: {} },
         { id: 'candidate-b', name: '候选 B · 改写系统提示词', promptOverrides: {} },
       ],
-      toolNames: runnerType === 'prompt'
-        ? ['Read', 'Glob', 'Grep', 'ReadProfile', 'ReadResume', 'WriteTodo', 'ReadTodo', 'AskUserQuestion']
-        : ['Read', 'Glob', 'Grep', 'ReadProfile', 'ReadResume', 'LoadSkill', 'WriteTodo', 'ReadTodo', 'AskUserQuestion', 'BrowserRunScript', 'BrowserNavigate', 'BrowserSnapshot', 'BrowserReadPage', 'BrowserClick', 'BrowserFill', 'BrowserFillForm', 'BrowserValidateForm', 'BrowserSelect', 'BrowserSetChecked', 'BrowserPressKey', 'BrowserUploadFile', 'BrowserWait', 'BrowserSwitchTab', 'BrowserGoBack'],
       userSimulator: 'approve_valid', maxModelTurns: runnerType === 'prompt' ? 30 : 100, repeatCount: 1,
       ...(runnerType === 'browser' ? { fixtureBranch: mode === 'career-portal' ? 'career-portal' as const : 'realistic-dom' as const } : {}),
     },
@@ -83,6 +80,8 @@ interface DeveloperConsoleValue {
   SetSearch: (value: string) => void;
   /** 评测事件到达或控制台重新挂载后由调用方触发；返回最新项目列表。 */
   Refresh: () => Promise<EvalProject[]>;
+  refreshing: boolean;
+  refreshError: string;
   busy: boolean;
   OpenCreate: () => void;
   /** 供"删除评测"确认弹窗复用：当前界面暂无入口，保留能力等待侧栏操作补齐。 */
@@ -103,11 +102,21 @@ function DeveloperConsoleProvider({ active, children }: { active: boolean; child
   const [createName, setCreateName] = useState('Prompt A/B 测评');
   const [createRunner, setCreateRunner] = useState<'prompt' | 'browser' | 'career-portal'>('prompt');
   const [deleteProjectId, setDeleteProjectId] = useState<string | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshError, setRefreshError] = useState('');
 
+  const refreshRequest = useRef(0);
   const Refresh = useCallback(async () => {
-    const [nextProjects, nextRuns] = await Promise.all([ListEvalProjects(), ListEvalRuns()]);
-    setProjects(nextProjects); setRuns(nextRuns);
-    return nextProjects;
+    const request = ++refreshRequest.current;
+    setRefreshing(true); setRefreshError('');
+    try {
+      const [nextProjects, nextRuns] = await Promise.all([ListEvalProjects(), ListEvalRuns()]);
+      if (request === refreshRequest.current) { setProjects(nextProjects); setRuns(nextRuns); }
+      return nextProjects;
+    } catch (error) {
+      if (request === refreshRequest.current) setRefreshError(error instanceof Error ? error.message : '读取评测列表失败');
+      throw error;
+    } finally { if (request === refreshRequest.current) setRefreshing(false); }
   }, []);
 
   // 进入开发者页时拉取；离开再进入会重新执行，保证侧栏与面包屑拿到最新数据。
@@ -155,8 +164,8 @@ function DeveloperConsoleProvider({ active, children }: { active: boolean; child
 
   const value = useMemo<DeveloperConsoleValue>(() => ({
     projects, runs, selectedProject, selectedProjectId: selectedProject?.id ?? null,
-    SelectProject, view, SetView, search, SetSearch, Refresh, busy, OpenCreate, RequestDeleteProject,
-  }), [projects, runs, selectedProject, SelectProject, view, SetView, search, SetSearch, Refresh, busy, OpenCreate, RequestDeleteProject]);
+    SelectProject, view, SetView, search, SetSearch, Refresh, refreshing, refreshError, busy, OpenCreate, RequestDeleteProject,
+  }), [projects, runs, selectedProject, SelectProject, view, SetView, search, SetSearch, Refresh, refreshing, refreshError, busy, OpenCreate, RequestDeleteProject]);
 
   return <DeveloperConsoleContext.Provider value={value}>
     {children}

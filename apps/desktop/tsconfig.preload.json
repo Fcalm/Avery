@@ -12,5 +12,5 @@
     "skipLibCheck": true,
     "types": ["node", "electron"]
   },
-  "include": ["src/preload.cts"]
+  "include": ["src/preload.cts", "src/task-notice-preload.cts"]
 }

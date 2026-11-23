@@ -19,6 +19,25 @@ describe('ParseProfileSections', () => {
     const sections = ParseProfileSections('\n备注：海外投递时用英文名\n\n随机文本行');
     expect(sections).toEqual([{ title: '', fields: [{ label: '备注', value: '海外投递时用英文名' }] }]);
   });
+
+  it('预览完整展示多行描述、带冒号的正文及空行，与复制内容一致', () => {
+    const value = '第一段介绍\n方案：使用 React\n\n- 产品设计\n- 测试交付';
+    const content = `[项目经历]\n项目描述：${value}\n项目角色：负责人\n项目职责/内容：职责第一行\n职责第二行`;
+    const sections = ParseProfileSections(content);
+    expect(sections[0].fields).toEqual([
+      { label: '项目描述', value },
+      { label: '项目角色', value: '负责人' },
+      { label: '项目职责/内容', value: '职责第一行\n职责第二行' },
+    ]);
+    expect(BuildProfilePlainText(sections)).toBe(content);
+  });
+
+  it('多行描述在下一小节结束，不吞并其他档案字段', () => {
+    expect(ParseProfileSections('[工作经历]\n工作职责/内容：第一行\n第二行\n\n[教育经历]\n学校名称：测试大学')).toEqual([
+      { title: '工作经历', fields: [{ label: '工作职责/内容', value: '第一行\n第二行' }] },
+      { title: '教育经历', fields: [{ label: '学校名称', value: '测试大学' }] },
+    ]);
+  });
 });
 
 describe('GetProfileSummary', () => {

@@ -65,13 +65,25 @@ export function useSetConversationPinned(handlers?: WorkspaceMutationHandlers) {
 
 /** 设置会话归档标记；归档仅使其从"最近"列表移出，记录与消息保留。 */
 export function useSetConversationArchived(handlers?: WorkspaceMutationHandlers) {
-  return useWorkspaceMutation<{ id: string; archived: boolean; expectedRevision?: number }, { id: string; archived: boolean; revision: number }>({
+  return useWorkspaceMutation<{ id: string; archived: boolean; expectedRevision?: number }, Awaited<ReturnType<import('@avery/contracts').WorkspaceBridge['SetConversationArchived']>>>({
     mutationFn: ({ id, archived, expectedRevision }, options) => Unwrap(platformClient.workspace.SetConversationArchived(id, archived, expectedRevision, options)),
     applyServer: (data, vars, result) => ({
       ...data,
-      conversations: data.conversations.map((item) => (item.id === vars.id ? { ...item, archived: result.archived, revision: result.revision } : item)),
+      conversations: data.conversations.map((item) => (item.id === vars.id ? { ...item, ...result } : item)),
     }),
     conflictCode: 'REVISION_CONFLICT',
+    ...handlers,
+  });
+}
+
+/** 归档页单条与批量删除共用后端快照校验；只移除已确认删除的记录。 */
+export function useDeleteArchivedConversations(handlers?: WorkspaceMutationHandlers) {
+  return useWorkspaceMutation<import('@avery/contracts').ArchivedConversationSelection[], import('@avery/contracts').ArchivedConversationDeleteResult>({
+    mutationFn: (items, options) => Unwrap(platformClient.workspace.DeleteArchivedConversations(items, options)),
+    applyServer: (data, _vars, result) => {
+      const deleted = new Set(result.deletedIds);
+      return { ...data, conversations: data.conversations.filter(item => !deleted.has(item.id)) };
+    },
     ...handlers,
   });
 }

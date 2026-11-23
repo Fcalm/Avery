@@ -171,7 +171,7 @@ function ConversationTrace({ traces, sessionTokenUsage, title, onSelectTrace }: 
         </div>
       </div>
       <div className="tr-list">
-        {rows.length ? rows.map(({ event, index }) => <button key={event.id} className={`trow role-${event.title.toLowerCase()}${event.id === selectedId ? ' sel' : ''}`} type="button" aria-pressed={event.id === selectedId} title={EventText(event)} onClick={() => setSelectedId(event.id)}>
+        {rows.length ? rows.map(({ event, index }) => <button key={event.id} className={`trow role-${event.title.toLowerCase()}${event.id === selectedId ? ' sel' : ''}`} type="button" aria-pressed={event.id === selectedId} data-native-title="true" title={EventText(event)} onClick={() => setSelectedId(event.id)}>
           <span className="trow-role"><Icon name={(RoleFilters.find((item) => item.key === event.title.toLowerCase()) ?? RoleFilters[0]).icon} size={12} />{event.title.toLowerCase()}</span>
           <span className="trow-txt">{EventText(event)}</span>
           <span className="trow-time">{FormatTime(event.createdAt)}</span>

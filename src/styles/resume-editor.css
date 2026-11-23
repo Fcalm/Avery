@@ -6,7 +6,7 @@
 .rse-section { border-top: 1px solid var(--border); padding: 20px 0; }
 .rse-section-head, .rse-entry-head, .rse-add-row { display: flex; align-items: center; gap: 8px; }
 .rse-section-head { margin-bottom: 14px; }
-.rse-section-head h3, .rse-entry-head h4 { margin: 0; font-size: 14px; font-weight: 600; }
+.rse-section-head h3, .rse-entry-head h4 { margin: 0; font-size: 14px; font-weight: 500; }
 .rse-section-head > span, .rse-add-row > span { color: var(--text-3); font-size: 12px; }
 .rse-section-head > .ghost-btn, .rse-entry-head > button { margin-left: auto; }
 .rse-entry { padding: 14px; margin-top: 12px; background: var(--surface-2); border-radius: var(--r-control); }

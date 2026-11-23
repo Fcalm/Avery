@@ -49,7 +49,7 @@
   --r-pill: 999px;
 
   --bg: #ffffff;
-  --surface: #fafafa;          /* 侧栏底色 */
+  --surface: #f4f7f5;          /* 侧栏底色 */
   --surface-2: #f4f4f5;        /* 悬停态、用户气泡、次级底块 */
   --panel: #ffffff;
   --raised: #ffffff;
@@ -58,19 +58,33 @@
   --text: #18181b;
   --text-2: #55555e;
   --text-3: #8b8b94;
-  --accent: #17654f;
-  --accent-hover: #12543f;
-  --accent-soft: #eaf2ee;
-  --accent-on: #ffffff;
+  /* 实心品牌按钮使用浅色文字，浅底控件按主题另配前景色。 */
+  --brand-primary: #215544;
+  --brand-primary-hover: #153c2f;
+  --brand-on: #ffffff;
+  --brand-heading: var(--brand-primary-hover);
+  --accent: var(--brand-primary);
+  --accent-hover: var(--brand-primary-hover);
+  --accent-soft: #ecf4ef;
+  --accent-border: #d2e3da;
+  --accent-on: var(--brand-on);
+  --nav-hover-bg: color-mix(in srgb, var(--brand-primary) 13%, var(--surface));
+  --nav-selected-bg: color-mix(in srgb, var(--brand-primary) 24%, var(--surface));
+  --nav-selected-focus-bg: color-mix(in srgb, var(--brand-primary) 35%, var(--surface));
+  --sidebar-control-bg: color-mix(in srgb, var(--nav-hover-bg) 60%, var(--surface));
+  /* 普通控件的选中反馈沿用中性灰。 */
+  --selected-bg: #e7e7ea;
+  --selected-border: #d5d5da;
   /* 文字选区独立于控件浅底，保证选中文字在白色页面上有清晰的绿色底块。 */
-  --selection-bg: #b6dfc6;
-  --selection-ink: #153b2b;
+  --selection-bg: #b9dac8;
+  --selection-ink: var(--brand-primary-hover);
   --shadow: 0 1px 2px rgba(24, 24, 27, .05), 0 8px 24px -12px rgba(24, 24, 27, .14);
   --shadow-lg: 0 12px 40px -12px rgba(24, 24, 27, .22);
 
   /* 环形图分段：主色 + 主色浅调 + 中性 */
-  --seg-a: #17654f;
-  --seg-b: #7fb3a2;
+  --progress-fill: var(--brand-primary);
+  --seg-a: var(--progress-fill);
+  --seg-b: #76a390;
   --seg-c: #dcdce0;
 
   /* 轨迹面板：每个聊天角色一层中性底，由浅到深 */
@@ -90,6 +104,9 @@
   --ease: cubic-bezier(.16, 1, .3, 1);
   --font-sans: "Segoe UI Variable Text", "Segoe UI", -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
   --font-data: "Manrope", "Segoe UI Variable Text", "Segoe UI", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  /* 界面文字统一 500；仅页面标题与新建对话欢迎语使用 600。 */
+  --fw-ui: 500;
+  --fw-display: 600;
 
   /* ---------------------------------------------------------------- 旧名别名 */
   --color-bg-start: var(--bg);
@@ -131,8 +148,6 @@
 
   --console-surface: var(--raised);
   --console-line: var(--border);
-  --scrollbar-idle: transparent;
-  --scrollbar-active: var(--border-2);
 
   --surface-hover: var(--surface-2);
   --surface-hover-strong: var(--surface-2);
@@ -196,8 +211,7 @@
   font-family: var(--font-sans);
 }
 
-/* 深色主题：只换原始令牌的值，别名随 var() 自动切换。
-   主色提亮为 #3e9e7e 以保证深底上的对比度。 */
+/* 深色主题提高文字强调色的亮度，并压暗淡绿底色，保留深色界面的层次。 */
 [data-theme="dark"] {
   --bg: #111113;
   --surface: #161619;
@@ -209,17 +223,22 @@
   --text: #f4f4f5;
   --text-2: #a8a8b2;
   --text-3: #7b7b85;
-  --accent: #3e9e7e;
-  --accent-hover: #4fb08e;
-  --accent-soft: #17261f;
-  --accent-on: #07201a;
-  --selection-bg: #76b692;
-  --selection-ink: #102b1e;
+  --brand-heading: #bbdfcd;
+  --accent: #92c6ad;
+  --accent-hover: var(--brand-heading);
+  --accent-soft: #1c2e26;
+  --accent-border: #355244;
+  --accent-on: var(--brand-primary-hover);
+  --nav-hover-bg: #23372f;
+  --nav-selected-bg: #345548;
+  --nav-selected-focus-bg: #284438;
+  --selected-bg: #2a2a31;
+  --selected-border: #3c3c45;
   --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 10px 28px -14px rgba(0, 0, 0, .7);
   --shadow-lg: 0 16px 48px -16px rgba(0, 0, 0, .8);
 
-  --seg-a: #3e9e7e;
-  --seg-b: #2b6d5a;
+  --progress-fill: var(--accent);
+  --seg-b: #4c876e;
   --seg-c: #3a3a42;
 
   --tr-system: rgba(255, 255, 255, .035);
@@ -232,4 +251,16 @@
   --danger-fill: #b4413c;
   --danger-fill-hover: #c9553f;
   --scrim: rgba(0, 0, 0, .56);
+}
+
+body {
+  font-weight: var(--fw-ui);
+}
+
+/* 浏览器默认给标题、表头与 strong 加粗到 700，这里统一压回 500；
+   页面标题与欢迎语由各自选择器再提回 600。 */
+h1, h2, h3, h4, h5, h6, th, b, strong,
+button, input, textarea, select, option, label, summary, legend,
+code, pre, kbd, samp, svg text {
+  font-weight: var(--fw-ui);
 }

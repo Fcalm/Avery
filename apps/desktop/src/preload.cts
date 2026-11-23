@@ -28,6 +28,9 @@ const agentBridge: DesktopAgentBridge = {
   GetProviderCatalog: () => invoke('agent:get-provider-catalog') as ReturnType<DesktopAgentBridge['GetProviderCatalog']>,
   GetModelConfiguration: (input) => invoke('agent:get-model-configuration', input) as ReturnType<DesktopAgentBridge['GetModelConfiguration']>,
   SaveModelConfiguration: (input) => invoke('agent:save-model-configuration', input) as ReturnType<DesktopAgentBridge['SaveModelConfiguration']>,
+  GetGoalModelTiers: () => invoke('agent:get-goal-model-tiers') as ReturnType<DesktopAgentBridge['GetGoalModelTiers']>,
+  SaveGoalModelTiers: (input) => invoke('agent:save-goal-model-tiers', input) as ReturnType<DesktopAgentBridge['SaveGoalModelTiers']>,
+  ChangeGoal: (input) => invokeAgentWrite('agent:change-goal', [input]) as ReturnType<DesktopAgentBridge['ChangeGoal']>,
   Send: (request) => invoke('agent:send', request) as ReturnType<DesktopAgentBridge['Send']>,
   RespondToInteraction: (response) => invokeAgentWrite('agent:respond-interaction', [response]) as ReturnType<DesktopAgentBridge['RespondToInteraction']>,
   Cancel: (requestId) => invoke('agent:cancel', requestId) as ReturnType<DesktopAgentBridge['Cancel']>,
@@ -75,6 +78,12 @@ const workspaceBridge: WorkspaceBridge = {
   SetConversationPinned: (id, pinned, revision, options) => invokeWorkspaceWrite('workspace:conversations-set-pinned', [id, pinned, revision], options) as ReturnType<WorkspaceBridge['SetConversationPinned']>,
   SetConversationArchived: (id, archived, revision, options) => invokeWorkspaceWrite('workspace:conversations-set-archived', [id, archived, revision], options) as ReturnType<WorkspaceBridge['SetConversationArchived']>,
   DeleteConversation: (id, options) => invokeWorkspaceWrite('workspace:conversations-delete', [id], options) as ReturnType<WorkspaceBridge['DeleteConversation']>,
+  DeleteArchivedConversations: (items, options) => invokeWorkspaceWrite('workspace:conversations-delete-archived', [items], options) as ReturnType<WorkspaceBridge['DeleteArchivedConversations']>,
+  OnConversationsChanged: (listener) => {
+    const handler = () => listener();
+    ipcRenderer.on('workspace:conversations-changed', handler);
+    return () => { ipcRenderer.removeListener('workspace:conversations-changed', handler); };
+  },
   AppendConversationMessages: (id, messages, options) => invokeWorkspaceWrite('workspace:conversations-append-messages', [id, messages], options) as ReturnType<WorkspaceBridge['AppendConversationMessages']>,
   CompleteConversationMessage: (id, messageId, content, thinking, options) => invokeWorkspaceWrite('workspace:conversations-complete-message', [id, messageId, content, thinking], options) as ReturnType<WorkspaceBridge['CompleteConversationMessage']>,
   RemoveConversationMessage: (id, messageId, options) => invokeWorkspaceWrite('workspace:conversations-remove-message', [id, messageId], options) as ReturnType<WorkspaceBridge['RemoveConversationMessage']>,
@@ -122,6 +131,7 @@ const evaluationBridge: DesktopEvaluationBridge = {
   ListProjects: () => invoke('evaluation:projects-list') as ReturnType<DesktopEvaluationBridge['ListProjects']>,
   DeleteProject: (id) => invokeEvaluationWrite('evaluation:project-delete', [id]) as ReturnType<DesktopEvaluationBridge['DeleteProject']>,
   ImportDataset: (id, jsonl, rubric, revision) => invokeEvaluationWrite('evaluation:dataset-import', [id, jsonl, rubric, revision]) as ReturnType<DesktopEvaluationBridge['ImportDataset']>,
+  PreviewDatasetImport: (id, jsonl) => invoke('evaluation:dataset-preview', id, jsonl) as ReturnType<DesktopEvaluationBridge['PreviewDatasetImport']>,
   ListDatasetVersions: (id) => invoke('evaluation:dataset-versions-list', id) as ReturnType<DesktopEvaluationBridge['ListDatasetVersions']>,
   SelectDatasetVersion: (id, version, revision) => invokeEvaluationWrite('evaluation:dataset-version-select', [id, version, revision]) as ReturnType<DesktopEvaluationBridge['SelectDatasetVersion']>,
   DeleteDatasetVersion: (id, version, revision) => invokeEvaluationWrite('evaluation:dataset-version-delete', [id, version, revision]) as ReturnType<DesktopEvaluationBridge['DeleteDatasetVersion']>,
@@ -156,6 +166,11 @@ const updateBridge: DesktopUpdateBridge = {
 };
 contextBridge.exposeInMainWorld('averyUpdates', updateBridge);
 contextBridge.exposeInMainWorld('averyWindow', {
+  OnTaskNotificationOpen: (listener: (sessionId: string) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, sessionId: unknown) => { if (typeof sessionId === 'string' && sessionId) listener(sessionId); };
+    ipcRenderer.on('app:task-notification-open', handler);
+    return () => ipcRenderer.removeListener('app:task-notification-open', handler);
+  },
   /** 仅查询/订阅宿主客户区尺寸，Renderer 不直接访问窗口或屏幕 API。 */
   GetFrameSize: () => invoke('window:get-frame-size') as Promise<{ width: number; height: number; unit: 'physical' | 'css' }>,
   OnFrameSizeChange: (listener: (size: { width: number; height: number; unit: 'physical' | 'css' }) => void) => {
@@ -175,6 +190,7 @@ contextBridge.exposeInMainWorld('averyWindow', {
   OpenProviderDashboard: (provider: string) => invoke('app:open-provider-dashboard', provider) as Promise<ResultEnvelope<boolean>>,
   /** 只传浏览器枚举；安装页、扩展目录及启动方式由 Main 决定。 */
   OpenBrowserExtensionSetup: (engine: import('@avery/contracts').ExtensionBrowserEngine) => invoke('app:open-browser-extension-setup', engine) as Promise<ResultEnvelope<import('@avery/contracts').BrowserExtensionSetup>>,
+  OpenEgoBrowserSetup: () => invoke('app:open-ego-browser-setup') as Promise<ResultEnvelope<import('@avery/contracts').EgoBrowserSetup>>,
   ReadMimoAccountUsage: () => invoke('app:mimo-account-usage') as Promise<ResultEnvelope<import('@avery/contracts').ProviderAccountUsage>>,
   OpenMimoAccountLogin: () => invoke('app:mimo-account-login') as Promise<ResultEnvelope<{ authorized: boolean }>>,
   DisconnectMimoAccount: () => invoke('app:mimo-account-disconnect') as Promise<ResultEnvelope<boolean>>,

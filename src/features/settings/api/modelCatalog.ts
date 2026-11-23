@@ -231,19 +231,21 @@ export function MergeProviderModels(catalog: ModelCatalog, providerId: ModelCata
   };
 }
 
-/** 用宿主返回的供应商目录补齐本地目录（首次进入、重新加载配置、官方模型列表同步）。 */
+/** 首次读取时补齐模型；之后只更新现有模型的能力，保留用户维护的列表。 */
 export function MergeBackendProviders(catalog: ModelCatalog, snapshots: BackendProviderSnapshot[]): ModelCatalog {
-  let next: ModelCatalog = { ...catalog, providers: catalog.providers.map((provider) => ({ ...provider })) };
+  let next = catalog;
   for (const snapshot of snapshots ?? []) {
     const id = snapshot?.provider;
     if (id !== 'DeepSeek' && id !== 'Z.AI' && id !== 'MIMO' && id !== '自定义') continue;
-    if (!next.providers.some((item) => item.id === id)) {
-      next.providers.push({ id, name: id === '自定义' ? '自定义提供商' : id, custom: id === '自定义', enabled: true, apiFormat: 'chat', models: [] });
+    if (!catalog.seeded) {
+      if (!next.providers.some((item) => item.id === id)) {
+        next = { ...next, providers: [...next.providers, { id, name: id === '自定义' ? '自定义提供商' : id, custom: id === '自定义', enabled: true, apiFormat: 'chat', models: [] }] };
+      }
+      next = MergeProviderModels(next, id, [...(snapshot.models ?? []), snapshot.model], {
+        contextWindow: ToPositiveInteger(snapshot.contextLimit) ?? DefaultContextWindow,
+        thinking: snapshot.thinkingEnabled !== false,
+      });
     }
-    next = MergeProviderModels(next, id, [...(snapshot.models ?? []), snapshot.model], {
-      contextWindow: ToPositiveInteger(snapshot.contextLimit) ?? DefaultContextWindow,
-      thinking: snapshot.thinkingEnabled !== false,
-    });
     next = MergeModelConfigurations(next, id, snapshot.modelConfigurations ?? []);
   }
   return { ...next, seeded: true };

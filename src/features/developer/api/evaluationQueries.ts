@@ -6,6 +6,7 @@ export const CreateEvalProject = (input: EvalProjectInput) => Unwrap(platformCli
 export const UpdateEvalProject = (id: string, input: EvalProjectInput, revision: number) => Unwrap(platformClient.evaluation.UpdateProject(id, input, revision));
 export const DeleteEvalProject = (id: string) => Unwrap(platformClient.evaluation.DeleteProject(id));
 export const ImportEvalDataset = (id: string, jsonl: string, rubric: string, revision: number) => Unwrap(platformClient.evaluation.ImportDataset(id, jsonl, rubric, revision));
+export const PreviewEvalDatasetImport = (id: string, jsonl: string) => Unwrap(platformClient.evaluation.PreviewDatasetImport(id, jsonl));
 export const ListEvalDatasetVersions = (id: string) => Unwrap(platformClient.evaluation.ListDatasetVersions(id));
 export const SelectEvalDatasetVersion = (id: string, version: string, revision: number) => Unwrap(platformClient.evaluation.SelectDatasetVersion(id, version, revision));
 export const DeleteEvalDatasetVersion = (id: string, version: string, revision: number) => Unwrap(platformClient.evaluation.DeleteDatasetVersion(id, version, revision));

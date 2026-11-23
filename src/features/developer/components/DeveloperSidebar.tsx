@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState, type RefObject } from 'react';
+import { useMemo, useRef, type RefObject } from 'react';
 import { useDeveloperConsole, type DeveloperView } from './DeveloperConsoleContext';
 import { BucketDotClass, BucketOf, RunBuckets, RunStatusText } from './evaluationDisplay';
 import { Icon, type IconName } from '../../../shared/components/Icon';
@@ -17,7 +17,6 @@ const DeveloperNavItems: Array<{ key: DeveloperView; label: string; icon: IconNa
  */
 function DeveloperSidebar({ navRef, indicatorRef }: { navRef: RefObject<HTMLElement | null>; indicatorRef: RefObject<HTMLDivElement | null> }) {
   const { projects, runs, selectedProjectId, SelectProject, view, SetView, search, SetSearch, OpenCreate } = useDeveloperConsole();
-  const [searchOpen, SetSearchOpen] = useState(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
 
   const filteredProjects = useMemo(() => {
@@ -38,39 +37,34 @@ function DeveloperSidebar({ navRef, indicatorRef }: { navRef: RefObject<HTMLElem
     }),
   })).filter((bucket) => bucket.items.length), [filteredProjects, runs]);
 
-  function ToggleSearch() {
-    SetSearchOpen((open) => {
-      if (!open) window.setTimeout(() => searchInputRef.current?.focus(), 120);
-      else SetSearch('');
-      return !open;
-    });
-  }
-
   return <>
-    <button className="sb-new-chat" type="button" onClick={OpenCreate} title="新建评测">
-      <Icon name="plus" size={15} />
+    <button className="nav-item sb-new-conversation sb-new-evaluation" type="button" aria-label="新建评测" aria-keyshortcuts="Control+K" title="新建评测" data-focus-tooltip onClick={OpenCreate}>
+      <Icon name="plus" size={17} />
       <span>新建评测</span>
-      <span className="kbd">Ctrl K</span>
+      <span className="kbd" aria-hidden="true">Ctrl K</span>
     </button>
 
     {/* 视图导航与工作区导航共用 nav/nav-ind 结构，滑动指示器由 AppShell 统一测量 */}
     <nav className="nav" ref={navRef} aria-label="开发者工具">
       <div className="nav-ind" ref={indicatorRef} aria-hidden="true" />
-      {DeveloperNavItems.map((item) => <button key={item.key} type="button" className={`nav-item ${view === item.key ? 'is-active' : ''}`} aria-current={view === item.key ? 'page' : undefined} title={item.label} onClick={() => SetView(item.key)}>
+      {DeveloperNavItems.map((item) => <button key={item.key} type="button" className={`nav-item ${view === item.key ? 'is-active' : ''}`} aria-label={item.count && projects.length > 0 ? `${item.label}，${projects.length} 项` : item.label} title={item.label} data-focus-tooltip aria-current={view === item.key ? 'page' : undefined} onClick={() => SetView(item.key)}>
         <Icon name={item.icon} size={17} />
         <span>{item.label}</span>
         {item.count && projects.length > 0 && <span className="count">{projects.length}</span>}
       </button>)}
     </nav>
 
-    <div className="sb-scroll">
+    <div className="sb-search-row">
+      <div className="nav-item sb-history-search" role="search" aria-label="搜索评测记录">
+        <button className="sb-history-search-icon" type="button" aria-label="搜索评测记录" title="搜索评测记录" onClick={() => searchInputRef.current?.focus()}><Icon name="search" size={17} /></button>
+        <input ref={searchInputRef} type="search" value={search} placeholder="搜索评测记录" aria-label="搜索评测记录" autoComplete="off" onChange={(event) => SetSearch(event.target.value)} onKeyDown={(event) => { if (event.key === 'Escape') SetSearch(''); }} />
+      </div>
+    </div>
+
+    <div className="sb-scroll sb-developer-history">
       <div className="sb-sec" aria-label="评测记录">
         <div className="sb-sec-h">
           <span>评测记录</span>
-          <div className={`sb-search ${searchOpen ? 'open' : ''}`}>
-            <input ref={searchInputRef} type="search" value={search} placeholder="搜索评测记录" aria-label="搜索评测记录" autoComplete="off" tabIndex={searchOpen ? 0 : -1} onChange={(event) => SetSearch(event.target.value)} onKeyDown={(event) => { if (event.key === 'Escape') { SetSearchOpen(false); SetSearch(''); } }} />
-            <button className="sb-search-btn" type="button" aria-expanded={searchOpen} aria-label="搜索评测记录" title="搜索评测记录" onClick={ToggleSearch}><Icon name="search" size={13} /></button>
-          </div>
         </div>
         <div className="ti-list">
           {groupedProjects.map((bucket) => <div key={bucket.key}>
@@ -79,11 +73,12 @@ function DeveloperSidebar({ navRef, indicatorRef }: { navRef: RefObject<HTMLElem
               const latest = runs.find((run) => run.projectId === project.id);
               const score = latest?.summary?.averageScore;
               return <button key={project.id} type="button" className={`thread-item ${selectedProjectId === project.id ? 'active' : ''}`} title={project.name} onClick={() => SelectProject(project.id)}>
-                <span className={`ev-dot ${BucketDotClass[BucketOf(latest)]}`} aria-hidden="true" />
+                <Icon name="flask" size={18} />
                 <span className="ti-body">
                   <span className="ti-title">{project.name}</span>
                   <span className="ti-meta">{RunStatusText(latest?.status ?? '')} · {score == null ? '暂无得分' : `${score.toFixed(1)} 分`} · {project.datasetCaseCount} 题</span>
                 </span>
+                <span className={`ev-dot ${BucketDotClass[BucketOf(latest)]}`} aria-hidden="true" />
               </button>;
             })}
           </div>)}

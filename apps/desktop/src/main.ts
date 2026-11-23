@@ -10,9 +10,11 @@ import { CreateTrayImage } from './tray-image';
 import { IsMimoLoginNavigation, MimoAccountService } from './mimo-account';
 import { CreateMimoSessionStore } from './mimo-session-store';
 import { RegisterBrowserExtensionSetup } from './browser-extension-setup';
-import { ResolveEgoExtensionExecutable } from './ego-browser-setup';
+import { RegisterEgoBrowserSetup, ResolveEgoExtensionExecutable } from './ego-browser-setup';
 import { AppUpdateService } from './app-updates';
 import { RegisterAppUpdateControls } from './app-update-ipc';
+import { TaskNotificationWindows } from './task-notifications';
+import { SubmitNoticeInteraction } from './task-notification-interaction';
 
 const smokeStartedAt = Date.now();
 /** 测试环境必须与正式安装版分组，避免 Windows 复用已卸载版本的快捷方式和图标。 */
@@ -29,6 +31,7 @@ let tray: Tray | undefined;
 let forceCloseAfterTrayDecision = false;
 let quitting = false;
 let appUpdates: AppUpdateService | undefined;
+let taskNotifications: TaskNotificationWindows | undefined;
 /** 还原（普通）尺寸：默认 1440×960，工作区更小时留出边距，保证还原后窗口确实变小。 */
 function ResolveWindowRestoreSize() {
   const workArea = screen.getPrimaryDisplay().workAreaSize;
@@ -453,7 +456,7 @@ async function runInstalledVisualScenario(outputDirectory: string): Promise<Reco
     const userDataPath = app.getPath('userData');
     if (process.env.AVERY_DESKTOP_SMOKE !== '1') await MigrateLegacyUserData(userDataPath);
     const workspacePath = join(userDataPath, 'Avery Workspace');
-    // ego lite 与其他浏览器共用扩展通道；异步定位应用，无需 CLI 或原生任务空间。
+    // 定位 ego 应用供一键启动；工作任务由 Backend 原生驱动创建专属工作区。
     const egoExecutable = await ResolveEgoExtensionExecutable();
     const externalBrowserPaths = { ...resolveExternalBrowserPaths(), ...(egoExecutable ? { ego: egoExecutable } : {}) };
     // 冒烟实例使用独立数据目录，也不能读写用户机器上的真实计划任务。
@@ -487,7 +490,17 @@ async function runInstalledVisualScenario(outputDirectory: string): Promise<Reco
       log: error => console.error('[app-update]', error),
     });
     RegisterAppUpdateControls({ service: appUpdates, webContentsGetter: () => mainWindow });
-    RegisterGateway({ backendHost, webContentsGetter: () => mainWindow, notificationIconPath: resolveAppIconPath() || undefined,
+    taskNotifications = new TaskNotificationWindows({
+      getMainWindow: () => mainWindow,
+      soundPath: join(app.getAppPath(), app.isPackaged ? 'dist' : 'public', 'audio', 'task-complete.wav'),
+      assetDirectory: join(app.getAppPath(), app.isPackaged ? 'dist' : 'public'),
+      preloadPath: join(app.getAppPath(), 'electron', 'task-notice-preload.cjs'),
+      iconPath: resolveAppIconPath() || undefined,
+      respond: (notice, payload) => SubmitNoticeInteraction((...args) => backendHost!.Command(...args), notice, payload),
+      log: (error) => console.error('[task-notification]', error),
+    });
+    RegisterGateway({ backendHost, webContentsGetter: () => mainWindow, onTaskNotice: (notice) => taskNotifications?.Show(notice),
+      onTaskNoticeResolved: (identity) => taskNotifications?.DismissInteractions(identity),
       onSettingsChanged: () => appUpdates!.PreferencesChanged() });
     RegisterWindowControls({ webContentsGetter: () => mainWindow, frameSize: () => nativeClientSize });
     const mimoAccount = new MimoAccountService({ getParent: () => mainWindow, sessionStore: CreateMimoSessionStore(userDataPath), ...(process.env.AVERY_MIMO_DIAGNOSTICS === '1' ? { onDiagnostic: (detail: import('./mimo-account').MimoAccountDiagnostic) => console.error('[mimo-account]', JSON.stringify(detail)) } : {}) });
@@ -497,6 +510,11 @@ async function runInstalledVisualScenario(outputDirectory: string): Promise<Reco
       browserPaths: externalBrowserPaths,
       extensionDirectory: app.isPackaged ? join(process.resourcesPath, 'browser-extension') : join(app.getAppPath(), 'apps', 'browser-extension'),
     });
+    RegisterEgoBrowserSetup({ webContentsGetter: () => mainWindow, probe: async () => {
+      const result = await backendHost!.Command('agent:browser-runtime-status', undefined, true) as CommandFailure | CommandSuccess;
+      if (!result.ok) throw new Error(result.error?.message ?? 'ego lite connection check failed.');
+      return result.data as import('@avery/contracts').AgentBrowserRuntimeStatus;
+    } });
     Menu.setApplicationMenu(null);
     if (!cronRunnerLaunch) {
       // 普通应用在首个窗口创建前注册托盘；后台 CronRunner 和自动化冒烟实例不暴露托盘。
@@ -539,5 +557,5 @@ async function runInstalledVisualScenario(outputDirectory: string): Promise<Reco
   app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
   app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
   // before-quit 先于窗口关闭事件：托盘「退出」触发的关闭必须放行，不再被托盘决策拦截。
-  app.on('before-quit', () => { quitting = true; appUpdates?.Stop(); DestroyTray(); backendHost?.Shutdown(); });
+  app.on('before-quit', () => { quitting = true; appUpdates?.Stop(); taskNotifications?.Stop(); DestroyTray(); backendHost?.Shutdown(); });
 }

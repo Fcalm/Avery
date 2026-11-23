@@ -4,6 +4,7 @@ import type { DesktopAgentBridge, DesktopEvaluationBridge, WorkspaceBridge, Resu
 
 /** 无边框窗口控制与常规设置的系统能力；由 preload 注入，浏览器开发环境不存在。 */
 interface DesktopWindowBridge {
+  OnTaskNotificationOpen: (listener: (sessionId: string) => void) => () => void;
   /** Windows 返回原生客户区物理像素，其余平台返回 CSS 尺寸；cornerRadius 始终使用 CSS 像素。 */
   GetFrameSize: () => Promise<{ width: number; height: number; unit: 'physical' | 'css'; cornerRadius?: number }>;
   OnFrameSizeChange: (listener: (size: { width: number; height: number; unit: 'physical' | 'css' }) => void) => () => void;
@@ -16,6 +17,7 @@ interface DesktopWindowBridge {
   OpenDeepSeekApiKeys: () => Promise<ResultEnvelope<boolean>>;
   OpenProviderDashboard: (provider: string) => Promise<ResultEnvelope<boolean>>;
   OpenBrowserExtensionSetup: (engine: import('@avery/contracts').ExtensionBrowserEngine) => Promise<ResultEnvelope<import('@avery/contracts').BrowserExtensionSetup>>;
+  OpenEgoBrowserSetup: () => Promise<ResultEnvelope<import('@avery/contracts').EgoBrowserSetup>>;
   /** MiMo 控制台 Cookie 只在主进程的隔离会话中使用，桥接仅返回脱敏状态。 */
   ReadMimoAccountUsage: () => Promise<ResultEnvelope<import('@avery/contracts').ProviderAccountUsage>>;
   OpenMimoAccountLogin: () => Promise<ResultEnvelope<{ authorized: boolean }>>;

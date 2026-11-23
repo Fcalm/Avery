@@ -19,16 +19,20 @@ export interface JobConditionGroup {
   options: JobConditionOption[];
 }
 
+export const JobCityMaxLength = 100;
+
+export const JobCityOptions: JobConditionOption[] = [
+  { value: 'any', label: '不限' }, { value: '北京', label: '北京' }, { value: '上海', label: '上海' },
+  { value: '深圳', label: '深圳' }, { value: '广州', label: '广州' }, { value: '杭州', label: '杭州' }, { value: '远程', label: '远程' },
+];
+
 /** 筛选面板的标签分组；单选维度再次点击可取消，公司规模支持同组 OR 多选。 */
 export const JobConditionGroups: JobConditionGroup[] = [
   { key: 'channel', label: '渠道', options: [
     { value: 'any', label: '不限' }, { value: 'boss_zhipin', label: 'BOSS直聘' },
     { value: 'company_website', label: '企业官网' }, { value: 'other', label: '其他' },
   ] },
-  { key: 'city', label: '城市', options: [
-    { value: 'any', label: '不限' }, { value: '北京', label: '北京' }, { value: '上海', label: '上海' },
-    { value: '深圳', label: '深圳' }, { value: '广州', label: '广州' }, { value: '杭州', label: '杭州' }, { value: '远程', label: '远程' },
-  ] },
+  { key: 'city', label: '城市', options: JobCityOptions },
   { key: 'jobSeekingType', label: '求职类型', options: [
     { value: 'any', label: '不限' }, { value: 'intern', label: '实习' },
     { value: 'campus_recruitment', label: '校招' }, { value: 'social_recruitment', label: '社招' },
@@ -70,7 +74,7 @@ export const JobConditionsStorageKey = 'avery.job-conditions.v1';
 
 /**
  * 读取应用内缓存的条件；结构或取值非法时回退默认值。
- * 只接受仍存在于选项表中的值，避免选项调整后旧缓存把控件置为非法状态。
+ * 城市支持自定义文本；其他维度只接受选项表中的值。
  */
 export function LoadJobConditions(): JobConditions {
   try {
@@ -87,6 +91,8 @@ export function LoadJobConditions(): JobConditions {
         // 旧版为单个字符串，读取时无损迁移为多选数组；非法值与“不限”不进入查询。
         const selected = Array.isArray(value) ? value : [value];
         conditions.companySize = group.options.filter((option) => option.value !== 'any' && selected.includes(option.value)).map((option) => option.value);
+      } else if (group.key === 'city' && typeof value === 'string') {
+        conditions.city = value.trim().slice(0, JobCityMaxLength) || DefaultJobConditions.city;
       } else if (typeof value === 'string' && group.options.some((option) => option.value === value)) conditions[group.key] = value;
     }
     return conditions;
@@ -135,7 +141,8 @@ export function BuildCollectPrompt(conditions: JobConditions): string {
   if (conditions.keyword.trim()) parts.push(conditions.keyword.trim());
   for (const group of JobConditionGroups) {
     const selected = GetJobConditionValues(conditions[group.key]);
-    for (const option of group.options) if (selected.includes(option.value)) parts.push(option.label);
+    if (group.key === 'city') parts.push(...selected);
+    else for (const option of group.options) if (selected.includes(option.value)) parts.push(option.label);
   }
   return `帮我按照条件：${parts.length ? parts.join('、') : '不限'}，采集岗位`;
 }

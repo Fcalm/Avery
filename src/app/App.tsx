@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
+import { WORKSPACE_QUERY_KEY } from '../features/workspace/api/workspaceData';
 import { createPortal } from 'react-dom';
 import { AppShell } from './AppShell';
 import { UiStoreProvider, useUiStore } from './UiStore';
@@ -20,7 +22,10 @@ import { BackendRecoveryGate, IsBackendRecoveryError } from './BackendRecoveryGa
 import { Icon } from '../shared/components/Icon';
 import { StartupScreen } from './StartupScreen';
 import { NoticePresentation } from './noticePresentation';
+import { TooltipLayer } from '../shared/components/TooltipLayer';
+import { AppendRoute, CreateNavigationHistory, MoveNavigationIndex, SameRoute, type RouteSnapshot } from './navigationHistory';
 import type { PageId } from '../types/domain';
+import { ModeOfScenario } from '../features/conversation/workspaceMode';
 
 /** 「启动时打开-恢复上次的对话」用的本机记录：只存会话 id，随工作空间之外的本机偏好保存。 */
 const LastConversationKey = 'avery-last-conversation-id';
@@ -67,7 +72,7 @@ function App() {
       root.style.removeProperty('--window-corner-radius');
     };
   }, []);
-  return <UiStoreProvider><AppContent /><AppNotice /></UiStoreProvider>;
+  return <UiStoreProvider><AppContent /><AppNotice /><TooltipLayer /></UiStoreProvider>;
 }
 
 /** 应用启动加载失败的错误页，提供重试入口。 */
@@ -77,19 +82,66 @@ function ErrorScreen({ onRetry }: { onRetry: () => void }) {
 
 function AppContent() {
   const workspace = useWorkspaceData();
+  const queryClient = useQueryClient();
+  useEffect(() => {
+    // 后台自动清理同样同步列表；预览或旧 preload 没有订阅能力时保持现有读取路径。
+    return window.averyWorkspace?.OnConversationsChanged?.(() => { void queryClient.invalidateQueries({ queryKey: WORKSPACE_QUERY_KEY }); });
+  }, [queryClient]);
   const [startupAnimationComplete, setStartupAnimationComplete] = useState(false);
   const HandleStartupAnimationComplete = useCallback(() => setStartupAnimationComplete(true), []);
   const { settings, setSettings } = useSettingsStore();
-  const { profileConflict, setProfileConflict, ShowNotice, activeConversationId, setActiveConversationId } = useUiStore();
+  const { profileConflict, setProfileConflict, ShowNotice, activeConversationId, setActiveConversationId, setAssistantView, setWorkspaceMode } = useUiStore();
   const profiles = useProfiles();
   const reloadProfiles = useReloadProfiles({ onFailure: (message) => ShowNotice(message, 'error') });
   const keepProfiles = useKeepProfiles({ onFailure: (message) => ShowNotice(message, 'error') });
   const conversations = useConversations();
+  useEffect(() => {
+    if (workspace.data && activeConversationId && !conversations.some(item => item.id === activeConversationId)) setActiveConversationId(null);
+  }, [workspace.data, conversations, activeConversationId, setActiveConversationId]);
   const [page, setPage] = useState<PageId>('assistant');
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [navHistory, setNavHistory] = useState(() => CreateNavigationHistory({ page: 'assistant', conversationId: null, settingsTab: 'general' }));
+  const restoringRouteRef = useRef<RouteSnapshot | null>(null);
+  const navHistoryRef = useRef(navHistory);
+  navHistoryRef.current = navHistory;
   const [reviewingTutorial, setReviewingTutorial] = useState(false);
   const [settingsTab, setSettingsTab] = useState<SettingTab>('general');
-  const [requestedSettingsTab, setRequestedSettingsTab] = useState<SettingTab>('general');
-  const [settingsTabRequestVersion, setSettingsTabRequestVersion] = useState(0);
+
+  useEffect(() => window.averyWindow?.OnTaskNotificationOpen?.((sessionId) => {
+    setSettingsOpen(false);
+    setReviewingTutorial(false);
+    setPage('assistant');
+    setAssistantView('chat');
+    const conversation = conversations.find((item) => item.id === sessionId);
+    if (conversation) {
+      setWorkspaceMode(ModeOfScenario(conversation.scenarioId));
+      setActiveConversationId(sessionId);
+    }
+  }), [conversations, setActiveConversationId, setAssistantView, setWorkspaceMode]);
+
+  // 页面与会话共同构成一个可返回的位置；后退/前进恢复时不重复入栈。
+  useEffect(() => {
+    // 设置是独立弹窗，分类切换不再向工作区页面历史添加记录。
+    const route = { page, conversationId: activeConversationId, settingsTab: 'general' as const };
+    const restoring = restoringRouteRef.current;
+    if (restoring) {
+      // 等页面与会话都落到目标快照后再停止抑制。
+      if (!SameRoute(restoring, route)) return;
+      restoringRouteRef.current = null;
+      return;
+    }
+    setNavHistory((current) => AppendRoute(current, route));
+  }, [page, activeConversationId]);
+
+  function NavigateHistory(delta: -1 | 1) {
+    const move = MoveNavigationIndex(navHistoryRef.current, delta);
+    if (!move) return;
+    navHistoryRef.current = move.history;
+    setNavHistory(move.history);
+    restoringRouteRef.current = move.route;
+    setPage(move.route.page);
+    setActiveConversationId(move.route.conversationId);
+  }
 
   // 「启动时打开」：会话数据就绪后回到上次活跃会话（设置选 last 时）；一次性执行，之后才允许持久化写入。
   const startRestoreDoneRef = useRef(false);
@@ -108,18 +160,23 @@ function AppContent() {
   }, [activeConversationId]);
 
   function RequestSettingsTab(tab: SettingTab) {
-    setRequestedSettingsTab(tab);
-    setSettingsTabRequestVersion((current) => current + 1);
+    setSettingsTab(tab);
+    setSettingsOpen(true);
+  }
+
+  function NavigatePage(destination: PageId) {
+    if (destination === 'settings') { setSettingsOpen(true); return; }
+    setPage(destination);
   }
 
   function CloseTutorial(destination?: PageId) {
-    if (destination) setPage(destination);
+    if (destination) NavigatePage(destination);
     setReviewingTutorial(false);
     requestAnimationFrame(() => document.querySelector<HTMLButtonElement>('.user-card')?.focus());
   }
 
   // 开发者页面不是可公开路由；设置关闭后立即退出，即使页面状态由调试工具直接改写也不能继续停留。
-  useEffect(() => { if (page === 'developer' && !settings.developerMode) setPage('settings'); }, [page, settings.developerMode]);
+  useEffect(() => { if (page === 'developer' && !settings.developerMode) { setPage('assistant'); setSettingsOpen(true); } }, [page, settings.developerMode]);
 
   // 旧版本的 DeepSeek 别名已弃用，在读取本地工作空间后立即迁移为当前默认模型。
   useEffect(() => {
@@ -137,7 +194,7 @@ function AppContent() {
       root.style.removeProperty('--avery-reply-lh');
     } else {
       root.style.setProperty('--avery-reply-fs', `${size.px}px`);
-      root.style.setProperty('--avery-reply-lh', '2em');
+      root.style.setProperty('--avery-reply-lh', '1.75em');
     }
   }, [settings.chatFontSize]);
 
@@ -156,16 +213,19 @@ function AppContent() {
   }
   if (workspace.isError && IsBackendRecoveryError(workspace.error)) return <BackendRecoveryGate onRetry={() => void workspace.refetch()} />;
   if (workspace.isError) return <ErrorScreen onRetry={() => void workspace.refetch()} />;
-  if (!settings.onboardingCompleted) return <OnboardingPage onComplete={(destination) => setPage(destination ?? 'profiles')} />;
+  if (!settings.onboardingCompleted) return <OnboardingPage onComplete={(destination) => NavigatePage(destination ?? 'profiles')} />;
   return <>
     <div className="tour-workspace" inert={reviewingTutorial}>
     {/* 开发者页的侧栏与主区共享评测配置状态；Provider 常驻挂载，仅在开发者页激活时拉取数据 */}
     <DeveloperConsoleProvider active={page === 'developer'}>
-      <AppShell page={page} onNavigate={setPage} onRestartOnboarding={() => setReviewingTutorial(true)} settingsTab={settingsTab} onRequestSettingsTab={RequestSettingsTab}>
+      <AppShell page={page} inert={settingsOpen} onNavigate={NavigatePage} canGoBack={navHistory.index > 0} canGoForward={navHistory.index < navHistory.entries.length - 1} onBack={() => NavigateHistory(-1)} onForward={() => NavigateHistory(1)} onRestartOnboarding={() => setReviewingTutorial(true)} onRequestSettingsTab={RequestSettingsTab}>
+        {(conversationToolbar) => <>
         {/* 在途 Agent 依赖 Renderer 流订阅写回消息终态；导航时隐藏而非卸载，避免遗漏流事件。 */}
-        <section className="assistant-page-presence" hidden={page !== 'assistant'}><AssistantPage onNavigate={setPage} /></section>
-        {page === 'jobs' && <JobsPage onGoAssistant={() => setPage('assistant')} />}{page === 'applications' && <ApplicationsPage onNavigate={setPage} />}{page === 'resumes' && <ResumesPage onGoAssistant={() => setPage('assistant')} />}{page === 'profiles' && <ProfilesPage />}{page === 'settings' && <SettingsPage onNavigateDeveloper={() => setPage('developer')} tab={settingsTab} requestedTab={requestedSettingsTab} tabRequestVersion={settingsTabRequestVersion} onTabChange={setSettingsTab} />}{page === 'developer' && <DeveloperPage />}
+        <section className="assistant-page-presence" hidden={page !== 'assistant'}><AssistantPage onNavigate={NavigatePage} toolbar={conversationToolbar} /></section>
+        {page === 'jobs' && <JobsPage onGoAssistant={() => setPage('assistant')} />}{page === 'applications' && <ApplicationsPage onNavigate={NavigatePage} />}{page === 'resumes' && <ResumesPage onGoAssistant={() => setPage('assistant')} />}{page === 'profiles' && <ProfilesPage />}{page === 'developer' && <DeveloperPage />}
+        </>}
       </AppShell>
+      {settingsOpen && <SettingsPage onClose={() => setSettingsOpen(false)} onNavigateDeveloper={() => { setSettingsOpen(false); setPage('developer'); }} tab={settingsTab} onTabChange={setSettingsTab} />}
     </DeveloperConsoleProvider>
     <Modal
       open={profileConflict}
@@ -187,10 +247,10 @@ function AppContent() {
 function AppNotice() {
   const { notice, HideNotice } = useUiStore();
   if (!notice) return null;
-  return createPortal(<div key={notice.id} data-tone={notice.tone} className={`app-toast${notice.action ? ' has-action' : ''}`} role={notice.tone === 'error' ? 'alert' : 'status'} aria-live={notice.tone === 'error' ? 'assertive' : 'polite'}>
+  return createPortal(<div key={notice.id} data-tone={notice.tone} className={`app-toast${notice.actions.length ? ' has-action' : ''}`} role={notice.tone === 'error' ? 'alert' : 'status'} aria-live={notice.tone === 'error' ? 'assertive' : 'polite'}>
       <Icon name={NoticePresentation[notice.tone].icon} size={14} />
       <span>{notice.message}</span>
-      {notice.action && <button className="app-toast-act" type="button" onClick={() => { HideNotice(); notice.action?.run(); }}>{notice.action.label}</button>}
+      {notice.actions.map((action) => <button key={action.label} className="app-toast-act" type="button" onClick={() => { HideNotice(); action.run(); }}>{action.label}</button>)}
     </div>, document.body);
 }
 

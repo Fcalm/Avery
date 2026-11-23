@@ -68,7 +68,7 @@ export const Tutorials: TutorialContent[] = [
     prompt: '请打开我提供的岗位链接，使用当前简历协助填写申请；提交前让我核对。',
     tip: '遇到登录、验证码或无法判断的字段时，先在浏览器中处理，再回到对话继续。提交前检查公司、岗位、简历和附件。',
     images: [{ file: '07-browser', alt: '设置中的浏览器选择、未连接状态与检测按钮' }, { file: '07-scene', alt: '对话输入区的聊天与工作场景菜单' }],
-    detail: { title: '如何安装扩展？', paragraphs: ['Chrome、Edge 和 ego lite 均使用 Avery Browser 扩展；在「设置 → 浏览器控制」点击「一键接入」，打开所选浏览器的扩展管理页和扩展目录。', 'Edge 使用 edge://extensions；Chrome 和 ego lite 使用 chrome://extensions。', '开启开发者模式，选择「加载解压缩的扩展」或「加载已解压的扩展程序」，选择 Avery 随附的 Browser 扩展文件夹。', '回到 Avery 点击「检测状态」。开发环境的扩展位于项目 apps/browser-extension；安装版使用应用随附的扩展目录。'] },
+    detail: { title: '如何安装扩展？', paragraphs: ['ego lite 使用原生工作区：在「设置 → 浏览器控制」选择 ego lite，点击「一键接入」启动并检测；执行网页任务时会自动创建独立工作区。Chrome 和 Edge 使用 Avery Browser 扩展，点击「一键接入」打开扩展管理页和扩展目录。', 'Edge 使用 edge://extensions；Chrome 使用 chrome://extensions。', '开启开发者模式，选择「加载解压缩的扩展」或「加载已解压的扩展程序」，选择 Avery 随附的 Browser 扩展文件夹。', '回到 Avery 点击「检测状态」。开发环境的扩展位于项目 apps/browser-extension；安装版使用应用随附的扩展目录。'] },
   },
   {
     title: '记住进度，也记住下一步',

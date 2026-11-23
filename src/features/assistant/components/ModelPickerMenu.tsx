@@ -95,7 +95,7 @@ export function ModelPickerMenu({ providers, provider, model, onSelect }: {
     {entry && <div ref={submenu} id={`${id}-models`} className="menu model-submenu" role="menu" aria-label={`${ProviderMeta[entry.provider].label} 模型`} onPointerEnter={CancelClose}>
       <div className="menu-label">{ProviderMeta[entry.provider].label}</div>
       {entry.models.map((availableModel) => <button key={availableModel} type="button" role="menuitemradio" aria-checked={entry.provider === provider && availableModel === model}
-        className={`menu-item plain${entry.provider === provider && availableModel === model ? ' sel' : ''}`} title={availableModel} onClick={() => onSelect(entry.provider, availableModel)}>
+        className={`menu-item plain${entry.provider === provider && availableModel === model ? ' sel' : ''}`} data-native-title="true" title={availableModel} onClick={() => onSelect(entry.provider, availableModel)}>
         <span className="mt">{availableModel}</span><Icon name="check" className="tick" size={14} />
       </button>)}
     </div>}

@@ -67,7 +67,7 @@ function CollectionProgress({ task }: { task: JobCollectionTask }) {
         const label = source.status === 'pending' ? running ? '待采集' : '未执行' : source.status === 'running' ? '采集中' : source.status === 'completed' ? '读取完成' : source.status === 'failed' ? '失败' : '部分采集';
         const icon = source.status === 'running' ? 'loading' : source.status === 'failed' ? 'warning-circle' : source.status === 'completed' ? 'check-circle' : source.status === 'partial' ? 'info' : 'clock';
         return <li key={source.sourceId} className={`jc-source-result is-${source.status}`}>
-          <div className="jc-source-result-head"><Icon name={icon} size={14} className={source.status === 'running' ? 'jc-spinning' : ''} /><b title={source.company}>{source.company}</b><span className="jc-source-status">{label}</span></div>
+          <div className="jc-source-result-head"><Icon name={icon} size={14} className={source.status === 'running' ? 'jc-spinning' : ''} /><b data-native-title="true" title={source.company}>{source.company}</b><span className="jc-source-status">{label}</span></div>
           <div className="jc-source-result-meta">读取 {source.received} 条记录 · {source.segments} 段{source.browserAssisted ? ' · 浏览器读取' : ''}</div>
           {source.error && <p className="jc-source-result-error">{source.error}</p>}
         </li>;

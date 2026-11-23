@@ -87,6 +87,6 @@ export function ProviderUsagePanel({ onConfigure }: { onConfigure: () => void })
       {providers.map((provider) => <ProviderUsageCard key={provider.provider} usage={provider} onOpenDashboard={(id) => void OpenDashboard(id)} onAuthorize={() => void AuthorizeMimo()} onDisconnect={() => void DisconnectMimo()} authorizing={authorizing} disconnecting={disconnecting} />)}
       {!providers.length && <div className="pu-empty">{!desktop ? '请在 Avery 桌面客户端查看账户用量。' : query.isPending ? '正在查询供应商用量…' : query.isError ? query.error.message : <>尚未配置供应商<button type="button" onClick={onConfigure}>前往设置</button></>}</div>}
     </div>
-    <div className="pu-sync" role="status" aria-live="polite" title={query.isError ? query.error.message : undefined}>{query.isFetching ? '正在刷新…' : query.isError ? query.data ? '刷新失败，已保留上次结果' : '刷新失败，请重试' : query.data ? '刚刚检查' : !desktop ? '桌面端可用' : '等待查询'}</div>
+    <div className="pu-sync" role="status" aria-live="polite" data-native-title="true" title={query.isError ? query.error.message : undefined}>{query.isFetching ? '正在刷新…' : query.isError ? query.data ? '刷新失败，已保留上次结果' : '刷新失败，请重试' : query.data ? '刚刚检查' : !desktop ? '桌面端可用' : '等待查询'}</div>
   </>;
 }

@@ -17,7 +17,7 @@ afterEach(() => { vi.unstubAllGlobals(); });
 
 describe('岗位采集条件的应用内缓存', () => {
   it('默认条件不限制岗位，具体条件映射到共享查询；四种视图仅改变状态条件', () => {
-    expect(BuildJobLibraryQuery(DefaultJobConditions, 'all', 'score', 1)).toMatchObject({ channels: [], cities: [], keyword: '', page: 1, pageSize: 20 });
+    expect(BuildJobLibraryQuery(DefaultJobConditions, 'all', 'created', 1)).toMatchObject({ channels: [], cities: [], keyword: '', page: 1, pageSize: 20 });
     for (const view of ['all', 'favorites', 'pending', 'applied'] as const) {
       expect(BuildJobLibraryQuery({ ...DefaultJobConditions, keyword: ' AGENT ', channel: 'boss_zhipin', salary: '25k', education: 'bachelor' }, view, 'created', 2))
         .toMatchObject({ keyword: 'AGENT', channels: ['boss_zhipin'], minMonthlySalary: 25000, educations: ['bachelor'], view, sort: 'created', page: 2 });
@@ -54,6 +54,19 @@ describe('岗位采集条件的应用内缓存', () => {
     expect(LoadJobConditions()).toEqual({ ...DefaultJobConditions, keyword: '后端工程师', education: 'bachelor' });
   });
 
+  it('自定义城市在缓存恢复后仍用于岗位筛选和采集', () => {
+    const entries = StubStorage();
+    SaveJobConditions({ ...DefaultJobConditions, city: '成都市' });
+
+    const conditions = LoadJobConditions();
+    expect(conditions.city).toBe('成都市');
+    expect(BuildJobLibraryQuery(conditions, 'all', 'created', 1).cities).toEqual(['成都市']);
+    expect(BuildCollectPrompt(conditions)).toBe('帮我按照条件：成都市，采集岗位');
+
+    entries.set(JobConditionsStorageKey, JSON.stringify({ city: '  ' }));
+    expect(LoadJobConditions().city).toBe(DefaultJobConditions.city);
+  });
+
   it('采集指令带上明确选择的条件，全部不限时退化为“不限”', () => {
     expect(BuildCollectPrompt({ ...DefaultJobConditions, keyword: ' 产品设计师 ', city: '上海', education: 'bachelor', companySize: ['100-499'] }))
       .toBe('帮我按照条件：产品设计师、上海、本科、100 到 499 人，采集岗位');
@@ -83,7 +96,7 @@ describe('岗位采集条件的应用内缓存', () => {
 
   it('多选公司规模、其他维度与排序方向完整传给后端查询', () => {
     const conditions = { ...DefaultJobConditions, companySize: ['20-99', '100-499'], education: 'master' };
-    for (const sort of ['score', 'salary', 'created'] as const) {
+    for (const sort of ['salary', 'created'] as const) {
       for (const sortDirection of ['asc', 'desc'] as const) {
         expect(BuildJobLibraryQuery(conditions, 'pending', sort, 3, sortDirection)).toMatchObject({
           companySizes: ['20-99', '100-499'], educations: ['master'], view: 'pending', sort, sortDirection, page: 3,

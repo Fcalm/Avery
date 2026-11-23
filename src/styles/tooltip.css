@@ -1,0 +1,30 @@
+/* 悬停提示固定白底黑字，不随明暗主题反转；层级高于弹窗与菜单。 */
+.app-tooltip {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 2147483000;
+  max-width: 280px;
+  padding: 5px 8px;
+  border: 1px solid #d8d8dc;
+  border-radius: var(--r-control);
+  background: #fff;
+  color: #18181b;
+  font-family: var(--font-sans);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.55;
+  text-align: left;
+  overflow-wrap: anywhere;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity .12s var(--ease);
+}
+
+.app-tooltip[data-show="true"] {
+  opacity: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .app-tooltip { transition: none; }
+}

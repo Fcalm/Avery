@@ -69,6 +69,43 @@ describe('档案草稿模板', () => {
     expect(GetProfileField('姓名：旧版用户', '个人信息', '姓名')).toBe('');
   });
 
+  it('多行粘贴完整回显，正文中的冒号和空行不截断，后续字段保持不变', () => {
+    const template = ProfileTemplateForCategory('project');
+    const value = '第一段项目介绍\n技术方案：React + TypeScript\n\n- 负责产品设计\n- 完成交付';
+    const updated = UpdateProfileField(template, '项目经历', '项目描述', value);
+    expect(GetProfileField(updated, '项目经历', '项目描述')).toBe(value);
+    expect(GetProfileField(updated, '项目经历', '项目角色')).toBe('');
+    expect(GetProfileField(updated, '项目经历', '项目职责/内容')).toBe('');
+  });
+
+  it('反复粘贴、替换和清空多行字段，不残留旧段落或重复内容', () => {
+    const template = ProfileTemplateForCategory('project');
+    const first = UpdateProfileField(template, '项目经历', '项目描述', '旧内容\n旧段落\n旧说明：不能残留');
+    const second = UpdateProfileField(first, '项目经历', '项目描述', '新内容\n新段落');
+    expect(second).not.toContain('旧');
+    expect(GetProfileField(second, '项目经历', '项目描述')).toBe('新内容\n新段落');
+    const cleared = UpdateProfileField(second, '项目经历', '项目描述', '');
+    expect(cleared).toBe(template);
+  });
+
+  it('多行编辑保留 Enter 和末尾空行，校验仍拒绝纯空白内容', () => {
+    const draft = CreateProfileDraft('other');
+    const content = UpdateProfileField(draft.content!, '其他资料', '资料说明', '第一行\n\n');
+    expect(GetProfileField(content, '其他资料', '资料说明')).toBe('第一行\n\n');
+    const blank = UpdateProfileField(content, '其他资料', '资料说明', '\n\n');
+    expect(GetProfileDraftErrors({ ...draft, content: blank })[GetProfileFieldId('other', 0, 0)]).toBeTruthy();
+  });
+
+  it('兼容 CRLF 和后续小节，粘贴的替换符号按原文保存', () => {
+    const content = '[项目经历]\r\n项目描述：旧第一行\r\n旧第二行\r\n项目角色：负责人\r\n\r\n[其他资料]\r\n资料说明：保留';
+    const value = '预算 $1 与 $&\n交付说明：原样保存';
+    const updated = UpdateProfileField(content, '项目经历', '项目描述', value);
+    expect(GetProfileField(updated, '项目经历', '项目描述')).toBe(value);
+    expect(GetProfileField(updated, '项目经历', '项目角色')).toBe('负责人');
+    expect(updated).toContain('[其他资料]\r\n资料说明：保留');
+    expect(updated).not.toContain('旧第二行');
+  });
+
   it('日期字段只接受横线或点号分隔的年月或年月日', () => {
     expect(IsProfileDateValue('2026-09')).toBe(true);
     expect(IsProfileDateValue('2026.09.08')).toBe(true);

@@ -1,9 +1,10 @@
-import { app, clipboard, ipcMain, Notification, shell } from 'electron';
+import { app, clipboard, ipcMain, shell } from 'electron';
 import { release } from 'node:os';
 import type { BrowserWindow, IpcMain, IpcMainInvokeEvent } from 'electron';
 import { FunctionRouteChannels, MethodRoutes, WriteCommandChannels } from '@avery/backend/dist/router';
 import { WriteCommandEnvelopeSchema } from '@avery/contracts';
 import type { MimoAccountService } from './mimo-account';
+import { CreateTaskCompletionHandler, type TaskCompletionNotice, type NoticeIdentity } from './task-completion';
 
 export const MaxGatewayPayloadBytes = 10 * 1024 * 1024;
 export const WindowControlChannels = ['window:minimize', 'window:toggle-maximize', 'window:is-maximized', 'window:close'] as const;
@@ -38,8 +39,19 @@ export function ValidateSender(event: IpcMainInvokeEvent, getWindow: () => Brows
 }
 
 /** 所有命令先通过来源、频率、大小和写信封校验，再进入 Backend Utility Process。 */
-export function RegisterGateway({ backendHost, webContentsGetter, notificationIconPath, onSettingsChanged, ipcMainApi = ipcMain }: { backendHost: BackendHostPort; webContentsGetter: () => BrowserWindow | undefined; notificationIconPath?: string; onSettingsChanged?: () => Promise<void>; ipcMainApi?: IpcMainPort }): void {
+export function RegisterGateway({ backendHost, webContentsGetter, onTaskNotice, onTaskNoticeResolved, onSettingsChanged, ipcMainApi = ipcMain }: { backendHost: BackendHostPort; webContentsGetter: () => BrowserWindow | undefined; onTaskNotice?: (notice: TaskCompletionNotice) => void; onTaskNoticeResolved?: (identity: NoticeIdentity) => void; onSettingsChanged?: () => Promise<void>; ipcMainApi?: IpcMainPort }): void {
   const limiter = CreateGatewayLimiter();
+  const notifyCompleted = CreateTaskCompletionHandler({
+    isForeground: () => {
+      const window = webContentsGetter();
+      return !window || window.isDestroyed() || (window.isVisible() && window.isFocused());
+    },
+    readSettings: () => ReadGeneralSettings(backendHost),
+    readTitle: (id) => ResolveConversationTitle(backendHost, id),
+    show: (notice) => onTaskNotice?.(notice),
+    dismissInteractions: (identity) => onTaskNoticeResolved?.(identity),
+    log: (error) => console.error('[task-notification]', error),
+  });
   for (const channel of [...Object.keys(MethodRoutes), ...FunctionRouteChannels]) {
     ipcMainApi.handle(channel, async (event, ...args: unknown[]): Promise<ResultEnvelope> => {
       if (!ValidateSender(event, webContentsGetter)) return { ok: false, error: { code: 'PERMISSION_DENIED', message: 'IPC sender is invalid.', retryable: false } };
@@ -71,20 +83,19 @@ export function RegisterGateway({ backendHost, webContentsGetter, notificationIc
     });
   }
   backendHost.OnEvent((event) => {
-    if (IsRunCompletedEvent(event)) void NotifyRunCompleted({ backendHost, webContentsGetter, iconPath: notificationIconPath }, event);
+    void notifyCompleted(event);
     const window = webContentsGetter();
     if (!window || window.isDestroyed()) return;
+    if (event && typeof event === 'object' && (event as { type?: unknown }).type === 'conversations_changed') {
+      window.webContents.send('workspace:conversations-changed');
+      return;
+    }
     if (event && typeof event === 'object' && (event as { type?: unknown }).type === 'evaluation_event') {
       window.webContents.send('evaluation:event', (event as { event?: unknown }).event);
       return;
     }
     window.webContents.send('agent:stream', event);
   });
-}
-
-/** Agent 流的完成事件：只有它触发系统通知，其余事件仍原样转发渲染层。 */
-function IsRunCompletedEvent(event: unknown): boolean {
-  return Boolean(event && typeof event === 'object' && (event as { type?: unknown }).type === 'completed');
 }
 
 type SettingsReader = { Command: (channel: string, idempotencyKey: string | undefined, ...args: unknown[]) => Promise<unknown> };
@@ -98,30 +109,6 @@ async function ResolveConversationTitle(backendHost: SettingsReader, sessionId: 
   const envelope = await backendHost.Command('workspace:get-view-model', undefined) as { ok?: boolean; data?: { conversations?: Array<{ id?: string; title?: string }> } } | undefined;
   const conversation = envelope?.ok === true ? envelope.data?.conversations?.find((item) => item.id === sessionId) : undefined;
   return conversation?.title ?? 'Avery 任务';
-}
-
-/** 长任务完成后，只在用户没有盯着窗口时弹系统通知；托盘里隐藏的窗口同样会收到。 */
-async function NotifyRunCompleted({ backendHost, webContentsGetter, iconPath }: { backendHost: SettingsReader; webContentsGetter: () => BrowserWindow | undefined; iconPath?: string }, event: unknown): Promise<void> {
-  try {
-    const window = webContentsGetter();
-    if (!window || window.isDestroyed()) return;
-    if (window.isVisible() && window.isFocused()) return;
-    const settings = await ReadGeneralSettings(backendHost);
-    if (settings?.notifyOnComplete !== true) return;
-    const sessionId = (event as { sessionId?: unknown }).sessionId;
-    const title = typeof sessionId === 'string' && sessionId ? await ResolveConversationTitle(backendHost, sessionId) : 'Avery 任务';
-    const notification = new Notification({ title: '任务已完成', body: `「${title}」已完成。`, silent: settings.notifySound !== true, ...(iconPath ? { icon: iconPath } : {}) });
-    notification.on('click', () => {
-      const target = webContentsGetter();
-      if (!target || target.isDestroyed()) return;
-      if (target.isMinimized()) target.restore();
-      target.show();
-      target.focus();
-    });
-    notification.show();
-  } catch {
-    // 通知是锦上添花：读取设置或弹通知失败都不影响任务完成流程，也不向渲染层抛错。
-  }
 }
 
 /** 系统能力通道：文本复制、固定服务商链接、工作空间目录与开机自启；均校验请求来源。 */
