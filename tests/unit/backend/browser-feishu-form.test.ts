@@ -128,7 +128,7 @@ describe('飞书 Select 业务值和候选稳定性', () => {
     expect(fixture.menu.children[0]!.hasAttribute('data-avery-dynamic-option')).toBe(false);
     fixture.settle(); await vi.advanceTimersByTimeAsync(60);
     expect(await result).toMatchObject({ ready: true, observedOptions: ['本科', '硕士'], optionsTruncated: false });
-    expect(fixture.menu.children[0]!.getAttribute('aria-label')).toBe('本科');
+    expect(fixture.menu.children[0]!.getAttribute('aria-label')).toBe('__avery_dynamic_option__:本科');
     expect(fixture.menu.children[0]!.getAttribute('role')).toBe('option');
     expect(fixture.menu.children[0]!.hasAttribute('tabindex')).toBe(false);
   });

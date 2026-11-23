@@ -84,6 +84,7 @@ function HandshakeStatus(status, expectedVersion, expectedProtocolRevision) {
  */
 export async function WaitForPb03Handshake({
   bridge,
+  engine = 'chrome',
   expectedVersion = '0.2.0',
   expectedProtocolRevision = 'avery-browser-extension-bridge-v3',
   timeoutMs = 20_000,
@@ -153,7 +154,7 @@ export async function WaitForPb03Handshake({
     if (signal?.aborted) return result('cancelled');
     attempts += 1;
     try {
-      last = HandshakeStatus(bridge?.Status?.(), expectedVersion, expectedProtocolRevision);
+      last = HandshakeStatus(bridge?.Status?.(engine), expectedVersion, expectedProtocolRevision);
     } catch (error) {
       last = { ...HandshakeStatus(null, expectedVersion, expectedProtocolRevision), lastError: String(error?.message || error) };
     }

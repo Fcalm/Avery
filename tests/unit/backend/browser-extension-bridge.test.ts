@@ -1,4 +1,5 @@
 import { readFile, rm } from 'node:fs/promises';
+import { createHmac } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -10,13 +11,20 @@ import { CreatePersonalBrowserExtensionRuntime } from '../../../apps/backend/src
 
 const roots: string[] = [];
 const WorkerInstanceId = 'worker-test';
+type PollResult = { commands: Array<{ id: string; browserTaskId: string; operation: string; payload: unknown }> };
 
 function WorkerBody(body: Record<string, unknown> = {}, workerInstanceId = String(body.workerInstanceId ?? WorkerInstanceId)) {
   return { ...body, workerInstanceId };
 }
 
-async function PostBridge(bridge: BrowserExtensionBridge, statePath: string, path: string, body: Record<string, unknown>, workerInstanceId = WorkerInstanceId, signal?: AbortSignal) {
+// 协议夹具使用浏览器专属凭据；跨浏览器回归另从真实配对 URL 获取凭据。
+async function ReadBridgeState(statePath: string, engine: 'chrome' | 'edge' | 'ego' = 'chrome') {
   const state = JSON.parse(await readFile(statePath, 'utf8'));
+  return { ...state, token: createHmac('sha256', state.token).update(`avery-browser-engine:${engine}`).digest('hex') };
+}
+
+async function PostBridge(bridge: BrowserExtensionBridge, statePath: string, path: string, body: Record<string, unknown>, workerInstanceId = WorkerInstanceId, signal?: AbortSignal, engine: 'chrome' | 'edge' | 'ego' = 'chrome') {
+  const state = await ReadBridgeState(statePath, engine);
   return fetch(`http://127.0.0.1:${bridge.Status().port}${path}`, {
     method: 'POST',
     headers: { authorization: `Bearer ${state.token}`, 'content-type': 'application/json' },
@@ -30,6 +38,86 @@ afterEach(async () => {
 });
 
 describe('BrowserExtensionBridge', () => {
+  it.each(['edge', 'ego'] as const)('Chrome 在线时切换到 %s，配对、派发、结果与清理始终归属所选浏览器', async (engine) => {
+    const root = await mkdtemp(join(tmpdir(), 'avery-extension-engine-routing-'));
+    roots.push(root);
+    const statePath = join(root, 'bridge.json');
+    const credentials = new Map<string, { token: string; port: string }>();
+    const post = (browser: string, path: string, body: Record<string, unknown>) => {
+      const config = credentials.get(browser)!;
+      return fetch(`http://127.0.0.1:${config.port}${path}`, {
+        method: 'POST', headers: { authorization: `Bearer ${config.token}`, 'content-type': 'application/json' },
+        // 相同 Worker ID 也不能使两个浏览器共享连接或命令。
+        body: JSON.stringify(WorkerBody({ version: '0.2.0', protocolRevision: BrowserExtensionProtocolRevision, ...body })),
+      });
+    };
+    const launchBrowser = vi.fn(async (browser: string, url: string) => {
+      const params = new URLSearchParams(new URL(url).hash.slice(1));
+      credentials.set(browser, { token: params.get('token')!, port: params.get('port')! });
+      expect((await post(browser, '/bridge/hello', {})).status).toBe(200);
+    });
+    const bridge = new BrowserExtensionBridge({ statePath, port: 0, browserPaths: { chrome: process.execPath, [engine]: process.execPath }, launchBrowser });
+    let oldPoll: Promise<Response> | undefined;
+    try {
+      await bridge.EnsureConnected('chrome');
+      expect(bridge.IsConnected('chrome')).toBe(true);
+      expect(bridge.Status(engine)).toMatchObject({ connected: false, state: 'offline' });
+      expect(bridge.IsConnected(engine)).toBe(false);
+      await expect(bridge.EnsureConnected(engine, { launch: false, deadline: Date.now() + 20 })).rejects.toMatchObject({ code: 'BROWSER_EXTENSION_REQUIRED' });
+      expect(launchBrowser).toHaveBeenCalledOnce();
+      oldPoll = post('chrome', '/bridge/poll', {});
+      const request = bridge.Request(engine, 'cdp', { id: 1, method: 'Target.getTargets', params: {} }, { deadline: Date.now() + 5_000, browserTaskId: 'collection-selected' });
+      await vi.waitFor(() => expect(bridge.IsConnected(engine)).toBe(true));
+      expect(launchBrowser).toHaveBeenNthCalledWith(2, engine, expect.any(String));
+      expect(credentials.get(engine)?.token).not.toBe(credentials.get('chrome')?.token);
+      const poll = await (await post(engine, '/bridge/poll', {})).json() as PollResult;
+      expect(poll.commands).toHaveLength(1);
+      const command = poll.commands[0];
+      expect(command).toMatchObject({ browserTaskId: 'collection-selected', operation: 'cdp' });
+      expect(await (await post('chrome', '/bridge/command-status', { id: command.id })).json()).toEqual({ active: false });
+      await post('chrome', '/bridge/result', { id: command.id, ok: true, data: '错误浏览器结果' });
+      expect(await (await post(engine, '/bridge/command-status', { id: command.id })).json()).toEqual({ active: true });
+      await post(engine, '/bridge/result', { id: command.id, ok: true, data: '所选浏览器结果' });
+      await expect(request).resolves.toBe('所选浏览器结果');
+
+      // 旧浏览器的协议故障也不能覆盖所选浏览器的在线握手。
+      await post('chrome', '/bridge/hello', { protocolRevision: 'old-protocol' });
+      expect(bridge.Status('chrome').state).toBe('stale');
+      expect(bridge.Status(engine).state).toBe('online');
+      const cleanup = bridge.CloseTask(engine, 'collection-selected', { closeTabs: false });
+      const cleanupPoll = await (await post(engine, '/bridge/poll', {})).json() as PollResult;
+      expect(cleanupPoll.commands[0]).toMatchObject({ operation: 'close_task', payload: { closeTabs: false } });
+      await post(engine, '/bridge/result', { id: cleanupPoll.commands[0].id, ok: true, data: { status: 'confirmed', closedTabs: 0, retainedTabs: 1, unknownTabs: 0 } });
+      await expect(cleanup).resolves.toMatchObject({ status: 'confirmed', retainedTabs: 1 });
+      await post('chrome', '/bridge/hello', {});
+      const returnRequest = bridge.Request('chrome', 'cdp', { id: 2, method: 'Target.getTargets', params: {} }, { deadline: Date.now() + 5_000, browserTaskId: 'collection-return' });
+      const returnPoll = await (await post('chrome', '/bridge/poll', {})).json() as PollResult;
+      expect(returnPoll.commands[0].browserTaskId).toBe('collection-return');
+      await post('chrome', '/bridge/result', { id: returnPoll.commands[0].id, ok: true, data: '切回 Chrome' });
+      await expect(returnRequest).resolves.toBe('切回 Chrome');
+      expect(launchBrowser).toHaveBeenCalledTimes(2);
+      await expect(bridge.EnsureConnected(engine === 'edge' ? 'ego' : 'edge')).rejects.toMatchObject({ code: 'BROWSER_NOT_INSTALLED' });
+      expect(launchBrowser).toHaveBeenCalledTimes(2);
+    } finally { await bridge.Close(); await oldPoll; }
+  });
+
+  it('拒绝没有浏览器归属的旧配对令牌，所选浏览器未连接时不能借用旧连接', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'avery-extension-legacy-routing-'));
+    roots.push(root);
+    const statePath = join(root, 'bridge.json');
+    const bridge = new BrowserExtensionBridge({ statePath, port: 0 });
+    try {
+      await bridge.Start();
+      const state = JSON.parse(await readFile(statePath, 'utf8'));
+      const response = await fetch(`http://127.0.0.1:${bridge.Status().port}/bridge/hello`, {
+        method: 'POST', headers: { authorization: `Bearer ${state.token}`, 'content-type': 'application/json' },
+        body: JSON.stringify(WorkerBody({ version: '0.2.0', protocolRevision: BrowserExtensionProtocolRevision })),
+      });
+      expect(response.status).toBe(401);
+      for (const engine of ['chrome', 'edge', 'ego'] as const) expect(bridge.IsConnected(engine)).toBe(false);
+    } finally { await bridge.Close(); }
+  });
+
   it.each([0, 20])('旧协议状态不能阻断升级后 Worker 的重新配对（握手延迟 %i ms）', async (handshakeDelay) => {
     const root = await mkdtemp(join(tmpdir(), 'avery-extension-repair-pairing-'));
     roots.push(root);
@@ -37,12 +125,12 @@ describe('BrowserExtensionBridge', () => {
     let updatedHandshake: Promise<void> | undefined;
     const launchBrowser = vi.fn(async (engine: string) => {
       expect(engine).toBe('ego');
-      expect(bridge.Status()).toMatchObject({ connected: false, state: 'stale' });
+      expect(bridge.Status('ego')).toMatchObject({ connected: false, state: 'stale' });
       updatedHandshake = (async () => {
         if (handshakeDelay) await new Promise((resolveWait) => setTimeout(resolveWait, handshakeDelay));
         expect((await PostBridge(bridge, statePath, '/bridge/hello', {
           version: '0.2.0', protocolRevision: BrowserExtensionProtocolRevision,
-        }, 'worker-updated')).status).toBe(200);
+        }, 'worker-updated', undefined, 'ego')).status).toBe(200);
       })();
       if (!handshakeDelay) await updatedHandshake;
     });
@@ -51,11 +139,11 @@ describe('BrowserExtensionBridge', () => {
       await bridge.Start();
       expect((await PostBridge(bridge, statePath, '/bridge/hello', {
         version: '0.2.0', protocolRevision: 'avery-browser-extension-bridge-v2',
-      }, 'worker-before-update')).status).toBe(409);
+      }, 'worker-before-update', undefined, 'ego')).status).toBe(409);
       await bridge.EnsureConnected('ego', { deadline: Date.now() + 1_000 });
       await updatedHandshake;
       expect(launchBrowser).toHaveBeenCalledOnce();
-      expect(bridge.Status()).toMatchObject({ connected: true, state: 'online', actualProtocolRevision: BrowserExtensionProtocolRevision, activeWorkerInstanceId: 'worker-updated' });
+      expect(bridge.Status('ego')).toMatchObject({ connected: true, state: 'online', actualProtocolRevision: BrowserExtensionProtocolRevision, activeWorkerInstanceId: 'worker-updated' });
     } finally { await updatedHandshake?.catch(() => undefined); await bridge.Close(); }
   });
 
@@ -67,10 +155,10 @@ describe('BrowserExtensionBridge', () => {
     const bridge = new BrowserExtensionBridge({ statePath, browserPaths: { ego: process.execPath }, port: 0, launchBrowser });
     try {
       await bridge.Start();
-      await PostBridge(bridge, statePath, '/bridge/hello', { version: '0.2.0', protocolRevision: 'avery-browser-extension-bridge-v2' });
+      await PostBridge(bridge, statePath, '/bridge/hello', { version: '0.2.0', protocolRevision: 'avery-browser-extension-bridge-v2' }, undefined, undefined, 'ego');
       await expect(bridge.EnsureConnected('ego', { deadline: Date.now() + 50 })).rejects.toMatchObject({ code: 'BROWSER_EXTENSION_STALE' });
       expect(launchBrowser).toHaveBeenCalledOnce();
-      expect(bridge.Status()).toMatchObject({ connected: false, state: 'stale', actualProtocolRevision: 'avery-browser-extension-bridge-v2' });
+      expect(bridge.Status('ego')).toMatchObject({ connected: false, state: 'stale', actualProtocolRevision: 'avery-browser-extension-bridge-v2' });
     } finally { await bridge.Close(); }
   });
 
@@ -81,15 +169,15 @@ describe('BrowserExtensionBridge', () => {
     const launchBrowser = vi.fn(async () => {
       expect((await PostBridge(bridge, statePath, '/bridge/hello', {
         version: '0.2.0', protocolRevision: 'avery-browser-extension-bridge-v2',
-      }, 'worker-still-outdated')).status).toBe(409);
+      }, 'worker-still-outdated', undefined, 'ego')).status).toBe(409);
     });
     const bridge = new BrowserExtensionBridge({ statePath, browserPaths: { ego: process.execPath }, port: 0, launchBrowser });
     try {
       await bridge.Start();
-      await PostBridge(bridge, statePath, '/bridge/hello', { version: '0.2.0', protocolRevision: 'avery-browser-extension-bridge-v2' });
+      await PostBridge(bridge, statePath, '/bridge/hello', { version: '0.2.0', protocolRevision: 'avery-browser-extension-bridge-v2' }, undefined, undefined, 'ego');
       await expect(bridge.EnsureConnected('ego', { deadline: Date.now() + 1_000 })).rejects.toMatchObject({ code: 'BROWSER_EXTENSION_STALE' });
       expect(launchBrowser).toHaveBeenCalledOnce();
-      expect(bridge.Status()).toMatchObject({ connected: false, state: 'stale' });
+      expect(bridge.Status('ego')).toMatchObject({ connected: false, state: 'stale' });
     } finally { await bridge.Close(); }
   });
 
@@ -102,10 +190,10 @@ describe('BrowserExtensionBridge', () => {
     const bridge = new BrowserExtensionBridge({ statePath, browserPaths: { ego: process.execPath }, port: 0, launchBrowser });
     try {
       await bridge.Start();
-      await PostBridge(bridge, statePath, '/bridge/hello', { version: '0.2.0', protocolRevision: 'avery-browser-extension-bridge-v2' });
+      await PostBridge(bridge, statePath, '/bridge/hello', { version: '0.2.0', protocolRevision: 'avery-browser-extension-bridge-v2' }, undefined, undefined, 'ego');
       await expect(bridge.EnsureConnected('ego', { signal: controller.signal, deadline: Date.now() + 1_000 })).rejects.toMatchObject({ code: 'CANCELLED' });
       expect(launchBrowser).toHaveBeenCalledOnce();
-      expect(bridge.Status().connected).toBe(false);
+      expect(bridge.Status('ego').connected).toBe(false);
     } finally { await bridge.Close(); }
   });
 
@@ -141,7 +229,7 @@ describe('BrowserExtensionBridge', () => {
     const bridge = new BrowserExtensionBridge({ statePath, browserPaths: { chrome: process.execPath }, port: 0, launchBrowser });
 
     const post = async (path: string, body: unknown) => {
-      const state = JSON.parse(await readFile(statePath, 'utf8'));
+      const state = await ReadBridgeState(statePath);
       return fetch(`http://127.0.0.1:${bridge.Status().port}${path}`, {
         method: 'POST',
         headers: { authorization: `Bearer ${state.token}`, 'content-type': 'application/json' },
@@ -207,7 +295,7 @@ describe('BrowserExtensionBridge', () => {
     const bridge = new BrowserExtensionBridge({ statePath, port: 0 });
     try {
       await bridge.Start();
-      const state = JSON.parse(await readFile(statePath, 'utf8'));
+      const state = await ReadBridgeState(statePath);
       const controller = new AbortController();
       const poll = fetch(`http://127.0.0.1:${bridge.Status().port}/bridge/poll`, {
         method: 'POST',
@@ -230,7 +318,7 @@ describe('BrowserExtensionBridge', () => {
     const statePath = join(root, 'bridge.json');
     const bridge = new BrowserExtensionBridge({ statePath, browserPaths: { chrome: process.execPath }, port: 0 });
     const post = async (path: string, body: unknown) => {
-      const state = JSON.parse(await readFile(statePath, 'utf8'));
+      const state = await ReadBridgeState(statePath);
       return fetch(`http://127.0.0.1:${bridge.Status().port}${path}`, {
         method: 'POST',
         headers: { authorization: `Bearer ${state.token}`, 'content-type': 'application/json' },
@@ -287,7 +375,7 @@ describe('BrowserExtensionBridge', () => {
     const statePath = join(root, 'bridge.json');
     const bridge = new BrowserExtensionBridge({ statePath, browserPaths: { chrome: process.execPath }, port: 0 });
     const post = async (path: string, body: unknown) => {
-      const state = JSON.parse(await readFile(statePath, 'utf8'));
+      const state = await ReadBridgeState(statePath);
       return fetch(`http://127.0.0.1:${bridge.Status().port}${path}`, {
         method: 'POST',
         headers: { authorization: `Bearer ${state.token}`, 'content-type': 'application/json' },
@@ -320,7 +408,7 @@ describe('BrowserExtensionBridge', () => {
     const statePath = join(root, 'bridge.json');
     const bridge = new BrowserExtensionBridge({ statePath, browserPaths: { chrome: process.execPath }, port: 0 });
     const post = async (path: string, body: unknown) => {
-      const state = JSON.parse(await readFile(statePath, 'utf8'));
+      const state = await ReadBridgeState(statePath);
       return fetch(`http://127.0.0.1:${bridge.Status().port}${path}`, {
         method: 'POST',
         headers: { authorization: `Bearer ${state.token}`, 'content-type': 'application/json' },
@@ -368,7 +456,7 @@ describe('BrowserExtensionBridge', () => {
     const statePath = join(root, 'bridge.json');
     const bridge = new BrowserExtensionBridge({ statePath, browserPaths: { chrome: process.execPath }, port: 0 });
     const post = async (path: string, body: unknown) => {
-      const state = JSON.parse(await readFile(statePath, 'utf8'));
+      const state = await ReadBridgeState(statePath);
       return fetch(`http://127.0.0.1:${bridge.Status().port}${path}`, {
         method: 'POST',
         headers: { authorization: `Bearer ${state.token}`, 'content-type': 'application/json' },
@@ -405,8 +493,8 @@ describe('BrowserExtensionBridge', () => {
     let bridge!: BrowserExtensionBridge;
     const launchBrowser = vi.fn(async (_engine: 'chrome' | 'edge' | 'ego', url: string) => {
       launchedUrl = url;
-      const state = JSON.parse(await readFile(statePath, 'utf8'));
-      const port = bridge.Status().port;
+      const state = { token: new URLSearchParams(new URL(launchedUrl).hash.slice(1)).get('token')! };
+      const port = bridge.Status(engine).port;
       const response = await fetch(`http://127.0.0.1:${port}/bridge/hello`, {
         method: 'POST',
         headers: { authorization: `Bearer ${state.token}`, 'content-type': 'application/json' },
@@ -425,10 +513,10 @@ describe('BrowserExtensionBridge', () => {
       await bridge.EnsureConnected(engine);
       expect(launchBrowser).toHaveBeenCalledExactlyOnceWith(engine, expect.any(String));
       expect(launchedUrl).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/pair#token=[a-f0-9]{64}&port=\d+$/);
-      expect(bridge.Status()).toMatchObject({ connected: true, version: '0.2.0' });
+      expect(bridge.Status(engine)).toMatchObject({ connected: true, version: '0.2.0' });
 
-      const state = JSON.parse(await readFile(statePath, 'utf8'));
-      const port = bridge.Status().port;
+      const state = { token: new URLSearchParams(new URL(launchedUrl).hash.slice(1)).get('token')! };
+      const port = bridge.Status(engine).port;
       const resultPromise = bridge.Request(engine, 'cdp', { id: 7, method: 'Target.getTargets', params: {} }, { deadline: Date.now() + 5_000, browserTaskId: 'task-test' });
       const poll = await fetch(`http://127.0.0.1:${port}/bridge/poll`, {
         method: 'POST',
@@ -475,7 +563,7 @@ describe('BrowserExtensionBridge', () => {
     const statePath = join(root, 'bridge.json');
     let bridge!: BrowserExtensionBridge;
     const launchBrowser = vi.fn(async () => {
-      const state = JSON.parse(await readFile(statePath, 'utf8'));
+      const state = await ReadBridgeState(statePath);
       const response = await fetch(`http://127.0.0.1:${bridge.Status().port}/bridge/hello`, {
         method: 'POST', headers: { authorization: `Bearer ${state.token}`, 'content-type': 'application/json' },
         body: JSON.stringify(WorkerBody({ version: '0.2.0', protocolRevision: BrowserExtensionProtocolRevision })),
@@ -484,7 +572,7 @@ describe('BrowserExtensionBridge', () => {
     });
     bridge = new BrowserExtensionBridge({ statePath, browserPaths: { chrome: process.execPath }, port: 0, launchBrowser });
     const post = async (path: string, body: unknown) => {
-      const state = JSON.parse(await readFile(statePath, 'utf8'));
+      const state = await ReadBridgeState(statePath);
       return fetch(`http://127.0.0.1:${bridge.Status().port}${path}`, {
         method: 'POST', headers: { authorization: `Bearer ${state.token}`, 'content-type': 'application/json' }, body: JSON.stringify(WorkerBody({ ...(body as Record<string, unknown>), version: '0.2.0', protocolRevision: BrowserExtensionProtocolRevision })),
       });
@@ -505,7 +593,7 @@ describe('BrowserExtensionBridge', () => {
 
     try {
       await bridge.EnsureConnected('chrome');
-      const bridgeState = JSON.parse(await readFile(statePath, 'utf8'));
+      const bridgeState = await ReadBridgeState(statePath);
       const closeThroughWorker = async (taskId: string, tabId: number, failure: 'none' | 'remove' | 'storage') => {
         const localStorage: Record<string, unknown> = {};
         const sessionStorage: Record<string, unknown> = {
@@ -570,7 +658,7 @@ describe('BrowserExtensionBridge', () => {
     const statePath = join(root, 'bridge.json');
     let bridge!: BrowserExtensionBridge;
     const launchBrowser = vi.fn(async () => {
-      const state = JSON.parse(await readFile(statePath, 'utf8'));
+      const state = await ReadBridgeState(statePath);
       const response = await fetch(`http://127.0.0.1:${bridge.Status().port}/bridge/hello`, {
         method: 'POST', headers: { authorization: `Bearer ${state.token}`, 'content-type': 'application/json' },
         body: JSON.stringify(WorkerBody({ version: '0.2.0', protocolRevision: BrowserExtensionProtocolRevision })),
@@ -579,7 +667,7 @@ describe('BrowserExtensionBridge', () => {
     });
     bridge = new BrowserExtensionBridge({ statePath, browserPaths: { chrome: process.execPath }, port: 0, launchBrowser });
     const post = async (path: string, body: unknown) => {
-      const state = JSON.parse(await readFile(statePath, 'utf8'));
+      const state = await ReadBridgeState(statePath);
       return fetch(`http://127.0.0.1:${bridge.Status().port}${path}`, {
         method: 'POST', headers: { authorization: `Bearer ${state.token}`, 'content-type': 'application/json' }, body: JSON.stringify(WorkerBody({ ...(body as Record<string, unknown>), version: '0.2.0', protocolRevision: BrowserExtensionProtocolRevision })),
       });
@@ -613,7 +701,7 @@ describe('BrowserExtensionBridge', () => {
     const statePath = join(root, 'bridge.json');
     let bridge!: BrowserExtensionBridge;
     const launchBrowser = vi.fn(async () => {
-      const state = JSON.parse(await readFile(statePath, 'utf8'));
+      const state = await ReadBridgeState(statePath);
       const response = await fetch(`http://127.0.0.1:${bridge.Status().port}/bridge/hello`, {
         method: 'POST',
         headers: { authorization: `Bearer ${state.token}`, 'content-type': 'application/json' },
@@ -630,9 +718,12 @@ describe('BrowserExtensionBridge', () => {
         method: 'DOM.setFileInputFiles',
         params: { targetId: 'task', files: ['C:\\authorized\\resume.pdf'] },
       }, { deadline: Date.now() + 30, browserTaskId: 'task-test' });
-      await expect(timedOut).rejects.toMatchObject({ code: 'BROWSER_COMMAND_TIMEOUT', statusUnknown: true });
+      await expect(timedOut).rejects.toMatchObject({ code: 'BROWSER_COMMAND_TIMEOUT', statusUnknown: false });
+      expect(bridge.GetDiagnostics()).toContainEqual(expect.objectContaining({
+        event: 'command_timeout', engine: 'chrome', method: 'DOM.setFileInputFiles', delivery: 'queued', statusUnknown: false,
+      }));
 
-      const state = JSON.parse(await readFile(statePath, 'utf8'));
+      const state = await ReadBridgeState(statePath);
       // 被撤销的命令不应让空 poll 等待 20 秒；用无副作用 probe 触发一次 flush，
       // 并确认响应中只有 probe，没有迟到的文件上传命令。
       const probePromise = bridge.Request('chrome', 'cdp', { id: 9, method: 'Target.getTargets', params: {} }, { deadline: Date.now() + 1_000, browserTaskId: 'task-test' });
@@ -649,6 +740,21 @@ describe('BrowserExtensionBridge', () => {
         body: JSON.stringify(WorkerBody({ id: poll.commands[0].id, ok: true, data: { id: 9, result: { targetInfos: [] } }, version: '0.2.0', protocolRevision: BrowserExtensionProtocolRevision })),
       });
       await expect(probePromise).resolves.toEqual({ id: 9, result: { targetInfos: [] } });
+
+      const lostResult = bridge.Request('chrome', 'cdp', { id: 10, method: 'Target.getTargets', params: {} }, {
+        deadline: Date.now() + 250, browserTaskId: 'task-test',
+      });
+      const lostResultAssertion = expect(lostResult).rejects.toMatchObject({ code: 'BROWSER_COMMAND_TIMEOUT', statusUnknown: false });
+      const delivered = await fetch(`http://127.0.0.1:${bridge.Status().port}/bridge/poll`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${state.token}`, 'content-type': 'application/json' },
+        body: JSON.stringify(WorkerBody({ version: '0.2.0', protocolRevision: BrowserExtensionProtocolRevision })),
+      }).then((response) => response.json()) as any;
+      expect(delivered.commands[0].payload.id).toBe(10);
+      await lostResultAssertion;
+      expect(bridge.GetDiagnostics()).toContainEqual(expect.objectContaining({
+        event: 'command_timeout', method: 'Target.getTargets', delivery: 'delivered', statusUnknown: false,
+      }));
     } finally {
       await bridge.Close();
     }
@@ -739,7 +845,7 @@ describe('BrowserExtensionBridge', () => {
     const statePath = join(root, 'bridge.json');
     let bridge!: BrowserExtensionBridge;
     const launchBrowser = vi.fn(async () => {
-      const state = JSON.parse(await readFile(statePath, 'utf8'));
+      const state = await ReadBridgeState(statePath);
       const response = await fetch(`http://127.0.0.1:${bridge.Status().port}/bridge/hello`, {
         method: 'POST',
         headers: { authorization: `Bearer ${state.token}`, 'content-type': 'application/json' },
@@ -749,7 +855,7 @@ describe('BrowserExtensionBridge', () => {
     });
     bridge = new BrowserExtensionBridge({ statePath, browserPaths: { chrome: process.execPath }, port: 0, launchBrowser });
     const post = async (path: string, body: unknown) => {
-      const state = JSON.parse(await readFile(statePath, 'utf8'));
+      const state = await ReadBridgeState(statePath);
       return fetch(`http://127.0.0.1:${bridge.Status().port}${path}`, {
         method: 'POST',
         headers: { authorization: `Bearer ${state.token}`, 'content-type': 'application/json' },

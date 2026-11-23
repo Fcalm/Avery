@@ -20,6 +20,13 @@ async function Fixture() {
 const Input = (readPage:(url:string)=>Promise<FeishuBrowserPage>, accept:(job:NormalizedJob)=>Promise<boolean> = async()=>true) => ({source,request,signal:new AbortController().signal,deadline:Date.now()+10000,readPage,accept});
 
 describe('飞书浏览器列表与公开详情混合采集',()=>{
+ it('标题预筛忽略大小写、全半角、空格及符号，保留匹配项再读取详情', async () => {
+  const {collector,transport}=await Fixture();const accepted:NormalizedJob[]=[];
+  const report=await collector.Run({...Input(async url=>({...Page(url,['1','2'],2),titles:{'1':'Ａｉ · 产品－经理','2':'算法工程师'}}),async job=>{accepted.push(job);return true}),
+    request:{...request,keyword:'a.I_产品 经理',keywordScope:'title'}});
+  expect(report).toMatchObject({received:1,complete:true,errors:[]});
+  expect(transport.Request).toHaveBeenCalledOnce();expect(accepted.map(job=>job.atsJobId)).toEqual(['1']);
+ });
  it('名称匹配在详情请求前排除全文搜索中的非目标岗位',async()=>{
   const {collector,transport}=await Fixture();const accepted:NormalizedJob[]=[];
   const report=await collector.Run({...Input(async url=>({...Page(url,['1','2','3'],3),titles:{'1':'产品经理','2':'算法工程师','3':'市场营销'}}),async j=>{accepted.push(j);return true}),request:{...request,keywordScope:'title'}});

@@ -10,6 +10,7 @@ import { BuiltinRecruitmentSources } from './recruitment-sources';
 import { JobCityMatches, NormalizeJobFilterValue } from '../repositories/job-query';
 import { CampusExpiredThroughYear, CampusRecruitmentSource, IsExpiredCampusRecruitment } from './campus-recruitment-source';
 import { CreateFeishuPageReader, FeishuBrowserCollector } from './feishu-browser-collection';
+import { MatchesCollectionKeyword } from './job-collection-keyword';
 
 interface CollectionStore {
   schemaVersion: 1;
@@ -247,9 +248,9 @@ export class JobLibraryCollectionService {
         if (firstInspection) filtered.expired++;
         return task.collected < task.request.targetCount;
       }
-      const text = (task.request.keywordScope === 'title' ? entry.job.title : `${entry.job.title}\n${entry.job.company}\n${entry.job.jd}`).toLowerCase();
+      const fields = task.request.keywordScope === 'title' ? entry.job.title : [entry.job.title, entry.job.company, entry.job.jd];
       if (seen.has(entry.identity)) return task.collected < task.request.targetCount;
-      if (task.request.keyword && !text.includes(task.request.keyword.toLowerCase())) {
+      if (!MatchesCollectionKeyword(fields, task.request.keyword)) {
         if (firstInspection) filtered.keyword++;
         return task.collected < task.request.targetCount;
       }
@@ -267,7 +268,8 @@ export class JobLibraryCollectionService {
         }
       }
       seen.add(entry.identity); batch.push(entry);
-      if (batch.length >= Math.min(JobCollectionLimits.batchSize, task.request.targetCount - task.collected)) await Flush();
+      // BOSS 逐页读取较慢，通过筛选即等待入库确认，不能让不足一批的结果在超时或取消时丢失。
+      if (task.request.channel === 'boss_zhipin' || batch.length >= Math.min(JobCollectionLimits.batchSize, task.request.targetCount - task.collected)) await Flush();
       return task.collected < task.request.targetCount;
     };
     try {

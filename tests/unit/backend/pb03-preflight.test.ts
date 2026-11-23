@@ -25,6 +25,14 @@ function Extension(overrides: Record<string, unknown> = {}) {
 }
 
 describe('PB-03 attach-only browser preflight', () => {
+  it.each(['edge', 'ego'])('预检只观察 %s 握手，不把其他浏览器在线当作就绪', async (engine) => {
+    const bridge = { Status: vi.fn((selected: string) => selected === engine
+      ? { state: 'offline', connected: false, handshakeReceived: false }
+      : { state: 'online', connected: true, handshakeReceived: true, handshakeSource: 'poll', actualVersion: '0.2.0', actualProtocolRevision: 'avery-browser-extension-bridge-v3' }) };
+    expect(await WaitForPb03Handshake({ bridge, engine, timeoutMs: 0 })).toMatchObject({ ready: false, status: 'timeout' });
+    expect(bridge.Status).toHaveBeenCalledWith(engine);
+  });
+
   it('等待同一 Bridge 的 poll 握手并记录 source/等待证据，不触发 Request 或浏览器动作', async () => {
     let statusReads = 0;
     const bridge = {

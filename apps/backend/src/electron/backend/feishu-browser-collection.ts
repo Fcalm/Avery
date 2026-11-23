@@ -10,6 +10,7 @@ import { NormalizeFeishuJob } from './ats/feishu';
 import { CreateSource } from './ats/source-runner';
 import { AtsPublicTransport } from './ats/public-transport';
 import { AtsError, type NormalizedJob, type PublicTransport } from './ats/types';
+import { MatchesCollectionKeyword } from './job-collection-keyword';
 
 const PageSchema = z.object({ url: z.string().url(), ready: z.boolean(), risk: z.string().optional(), path: z.string().regex(/^[\w-]{1,100}$/).optional(), company: z.string().max(500).optional(), page: z.number().int().positive().optional(), total: z.number().int().nonnegative().max(100000).optional(), ids: z.array(z.string().regex(/^\d+$/)).max(100), titles: z.record(z.string(),z.string().max(300)).default({}) });
 export type FeishuBrowserPage = z.infer<typeof PageSchema>;
@@ -112,7 +113,7 @@ export class FeishuBrowserCollector {
       if (seen.size > total) throw new AtsError('SOURCE_SCHEMA_CHANGED', 'Feishu list contains more job IDs than its declared count.');
       if (!page.ids.length && total > 0) throw new AtsError('SOURCE_SCHEMA_CHANGED', 'Feishu search ended before its declared count.');
       // 原生搜索可能匹配JD；明确选择名称范围时，已读到名称的非匹配项无需再请求详情。
-      const candidates = request.keyword && request.keywordScope === 'title' ? page.ids.filter(id=>!page.titles[id] || page.titles[id].toLowerCase().includes(request.keyword.toLowerCase())) : page.ids;
+      const candidates = request.keyword && request.keywordScope === 'title' ? page.ids.filter(id=>!page.titles[id] || MatchesCollectionKeyword(page.titles[id], request.keyword)) : page.ids;
       // 详情并发最多3个；写入逐条串行，避免共享批次计数和目标数量竞争。
       for (let offset = 0; offset < candidates.length; offset += 3) {
         const jobs = await Promise.allSettled(candidates.slice(offset, offset + 3).map(async id => {

@@ -2,7 +2,9 @@ import {
   AgentBrowserError,
   CanonicalFormField,
   EncodedFormFieldPrefix,
+  DynamicOptionPrefix,
   FormFieldAliases,
+  FormOptionAliases,
   FormFields,
   FormTextSimilarity,
   NormalizeFormLabel,
@@ -12,6 +14,8 @@ import {
   type FormOptionObservation,
 } from './browser-form-service';
 import { BrowserDateAdapters, BrowserDateAdapterSelectionScript } from './browser-date-adapters';
+import { FindOperationField } from './browser-form-review';
+import { BeisenRegionOptionsExpression } from './browser-region-form';
 import { FeishuSelectEnrichmentScript, FeishuSelectOptionsExpression, FeishuSelectValueScript } from './browser-feishu-form';
 import { MokaDateControlsScript, MokaDateOptionRevealExpression, MokaDatePreparationExpression, MokaFormEnrichmentScript, MokaFormTargetRevealExpression, MokaFormValueScript, MokaOptionEnrichmentScript, MokaSearchOptionsWaitExpression } from './browser-moka-form';
 
@@ -323,6 +327,7 @@ export const FormSemanticEnrichmentExpression = (() => {
         v: filled,
         j: identities.nodes.get(element),
         k: recordRoot ? identities.nodes.get(recordRoot) : undefined,
+        t: dateAdapterFor(element) === 'beisen' ? 'beisen' : undefined,
         u: element.required === true || element.getAttribute('aria-required') === 'true' || Boolean(element.closest('.form-item')?.querySelector('.form-item__required')) ? true : undefined,
         ...context,
         ...overrides,
@@ -759,11 +764,11 @@ export function DynamicOptionEnrichmentFor(onlyMoka = false): string { return `(
     // Phoenix Select 会把嵌套 option 从无障碍树折叠为空名称 listitem；button + tabindex 可稳定保留候选名称和 ref。
     element.setAttribute('role', confirmation || !selectionControl ? 'button' : 'radio');
     element.setAttribute('tabindex', '0');
-    element.setAttribute('aria-label', confirmation ? '__avery_dynamic_confirmation__' : text.slice(0, 120));
+    element.setAttribute('aria-label', confirmation ? '__avery_dynamic_confirmation__' : ${JSON.stringify(DynamicOptionPrefix)} + text.slice(0, 120));
     annotated += 1;
   }
   const observed = [...new Set(candidates.filter(candidate => !confirmations.has(candidate.element)).map(candidate => candidate.text.slice(0,120)))];
-  return { roots: roots.size, annotated, observedOptions:observed.slice(0,40), optionsTruncated:observed.length>40 };
+  return { roots: roots.size, annotated, scoped:true, observedOptions:observed.slice(0,40), optionsTruncated:observed.length>40 };
 })()`; }
 
 export const DynamicOptionEnrichmentExpression = DynamicOptionEnrichmentFor();
@@ -787,7 +792,7 @@ export const DynamicOptionObservationExpression = `(() => {
   for (const element of document.querySelectorAll('[data-avery-dynamic-option]')) {
     const rect = element.getBoundingClientRect(), style = getComputedStyle(element);
     if (!rect.width || !rect.height || style.visibility === 'hidden' || style.display === 'none') continue;
-    const label = String(element.getAttribute('aria-label') || element.innerText || '').replace(/\\s+/g, ' ').trim();
+    const label = String(element.getAttribute('aria-label') || element.innerText || '').replace(/^${DynamicOptionPrefix}/,'').replace(/\\s+/g, ' ').trim();
     if (!label || label.startsWith('__avery_') || /^(确定|确认|完成|取消|关闭)$/.test(label) || labels.includes(label)) continue;
     labels.push(label.slice(0, 120));
     if (labels.length > 40) break;
@@ -814,17 +819,7 @@ export function DynamicOptionMatch(
   const clickable = new Set<string>();
   const snapshot = String(data?.snapshot ?? '');
   for (const match of snapshot.matchAll(/\[[^\]\r\n]*\bref=(e\d+)\b[^\]\r\n]*\][^\r\n]*\bclickable\b/g)) clickable.add(match[1]);
-  const normalizeOption = (value: unknown) => {
-    const normalized = NormalizeFormOption(fieldKey, value);
-    if (fieldKey === 'workYears') {
-      if (/^(在校学生|在读学生|学生)$/.test(normalized)) return 'student';
-      if (/^(刚毕业|应届毕业生|应届生)$/.test(normalized)) return 'graduate';
-    }
-    if (fieldKey === 'degree' && normalized === '本科') return '学士';
-    // 档案可能保存“汉”，而招聘站枚举通常展示“汉族”；仅去掉末尾族字，不做宽泛模糊匹配。
-    if (fieldKey === 'ethnicity') return normalized.replace(/族$/, '');
-    return normalized;
-  };
+  const normalizeOption = (value: unknown) => NormalizeFormOption(fieldKey, value);
   const desired = normalizeOption(desiredValue);
   const regionField = ['nativePlace', 'residence', 'hukou', 'targetProvince', 'targetCity'].includes(fieldKey);
   const geographic = (value: string) => value.replace(/特别行政区|自治区|省|市|区|县|[\/><>,，]/g, '');
@@ -832,7 +827,10 @@ export function DynamicOptionMatch(
   const candidates: Array<{ ref: string; label: string; score: number; complete: boolean; role: string; actionKey: string }> = [];
   for (const [rawRef, metadata] of Object.entries(refs)) {
     const role = String(metadata?.role ?? '').toLowerCase();
-    const label = String(metadata?.name ?? '').replace(/\s+/g, ' ').trim().slice(0, 120);
+    const rawName = String(metadata?.name ?? '');
+    // 生产快照必须来自当前候选观察器，正文里的同名按钮不能冒充下拉选项。
+    if (data.optionObservation?.scoped === true && !rawName.startsWith(DynamicOptionPrefix)) continue;
+    const label = (rawName.startsWith(DynamicOptionPrefix) ? rawName.slice(DynamicOptionPrefix.length) : rawName).replace(/\s+/g, ' ').trim().slice(0, 120);
     const normalized = normalizeOption(label);
     if (!normalized || normalized.length > 80 || /^(请选择|请输入|确定|取消|关闭)$/.test(normalized)) continue;
     // 这些枚举只接受确切同义项，不能把“非全日制”或不同周期凭子串相似选中。
@@ -848,17 +846,16 @@ export function DynamicOptionMatch(
     if (normalized === desired) { score = 100; complete = true; }
     else if (regionField && normalizedGeographic && normalizedGeographic === desiredGeographic) { score = 95; complete = true; }
     else if (regionField && normalizedGeographic.length >= 2 && desiredGeographic.endsWith(normalizedGeographic)) { score = 90; complete = true; }
-    else if (normalized.length >= 2 && desired.includes(normalized)) score = 85;
-    else if (regionField && normalizedGeographic.length >= 2 && desiredGeographic.includes(normalizedGeographic)) score = 75;
-    else if (desired.length >= 2 && normalized.includes(desired)) { score = 65; complete = true; }
+    // 只有地区允许逐层导航，普通枚举和学校名称不能靠子串猜测；学历也不能推导学位。
+    else if (regionField && normalizedGeographic.length >= 2 && desiredGeographic.startsWith(normalizedGeographic)) score = 75;
     // 北森地区级联的中间层圆点只会选中当前级，不能展开下一级；仅允许在目标末级使用。
     if (score && !(regionField && role === 'radio' && !complete)) {
       candidates.push({ ref: `@${rawRef.replace(/^@/, '')}`, label, score, complete, role, actionKey });
     }
   }
-  // 北森同时暴露文字行和旁侧圆点。文字行承担级联导航和末级选择，圆点只是辅助选中态；
-  // 优先点击文字可避免停在省级或命中尺寸过小、易重建的图标节点。
-  const actionPriority = (candidate: typeof candidates[number]) => candidate.role === 'radio' ? 0 : 2;
+  // 中间层点文字展开，来源要求的最终层优先点圆点选中；点城市文字可能只展开区县而不选中城市。
+  const actionPriority = (candidate: typeof candidates[number]) => candidate.role === 'radio'
+    ? regionField && candidate.complete ? 3 : 0 : 2;
   candidates.sort((left, right) => right.score - left.score
     || actionPriority(right) - actionPriority(left)
     || left.label.length - right.label.length);
@@ -891,9 +888,13 @@ export function MatchingDynamicFormFields(fields: FormField[], operation: FormFi
 }
 
 function DynamicFormTarget(fields: FormField[], operation: FormFillOperation): FormField | undefined {
+  if (operation.targetNodeIdentity || operation.targetRecordIdentity) {
+    const target = FindOperationField(fields, operation);
+    return target?.control === 'select' && !target.options?.length ? target : undefined;
+  }
   const matches = MatchingDynamicFormFields(fields, operation);
   if (operation.targetRecordIndex !== undefined) return matches.length === 1 ? matches[0] : undefined;
-  return operation.targetOccurrence === undefined ? matches[operation.occurrence] ?? matches[0] : matches[operation.targetOccurrence];
+  return operation.targetOccurrence === undefined ? matches[operation.occurrence] : matches[operation.targetOccurrence];
 }
 
 export function DynamicConfirmationMatch(data: Record<string, any>): { ref: string; label: string } | undefined {
@@ -949,6 +950,9 @@ export function DynamicSelectionVerificationExpression(operation: FormFillOperat
     const normalize = (value) => String(value || '').toLowerCase().replace(/[\\s_\\-—–·:：()（）[\\]【】*＊]/g, '');
     const triggers = [...document.querySelectorAll('[data-avery-form-semantic="custom-select"]')]
       .filter((element) => element.getAttribute('data-avery-form-key') === ${JSON.stringify(operation.key)});
+    const identity = ${JSON.stringify(operation.targetNodeIdentity)};
+    const identityTrigger = identity ? triggers.find(element => window.__averyFormIdentities?.nodes.get(element) === identity) : undefined;
+    if (identity && !identityTrigger) return {filled:false};
     if (${operation.adapter === 'feishu'}) {
       const identity = ${JSON.stringify(operation.targetNodeIdentity)};
       const target = typeof identity === 'string' && identity ? triggers.find(element => window.__averyFormIdentities?.nodes.get(element) === identity) : undefined;
@@ -959,7 +963,7 @@ export function DynamicSelectionVerificationExpression(operation: FormFillOperat
       const candidates = triggers.filter((element) => element.getAttribute('data-avery-form-section') === ${JSON.stringify(operation.concept.split('.')[0])}
         && normalize(element.getAttribute('data-avery-form-label')) === normalize(${JSON.stringify(operation.label)})
         && (${operation.targetRecordIndex === undefined} || element.getAttribute('data-avery-form-record') === ${JSON.stringify(String(operation.targetRecordIndex))}));
-      const target = candidates[${operation.targetRecordIndex === undefined ? operation.targetOccurrence ?? 0 : 0}];
+      const target = identityTrigger ?? candidates[${operation.targetRecordIndex === undefined ? operation.targetOccurrence ?? 0 : 0}];
       if (!(target instanceof HTMLElement)) return { filled: false };
       if (${operation.kind === 'custom_date'}) {
         const parse = (value) => String(value || '').match(/^(\\d{4})[-/.年](\\d{1,2})(?:[-/.月](\\d{1,2}))?[月日]?$/);
@@ -972,7 +976,7 @@ export function DynamicSelectionVerificationExpression(operation: FormFillOperat
     if (${JSON.stringify(operation.kind === 'custom_date' && operation.targetOccurrence !== undefined)}) {
       const candidates = triggers.filter((element) => element.getAttribute('data-avery-form-section') === ${JSON.stringify(operation.concept.split('.')[0])}
         && normalize(element.getAttribute('data-avery-form-label')) === normalize(${JSON.stringify(operation.label)}));
-      const target = candidates[${operation.targetOccurrence ?? 0}];
+      const target = identityTrigger ?? candidates[${operation.targetOccurrence ?? 0}];
       if (!(target instanceof HTMLElement)) return { filled: false };
       const input = target.querySelector('input');
       const value = target.matches(${JSON.stringify(BrowserDateAdapters.feishu.rangeEdge)}) ? target.textContent : input?.value;
@@ -982,52 +986,53 @@ export function DynamicSelectionVerificationExpression(operation: FormFillOperat
       return { filled: Boolean(desired && actual && Number(desired[1]) === Number(actual[1])
         && Number(desired[2]) === Number(actual[2]) && (!desired[3] || Number(desired[3]) === Number(actual[3]))) };
     }
-    const trigger = triggers[${operation.occurrence}] || triggers[0];
+    const candidates = triggers.filter(element =>
+      (!${JSON.stringify(operation.targetLabel ?? operation.label)} || normalize(element.getAttribute('data-avery-form-label')) === normalize(${JSON.stringify(operation.targetLabel ?? operation.label)}))
+      && (${operation.targetSection === undefined} || element.getAttribute('data-avery-form-section') === ${JSON.stringify(operation.targetSection)})
+      && (${operation.targetRecordIndex === undefined} || element.getAttribute('data-avery-form-record') === ${JSON.stringify(String(operation.targetRecordIndex))}));
+    const trigger = identity ? triggers.find(element => window.__averyFormIdentities?.nodes.get(element) === identity)
+      : candidates.length === 1 ? candidates[0] : undefined;
     if (!(trigger instanceof HTMLElement)) return { filled: false };
-    const visibleControls = (root) => [...root.querySelectorAll('input,textarea,select,[role="combobox"],[aria-haspopup="listbox"]')]
-      .filter((element) => {
-        if (!(element instanceof HTMLElement)) return false;
-        const style = getComputedStyle(element);
-        const rect = element.getBoundingClientRect();
-        return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
-      }).length;
-    let displayRoot = trigger;
-    for (let current = trigger; current?.parentElement; current = current.parentElement) {
-      if (['BODY', 'HTML'].includes(current.tagName)) break;
-      if (visibleControls(current) > 4) break;
-      displayRoot = current;
-      if (current.matches('label,[class*="form-item" i],[class*="formitem" i],[class*="field" i]')) break;
-    }
-    const inputValues = [...displayRoot.querySelectorAll('input,textarea')]
-      .map((element) => element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement ? element.value : '')
-      .join(' ');
-    const selectedState = [...displayRoot.querySelectorAll('[aria-selected="true"],[aria-checked="true"],input:checked,[class*="selected" i],[class*="checked" i]')]
-      .map((element) => element instanceof HTMLInputElement ? element.value : element.textContent || '')
-      .join(' ');
-    const displayText = [displayRoot.innerText, displayRoot.textContent, inputValues, selectedState].filter(Boolean).join(' ');
+    // 仅回读当前触发器的业务展示值，禁止从父容器、相邻字段或仍打开的菜单借用目标文字。
+    // Phoenix 内部 input 是搜索词，不代表选中；只接受明确的选中内容区域。
+    const phoenix = trigger.matches('.phoenix-select') ? trigger.querySelector('.phoenix-select__content') : null;
+    const input = trigger.querySelector('input');
+    const displayText = String(phoenix ? phoenix.innerText ?? phoenix.textContent ?? ''
+      : trigger.matches('.phoenix-select') ? ''
+      : 'value' in trigger ? trigger.value
+      : ${operation.kind === 'custom_date'} ? input?.value ?? ''
+      : trigger.innerText ?? trigger.textContent ?? '').trim();
     const display = normalize(displayText);
     const selected = ${JSON.stringify(selected)};
+    const aliases = ${JSON.stringify(FormOptionAliases[operation.key] ?? [])};
+    const optionValue = raw => {
+      const value = normalize(raw);
+      if (${operation.key === 'ethnicity'}) return value.replace(/族$/, '');
+      return aliases.find(group => group.includes(value))?.[0] ?? value;
+    };
     const geographic = (value) => value.replace(/特别行政区|自治区|省|市|区|县|[\\/><>,，]/g, '');
     const dateParts = (value) => {
-      const match = String(value || '').match(/(\\d{4})\\D{0,4}(\\d{1,2})(?:\\D{0,4}(\\d{1,2}))?/);
+      const match = String(value || '').trim().match(/^(\\d{4})[-/.年](\\d{1,2})(?:[-/.月](\\d{1,2}))?[月日]?$/);
       return match ? [Number(match[1]), Number(match[2]), match[3] ? Number(match[3]) : undefined] : undefined;
     };
     const geographicField = ${JSON.stringify(['nativePlace', 'residence', 'hukou', 'targetProvince', 'targetCity'].includes(operation.key))};
-    const exactOrContained = !geographicField && selected.some((label) => label && display.includes(label));
+    const exactValue = !geographicField && optionValue(displayText) === ${JSON.stringify(NormalizeFormOption(operation.key, operation.value))};
     const geographicDisplay = geographic(display);
     const desiredGeographic = geographic(normalize(${JSON.stringify(operation.value)}));
     const selectedLeaf = geographic(selected[selected.length - 1] || '');
+    const selectedPath = geographic(selected.join(''));
     const geographicMatch = geographicField
       && desiredGeographic.length >= 2
-      && (geographicDisplay.includes(desiredGeographic)
+      && (geographicDisplay === desiredGeographic
         || (selectedLeaf.length >= 2
-          && desiredGeographic.endsWith(selectedLeaf) && geographicDisplay.includes(selectedLeaf)));
+          && selectedPath === desiredGeographic
+          && desiredGeographic.endsWith(selectedLeaf) && geographicDisplay === selectedLeaf));
     const desiredDate = dateParts(${JSON.stringify(operation.value)});
     const observedDate = dateParts(displayText);
     const dateMatch = ${JSON.stringify(['birthDate', 'startDate', 'endDate', 'availability'].includes(operation.key))}
       && desiredDate && observedDate && desiredDate[0] === observedDate[0] && desiredDate[1] === observedDate[1]
       && (desiredDate[2] === undefined || desiredDate[2] === observedDate[2]);
-    return { filled: display !== '请选择' && (exactOrContained || geographicMatch || dateMatch) };
+    return { filled: Boolean(display && display !== '请选择' && (exactValue || geographicMatch || dateMatch)) };
   })()`;
 }
 
@@ -1196,11 +1201,14 @@ export class BrowserFormDriver {
   private async SnapshotDynamicOptions(options: { signal?: AbortSignal; deadline?: number }, operation?: FormFillOperation): Promise<BrowserFormCommandEnvelope> {
     const cleanup = ['eval', '-b', Buffer.from(DynamicOptionCleanupExpression, 'utf8').toString('base64')];
     await this.port.runCommand(cleanup, options);
-    const expression = operation?.adapter === 'feishu' ? FeishuSelectOptionsExpression(operation) : DynamicOptionEnrichmentFor(operation?.adapter === 'moka');
+    const beisenRegion = operation?.adapter === 'beisen' && ['nativePlace','residence','hukou','targetProvince','targetCity'].includes(operation.key);
+    const expression = beisenRegion
+      ? BeisenRegionOptionsExpression(Math.max(0, Math.min(8_000, (options.deadline ?? Date.now()+9_000)-Date.now()-500)))
+      : operation?.adapter === 'feishu' ? FeishuSelectOptionsExpression(operation) : DynamicOptionEnrichmentFor(operation?.adapter === 'moka');
     const enrichment = await this.port.runCommand(['eval', '-b', Buffer.from(expression, 'utf8').toString('base64')], options);
-    if (operation?.adapter === 'feishu' && enrichment.data?.result?.ready !== true) {
+    if ((operation?.adapter === 'feishu' || beisenRegion) && enrichment.data?.result?.ready !== true) {
       const reason = String(enrichment.data?.result?.reason ?? 'unknown');
-      throw new AgentBrowserError('BROWSER_FORM_MENU_NOT_READY', `The Feishu select menu is not ready (${reason}). Observe the field before selecting.`);
+      throw new AgentBrowserError('BROWSER_FORM_MENU_NOT_READY', `The select menu is not ready (${reason}). Observe the field before selecting; do not fill the selector display input.`);
     }
     // 个人浏览器的 ref 包含严格语义指纹；标记必须保留到本次点击完成，下次快照会先清理。
     const snapshot = await this.port.runCommand(['snapshot', '-i', '-c', '--urls'], options);
@@ -1458,10 +1466,11 @@ export class BrowserFormDriver {
     const formSnapshot = await this.InspectForm(options, true, operation);
     const fields = FormFields(formSnapshot.data?.refs && typeof formSnapshot.data.refs === 'object' ? formSnapshot.data.refs : {}, this.port.pageRevision());
     const target = DynamicFormTarget(fields, operation);
-    if (target?.interaction.adapter === 'feishu') operation = { ...operation, adapter: 'feishu', targetNodeIdentity: target.nodeIdentity };
+    if (target?.interaction.adapter) operation = { ...operation, adapter: target.interaction.adapter, targetNodeIdentity: target.nodeIdentity };
     const selectedLabels: string[] = [];
     const region = ['nativePlace', 'residence', 'hukou', 'targetProvince', 'targetCity'].includes(operation.key);
     let committed = false;
+    let outcomeUnknown = false;
     let searchedDynamicList = false;
     let lastObservation: {observedOptions?:unknown;optionsTruncated?:boolean} | undefined;
     let optionsBeforeSearch: string[] | undefined;
@@ -1521,7 +1530,7 @@ export class BrowserFormDriver {
         } catch (error) {
           // 虚拟列表可能在快照后立即重建候选节点；只在 ref 失效时重新生成一次候选快照，
           // 再按相同语义选择，避免重复执行已完成的级联步骤。
-          if (!(error instanceof AgentBrowserError) || error.code !== 'BROWSER_STALE_PAGE_REF') throw error;
+          if (!(error instanceof AgentBrowserError) || error.statusUnknown || error.code !== 'BROWSER_STALE_PAGE_REF') throw error;
           const refreshedSnapshot = await this.SnapshotDynamicOptions(options,operation);
           lastObservation = refreshedSnapshot.data?.optionObservation;
           const refreshed = DynamicOptionMatch(refreshedSnapshot.data ?? {}, operation.key, operation.value, visitedActions, operation.adapter === 'moka' && !region);
@@ -1579,11 +1588,14 @@ export class BrowserFormDriver {
         }
       }
       return committed ? { filled: true } : await failure('selection_not_committed');
+    } catch (error) {
+      outcomeUnknown = error instanceof AgentBrowserError && error.statusUnknown;
+      throw error;
     } finally {
       try { await this.port.runCommand(['eval', '-b', Buffer.from(DynamicOptionCleanupExpression, 'utf8').toString('base64')], options); } catch { /* 字段结果优先，下次候选快照仍会先清理。 */ }
       try { await this.port.runCommand(['eval', '-b', Buffer.from(FormSemanticCleanupExpression, 'utf8').toString('base64')], options); } catch { /* 下次 Inspect 会再次清理。 */ }
       // 地区确认成功后组件应自行关闭；再次切换触发器可能反而重开弹层。失败路径才执行恢复性收尾。
-      if (!committed || !region) await this.DismissTransientOverlay(options, target ? operation : undefined);
+      if (!outcomeUnknown && (!committed || !region)) await this.DismissTransientOverlay(options, target ? operation : undefined);
     }
   }
 
@@ -1595,8 +1607,9 @@ export class BrowserFormDriver {
     const formSnapshot = await this.InspectForm(options, true, operation);
     const fields = FormFields(formSnapshot.data?.refs && typeof formSnapshot.data.refs === 'object' ? formSnapshot.data.refs : {}, this.port.pageRevision());
     const matchingFields = MatchingDynamicFormFields(fields, operation);
-    const target = operation.targetRecordIndex !== undefined ? DynamicFormTarget(fields, operation) : matchingFields[operation.targetOccurrence ?? operation.occurrence];
+    const target = operation.targetNodeIdentity || operation.targetRecordIdentity || operation.targetRecordIndex !== undefined ? DynamicFormTarget(fields, operation) : matchingFields[operation.targetOccurrence ?? operation.occurrence];
     let committed = false;
+    let outcomeUnknown = false;
 
     try {
       if (!target) return { filled: false, reason: 'dynamic_field_not_found' };
@@ -1651,7 +1664,7 @@ export class BrowserFormDriver {
           const refreshedForm = await this.InspectForm(options, true);
           const refreshedFields = FormFields(refreshedForm.data?.refs && typeof refreshedForm.data.refs === 'object' ? refreshedForm.data.refs : {}, this.port.pageRevision());
           const refreshedMatches = MatchingDynamicFormFields(refreshedFields, operation);
-          const refreshedTarget = operation.targetRecordIndex !== undefined ? DynamicFormTarget(refreshedFields, operation) : refreshedMatches[operation.targetOccurrence ?? operation.occurrence];
+          const refreshedTarget = operation.targetNodeIdentity || operation.targetRecordIdentity || operation.targetRecordIndex !== undefined ? DynamicFormTarget(refreshedFields, operation) : refreshedMatches[operation.targetOccurrence ?? operation.occurrence];
           if (!refreshedTarget) return { filled: false, reason: 'dynamic_field_not_found' };
           await this.ClickDynamicRef(refreshedTarget.ref, options);
           await this.port.delay(DynamicTransitionDelayMs, options.signal);
@@ -1665,13 +1678,16 @@ export class BrowserFormDriver {
         return committed ? { filled: true } : { filled: false, reason: 'selection_not_committed' };
       }
       return { filled: true };
+    } catch (error) {
+      outcomeUnknown = error instanceof AgentBrowserError && error.statusUnknown;
+      throw error;
     } finally {
       if (operation.adapter === 'moka') {
         try { await this.port.runCommand(['eval', '-b', Buffer.from("(() => { for (const element of document.querySelectorAll('[data-avery-moka-active-date]')) element.removeAttribute('data-avery-moka-active-date'); return { cleaned: true }; })()", 'utf8').toString('base64')], options); } catch { /* 不覆盖原字段结果。 */ }
       }
       try { await this.port.runCommand(['eval', '-b', Buffer.from(DateEditorCleanupExpression, 'utf8').toString('base64')], options); } catch { /* 下次日期操作仍会先清理。 */ }
       try { await this.port.runCommand(['eval', '-b', Buffer.from(FormSemanticCleanupExpression, 'utf8').toString('base64')], options); } catch { /* 下次 Inspect 会再次清理。 */ }
-      await this.DismissTransientOverlay(options, target ? operation : undefined);
+      if (!outcomeUnknown) await this.DismissTransientOverlay(options, target ? operation : undefined);
     }
   }
 

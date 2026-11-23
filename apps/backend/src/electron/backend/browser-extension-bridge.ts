@@ -1,5 +1,5 @@
 import { createServer, type Server, type ServerResponse } from 'node:http';
-import { randomBytes, randomUUID } from 'node:crypto';
+import { createHmac, randomBytes, randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { spawn } from 'node:child_process';
@@ -7,6 +7,7 @@ import { spawn } from 'node:child_process';
 const DefaultBridgePort = 17653;
 const MaxJsonBytes = 20 * 1024 * 1024;
 const ExtensionOnlineWindowMs = 35_000;
+type ExtensionBrowserEngine = 'chrome' | 'edge' | 'ego';
 
 /**
  * 扩展 Worker 与 Backend 的协议指纹。manifest version 只描述发布包，不能
@@ -50,11 +51,13 @@ type SettledCommand = {
 };
 
 export type BrowserExtensionBridgeDiagnostic = {
-  event: 'stale_revoke' | 'epoch_revoke' | 'late_result' | 'late_ack';
+  event: 'stale_revoke' | 'epoch_revoke' | 'late_result' | 'late_ack' | 'command_timeout';
+  engine: ExtensionBrowserEngine;
   commandId: string;
   browserTaskId: string;
   runId: string | null;
   operation: string;
+  method?: string;
   delivery: CommandDeliveryState | 'unknown';
   statusUnknown: boolean;
   workerInstanceId: string | null;
@@ -101,6 +104,7 @@ export interface BrowserExtensionBridgeOptions {
   now?: () => number;
   launchBrowser?: (engine: 'chrome' | 'edge' | 'ego', url: string) => Promise<void> | void;
   expectedExtensionVersion?: string;
+  recordLog?: (level: 'WARN', event: string, detail: string) => void;
 }
 
 export class BrowserExtensionBridgeError extends Error {
@@ -153,8 +157,13 @@ export class BrowserExtensionBridge {
   private readonly requestedPort: number;
   private readonly now: () => number;
   private readonly launchBrowser?: BrowserExtensionBridgeOptions['launchBrowser'];
+  private readonly recordLog?: BrowserExtensionBridgeOptions['recordLog'];
   private readonly expectedExtensionVersion: string;
   private readonly token: string;
+  private readonly pairingKey: string;
+  private readonly engine: ExtensionBrowserEngine;
+  private readonly root?: BrowserExtensionBridge;
+  private readonly channels = new Map<ExtensionBrowserEngine, BrowserExtensionBridge>();
   private server: Server | null = null;
   private startPromise: Promise<void> | null = null;
   private port = 0;
@@ -182,24 +191,48 @@ export class BrowserExtensionBridge {
   private settled = new Map<string, SettledCommand>();
   private diagnostics: BrowserExtensionBridgeDiagnostic[] = [];
 
-  constructor(options: BrowserExtensionBridgeOptions) {
+  constructor(options: BrowserExtensionBridgeOptions, channel?: { root: BrowserExtensionBridge; engine: ExtensionBrowserEngine }) {
     this.statePath = resolve(options.statePath);
     this.browserPaths = options.browserPaths ?? {};
     this.requestedPort = options.port ?? DefaultBridgePort;
     this.now = options.now ?? Date.now;
     this.launchBrowser = options.launchBrowser;
+    this.recordLog = options.recordLog;
     this.expectedExtensionVersion = options.expectedExtensionVersion ?? BrowserExtensionManifestVersion;
-    mkdirSync(dirname(this.statePath), { recursive: true });
-    let token = '';
-    try { token = String(JSON.parse(readFileSync(this.statePath, 'utf8'))?.token ?? ''); } catch { token = ''; }
-    if (!/^[a-f0-9]{64}$/.test(token)) {
-      token = randomBytes(32).toString('hex');
-      writeFileSync(this.statePath, JSON.stringify({ schemaVersion: 1, token }, null, 2), { encoding: 'utf8', mode: 0o600 });
+    this.root = channel?.root;
+    this.engine = channel?.engine ?? 'chrome';
+    if (channel) {
+      this.pairingKey = channel.root.pairingKey;
+    } else {
+      mkdirSync(dirname(this.statePath), { recursive: true });
+      let token = '';
+      try { token = String(JSON.parse(readFileSync(this.statePath, 'utf8'))?.token ?? ''); } catch { token = ''; }
+      if (!/^[a-f0-9]{64}$/.test(token)) {
+        token = randomBytes(32).toString('hex');
+        writeFileSync(this.statePath, JSON.stringify({ schemaVersion: 1, token }, null, 2), { encoding: 'utf8', mode: 0o600 });
+      }
+      this.pairingKey = token;
     }
-    this.token = token;
+    // 旧配对令牌没有浏览器归属，不能继续派发命令；新配对页按引擎签发稳定令牌，重启后仍可恢复。
+    this.token = createHmac('sha256', this.pairingKey).update(`avery-browser-engine:${this.engine}`).digest('hex');
+    if (!channel) {
+      for (const engine of ['edge', 'ego'] as const) this.channels.set(engine, new BrowserExtensionBridge(options, { root: this, engine }));
+    }
+  }
+
+  /** 每个浏览器独立持有握手、Worker 代次、长轮询与任务队列，只共享回环监听端口。 */
+  private Channel(engine: ExtensionBrowserEngine): BrowserExtensionBridge {
+    if (engine !== 'chrome' && engine !== 'edge' && engine !== 'ego') throw new BrowserExtensionBridgeError('BROWSER_ARGUMENT_INVALID', 'Browser engine is invalid.');
+    if (this.root) return this.root.Channel(engine);
+    return engine === this.engine ? this : this.channels.get(engine)!;
   }
 
   async Start(): Promise<void> {
+    if (this.root) {
+      await this.root.Start();
+      this.port = this.root.port;
+      return;
+    }
     if (this.server?.listening) return;
     if (this.startPromise) return this.startPromise;
     this.startPromise = new Promise<void>((resolveStart, rejectStart) => {
@@ -242,16 +275,19 @@ export class BrowserExtensionBridge {
 
   private RecordDiagnostic(
     event: BrowserExtensionBridgeDiagnostic['event'],
-    command: Pick<BridgeCommand, 'id' | 'browserTaskId' | 'operation' | 'runId'>,
+    command: Pick<BridgeCommand, 'id' | 'browserTaskId' | 'operation' | 'runId' | 'payload'>,
     delivery: CommandDeliveryState | 'unknown',
     statusUnknown: boolean,
   ): void {
+    const method = (command.payload as { method?: unknown } | null)?.method;
     const diagnostic: BrowserExtensionBridgeDiagnostic = {
       event,
+      engine: this.engine,
       commandId: command.id,
       browserTaskId: command.browserTaskId,
       runId: command.runId ?? null,
       operation: command.operation,
+      ...(command.operation === 'cdp' && typeof method === 'string' && /^[A-Za-z]+\.[A-Za-z]+$/.test(method) ? { method } : {}),
       delivery,
       statusUnknown,
       workerInstanceId: this.activeWorkerInstanceId,
@@ -264,7 +300,9 @@ export class BrowserExtensionBridge {
     this.diagnostics.push(diagnostic);
     if (this.diagnostics.length > 100) this.diagnostics.splice(0, this.diagnostics.length - 100);
     try {
-      console.warn('[Avery browser extension bridge]', JSON.stringify(diagnostic));
+      const detail = JSON.stringify(diagnostic);
+      if (this.recordLog) this.recordLog('WARN', 'browser.extension_bridge', detail);
+      else console.warn('[Avery browser extension bridge]', detail);
     } catch { /* 日志失败不能改变命令终态。 */ }
   }
 
@@ -477,7 +515,7 @@ export class BrowserExtensionBridge {
     return 'online';
   }
 
-  IsConnected(): boolean { return this.ProtocolReady(); }
+  IsConnected(engine: ExtensionBrowserEngine = this.engine): boolean { return this.Channel(engine).ProtocolReady(); }
 
   private FlushPoll(): void {
     if (!this.pollResponse || !this.commands.length) return;
@@ -487,6 +525,8 @@ export class BrowserExtensionBridge {
     this.pollConnectionEpoch = -1;
     if (this.pollTimer) clearTimeout(this.pollTimer);
     this.pollTimer = null;
+    // 已断开的长轮询无法领取命令。保留队列供下一次有效轮询领取。
+    if (response.destroyed || response.writableEnded) return;
     if (pollEpoch !== this.connectionEpoch || !this.ProtocolReady()) {
       this.RevokeQueuedBeforeDelivery(this.ConnectionReadinessError() ?? this.WorkerEpochError(false));
       Json(response, 200, { commands: [] });
@@ -512,6 +552,11 @@ export class BrowserExtensionBridge {
   }
 
   private async Handle(request: import('node:http').IncomingMessage, response: ServerResponse): Promise<void> {
+    if (!this.root) {
+      for (const channel of this.channels.values()) {
+        if (channel.Authorized(request)) return channel.Handle(request, response);
+      }
+    }
     response.setHeader('access-control-allow-origin', '*');
     response.setHeader('access-control-allow-headers', 'authorization,content-type');
     if (request.method === 'OPTIONS') { response.writeHead(204); response.end(); return; }
@@ -543,6 +588,13 @@ export class BrowserExtensionBridge {
           this.pollTimer = null;
           Json(response, 200, { commands: [] });
         }, 20_000);
+        response.once('close', () => {
+          if (this.pollResponse !== response) return;
+          this.pollResponse = null;
+          this.pollConnectionEpoch = -1;
+          if (this.pollTimer) clearTimeout(this.pollTimer);
+          this.pollTimer = null;
+        });
         this.FlushPoll();
         return;
       }
@@ -618,6 +670,8 @@ export class BrowserExtensionBridge {
   }
 
   async EnsureConnected(engine: 'chrome' | 'edge' | 'ego', options: { launch?: boolean; signal?: AbortSignal; deadline?: number } = {}): Promise<void> {
+    const channel = this.Channel(engine);
+    if (channel !== this) return channel.EnsureConnected(engine, options);
     const end = Math.min(options.deadline ?? this.now() + 20_000, this.now() + 20_000);
     if (options.signal?.aborted) throw new BrowserExtensionBridgeError('CANCELLED', 'Browser extension connection was cancelled.');
     if (this.now() >= end) throw new BrowserExtensionBridgeError('BROWSER_COMMAND_TIMEOUT', 'Browser extension connection timed out.');
@@ -669,6 +723,8 @@ export class BrowserExtensionBridge {
   }
 
   async Request(engine: 'chrome' | 'edge' | 'ego', operation: string, payload: unknown, options: { signal?: AbortSignal; deadline?: number; responseDeadline?: number; browserTaskId?: string; runId?: string } = {}): Promise<any> {
+    const channel = this.Channel(engine);
+    if (channel !== this) return channel.Request(engine, operation, payload, options);
     if (!Number.isSafeInteger(options.deadline) || (options.deadline as number) <= 0) {
       throw new BrowserExtensionBridgeError('BROWSER_COMMAND_DEADLINE_REQUIRED', 'A browser command deadline is required.');
     }
@@ -703,22 +759,24 @@ export class BrowserExtensionBridge {
         return;
       }
       const id = randomUUID();
-      const Abort = () => {
+      const Fail = (timedOut: boolean) => {
         const pending = this.pending.get(id);
         if (!pending) return;
+        // 超时或取消时从候选队列撤销，避免 Worker 晚到后启动写操作。
         this.commands = this.commands.filter((command) => command.id !== id);
-        const error = new BrowserExtensionBridgeError('CANCELLED', 'Browser extension command was cancelled.', true);
-        this.SettlePending(id, pending, { code: error.code, statusUnknown: true, error });
+        const delivered = pending.delivery === 'delivered';
+        const method = (pending.command.payload as { method?: unknown } | null)?.method;
+        const readTarget = pending.command.operation === 'cdp' && (method === 'Target.getTargets' || method === 'Target.getTargetInfo');
+        const statusUnknown = delivered && !readTarget;
+        const message = !timedOut ? 'Browser extension command was cancelled.'
+          : delivered ? 'Browser extension did not return a result for the delivered command.'
+            : 'Browser extension did not pick up the queued command in time.';
+        const error = new BrowserExtensionBridgeError(timedOut ? 'BROWSER_COMMAND_TIMEOUT' : 'CANCELLED', message, statusUnknown);
+        this.SettlePending(id, pending, { code: error.code, statusUnknown, error });
+        if (timedOut) this.RecordDiagnostic('command_timeout', pending.command, pending.delivery, statusUnknown);
       };
-      const timer = setTimeout(() => {
-        const pending = this.pending.get(id);
-        if (!pending) return;
-        // 超时发生在命令尚未被长轮询取走时，必须一并撤销队列项；否则扩展
-        // 可能在调用方已收到 status_unknown 后才执行这个写操作。
-        this.commands = this.commands.filter((command) => command.id !== id);
-        const error = new BrowserExtensionBridgeError('BROWSER_COMMAND_TIMEOUT', 'Browser extension command timed out.', true);
-        this.SettlePending(id, pending, { code: error.code, statusUnknown: true, error });
-      }, timeout);
+      const Abort = () => Fail(options.signal?.reason?.code === 'BROWSER_COMMAND_TIMEOUT' || this.now() >= responseDeadline);
+      const timer = setTimeout(() => Fail(true), timeout);
       options.signal?.addEventListener('abort', Abort, { once: true });
       const command: BridgeCommand = { id, operation, payload, deadline, browserTaskId, ...(options.runId ? { runId: options.runId } : {}) };
       this.pending.set(id, {
@@ -735,12 +793,14 @@ export class BrowserExtensionBridge {
     });
   }
 
-  GetDiagnostics(): BrowserExtensionBridgeDiagnostic[] {
+  GetDiagnostics(engine: ExtensionBrowserEngine = this.engine): BrowserExtensionBridgeDiagnostic[] {
+    const channel = this.Channel(engine);
+    if (channel !== this) return channel.GetDiagnostics(engine);
     this.PruneSettled();
     return this.diagnostics.map((diagnostic) => ({ ...diagnostic }));
   }
 
-  Status(): {
+  Status(engine: ExtensionBrowserEngine = this.engine): {
     connected: boolean;
     state: BrowserExtensionConnectionState;
     version?: string;
@@ -756,6 +816,8 @@ export class BrowserExtensionBridge {
     port: number;
     message?: string;
   } {
+    const channel = this.Channel(engine);
+    if (channel !== this) return channel.Status(engine);
     const state = this.CurrentConnectionState();
     return {
       connected: state === 'online',
@@ -770,12 +832,14 @@ export class BrowserExtensionBridge {
       handshakeSource: this.handshakeSource,
       source: this.handshakeSource,
       activeWorkerInstanceId: this.activeWorkerInstanceId,
-      port: this.port || this.requestedPort,
+      port: this.root?.port || this.port || this.requestedPort,
       ...(state === 'stale' ? { message: this.StaleProtocolError().message } : {}),
     };
   }
 
   async CloseTask(engine: 'chrome' | 'edge' | 'ego', browserTaskId?: string, options: { deadline?: number; closeTabs?: boolean } = {}): Promise<BrowserTaskCleanupOutcome> {
+    const channel = this.Channel(engine);
+    if (channel !== this) return channel.CloseTask(engine, browserTaskId, options);
     if (!IsBrowserTaskId(browserTaskId)) throw new BrowserExtensionBridgeError('BROWSER_TASK_ID_REQUIRED', 'A browserTaskId is required to close a browser task.');
     const responseDeadline = options.deadline ?? this.now() + 5_000;
     // 给 worker 留出一个共同清理 deadline，并为扩展回传逐标签页结果保留余量。
@@ -822,6 +886,7 @@ export class BrowserExtensionBridge {
   }
 
   async Close(): Promise<void> {
+    await Promise.all([...this.channels.values()].map(channel => channel.Close()));
     this.InvalidatePoll();
     for (const [id, pending] of [...this.pending]) {
       const error = new BrowserExtensionBridgeError('CANCELLED', 'Browser extension bridge closed.');

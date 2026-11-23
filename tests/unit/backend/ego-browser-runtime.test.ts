@@ -5,7 +5,7 @@ import { EgoBrowserBootstrap } from '../../../apps/backend/src/electron/backend/
 import { AgentBrowserRuntime } from '../../../apps/backend/src/electron/backend/agent-browser-runtime';
 import type { BrowserExtensionBridge } from '../../../apps/backend/src/electron/backend/browser-extension-bridge';
 import { PersonalBrowserCdpError, type PersonalBrowserRuntimePort } from '../../../apps/backend/src/electron/backend/personal-browser-cdp-runtime';
-import { DescribeEgoCliExit, EgoBrowserRuntimeProvider } from '../../../apps/backend/src/electron/backend/ego-browser-runtime';
+import { DescribeEgoCliExit, EgoBrowserRuntimeProvider, type EgoWorkspaceBinding } from '../../../apps/backend/src/electron/backend/ego-browser-runtime';
 import { BuildEgoNativeLaunch, QuoteWindowsArgument } from '../../../apps/backend/src/electron/backend/ego-browser-launcher';
 import * as EgoBrowserLauncher from '../../../apps/backend/src/electron/backend/ego-browser-launcher';
 import { SettingsSubmitSchema } from '../../../packages/contracts/src/write-schemas';
@@ -13,7 +13,7 @@ import { SettingsSubmitSchema } from '../../../packages/contracts/src/write-sche
 afterEach(() => { vi.unstubAllGlobals(); vi.unstubAllEnvs(); });
 
 /** 运行固定引导脚本，通过真实本机传输核对原生调用边界，不启动用户浏览器。 */
-async function CreateNativeHarness(closeTabs = true) {
+async function CreateNativeHarness(closeTabs = true, recoverable = false) {
   let closedSpace = false;
   let ownership = 'agent';
   const tabs = [{ targetId: 'own-page', title: '任务页面', url: 'https://example.com/', active: true }];
@@ -21,7 +21,7 @@ async function CreateNativeHarness(closeTabs = true) {
     createTaskSpace: vi.fn(async () => ({ id: 7 })),
     useTaskSpace: vi.fn(async (_id: number): Promise<unknown> => 7),
     listTabs: vi.fn(async () => ({ tabs })),
-    listTaskSpaces: vi.fn(async () => ({ taskSpaces: closedSpace ? [] : [{ id: 7, ownership }] })),
+    listTaskSpaces: vi.fn(async () => ({ taskSpaces: closedSpace ? [] : [{ id: 7, name: 'Avery test', ownership }] })),
     createTab: vi.fn(async (url: string) => { const tab = { targetId: 'new-page', title: '', url, active: true }; tabs.push(tab); return { targetId: tab.targetId }; }),
     closeTaskSpace: vi.fn(async () => { closedSpace = true; return { done: true }; }),
     completeTaskSpace: vi.fn(async () => { ownership = 'user'; return { done: true }; }),
@@ -49,12 +49,13 @@ async function CreateNativeHarness(closeTabs = true) {
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const address = server.address();
   if (!address || typeof address === 'string') throw new Error('No local test port.');
-  const work = EgoBrowserBootstrap({ port: address.port, token: 'test-token', name: 'Avery test', closeTabs });
+  const work = EgoBrowserBootstrap({ port: address.port, token: 'test-token', name: 'Avery test', closeTabs, recoverable });
   const next = () => queue.length ? Promise.resolve(queue.shift()!) : new Promise<Record<string, unknown>>((resolve) => waiters.push(resolve));
-  expect(await next()).toEqual({ ready: true, spaceId: 7 });
+  expect(await next()).toMatchObject({ ready: true, spaceId: 7 });
   let id = 0;
   return {
     native,
+    tabs,
     async command(method: string, params: Record<string, unknown> = {}, sessionId?: string) {
       socket.write(`${JSON.stringify({ id: ++id, method, params, sessionId })}\n`);
       return next();
@@ -173,6 +174,30 @@ describe('ego lite 空间与 CDP 适配', () => {
     } finally { await h.close(); }
   });
 
+  it('原生截图未回包时释放串行队列，迟到图片不会影响同一会话的后续读取', async () => {
+    const h = await CreateNativeHarness();
+    try {
+      await h.command('Target.attachToTarget', { targetId: 'own-page' });
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      let screenshotSent!: (id: number) => void;
+      const nativeId = new Promise<number>(resolve => { screenshotSent = resolve; });
+      h.native.sendCDPMessage.mockImplementationOnce(data => screenshotSent(JSON.parse(data).id));
+
+      const screenshot = h.command('Page.captureScreenshot', { format: 'png' }, 'own-session');
+      const screenshotId = await nativeId;
+      const observation = h.command('Runtime.evaluate', { expression: 'document.title' }, 'own-session');
+      await vi.advanceTimersByTimeAsync(8_000);
+      await expect(screenshot).resolves.toMatchObject({ error: { code: 'BROWSER_COMMAND_TIMEOUT', message: 'ego did not return a native screenshot response.' } });
+      h.native.onCDPMessage?.(JSON.stringify({ id: screenshotId, result: { data: 'late-screenshot' } }));
+      await expect(observation).resolves.toMatchObject({ result: { result: { value: '任务内容' } } });
+      expect(h.native.createTaskSpace).toHaveBeenCalledOnce();
+      expect(h.native.closeTaskSpace).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+      await h.close();
+    }
+  });
+
   it('用户接管或空间消失时停下，不接管、不新建替代空间', async () => {
     const h = await CreateNativeHarness();
     try {
@@ -202,6 +227,23 @@ describe('ego lite 空间与 CDP 适配', () => {
     expect(h.native.sendCDPMessage.mock.calls.map(([data]) => JSON.parse(data).method)).toEqual(['Target.attachToTarget', 'Target.detachFromTarget']);
   });
 
+  it('交付给当前任务的工作区在传输中断后只释放调试会话', async () => {
+    const h = await CreateNativeHarness(true, true);
+    await h.command('Target.attachToTarget', { targetId: 'own-page' });
+    await h.disconnect();
+    expect(h.native.closeTaskSpace).not.toHaveBeenCalled();
+    expect(h.native.completeTaskSpace).not.toHaveBeenCalled();
+    expect(h.native.sendCDPMessage.mock.calls.map(([data]) => JSON.parse(data).method)).toContain('Target.detachFromTarget');
+  });
+
+  it('用户新增的标签页使工作区收尾转为保留', async () => {
+    const h = await CreateNativeHarness(true, true);
+    h.tabs.push({ targetId: 'user-page', url: 'https://example.com/draft', active: false, title: 'User draft' });
+    expect(await h.close()).toMatchObject({ closed: true, closedTabs: 0, retainedTabs: 2 });
+    expect(h.native.closeTaskSpace).not.toHaveBeenCalled();
+    expect(h.native.completeTaskSpace).toHaveBeenCalledOnce();
+  });
+
   it('保留模式断线时也交还空间，不在 finally 删除页面', async () => {
     const h = await CreateNativeHarness(false);
     await h.disconnect();
@@ -216,58 +258,186 @@ describe('ego lite 空间与 CDP 适配', () => {
     expect(h.native.closeTaskSpace).not.toHaveBeenCalled();
   });
 
-  it('ego 检测和导航使用扩展通道；同一任务复用驱动并由扩展清理标签页', async () => {
-    let connected = false;
-    const personal: PersonalBrowserRuntimePort = {
-      Connect: vi.fn(async () => { connected = true; return { anchorUrl: '' }; }),
-      Run: vi.fn(async (command) => ({ success: true as const, data: command[0] === 'open' ? { url: command[1] } : {} })),
-      IsConnected: () => connected, GetBrowserTaskId: () => 'ego-extension-task', ResetReferences: vi.fn(),
-      Close: vi.fn(async () => { connected = false; }),
-    };
-    const bridge = {
-      Start: vi.fn(), EnsureConnected: vi.fn(), IsConnected: () => true,
-      Status: () => ({ connected: true, state: 'online', port: 17653 }),
-      CloseTask: vi.fn(async () => ({ status: 'confirmed', browserTaskId: 'ego-extension-task', closedTabs: 2, unknownTabs: 0 })), Close: vi.fn(),
-    };
-    const createExtensionRuntime = vi.fn(() => personal);
-    const runtime = new AgentBrowserRuntime({ runtimeRoot: 'D:/Avery/项目外部产物-20261030/ego-unit', resolveUploadFile: async () => null, browserExtensionBridge: bridge as unknown as BrowserExtensionBridge, externalBrowserPaths: { ego: process.execPath }, createExtensionRuntime, closeBridgeOnClose: false });
+  it.each([true, false])('ego 检测不创建空间，同任务复用且收尾冻结 closeTabs=%s', async closeTabs => {
+    const h = RoutingHarness();
+    h.runtime.SetCloseTaskTabs(closeTabs);
     try {
-      await runtime.SetEngine('ego');
-      expect(await runtime.GetStatus(true)).toMatchObject({ engine: 'ego', state: 'ready', extension: { connected: true } });
-      expect(createExtensionRuntime).not.toHaveBeenCalled();
+      await h.runtime.SetEngine('ego');
+      expect(await h.runtime.GetStatus(true)).toMatchObject({ engine: 'ego', state: 'ready', connection: { connected: true } });
+      expect(h.provider.CreateRuntime).not.toHaveBeenCalled();
       for (const url of ['https://example.com/first', 'https://example.com/second']) {
-        const proposal = await runtime.Prepare({ toolName: 'BrowserNavigate', arguments: { url } });
-        expect(await runtime.Execute({ proposal })).toMatchObject({ status: 'succeeded' });
+        const proposal = await h.runtime.Prepare({ toolName: 'BrowserNavigate', arguments: { url } });
+        expect(await h.runtime.Execute({ proposal })).toMatchObject({ status: 'succeeded' });
       }
-      expect(createExtensionRuntime).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ engine: 'ego', bridge }));
-      expect(personal.Connect).toHaveBeenCalledOnce();
-      expect(bridge.EnsureConnected).toHaveBeenCalledWith('ego', expect.any(Object));
-      runtime.SetCloseTaskTabs(false);
-      expect(await runtime.CloseTask()).toMatchObject({ status: 'confirmed', closedTabs: 2 });
-      expect(bridge.CloseTask).toHaveBeenCalledWith('ego', 'ego-extension-task', expect.objectContaining({ closeTabs: true }));
-    } finally { await runtime.Close(); }
+      expect(h.provider.CreateRuntime).toHaveBeenCalledExactlyOnceWith({ closeTabs });
+      expect(h.created[0].Connect).toHaveBeenCalledOnce();
+      expect(h.createExtensionRuntime).not.toHaveBeenCalled();
+      expect(h.bridge.EnsureConnected).not.toHaveBeenCalled();
+      h.runtime.SetCloseTaskTabs(!closeTabs);
+      expect(await h.runtime.CloseTask()).toMatchObject({ status: 'confirmed', browserTaskId: 'native-1' });
+      expect(h.created[0].CloseTask).toHaveBeenCalledWith(expect.objectContaining({ closeTabs }));
+      expect(h.bridge.CloseTask).not.toHaveBeenCalled();
+      const proposal = await h.runtime.Prepare({ toolName: 'BrowserNavigate', arguments: { url: 'https://example.com/new-task' } });
+      await h.runtime.Execute({ proposal });
+      expect(h.runtime.GetBrowserTaskId()).toBe('native-2');
+      expect(h.provider.CreateRuntime).toHaveBeenLastCalledWith({ closeTabs: !closeTabs });
+    } finally { await h.runtime.Close(); }
   });
 
-  it('ego 扩展清理结果未知时不能回报成功关闭', async () => {
-    const personal: PersonalBrowserRuntimePort = {
-      Connect: async () => ({ anchorUrl: '' }), Run: async () => ({ success: true, data: { url: 'https://example.com/' } }),
-      IsConnected: () => true, GetBrowserTaskId: () => 'ego-unknown', ResetReferences: () => undefined, Close: vi.fn(async () => undefined),
-    };
-    const bridge = { EnsureConnected: vi.fn(), CloseTask: vi.fn(async () => ({ status: 'status_unknown', browserTaskId: 'ego-unknown', closedTabs: 0, unknownTabs: null })) };
-    const runtime = new AgentBrowserRuntime({ runtimeRoot: 'D:/Avery/项目外部产物-20261030/ego-unit', resolveUploadFile: async () => null, browserExtensionBridge: bridge as unknown as BrowserExtensionBridge, createExtensionRuntime: () => personal, closeBridgeOnClose: false });
-    await runtime.SetEngine('ego');
-    const proposal = await runtime.Prepare({ toolName: 'BrowserNavigate', arguments: { url: 'https://example.com/' } });
-    await runtime.Execute({ proposal });
-    expect(await runtime.CloseTask()).toMatchObject({ status: 'status_unknown', unknownTabs: null });
-    expect(personal.Close).toHaveBeenCalledOnce();
-    await runtime.Close();
+  it('工作区恢复失败时保留绑定，重复打开不会新建替代空间', async () => {
+    const h = RoutingHarness();
+    const original: EgoWorkspaceBinding = { id: 7, name: 'Avery ego-original', state: 'agent', targetId: 'original-tab' };
+    const save = vi.fn(async () => undefined);
+    h.runtime.SetWorkspaceScope({ read: () => original, save, userApproved: false });
+    h.provider.CreateRuntime.mockRejectedValue(new PersonalBrowserCdpError('BROWSER_TASK_RETIRED', 'The original workspace is gone.'));
+    try {
+      await h.runtime.SetEngine('ego');
+      for (const action of ['resume', 'open'] as const) {
+        await expect(h.runtime.ManageWorkspace(action, {})).rejects.toMatchObject({ code: 'BROWSER_TASK_RETIRED' });
+      }
+      expect(h.provider.CreateRuntime.mock.calls).toEqual([
+        [expect.objectContaining({ workspace: original, userApproved: false })],
+        [expect.objectContaining({ workspace: original, userApproved: false })],
+      ]);
+      expect(save).not.toHaveBeenCalled();
+      expect(h.createExtensionRuntime).not.toHaveBeenCalled();
+    } finally { await h.runtime.Close(); }
   });
 
-  it('ego 扩展未连接时检测不能误报原生连接成功', async () => {
-    const bridge = { Start: vi.fn(), IsConnected: () => false, Status: () => ({ connected: false, state: 'offline', port: 17653 }) };
-    const runtime = new AgentBrowserRuntime({ runtimeRoot: 'D:/Avery/项目外部产物-20261030/ego-unit', resolveUploadFile: async () => null, browserExtensionBridge: bridge as unknown as BrowserExtensionBridge, externalBrowserPaths: { ego: process.execPath }, closeBridgeOnClose: false });
-    await runtime.SetEngine('ego');
-    expect(await runtime.GetStatus()).toMatchObject({ engine: 'ego', available: true, running: false, state: 'stopped', extension: { connected: false } });
-    await runtime.Close();
+  it('ego 原生服务离线时不借用在线扩展，不在检测中创建空间', async () => {
+    const h = RoutingHarness();
+    h.provider.GetStatus.mockResolvedValue({ available: true, connected: false });
+    try {
+      await h.runtime.SetEngine('ego');
+      expect(await h.runtime.GetStatus()).toMatchObject({ engine: 'ego', available: true, running: false, state: 'stopped', connection: { connected: false } });
+      expect(h.provider.CreateRuntime).not.toHaveBeenCalled();
+      expect(h.bridge.Start).not.toHaveBeenCalled();
+      expect(h.createExtensionRuntime).not.toHaveBeenCalled();
+    } finally { await h.runtime.Close(); }
+  });
+
+  it('原生创建失败明确停止，不能回退到扩展或个人页面', async () => {
+    const h = RoutingHarness();
+    h.provider.CreateRuntime.mockRejectedValue(new PersonalBrowserCdpError('BROWSER_EGO_UNAVAILABLE', 'native unavailable'));
+    try {
+      await h.runtime.SetEngine('ego');
+      const proposal = await h.runtime.Prepare({ toolName: 'BrowserNavigate', arguments: { url: 'https://example.com/' } });
+      await expect(h.runtime.Execute({ proposal })).rejects.toMatchObject({ code: 'BROWSER_EGO_UNAVAILABLE' });
+      expect(h.provider.CreateRuntime).toHaveBeenCalledOnce();
+      expect(h.bridge.EnsureConnected).not.toHaveBeenCalled();
+      expect(h.createExtensionRuntime).not.toHaveBeenCalled();
+    } finally { await h.runtime.Close(); }
+  });
+
+  it.each(['CANCELLED', 'BROWSER_COMMAND_TIMEOUT'])('创建连接时 %s 会释放原生驱动，不自动创建第二个工作区', async code => {
+    const h = RoutingHarness();
+    const close = vi.fn(async () => undefined);
+    const connect = vi.fn(async () => { throw new PersonalBrowserCdpError(code, 'connection stopped'); });
+    h.provider.CreateRuntime.mockResolvedValue({ Connect: connect, Close: close, IsConnected: () => false, ResetReferences() {}, Run: vi.fn(), GetBrowserTaskId: () => 'native-stopped' });
+    try {
+      await h.runtime.SetEngine('ego');
+      await expect(h.runtime.Execute({ proposal: await h.runtime.Prepare({ toolName: 'BrowserNavigate', arguments: { url: 'https://example.com/' } }) })).rejects.toMatchObject({ code: code === 'CANCELLED' ? code : 'BROWSER_EGO_UNAVAILABLE' });
+      expect(close).toHaveBeenCalledOnce();
+      expect(h.provider.CreateRuntime).toHaveBeenCalledOnce();
+      expect(h.createExtensionRuntime).not.toHaveBeenCalled();
+    } finally { await h.runtime.Close(); }
+  });
+
+  it.each(['BROWSER_TASK_RETIRED', 'BROWSER_VISIBLE_USER_ACTION_REQUIRED'])('%s 后同一任务不自动重建空间，结束任务后才可重新开始', async code => {
+    const h = RoutingHarness();
+    try {
+      await h.runtime.SetEngine('ego');
+      await h.runtime.Execute({ proposal: await h.runtime.Prepare({ toolName: 'BrowserNavigate', arguments: { url: 'https://example.com/' } }) });
+      h.created[0].Run = vi.fn(async () => { throw new PersonalBrowserCdpError(code, 'space unavailable'); });
+      for (let attempt = 0; attempt < 2; attempt++) {
+        await expect(h.runtime.Execute({ proposal: await h.runtime.Prepare({ toolName: 'BrowserNavigate', arguments: { url: 'https://example.com/continue' } }) })).rejects.toMatchObject({ code });
+      }
+      expect(h.provider.CreateRuntime).toHaveBeenCalledOnce();
+      expect(await h.runtime.GetStatus(true)).toMatchObject({ state: 'unhealthy' });
+      await h.runtime.CloseTask();
+      await h.runtime.Execute({ proposal: await h.runtime.Prepare({ toolName: 'BrowserNavigate', arguments: { url: 'https://example.com/new' } }) });
+      expect(h.provider.CreateRuntime).toHaveBeenCalledTimes(2);
+    } finally { await h.runtime.Close(); }
+  });
+
+  it('原生连接中断停止当前任务，不把重连变成另一个工作区', async () => {
+    const h = RoutingHarness();
+    try {
+      await h.runtime.SetEngine('ego');
+      await h.runtime.Execute({ proposal: await h.runtime.Prepare({ toolName: 'BrowserNavigate', arguments: { url: 'https://example.com/' } }) });
+      h.created[0].IsConnected = () => false;
+      for (let attempt = 0; attempt < 2; attempt++) await expect(h.runtime.Execute({ proposal: await h.runtime.Prepare({ toolName: 'BrowserNavigate', arguments: { url: 'https://example.com/continue' } }) })).rejects.toMatchObject({ code: 'BROWSER_EGO_UNAVAILABLE' });
+      expect(h.provider.CreateRuntime).toHaveBeenCalledOnce();
+      expect(h.createExtensionRuntime).not.toHaveBeenCalled();
+    } finally { await h.runtime.Close(); }
+  });
+
+  it.each([
+    ['BrowserScreenshot', 'screenshot', {}, 'BROWSER_COMMAND_TIMEOUT'],
+    ['BrowserScreenshot', 'screenshot', {}, 'CANCELLED'],
+    ['BrowserWait', 'wait', { kind: 'text', value: 'never arrives' }, 'BROWSER_COMMAND_TIMEOUT'],
+    ['BrowserSnapshot', 'snapshot', {}, 'BROWSER_COMMAND_TIMEOUT'],
+  ] as const)('%s 失败后继续读取原任务页（%s）', async (toolName, commandName, args, code) => {
+    const h = RoutingHarness();
+    const url = 'https://example.com/jobs';
+    try {
+      await h.runtime.SetEngine('ego');
+      await h.runtime.Execute({ proposal: await h.runtime.Prepare({ toolName: 'BrowserNavigate', arguments: { url } }) });
+      const personal = h.created[0];
+      const run = personal.Run;
+      personal.Run = vi.fn(async (command, options) => {
+        if (command[0] === commandName) throw new PersonalBrowserCdpError(code, 'observation did not settle', toolName === 'BrowserSnapshot');
+        return run(command, options);
+      });
+
+      await expect(h.runtime.Execute({ proposal: await h.runtime.Prepare({ toolName, arguments: args }) })).rejects.toMatchObject({ code, statusUnknown: false });
+      await expect(h.runtime.Execute({ proposal: await h.runtime.Prepare({ toolName: 'BrowserReadPage', arguments: {} }) })).resolves.toMatchObject({ status: 'succeeded', data: { url } });
+      expect(h.runtime.GetBrowserTaskId()).toBe('native-1');
+      expect(h.provider.CreateRuntime).toHaveBeenCalledOnce();
+      expect(personal.CloseTask).not.toHaveBeenCalled();
+    } finally { await h.runtime.Close(); }
+  });
+
+  it('原生清理未知保留未知结果；切换 Chrome 释放空间后才进入扩展通道', async () => {
+    const h = RoutingHarness();
+    try {
+      await h.runtime.SetEngine('ego');
+      await h.runtime.Execute({ proposal: await h.runtime.Prepare({ toolName: 'BrowserNavigate', arguments: { url: 'https://example.com/' } }) });
+      h.created[0].CloseTask = vi.fn(async () => ({ status: 'status_unknown' as const, browserTaskId: 'native-1', closedTabs: 0, unknownTabs: null }));
+      expect(await h.runtime.CloseTask()).toMatchObject({ status: 'status_unknown', unknownTabs: null });
+      expect(h.created[0].Close).toHaveBeenCalledOnce();
+      await h.runtime.SetEngine('chrome');
+      await h.runtime.Execute({ proposal: await h.runtime.Prepare({ toolName: 'BrowserNavigate', arguments: { url: 'https://example.com/' } }) });
+      expect(h.createExtensionRuntime).toHaveBeenCalledWith(expect.objectContaining({ engine: 'chrome' }));
+      expect(h.bridge.EnsureConnected).toHaveBeenCalledWith('chrome', expect.any(Object));
+      await h.runtime.SetEngine('ego');
+      expect(h.bridge.CloseTask).toHaveBeenCalledWith('chrome', 'extension-task', expect.any(Object));
+      await h.runtime.Execute({ proposal: await h.runtime.Prepare({ toolName: 'BrowserNavigate', arguments: { url: 'https://example.com/' } }) });
+      expect(h.runtime.GetBrowserTaskId()).toBe('native-2');
+    } finally { await h.runtime.Close(); }
   });
 });
+
+function RoutingHarness() {
+  const makeRuntime = (id: string): PersonalBrowserRuntimePort => {
+    let connected = false, url = '';
+    return {
+      Connect: vi.fn(async () => { connected = true; return { anchorUrl: '' }; }),
+      Run: vi.fn(async command => { if (command[0] === 'open') url = command[1]; return { success: true as const, data: { url } }; }),
+      IsConnected: () => connected, GetBrowserTaskId: () => id, ResetReferences: vi.fn(),
+      CloseTask: vi.fn(async options => ({ status: 'confirmed' as const, browserTaskId: id, closedTabs: options.closeTabs ? 2 : 0, retainedTabs: options.closeTabs ? 0 : 2, unknownTabs: 0 })),
+      Close: vi.fn(async () => { connected = false; }),
+    };
+  };
+  const created: PersonalBrowserRuntimePort[] = [];
+  const provider = {
+    GetStatus: vi.fn(async (_probe: boolean) => ({ available: true, connected: true })),
+    CreateRuntime: vi.fn(async (_options?: { closeTabs?: boolean }) => { const runtime = makeRuntime(`native-${created.length + 1}`); created.push(runtime); return runtime; }),
+  };
+  const bridge = { Start: vi.fn(), EnsureConnected: vi.fn(), IsConnected: () => true, Status: () => ({ connected: true, state: 'online', port: 17653 }),
+    CloseTask: vi.fn(async () => ({ status: 'confirmed', browserTaskId: 'extension-task', closedTabs: 1, unknownTabs: 0 })), Close: vi.fn() };
+  const extension = makeRuntime('extension-task'); delete extension.CloseTask;
+  const createExtensionRuntime = vi.fn(() => extension);
+  const runtime = new AgentBrowserRuntime({ runtimeRoot: 'D:/Avery/项目外部产物-20261030/ego-unit', resolveUploadFile: async () => null, browserExtensionBridge: bridge as unknown as BrowserExtensionBridge, egoBrowserProvider: provider, externalBrowserPaths: { chrome: process.execPath }, createExtensionRuntime, closeBridgeOnClose: false });
+  return { runtime, provider, created, bridge, createExtensionRuntime };
+}

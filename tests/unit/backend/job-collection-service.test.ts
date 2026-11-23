@@ -47,9 +47,9 @@ describe('JobCollectionService', () => {
 
     expect(result.candidates).toHaveLength(2);
     expect(saveJob).not.toHaveBeenCalled();
-    const saved = await service.SaveCandidate({ sessionId: 'session-1', collectionId: result.collectionId, candidateId: result.candidates[0].candidateId, matchScore: 91 });
+    const saved = await service.SaveCandidate({ sessionId: 'session-1', collectionId: result.collectionId, candidateId: result.candidates[0].candidateId });
     expect(saved.jobId).toBe('job-boss-a1');
-    expect(saveJob).toHaveBeenCalledWith(expect.objectContaining({ title: '产品经理', company: '甲公司', matchScore: 91 }));
+    expect(saveJob).toHaveBeenCalledWith(expect.objectContaining({ title: '产品经理', company: '甲公司' }));
   });
 
   it('候选缓存按创建时刻绝对过期且不会滑动续期', async () => {

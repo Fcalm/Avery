@@ -202,6 +202,11 @@ function FieldInteraction(
   if (metadata.adapter === 'moka' && control === 'select') return {
     adapter: 'moka', kind: ['date', 'yearMonth'].includes(definition?.valueType ?? '') ? 'datePicker' : 'select', editable: false, requiresCommit: true,
   };
+  if (metadata.adapter === 'beisen' && control === 'select') return {
+    adapter: 'beisen', kind: definition?.valueType === 'region' ? 'cascader'
+      : ['date','yearMonth'].includes(definition?.valueType ?? '') ? 'datePicker' : 'select',
+    editable: false, requiresCommit: true,
+  };
   if (control === 'file') return { kind: 'upload', editable: false };
   if (control === 'radio') return { kind: 'radio', editable: true };
   if (control === 'checkbox') return { kind: 'checkbox', editable: true };
@@ -371,13 +376,19 @@ export function NormalizeFormLabel(value: unknown): string {
 }
 
 /** 仅归并字段内含义明确的枚举别名；非全日制、不同到岗周期不会因子串相似而合并。 */
+export const FormOptionAliases: Record<string, string[][]> = {
+  educationType: [['统招全日制', '全国普通高等院校全日制']],
+  availability: [['1周内', '一周内', '一星期内'], ['1个月内', '一个月内'], ['3个月内', '三个月内'], ['3个月以上', '三个月以上']],
+  workYears: [['在校学生', '在读学生', '学生'], ['刚毕业', '应届毕业生', '应届生']],
+};
+
+/** 页面快照仅将当前候选观察器标记的元素作为可选项，不能混入页面正文中的同名按钮。 */
+export const DynamicOptionPrefix = '__avery_dynamic_option__:';
+
 export function NormalizeFormOption(key: string, value: unknown): string {
   const normalized = NormalizeFormLabel(value);
-  const groups = key === 'educationType'
-    ? [['统招全日制', '全国普通高等院校全日制']]
-    : key === 'availability'
-      ? [['1周内', '一周内', '一星期内'], ['1个月内', '一个月内'], ['3个月内', '三个月内'], ['3个月以上', '三个月以上']]
-      : [];
+  if (key === 'ethnicity') return normalized.replace(/族$/, '');
+  const groups = FormOptionAliases[key] ?? [];
   return groups.find(group => group.includes(normalized))?.[0] ?? normalized;
 }
 
@@ -400,7 +411,7 @@ export function FormValuesMatch(key: string, expected: string, actual: string): 
     if (source && retained) return source.year === retained.year && source.month === retained.month
       && (source.day === undefined || source.day === retained.day);
   }
-  return ['educationType', 'availability'].includes(key)
+  return (key === 'ethnicity' || Object.hasOwn(FormOptionAliases, key))
     && NormalizeFormOption(key, expected) === NormalizeFormOption(key, actual);
 }
 

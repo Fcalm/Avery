@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AgentHost } from '../../../apps/backend/src/electron/backend/agent-host';
 import { CreateDefaultModules } from '../../../packages/agent-modules-defaults/src/index';
-import { GetConversationArtifacts, type BrowserActionProposal, type BrowserAutomationPort, type ConversationPresentation, type ModelCompletion } from '../../../packages/agent-sdk/src/index';
+import { GetConversationArtifacts, type AgentMessage, type BrowserActionProposal, type BrowserAutomationPort, type ConversationPresentation, type ModelCompletion } from '../../../packages/agent-sdk/src/index';
 import { JobLibraryCollectionService } from '../../../apps/backend/src/electron/backend/job-library-collection-service';
 
 const temporaryRoots: string[] = [];
@@ -71,6 +71,7 @@ async function CreateHost(
     ...(browserTaskCleanupTimeoutMs ? { browserTaskCleanupTimeoutMs } : {}),
     createDefaultModules: (ports) => ({ ...CreateDefaultModules(ports), modelProvider: provider }),
   });
+  await host.Ready();
   (host as any).currentSessionId = 'failure-session';
   return { host, events, business, observability, root };
 }
@@ -363,7 +364,7 @@ describe('AgentHost 浏览器失败与用户接管', () => {
     paused.status = 'ready';
     paused.result = { role: 'tool', tool_call_id: 'failure-0', content: JSON.stringify(approved ? { ok: true, receipt: { receiptId: 'already-executed' } } : { ok: false, code: 'BROWSER_CONFIRMATION_STALE' }) };
     (first.host as any).interactionDecisions.set(interactionId, { kind: 'approval', requestId: 'saved-decision', sessionId: 'failure-session', interactionId, approved });
-    (first.host as any).SaveState();
+    await (first.host as any).SaveState();
     await first.host.Close();
     const host = new AgentHost({ userDataPath: join(first.root, 'user-data'), workspacePath: first.root, Emit: vi.fn(), browserRuntime: browser as never,
       business: first.business, observability: first.observability, credentialPort: { Load: vi.fn(async () => null), Save: vi.fn() },
@@ -395,6 +396,39 @@ describe('AgentHost 浏览器失败与用户接管', () => {
       expect(provider.getCallCount()).toBe(2);
       expect((host as any).histories.get('failure-session').filter((message: any) => message.role === 'user' && message.metadata?.source !== 'runtime')).toHaveLength(1);
     } finally { await host.Close(); }
+  });
+
+  it('确认动作执行中取消遇到写盘失败，迟到结果不会恢复任务或重放动作', async () => {
+    let started!: () => void, release!: () => void;
+    const executing = new Promise<void>(resolve => { started = resolve; });
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const provider = CreateProvider(index => index === 0 ? ToolCall(index, 'BrowserClick', { ref: '@e1', pageRevision: 1 }) : { content: '不应续轮', toolCalls: [] });
+    const browser = {
+      Prepare: vi.fn(async ({ toolName, arguments: args }: Parameters<BrowserAutomationPort['Prepare']>[0]) => Proposal(toolName, args)),
+      Execute: vi.fn(async () => { started(); await gate; return { status: 'succeeded', data: { clicked: true } }; }),
+      GetStatus: vi.fn(), ResetPageReferences: vi.fn(), Close: vi.fn(async () => undefined),
+    };
+    const { host, events } = await CreateHost(provider, browser as never);
+    const state = host as unknown as { SaveState(): void; histories: Map<string, AgentMessage[]> };
+    let pending: Promise<unknown> | undefined;
+    try {
+      await host.Send({ requestId: 'cancel-executing', sessionId: 'failure-session', scenarioId: 'application', confirmationMode: 'always_confirm', content: '点击按钮' });
+      const interactionId = events.find(event => event.type === 'browser_confirmation').confirmationId;
+      pending = host.RespondToInteraction({ kind: 'approval', requestId: 'cancel-executing', sessionId: 'failure-session', interactionId, approved: true });
+      await executing;
+      const save = vi.spyOn(state, 'SaveState').mockImplementationOnce(() => { throw new Error('ENOSPC isolated cancellation'); });
+      await expect(host.Cancel('cancel-executing')).resolves.toEqual({ cancelled: true });
+      save.mockRestore();
+      release(); await pending;
+      expect(browser.Execute).toHaveBeenCalledTimes(1);
+      expect(provider.getCallCount()).toBe(1);
+      expect(events.filter(event => event.type === 'cancelled')).toHaveLength(1);
+      expect(events.filter(event => event.type === 'completed')).toHaveLength(0);
+      const results = state.histories.get('failure-session')?.filter(message => message.tool_call_id === 'failure-0') ?? [];
+      expect(results).toHaveLength(1);
+      expect(JSON.parse(results[0].content)).toMatchObject({ code: 'STATUS_UNKNOWN' });
+      expect(host.IsBusy()).toBe(false);
+    } finally { release(); await pending; await host.Close(); }
   });
 
   it('取消等待任务补全协议并禁止迟到确认复活', async () => {
@@ -704,7 +738,7 @@ describe('AgentHost 浏览器失败与用户接管', () => {
       schedule: { type: 'once', executeAt: '2030-01-01T09:00:00+08:00', timeZone: 'Asia/Shanghai' },
     };
 
-    const proposal = (host as any).PrepareCronTask(input, { requestId: 'cron-without-resume' });
+    const proposal = await (host as any).PrepareCronTask(input, { requestId: 'cron-without-resume' });
     expect(proposal.summary).toContain('当前未绑定简历');
     await expect(host.ConfirmCronTask(proposal.confirmationId, true)).resolves.toMatchObject({ created: true, task: { id: 'cron-created' } });
     expect(business.CreateCronTask).toHaveBeenCalledWith(input, { browserTaskGrant: expect.objectContaining({
@@ -722,7 +756,7 @@ describe('AgentHost 浏览器失败与用户接管', () => {
     const { host, business } = await CreateHost(provider, browser as any);
     const schedule = { type: 'once', executeAt: '2030-01-01T09:00:00+08:00', timeZone: 'Asia/Shanghai' };
 
-    const application = (host as any).PrepareCronTask({
+    const application = await (host as any).PrepareCronTask({
       title: '企业官网投递', message: '打开企业官网，填写并提交申请表单', scenarioId: 'application', schedule,
     }, { requestId: 'cron-application', resumeId: 'resume-7', profileIds: ['profile-a', 'profile-b', 'profile-a'] });
     await host.ConfirmCronTask(application.confirmationId, true);
@@ -732,7 +766,7 @@ describe('AgentHost 浏览器失败与用户接管', () => {
       resourceIds: ['resume:resume-7', 'profile:profile-a', 'profile:profile-b'],
     }) });
 
-    const boss = (host as any).PrepareCronTask({
+    const boss = await (host as any).PrepareCronTask({
       title: 'BOSS 打招呼', message: '在 BOSS 直聘联系招聘者并发送消息', scenarioId: 'application', schedule,
     }, { requestId: 'cron-boss', resumeId: 'resume-7', profileIds: ['profile-a'] });
     await host.ConfirmCronTask(boss.confirmationId, true);

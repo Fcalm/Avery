@@ -609,7 +609,7 @@ describe('AgentBrowserRuntime', () => {
         e2: {
           role: 'textbox', tag: 'input', name: '请输入', type: 'text', section: '教育经历',
           nearbyTexts: ['学校名称'], precedingLabels: ['学历'], followingLabels: ['专业名称'], groupHeading: '教育经历 1', recordIndex: 0,
-          valueLength: batchExecuted ? 1 : 0,
+          valueLength: batchExecuted ? 4 : 0, currentValue: batchExecuted ? '测试大学' : '',
         },
       } } };
       if (command === 'tab') return { success: true, data: { tabs: [{ tabId: 't1', url: 'https://93.184.216.34/application', active: true }] } };
@@ -653,7 +653,7 @@ describe('AgentBrowserRuntime', () => {
       if (command === 'get') return { success: true, data: { url: 'https://93.184.216.34/application' } };
       if (command === 'snapshot') return { success: true, data: { refs: {
         e2: { role: 'textbox', tag: 'input', name: '请输入', section: '教育经历', nearbyTexts: ['院校信息'], recordIndex: 0 },
-        e3: { role: 'textbox', tag: 'input', name: '学校', section: '教育经历', recordIndex: 0, valueLength: batchExecuted ? 1 : 0 },
+        e3: { role: 'textbox', tag: 'input', name: '学校', section: '教育经历', recordIndex: 0, valueLength: batchExecuted ? 4 : 0, currentValue: batchExecuted ? '测试大学' : '' },
       } } };
       if (command === 'tab') return { success: true, data: { tabs: [{ tabId: 't1', url: 'https://93.184.216.34/application', active: true }] } };
       if (command === 'batch') { batchExecuted = true; batchInputs.push(stdin ?? ''); return { success: true, data: { results: [{ success: true }] } }; }
@@ -862,7 +862,7 @@ describe('AgentBrowserRuntime', () => {
     });
     const outcome = await runtime.Execute({ proposal });
 
-    expect(clicks).toEqual(['@e2', '@e10', '@e11', '@e13', '@e14']);
+    expect(clicks).toEqual(['@e2', '@e10', '@e13', '@e14']);
     expect(evalExpressions.some((expression) => expression.includes('data-avery-dynamic-option'))).toBe(true);
     expect(evalExpressions.some((expression) => expression.includes('typeof element.onclick'))).toBe(true);
     expect(evalExpressions.some((expression) => expression.includes('geographic(display)'))).toBe(true);
@@ -885,6 +885,8 @@ describe('AgentBrowserRuntime', () => {
       constructor(text = '') { this.innerText = text; this.textContent = text; }
       getAttribute(name: string) { return name === 'data-avery-form-key' ? 'residence' : '现居住地'; }
       closest() { return this; }
+      matches() { return false; }
+      querySelector() { return null; }
       querySelectorAll() { return []; }
     }
     const verify = (display: string, selected: string[]) => {
@@ -904,10 +906,13 @@ describe('AgentBrowserRuntime', () => {
       sourceTitle: '教育经历', sourcePath: 'profile:education', sourcePaths: ['profile:education'], concept: 'education.endDate', strategy: 'semantic',
     } as const;
     class ElementStub {
-      innerText = '毕业时间 2027年6月';
+      innerText = '2027年6月';
       textContent = this.innerText;
       parentElement = undefined;
       getAttribute(name: string) { return name === 'data-avery-form-key' ? 'endDate' : '毕业时间'; }
+      matches() { return false; }
+      closest() { return null; }
+      querySelector() { return { value: this.innerText }; }
       querySelectorAll() { return []; }
     }
     const trigger = new ElementStub();
@@ -1441,7 +1446,7 @@ describe('AgentBrowserRuntime', () => {
     await runtime.Close();
   });
 
-  it('BrowserFillForm 批次超时返回字段级失败，不关闭仍可见的浏览器实例', async () => {
+  it('BrowserFillForm 已派发批次结果未知时暂停，不继续后续字段或收尾交互', async () => {
     const runtimeRoot = await mkdtemp(join(tmpdir(), 'avery-browser-fill-timeout-'));
     temporaryRoots.push(runtimeRoot);
     const recordLog = vi.fn();
@@ -1468,14 +1473,10 @@ describe('AgentBrowserRuntime', () => {
         __formSources: { profiles: [{ id: 'profile-1', category: 'application', title: '个人信息', content: '[个人信息]\n姓名：张三' }] },
       },
     });
-    await expect(runtime.Execute({ proposal })).resolves.toMatchObject({
-      status: 'succeeded',
-      data: {
-        filledCount: 0,
-        skipped: [{ label: '姓名', reason: 'field_timeout' }],
-      },
-    });
-    expect(recordLog).toHaveBeenCalledWith('WARN', 'browser.form_field', expect.stringContaining('field=personal.name:0 kind=fill'));
+    const before = runBrowserCommand.mock.calls.length;
+    await expect(runtime.Execute({ proposal })).resolves.toMatchObject({ status: 'status_unknown', data: { code: 'BROWSER_COMMAND_TIMEOUT' } });
+    const sent = runBrowserCommand.mock.calls.slice(before).map(([call]) => call.args);
+    expect(sent.at(-1)).toContain('batch');
     expect(recordLog.mock.calls.flat().join(' ')).not.toContain('张三');
     await runtime.Close();
   });

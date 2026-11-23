@@ -884,9 +884,10 @@ export class PersonalBrowserCdpRuntime implements PersonalBrowserRuntimePort {
     return new Promise((resolveCommand, rejectCommand) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
-        commandController.abort();
+        const error = new PersonalBrowserCdpError('BROWSER_COMMAND_TIMEOUT', `${method} timed out.`, sideEffect);
+        commandController.abort(error);
         effectiveOptions.signal?.removeEventListener('abort', Abort);
-        rejectCommand(new PersonalBrowserCdpError('BROWSER_COMMAND_TIMEOUT', `${method} timed out.`, sideEffect));
+        rejectCommand(error);
       }, this.Timeout(effectiveOptions));
       const Abort = () => {
         this.pending.delete(id);
@@ -1423,6 +1424,9 @@ export class PersonalBrowserCdpRuntime implements PersonalBrowserRuntimePort {
         disabled: Boolean(element.disabled || element.getAttribute('aria-disabled') === 'true' || element.classList.contains('disabled')),
         readOnly: element.readOnly === true,
         contentEditable: element.isContentEditable,
+        // Phoenix 的 unText 输入仅承载选择器焦点，值由选项状态控制，不能当普通文本框写入。
+        selectionOnly: element.matches('.phoenix-select__input--unText') && Boolean(element.closest('.phoenix-select'))
+          && !element.hasAttribute('data-avery-date-editor'),
       };
     })()`;
   }
@@ -1481,24 +1485,31 @@ export class PersonalBrowserCdpRuntime implements PersonalBrowserRuntimePort {
         fillStateValid: focused && !element.disabled && !element.readOnly
         && (expectedFillValue === undefined || value === expectedFillValue) };
     })()`;
-    const result = this.Value(await this.EvaluateReference(expression, locator, options));
-    // 聚焦检查失败时尚未清空或插入文本；清空之后的失败仍需核对页面，不能自动重试写入。
     const textMayHaveChanged = stage !== 'focus';
+    let result: Record<string, any>;
+    try { result = this.Value(await this.EvaluateReference(expression, locator, options)); }
+    catch (error) {
+      // 写入后的只读核验也可能因导航或断连失败；这不能把已发生的写入降格成可安全重试。
+      if (textMayHaveChanged && error instanceof PersonalBrowserCdpError) throw new PersonalBrowserCdpError(error.code, error.message, true);
+      throw error;
+    }
+    // 聚焦检查失败时尚未清空或插入文本；清空之后的失败仍需核对页面，不能自动重试写入。
     if (result?.stale) throw new PersonalBrowserCdpError('BROWSER_STALE_PAGE_REF', `The browser input changed (${stage}). Take a new snapshot.`, textMayHaveChanged);
     if (result?.fillStateValid !== true) {
       const reason = result?.disabled ? 'disabled' : result?.readOnly ? 'read_only'
         : result?.focused === false ? 'focus_lost' : result?.valueMatches === false ? 'value_mismatch' : 'invalid_state';
+      if (stage === 'insert' && reason === 'value_mismatch') {
+        // 原节点和焦点均已核实，只是值未保留。交给 Agent 观察后重规划，不能自动重写或继续脚本。
+        throw new PersonalBrowserCdpError('BROWSER_FILL_VALUE_MISMATCH', 'The original input did not retain the requested value. Take a fresh snapshot and replan; do not replay this fill or press Enter blindly.');
+      }
       throw new PersonalBrowserCdpError('BROWSER_COMMAND_FAILED', `Input replacement failed (${stage}: ${reason}). ${textMayHaveChanged ? 'Verify the current field value before continuing.' : 'No text was replaced. Observe the field before continuing.'}`, textMayHaveChanged);
     }
   }
 
   private async InsertText(text: string, options: PersonalBrowserCommandOptions): Promise<void> {
-    const chunks = text.length <= 120 ? [...text] : text.match(/[\s\S]{1,8}/g) ?? [];
-    const waits = [37, 53, 41, 67];
-    for (const [index, chunk] of chunks.entries()) {
-      await this.Send('Input.insertText', { text: chunk }, this.taskSessionId ?? undefined, options, true);
-      if (index < chunks.length - 1) await this.Pause(text.length <= 120 ? waits[index % waits.length] : 20, options, true);
-    }
+    // 一次发送完整值，避免搜索过滤在字符间重建节点或移动焦点，导致剩余内容落到别的字段。
+    // 仍由 Chromium 产生输入事件，并在写入后核验原节点的实际值；不绕过受控组件的状态更新。
+    if (text) await this.Send('Input.insertText', { text }, this.taskSessionId ?? undefined, options, true);
   }
 
   private async Fill(ref: unknown, text: unknown, options: PersonalBrowserCommandOptions): Promise<Record<string, any>> {
@@ -1506,6 +1517,7 @@ export class PersonalBrowserCdpRuntime implements PersonalBrowserRuntimePort {
     const locator = this.Ref(ref);
     const point = await this.Locate(locator, options);
     if (point.type === 'password') throw new PersonalBrowserCdpError('BROWSER_ARGUMENT_INVALID', 'Password inputs cannot be filled by the personal-browser driver.');
+    if (point.selectionOnly === true) throw new PersonalBrowserCdpError('BROWSER_SELECT_REQUIRED', 'This is a selection-only input. Use BrowserFillForm to select observed options; only the popup search input may be filled for filtering.');
     if (point.readOnly === true) throw new PersonalBrowserCdpError('BROWSER_ARGUMENT_INVALID', 'The browser input is read-only.');
     if (!['input', 'textarea'].includes(point.tag) && point.contentEditable !== true) throw new PersonalBrowserCdpError('BROWSER_ARGUMENT_INVALID', 'BrowserFill requires a text input.');
     if (point.tag === 'input' && point.type === 'date') {
@@ -1548,18 +1560,45 @@ export class PersonalBrowserCdpRuntime implements PersonalBrowserRuntimePort {
       let element;
       element = globalThis.__averySnapshotNodes?.nodes.get(expected.nodeId)?.deref();
       if (!(element instanceof HTMLSelectElement) || !element.isConnected) return { unsupported: true };
-      const option = [...element.options].find((candidate) => candidate.value === requested || String(candidate.textContent || '').trim() === requested);
-      if (!option) return { missing: true };
+      const matches = [...element.options].filter(candidate => candidate.value === requested || String(candidate.textContent || '').trim() === requested);
+      if (!matches.length) return { missing: true };
+      if (matches.length !== 1) return { ambiguous: true };
+      const option = matches[0];
+      if (option.disabled || option.parentElement?.disabled) return { disabled: true };
       element.value = option.value;
       element.dispatchEvent(new Event('input', { bubbles: true }));
       element.dispatchEvent(new Event('change', { bubbles: true }));
-      return { selected: true };
+      return { selected: true, expectedValue: option.value };
     })()`;
     const result = this.Value(await this.EvaluateReference(expression, locator, options, true, true));
     if (result?.stale) throw new PersonalBrowserCdpError('BROWSER_STALE_PAGE_REF', 'The select element is unavailable. Take a new snapshot.');
     if (result?.unsupported) throw new PersonalBrowserCdpError('BROWSER_ARGUMENT_INVALID', 'BrowserSelect only supports native select elements; use BrowserClick for custom dropdowns.');
     if (result?.missing) throw new PersonalBrowserCdpError('BROWSER_ARGUMENT_INVALID', 'The requested select option is unavailable.');
+    if (result?.ambiguous || result?.disabled) throw new PersonalBrowserCdpError('BROWSER_ARGUMENT_INVALID', 'The requested select option is ambiguous or disabled. Inspect the available options.');
+    if (typeof result?.expectedValue !== 'string') throw new PersonalBrowserCdpError('BROWSER_OUTPUT_INVALID', 'The select action did not return a verifiable value.', true);
+    await this.AssertControlValue(locator, result.expectedValue, 'select', options);
     return { selected: true };
+  }
+
+  /** 动作回执不证明表单状态；独立回读可发现受控组件在事件处理后回滚的选择。 */
+  private async AssertControlValue(locator: ElementFingerprint, expectedValue: string | boolean, kind: 'select' | 'checked', options: PersonalBrowserCommandOptions): Promise<void> {
+    const expression = `(() => {
+      const expected = ${SafeJson(locator)};
+      const expectedControlValue = ${SafeJson(expectedValue)};
+      const element = globalThis.__averySnapshotNodes?.nodes.get(expected.nodeId)?.deref();
+      if (!(element instanceof HTMLElement) || !element.isConnected) return {matches:false};
+      const actual = ${JSON.stringify(kind)} === 'select' ? element.value
+        : element instanceof HTMLInputElement ? element.checked
+        : ['true','false'].includes(element.getAttribute('aria-checked')) ? element.getAttribute('aria-checked') === 'true' : undefined;
+      return {matches:actual === expectedControlValue};
+    })()`;
+    let result: Record<string, any>;
+    try { result = this.Value(await this.EvaluateReference(expression, locator, options)); }
+    catch (error) {
+      if (error instanceof PersonalBrowserCdpError) throw new PersonalBrowserCdpError(error.code, error.message, true);
+      throw error;
+    }
+    if (result?.matches !== true) throw new PersonalBrowserCdpError('BROWSER_COMMAND_FAILED', 'The control did not retain the requested value. Verify the current field before continuing.', true);
   }
 
   private async SetChecked(ref: unknown, checked: unknown, options: PersonalBrowserCommandOptions): Promise<Record<string, any>> {
@@ -1570,6 +1609,7 @@ export class PersonalBrowserCdpRuntime implements PersonalBrowserRuntimePort {
       throw new PersonalBrowserCdpError('BROWSER_ARGUMENT_INVALID', 'BrowserSetChecked requires a checkbox or radio input.');
     }
     if (point.checked !== checked) await this.ClickPoint(point as { x: number; y: number }, options);
+    await this.AssertControlValue(locator, checked, 'checked', options);
     return { checked };
   }
 

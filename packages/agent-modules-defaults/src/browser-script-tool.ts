@@ -95,7 +95,7 @@ export async function ExecuteBrowserScript(input: {
           if (typeof confirmationId === 'string') {
             const pending = context.pendingBrowserActions?.get(confirmationId);
             if (pending && typeof pending === 'object') Object.assign(pending, { toolCallId: callId });
-            context.persistSessionState();
+            await context.persistSessionState();
           }
           throw new ScriptStopped(child, payload);
         }

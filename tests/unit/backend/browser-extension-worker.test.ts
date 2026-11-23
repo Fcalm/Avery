@@ -72,10 +72,12 @@ describe('Avery pairing page cleanup', () => {
   const token = 'd'.repeat(64);
   const pairUrl = `http://127.0.0.1:17653/pair#token=${token}&port=17653`;
 
-  function Fixture(options: { failHello?: boolean; currentUrl?: string; pendingUrl?: string } = {}) {
+  function Fixture(options: { failHello?: boolean; currentUrl?: string; pendingUrl?: string; onlyTab?: boolean; urlAfterQuery?: string } = {}) {
     let listener: MessageListener | undefined;
     const removed: number[] = [];
     const queried: number[] = [];
+    const updated: Array<{ id: number; url: string }> = [];
+    let windowChecked = false;
     StartWorker({
       storage: { local: StorageArea({}), session: StorageArea({}) },
       runtime: {
@@ -85,15 +87,24 @@ describe('Avery pairing page cleanup', () => {
       },
       alarms: { create() {}, onAlarm: { addListener() {} } },
       tabs: {
-        get: async (id: number) => { queried.push(id); return { id, url: options.currentUrl ?? pairUrl, pendingUrl: options.pendingUrl }; },
+        get: async (id: number) => {
+          queried.push(id);
+          return { id, windowId: 3, url: (windowChecked ? options.urlAfterQuery : undefined) ?? options.currentUrl ?? pairUrl, pendingUrl: options.pendingUrl };
+        },
+        query: async ({ windowId }: { windowId: number }) => {
+          expect(windowId).toBe(3);
+          windowChecked = true;
+          return options.onlyTab ? [{ id: 42 }] : [{ id: 42 }, { id: 43 }];
+        },
         remove: async (id: number) => { removed.push(id); },
+        update: async (id: number, { url }: { url: string }) => { updated.push({ id, url }); },
       },
       debugger: {},
     }, async (url: string) => new URL(url).pathname === '/bridge/hello'
       ? { ok: !options.failHello, status: options.failHello ? 503 : 200, json: async () => ({ ok: true }) }
       : { ok: false, status: 409, json: async () => ({ code: 'BROWSER_EXTENSION_STALE' }) });
     return {
-      removed, queried,
+      removed, queried, updated,
       pair: (sender: unknown = { tab: { id: 42 }, frameId: 0, url: pairUrl }) => CallMessage(listener!, { type: 'avery_pair', token, port: 17653 }, 4000, sender),
     };
   }
@@ -101,8 +112,23 @@ describe('Avery pairing page cleanup', () => {
   it('握手成功后关闭发起配对的顶层标签页', async () => {
     const fixture = Fixture();
     expect((await fixture.pair()).value).toEqual({ ok: true });
-    expect(fixture.queried).toEqual([42]);
+    expect(fixture.queried).toEqual([42, 42]);
     expect(fixture.removed).toEqual([42]);
+    expect(fixture.updated).toEqual([]);
+  });
+
+  it('冷启动配对页是窗口唯一标签时，用空白页保持浏览器在线', async () => {
+    const fixture = Fixture({ onlyTab: true });
+    expect((await fixture.pair()).value).toEqual({ ok: true });
+    expect(fixture.removed).toEqual([]);
+    expect(fixture.updated).toEqual([{ id: 42, url: 'about:blank' }]);
+  });
+
+  it('查询窗口期间用户已导航时，保留其新页面', async () => {
+    const fixture = Fixture({ onlyTab: true, urlAfterQuery: 'https://example.com/user-page' });
+    expect((await fixture.pair()).value).toEqual({ ok: true });
+    expect(fixture.removed).toEqual([]);
+    expect(fixture.updated).toEqual([]);
   });
 
   it('握手失败时保留页面且不尝试关闭标签页', async () => {
@@ -149,6 +175,51 @@ function AbortableWait(signal?: AbortSignal): Promise<never> {
 }
 
 describe('Avery browser extension worker', () => {
+  it.each(['/bridge/hello', '/bridge/result'])('%s 回执只返回响应头时会中止读 body 并恢复轮询', async (blockedPath) => {
+    const results: string[] = [];
+    let polls = 0;
+    let stalled = false;
+    let aborted = false;
+    let tabReads = 0;
+    const chrome = {
+      storage: {
+        local: StorageArea({ averyBridge: { token: 'a'.repeat(64), port: 1111 } }),
+        session: StorageArea(SeedTaskRegistry({ 'test-task': { tabIds: [10], parentTabId: null, activeTabId: 10 } })),
+      },
+      runtime: { onMessage: { addListener() {} }, onStartup: { addListener() {} }, onInstalled: { addListener() {} }, getManifest: () => ({ version: '0.2.0' }) },
+      alarms: { create() {}, onAlarm: { addListener() {} } },
+      tabs: { get: async () => { tabReads += 1; return { id: 10, windowId: 1, url: 'https://example.test/', status: 'complete' }; } },
+      debugger: {},
+    };
+    const worker = StartWorker(chrome, async (url: string, options: { signal: AbortSignal; body: string }) => {
+      const { pathname } = new URL(url);
+      const ok = (body: unknown) => ({ ok: true, json: async () => body });
+      if (pathname === '/bridge/poll') {
+        polls += 1;
+        if (polls > 2) return { ok: false, status: 409, json: async () => ({ code: 'BROWSER_EXTENSION_STALE' }) };
+        return ok({ commands: [{ id: 'read-' + polls, browserTaskId: 'test-task', operation: 'cdp',
+          payload: { id: polls, method: 'Target.getTargets' }, deadline: Date.now() + 5_000 }] });
+      }
+      if (pathname === '/bridge/command-status') return ok({ active: true });
+      if (pathname === '/bridge/result') results.push(JSON.parse(options.body).id);
+      if (pathname === blockedPath && !stalled) {
+        stalled = true;
+        return { ok: true, json: () => new Promise((_, reject) => {
+          options.signal.addEventListener('abort', () => { aborted = true; reject(options.signal.reason); }, { once: true });
+        }) };
+      }
+      return ok({ ok: true });
+    }, Date.now(), true);
+    try {
+      await WaitUntil(() => results.includes('read-2'), 600);
+      expect(aborted).toBe(true);
+      expect(results).toEqual(blockedPath === '/bridge/result' ? ['read-1', 'read-1', 'read-2'] : ['read-1', 'read-2']);
+      expect(tabReads).toBe(2);
+    } finally {
+      runInContext('pollEpoch += 1; activePollAbort?.abort();', worker);
+    }
+  });
+
   it.each([{ closeTabs: true, detachFails: false }, { closeTabs: false, detachFails: false }, { closeTabs: false, detachFails: true }])('任务清理 %j：解除调试并退休任务，只按策略关闭自有标签页', async ({ closeTabs, detachFails }) => {
     const removed: number[] = [];
     const detached: number[] = [];

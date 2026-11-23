@@ -36,7 +36,7 @@ class BrowserExtensionSocket {
   private async Open(options: { signal?: AbortSignal; deadline?: number }): Promise<void> {
     try {
       await this.bridge.EnsureConnected(this.engine, options);
-      const status = this.bridge.Status();
+      const status = this.bridge.Status(this.engine);
       const actualVersion = status.actualVersion ?? status.version;
       const actualProtocolRevision = status.actualProtocolRevision ?? status.protocolRevision;
       const expectedVersion = status.expectedVersion ?? BrowserExtensionManifestVersion;
@@ -127,7 +127,7 @@ export function CreatePersonalBrowserExtensionRuntime(input: {
   // 投递，不能用来决定扩展侧标签页归属。
   const browserTaskId = randomUUID();
   return new PersonalBrowserCdpRuntime({
-    endpoint: `ws://127.0.0.1:${input.bridge.Status().port}/devtools/browser/extension`,
+    endpoint: `ws://127.0.0.1:${input.bridge.Status(input.engine).port}/devtools/browser/extension`,
     now: input.now,
     delay: input.delay,
     browserTaskId,

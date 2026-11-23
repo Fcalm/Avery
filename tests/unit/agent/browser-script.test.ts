@@ -30,7 +30,7 @@ function Harness(options: { confirmationMode?: 'always_confirm' | 'fully_trusted
   const tools = CreateToolsModule({ getConfig: vi.fn(async () => null), saveConfig: vi.fn(), getStoredSettings: vi.fn(async () => ({})), observabilityStore: { AppendTraceEvent: trace } } as never);
   const base = CreateToolContext();
   const context = CreateToolContext({
-    confirmationMode: options.confirmationMode ?? 'fully_trusted', ports: { ...base.ports, browser }, pendingBrowserActions: new Map(),
+    confirmationMode: options.confirmationMode ?? 'fully_trusted', ports: { ...base.ports, browser, images: { Save: async () => ({ uri: 'attachment://script-screenshot/image.png', mimeType: 'image/png', detail: 'auto' }) } }, pendingBrowserActions: new Map(),
     allowedToolNames: new Set(tools.GetToolDefinitions('application').map((t) => t.definition.function.name)),
   });
   const run = (script: string, args: Record<string, unknown> = {}, id = 'script-1') => tools.ExecuteToolCall({ id, type: 'function', function: { name: 'BrowserRunScript', arguments: JSON.stringify({ script, ...args }) } }, context);
@@ -165,6 +165,19 @@ describe('BrowserRunScript 工具与执行边界', () => {
     expect(uncertain.browser.Execute).toHaveBeenCalledOnce();
   });
 
+  it('填写值未保留只停止脚本，Agent 可重新观察后继续，不能盲目重放或执行后续 Enter', async () => {
+    const h = Harness();
+    h.browser.Execute.mockRejectedValueOnce(Object.assign(new Error('Input did not retain value'), { code: 'BROWSER_FILL_VALUE_MISMATCH', statusUnknown: false }));
+    const stopped = await h.run(`await page.fill('@e1','广东佛山'); await page.press('Enter');`, { pageRevision: 1 });
+    expect(stopped.disposition).toBeUndefined();
+    expect(JSON.parse(stopped.content)).toMatchObject({ ok: false, code: 'BROWSER_FILL_VALUE_MISMATCH', failedStep: 1, browserState: { requiresSnapshot: true }, recovery: { action: 'observe_then_replan', replayAllowed: false } });
+    expect(h.browser.Execute).toHaveBeenCalledOnce();
+    h.context.requiresBrowserSnapshot = true;
+    expect(JSON.parse((await h.run(`await page.fill('@e1','广东佛山');`, { pageRevision: 1 }, 'blind')).content).code).toBe('BROWSER_SNAPSHOT_CONTEXT_LOST');
+    const recovered = await h.run(`await page.snapshot(); await page.click('@e2'); await page.snapshot();`, {}, 'recover');
+    expect(JSON.parse(recovered.content).ok).toBe(true);
+  });
+
   it('压缩丢失上下文时必须先观察；脚本快照与下一轮增量依赖外层真实回执', async () => {
     const h = Harness(); h.context.requiresBrowserSnapshot = true;
     expect(JSON.parse((await h.run(`await page.fill('@e1','x')`, { pageRevision: 1 })).content)).toMatchObject({ code: 'BROWSER_SNAPSHOT_CONTEXT_LOST' });
@@ -222,6 +235,25 @@ describe('BrowserRunScript 工具与执行边界', () => {
     const outcome = await RunAgentLoop(k.input);
     expect(h.browser.Execute).toHaveBeenCalledTimes(2);
     expect(JSON.parse(outcome.transcript.find((m) => m.role === 'tool')!.content)).toMatchObject({ code: 'TOOL_CALL_BUDGET_EXHAUSTED', completedSteps: 2 });
+  });
+
+  it('Kernel 在可恢复填写失败后继续模型循环，并强制先观察再改用选择动作', async () => {
+    const h=Harness();
+    h.browser.Execute.mockRejectedValueOnce(Object.assign(new Error('Value was not retained'),{code:'BROWSER_FILL_VALUE_MISMATCH'}));
+    const call=(id:string,name:string,args:Record<string,unknown>)=>({id,type:'function' as const,function:{name,arguments:JSON.stringify(args)}});
+    const k=CreateKernelHarness({tools:h.tools.GetToolDefinitions('application'),executeTool:(c,ctx)=>h.tools.ExecuteToolCall(c,ctx),completions:[
+      {content:'',toolCalls:[call('failed','BrowserRunScript',{pageRevision:1,script:`await page.fill('@e1','广东佛山'); await page.press('Enter');`})]},
+      {content:'',toolCalls:[call('blind','BrowserFill',{pageRevision:1,ref:'@e1',text:'广东佛山'})]},
+      {content:'',toolCalls:[call('observe','BrowserSnapshot',{})]},
+      {content:'',toolCalls:[call('select','BrowserRunScript',{pageRevision:2,script:`await page.click('@e2'); await page.snapshot();`})]},
+      {content:'已重新观察并调整操作。',toolCalls:[]},
+    ]});
+    k.input.toolContext=h.context;
+    k.input.scenario!.budgets.maxTurns=10;
+    const outcome=await RunAgentLoop(k.input);
+    expect(outcome.outcome).toBe('completed');
+    expect(outcome.transcript.filter(m=>m.role==='tool').map(m=>JSON.parse(m.content).code)).toEqual(['BROWSER_FILL_VALUE_MISMATCH','BROWSER_SNAPSHOT_CONTEXT_LOST',undefined,'BROWSER_SCRIPT_COMPLETED']);
+    expect(h.browser.Execute.mock.calls.map(([{proposal}])=>proposal.toolName)).toEqual(['BrowserFill','BrowserSnapshot','BrowserClick','BrowserSnapshot']);
   });
 
   it('相同按键的新调用正常执行，同一调用重试仍保持幂等', async () => {

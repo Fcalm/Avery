@@ -1,4 +1,4 @@
-/** 三种 Chromium 浏览器统一通过 Avery 扩展接入。 */
+/** Chrome/Edge 使用扩展；ego 值保留旧入口兼容，正式任务使用原生工作区。 */
 export type ExtensionBrowserEngine = 'chrome' | 'edge' | 'ego';
 
 /** 打开安装入口不等于安装或连接成功，连接结果仍由真实握手决定。 */

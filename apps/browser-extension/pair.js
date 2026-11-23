@@ -18,6 +18,6 @@
     else update();
   };
   chrome.runtime.sendMessage({ type: 'avery_pair', token, port }).then((result) => {
-    render(result?.ok ? 'Avery 浏览器扩展已连接，此页面将自动关闭。若未关闭，可手动关闭并返回 Avery。' : `连接失败：${result?.message || 'unknown error'}`);
+    render(result?.ok ? 'Avery 浏览器扩展已连接。可以返回 Avery 继续。' : `连接失败：${result?.message || 'unknown error'}`);
   }).catch((error) => render(`连接失败：${error?.message || '无法联系 Avery 浏览器扩展'}`));
 })();

@@ -1,7 +1,7 @@
 import { createServer } from 'node:http';
 import { createConnection } from 'node:net';
 import { execFile, spawn } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { createHash, createHmac } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -1799,6 +1799,7 @@ try {
    const handshake = hostInitOnly
      ? { ready: false, status: 'not_evaluated', blocked: false, handshakeReceived: false, source: 'skipped_test_mode', actualVersion: null, actualProtocolRevision: null, versionMatches: false, protocolRevisionMatches: false, online: false, state: 'host_init_only_not_pb03', waitedMs: 0, waitDurationMs: 0, attempts: 0, preflightGate: 'not_evaluated' }
      : await WaitForPb03Handshake({
+       engine,
        bridge,
        expectedVersion: expectedExtensionVersion,
        expectedProtocolRevision: expectedExtensionProtocolRevision,
@@ -1807,7 +1808,7 @@ try {
      });
    userDataPath = join(runtimeRoot, 'user-data');
    if (hostInitOnly) {
-      const status = bridge.Status();
+      const status = bridge.Status(engine);
      const listening = await IsTcpPortListening(status.port);
       const provider = CreateFixtureProvider(fixtureUrl, observations, runtime, bridge);
       host = new AgentHost({
@@ -1846,7 +1847,7 @@ try {
    // GetStatus(true) 会在断线时走 EnsureConnected 的 launch 分支，所以只能
    // 在 preflight 已确认在线后调用。
    const before = await runtime.GetStatus(false);
-   const bridgeStatus = bridge.Status();
+   const bridgeStatus = bridge.Status(engine);
   const listening = await IsTcpPortListening(bridgeStatus.port);
   const initialBrowser = {
     bridge: { listening, port: bridgeStatus.port, listenerState: listening ? 'listening' : 'not_listening' },
@@ -2272,7 +2273,7 @@ try {
     output.taskTabEvidence.otherTask.ledger = SafeLedger(await ReadState(sentinelUserDataPath));
     output.taskTabEvidence.errors = [...(observations.targetEvidenceErrors ?? []), ...(sentinelObservations?.targetEvidenceErrors ?? [])];
     output.taskTabEvidence.secondaryCheckerErrors = [...(observations.secondaryCheckerErrors ?? []), ...(sentinelObservations?.secondaryCheckerErrors ?? [])];
-    const finalConnection = bridge.Status();
+    const finalConnection = bridge.Status(engine);
     const finalListening = await IsTcpPortListening(finalConnection.port);
     output.browser.bridge = { listening: finalListening, port: finalConnection.port, listenerState: finalListening ? 'listening' : 'not_listening' };
     output.browser.extension = {
@@ -2432,7 +2433,7 @@ try {
   if (!output.toolEvents.length) output.toolEvents = SafeToolEvents(events);
   if (!output.ledger.length) output.ledger = SafeLedger(state);
   if (bridge) {
-    const status = bridge.Status();
+    const status = bridge.Status(engine);
     output.extensionVersion = hostInitOnly ? null : status.version ?? null;
     const listening = status.port > 0 ? await IsTcpPortListening(status.port) : false;
     const finalExtension = hostInitOnly
@@ -2480,7 +2481,8 @@ try {
               : 'skipped_already_performed';
     } else {
       try {
-        const token = String(JSON.parse(await readFile(bridgeStatePath, 'utf8')).token ?? '');
+        const pairingKey = String(JSON.parse(await readFile(bridgeStatePath, 'utf8')).token ?? '');
+        const token = createHmac('sha256', pairingKey).update(`avery-browser-engine:${engine}`).digest('hex');
         const restore = await RestorePb03Pairing({
           ...restoreOptions,
           token,

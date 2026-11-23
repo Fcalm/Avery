@@ -7,6 +7,8 @@ const PollAlarm = 'avery-bridge-poll';
 const DebuggerCommandTimeoutMs = 15000;
 const EventStorageTimeoutMs = 1000;
 const BridgeStorageTimeoutMs = 3000;
+const BridgeRequestTimeoutMs = 3000;
+const BridgePollTimeoutMs = 25000;
 const TaskSnapshotsToKeep = 8;
 const PollRetryDelayMs = 100;
 const PollRetryMaxDelayMs = 1000;
@@ -296,17 +298,18 @@ async function PrunePairSnapshots() {
   } catch { /* 历史配对回收失败不影响当前桥接或命令。 */ }
 }
 
-async function BridgeFetch(config, path, body, signal) {
+async function BridgeFetch(config, path, body, signal, timeoutMs = BridgeRequestTimeoutMs) {
   const version = chrome.runtime.getManifest()?.version;
-  const requestController = signal ? null : new AbortController();
-  const requestTimeout = requestController ? setTimeout(() => requestController.abort(), 25_000) : null;
+  const requestController = new AbortController();
+  const requestSignal = signal ? AbortSignal.any([signal, requestController.signal]) : requestController.signal;
+  const requestTimeout = setTimeout(() => requestController.abort(), Math.max(1, timeoutMs));
   try {
     const response = await fetch(`http://127.0.0.1:${config.port}${path}`, {
       method: 'POST',
       headers: { authorization: `Bearer ${config.token}`, 'content-type': 'application/json' },
       body: JSON.stringify({ ...(body || {}), workerInstanceId, version, protocolRevision: BrowserExtensionProtocolRevision }),
       cache: 'no-store',
-      signal: signal || requestController.signal,
+      signal: requestSignal,
     });
     if (!response.ok) {
       let failure;
@@ -314,11 +317,12 @@ async function BridgeFetch(config, path, body, signal) {
       if (failure?.code === 'BROWSER_EXTENSION_STALE') {
         throw ErrorWithCode('BROWSER_EXTENSION_STALE', String(failure.message || 'The Avery browser extension Service Worker is stale.'));
       }
-      throw new Error(`Bridge returned HTTP ${response.status}.`);
+      throw Object.assign(new Error(`Bridge returned HTTP ${response.status}.`), { status: response.status });
     }
-    return response.json();
+    // fetch 在响应头到达时就完成；响应体读完前也必须保留超时和取消信号。
+    return await response.json();
   } finally {
-    if (requestTimeout) clearTimeout(requestTimeout);
+    clearTimeout(requestTimeout);
   }
 }
 
@@ -938,7 +942,8 @@ function InvalidCommand(command, code, message) {
 }
 
 async function CommandIsActive(config, command) {
-  const status = await BridgeFetch(config, '/bridge/command-status', { id: command.id });
+  const status = await BridgeFetch(config, '/bridge/command-status', { id: command.id }, undefined,
+    Math.min(BridgeRequestTimeoutMs, command.deadline - Date.now()));
   return status?.active === true;
 }
 
@@ -979,6 +984,9 @@ async function Poll() {
   const epoch = pollEpoch;
   if (activePollEpoch === epoch) return;
   activePollEpoch = epoch;
+  const controller = new AbortController();
+  const signal = controller.signal;
+  activePollAbort = controller;
   try {
     let retryDelay = PollRetryDelayMs;
     // A fresh worker instance must prove its generation before it can poll.
@@ -987,29 +995,25 @@ async function Poll() {
     let helloBeforePoll = true;
     const retry = async () => {
       if (epoch !== pollEpoch) return false;
-      const controller = new AbortController();
-      activePollAbort = controller;
       try {
         await new Promise((resolveWait, rejectWait) => {
           let timer = null;
           const abort = () => {
             if (timer) clearTimeout(timer);
             timer = null;
-            controller.signal.removeEventListener('abort', abort);
+            signal.removeEventListener('abort', abort);
             rejectWait(ErrorWithCode('CANCELLED', 'A newer Avery browser pairing replaced this poll.'));
           };
           timer = setTimeout(() => {
             timer = null;
-            controller.signal.removeEventListener('abort', abort);
+            signal.removeEventListener('abort', abort);
             resolveWait();
           }, retryDelay);
-          controller.signal.addEventListener('abort', abort, { once: true });
-          if (controller.signal.aborted) abort();
+          signal.addEventListener('abort', abort, { once: true });
+          if (signal.aborted) abort();
         });
       } catch {
         return false;
-      } finally {
-        if (activePollAbort === controller) activePollAbort = null;
       }
       retryDelay = Math.min(PollRetryMaxDelayMs, retryDelay * 2);
       return epoch === pollEpoch;
@@ -1023,9 +1027,8 @@ async function Poll() {
       }
       if (helloBeforePoll) {
         try {
-          await BridgeFetch(config, '/bridge/hello', {}, undefined);
+          await BridgeFetch(config, '/bridge/hello', {}, signal);
           helloBeforePoll = false;
-          retryDelay = PollRetryDelayMs;
         } catch (error) {
           if (epoch !== pollEpoch || error?.code === 'BROWSER_EXTENSION_STALE') {
             RecordPollDiagnostic('Avery browser extension Service Worker is stale; waiting for reload.', error);
@@ -1037,15 +1040,11 @@ async function Poll() {
         }
       }
       let response;
-      const controller = new AbortController();
-      const timeoutController = new AbortController();
-      const requestTimeout = setTimeout(() => timeoutController.abort(), 25_000);
-      activePollAbort = controller;
       try {
-        response = await BridgeFetch(config, '/bridge/poll', {}, AbortSignal.any([controller.signal, timeoutController.signal]));
+        response = await BridgeFetch(config, '/bridge/poll', {}, signal, BridgePollTimeoutMs);
         retryDelay = PollRetryDelayMs;
       } catch (error) {
-        if (epoch !== pollEpoch || controller.signal.aborted) return;
+        if (epoch !== pollEpoch || signal.aborted) return;
         if (error?.code === 'BROWSER_EXTENSION_STALE') {
           RecordPollDiagnostic('Avery browser extension Service Worker is stale; waiting for reload.', error);
           return;
@@ -1054,10 +1053,6 @@ async function Poll() {
         helloBeforePoll = true;
         if (!await retry()) return;
         continue;
-      }
-      finally {
-        clearTimeout(requestTimeout);
-        if (activePollAbort === controller) activePollAbort = null;
       }
       if (epoch !== pollEpoch) return;
       const parsed = ParsePollResponse(response);
@@ -1074,10 +1069,22 @@ async function Poll() {
       for (const command of parsed.commands) {
         if (epoch !== pollEpoch) return;
         const result = await EnqueueCommand(command, epoch, config);
-        await BridgeFetch(config, '/bridge/result', result).catch(() => undefined);
+        // Host 按 command ID 结算。仅重发已有回执，绝不重复执行浏览器命令。
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+          try {
+            // 重配对前已开始的命令仍向原 Host 结算，使用原配对地址和令牌。
+            await BridgeFetch(config, '/bridge/result', result, epoch === pollEpoch ? signal : undefined);
+            break;
+          } catch (error) {
+            if (epoch !== pollEpoch || error?.code === 'BROWSER_EXTENSION_STALE') return;
+            RecordPollDiagnostic('Avery browser result delivery failed.', error);
+            if (attempt > 0 || (error?.status >= 400 && error.status < 500) || CommandExpired(command)) break;
+          }
+        }
       }
     }
   } finally {
+    if (activePollAbort === controller) activePollAbort = null;
     if (activePollEpoch === epoch) activePollEpoch = -1;
   }
 }
@@ -1093,7 +1100,7 @@ function ValidBridgeConfig(value) {
     && Number.isSafeInteger(value.port) && value.port > 0 && value.port <= 65535;
 }
 
-/** 配对成功后只关闭发起配对的顶层页面；重新读取 URL，避免误关已被用户导航的标签页。 */
+/** 配对页是窗口唯一标签时保留空白页，否则关闭已完成的配对页。 */
 async function ClosePairedTab(sender, config) {
   const tabId = sender?.tab?.id;
   if (!Number.isSafeInteger(tabId) || sender.frameId !== 0) return;
@@ -1108,7 +1115,17 @@ async function ClosePairedTab(sender, config) {
   };
   if (!isPairPage(sender.url)) return;
   const tab = await chrome.tabs.get(tabId);
-  if (isPairPage(tab.pendingUrl || tab.url)) await chrome.tabs.remove(tabId);
+  if (!Number.isSafeInteger(tab.windowId) || !isPairPage(tab.pendingUrl || tab.url)) return;
+  const windowTabs = await chrome.tabs.query({ windowId: tab.windowId });
+  // 查询窗口是异步的，用户可能已经导航或移动了配对页。
+  const current = await chrome.tabs.get(tabId);
+  if (current.windowId !== tab.windowId || !isPairPage(current.pendingUrl || current.url)) return;
+  if (windowTabs.some((candidate) => Number.isSafeInteger(candidate.id) && candidate.id !== tabId)) {
+    await chrome.tabs.remove(tabId);
+  } else {
+    // 冷启动可能只打开配对页。关闭它会退出浏览器，导致刚握手的 Worker 无法领取导航命令。
+    await chrome.tabs.update(tabId, { url: 'about:blank' });
+  }
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {

@@ -16,6 +16,23 @@ function Proposal(overrides: Partial<BrowserActionProposal> = {}): BrowserAction
 }
 
 describe('浏览器工具 Harness', () => {
+  it.each([{risk:'medium',force:false},{risk:'high',force:true},{risk:'high',force:false}] as const)('填写失败按风险和确认状态恢复或暂停：%j',async ({risk,force})=>{
+    const args={ref:'@e1',pageRevision:1,text:'广东佛山'};
+    const browser={Prepare:vi.fn(async()=>Proposal({toolName:'BrowserFill',canonicalArguments:args,risk,forceConfirmation:force})),Execute:vi.fn(async()=>{throw Object.assign(new Error('Value was not retained'),{code:'BROWSER_FILL_VALUE_MISMATCH'});})};
+    const base=CreateToolContext(),context=CreateToolContext({ports:{...base.ports,browser:browser as never},pendingBrowserActions:new Map()});
+    if(force) {
+      const result=await CreateToolsModule(CreatePorts()).ExecuteToolCall({id:'risk',type:'function',function:{name:'BrowserFill',arguments:JSON.stringify(args)}},context);
+      expect(result.disposition).toBe('wait_confirmation');expect(browser.Execute).not.toHaveBeenCalled();
+    }else if(risk==='high'){
+      const result=await CreateToolsModule(CreatePorts()).ExecuteToolCall({id:'high',type:'function',function:{name:'BrowserFill',arguments:JSON.stringify(args)}},context);
+      expect(result.disposition).toBe('pause');
+      expect(JSON.parse(result.content)).toMatchObject({code:'STATUS_UNKNOWN'});
+    }else{
+      const result=await CreateToolsModule(CreatePorts()).ExecuteToolCall({id:'ordinary',type:'function',function:{name:'BrowserFill',arguments:JSON.stringify(args)}},context);
+      expect(result.disposition).toBeUndefined();
+      expect(JSON.parse(result.content)).toMatchObject({code:'BROWSER_FILL_VALUE_MISMATCH',recovery:{action:'observe_then_replan',replayAllowed:false},browserState:{requiresSnapshot:true}});
+    }
+  });
   it('始终确认模式下规划仍为只读，执行阶段继续遵守确认策略', async () => {
     const browser={Prepare:vi.fn(async({arguments:args}:{arguments:Record<string,unknown>})=>Proposal({toolName:'BrowserFillForm',canonicalArguments:args,risk:'low'})),Execute:vi.fn(async()=>({status:'succeeded' as const,data:{phase:'plan',executed:false}}))};
     const base=CreateToolContext();
@@ -164,12 +181,41 @@ describe('浏览器工具 Harness', () => {
     expect(JSON.parse(unsupported.content)).toMatchObject({ ok: false, code: 'BROWSER_VISION_UNAVAILABLE' });
     expect(browser.Prepare).not.toHaveBeenCalled();
 
-    const result = await module.ExecuteToolCall(call, CreateToolContext({ scenarioId: 'application', supportsVisionInput: true, ports: { ...base.ports, browser } }));
+    const reference = { uri: 'attachment://screenshot/image.png', mimeType: 'image/png' as const, detail: 'auto' as const, sha256: 'a'.repeat(64) };
+    const saveImage = vi.fn(async () => reference);
+    const result = await module.ExecuteToolCall(call, CreateToolContext({ scenarioId: 'application', supportsVisionInput: true, ports: { ...base.ports, browser, images: { Save: saveImage } } }));
     expect(result.content).not.toContain('base64');
     expect(result.followupMessages).toEqual([expect.objectContaining({
       role: 'user',
       providerContent: expect.arrayContaining([expect.objectContaining({ type: 'image_url', image_url: { url: imageDataUrl, detail: 'auto' } })]),
+      imageAttachments: [reference],
     })]);
+    expect(saveImage).toHaveBeenCalledWith(imageDataUrl, expect.any(AbortSignal));
+    const failed = await module.ExecuteToolCall(call, CreateToolContext({ scenarioId: 'application', supportsVisionInput: true, ports: { ...base.ports, browser, images: { Save: vi.fn(async () => { throw Object.assign(new Error('image storage failed'), { code: 'STORAGE_ERROR' }); }) } } }));
+    expect(JSON.parse(failed.content).ok).toBe(false);
+    expect(failed.followupMessages).toBeUndefined();
+  });
+
+  it('只读截图的工具期限到达时返回超时，避免把下层取消误判为暂停', async () => {
+    vi.useFakeTimers();
+    try {
+      const browser = {
+        Prepare: vi.fn(async () => Proposal({ toolName: 'BrowserScreenshot', canonicalArguments: {}, risk: 'low' })),
+        Execute: vi.fn(({ signal }: { signal: AbortSignal }) => new Promise<never>((_resolve, reject) => {
+          signal.addEventListener('abort', () => reject(Object.assign(new Error('Browser command was cancelled.'), { code: 'CANCELLED' })), { once: true });
+        })),
+        GetStatus: vi.fn(), ClearProfile: vi.fn(), ResetPageReferences: vi.fn(), Close: vi.fn(),
+      };
+      const base = CreateToolContext();
+      const result = CreateToolsModule(CreatePorts()).ExecuteToolCall({
+        id: 'screenshot-timeout', type: 'function', function: { name: 'BrowserScreenshot', arguments: '{}' },
+      }, CreateToolContext({ scenarioId: 'application', supportsVisionInput: true, ports: { ...base.ports, browser } }));
+
+      await vi.advanceTimersByTimeAsync(30_000);
+      const settled = await result;
+      expect(settled.disposition).toBeUndefined();
+      expect(JSON.parse(settled.content)).toMatchObject({ ok: false, code: 'BROWSER_COMMAND_TIMEOUT', message: expect.stringContaining('BrowserSnapshot') });
+    } finally { vi.useRealTimers(); }
   });
 
   it('未加入当前 Run 的文件不能进入 Runtime', async () => {

@@ -18,9 +18,12 @@ class TranscriptSocket {
   snapshotItems?: Array<Record<string, unknown>>;
   contextId = 1;
   fillStateValid = true;
+  fillValueMatches = true;
+  selectionOnlyInput = false;
   fillStateChecks = 0;
   failFillStateAt?: number;
   readOnlyInput = false;
+  controlValueMatches = true;
   unavailableViewport = false;
   readonly sent: Array<{ id: number; method: string; params: Record<string, any>; sessionId?: string }> = [];
   readonly sentOptions: PersonalBrowserCommandOptions[] = [];
@@ -88,10 +91,13 @@ class TranscriptSocket {
     if (message.method === 'Runtime.evaluate') {
       const expression = String(message.params.expression ?? '');
       if (expression.includes('__host_test__')) return { result: { type: 'object', value: { ok: true } } };
+      if (expression.includes('const expectedControlValue =')) return { result: { type: 'object', value: { matches: this.controlValueMatches } } };
+      if (expression.includes('const matches = [...element.options]')) return { result: { type: 'object', value: { selected: true, expectedValue: 'selected-value' } } };
       if (expression.includes('const expectedFillValue =')) {
         this.fillStateChecks += 1;
         const valid = this.fillStateValid && this.fillStateChecks !== this.failFillStateAt;
-        return { result: { type: 'object', value: { fillStateValid: valid, focused: valid, valueMatches: true } } };
+        const valueMatches = this.fillStateChecks !== 3 || this.fillValueMatches;
+        return { result: { type: 'object', value: { fillStateValid: valid && valueMatches, focused: valid, valueMatches } } };
       }
       // SnapshotExpression itself now reports readyState, so recognize the
       // candidate collector before the small readiness probe.
@@ -136,7 +142,7 @@ class TranscriptSocket {
         if (this.unavailableViewport) return { result: { type: 'object', value: { unavailableViewport: true } } };
         const input = expression.includes('"tag":"input"');
         const date = expression.includes('"type":"date"');
-        return { result: { type: 'object', value: { stale: false, x: input ? 100 : 200, y: 60, tag: input ? 'input' : 'button', type: input ? (date ? 'date' : 'search') : '', disabled: false, readOnly: this.readOnlyInput } } };
+        return { result: { type: 'object', value: { stale: false, x: input ? 100 : 200, y: 60, tag: input ? 'input' : 'button', type: input ? (date ? 'date' : 'search') : '', disabled: false, readOnly: this.readOnlyInput, selectionOnly: this.selectionOnlyInput } } };
       }
     }
     if (message.method === 'Page.captureScreenshot') return { data: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).toString('base64') };
@@ -352,6 +358,39 @@ describe('PersonalBrowserCdpRuntime', () => {
         message: expect.stringContaining(mode === 'readOnlyInput' ? 'read-only' : 'Restore the browser window'),
       });
       expect(socket.sent.some(message => message.method.startsWith('Input.'))).toBe(false);
+    } finally { await runtime.Close(); }
+  });
+
+  it.each(['广东佛山', 'C++ / AI 产品', '𠮷'.repeat(130)])('完整值一次输入，避免字符间过滤或焦点迁移：%s', async text => {
+    const socket = new TranscriptSocket();
+    const runtime = new PersonalBrowserCdpRuntime({ endpoint: 'ws://127.0.0.1:9222/devtools/browser/test-id', webSocketFactory: () => socket, delay: async () => undefined });
+    try {
+      await runtime.Run(['snapshot']);
+      await runtime.Run(['fill', '@e1', text]);
+      expect(socket.sent.filter(message => message.method === 'Input.insertText').map(message => message.params.text)).toEqual([text]);
+    } finally { await runtime.Close(); }
+  });
+
+  it.each([false, true])('值未保留或选择器入口返回可恢复错误，不自动重写：selectionOnly=%s', async selectionOnly => {
+    const socket = new TranscriptSocket();
+    socket.fillValueMatches = false;
+    socket.selectionOnlyInput = selectionOnly;
+    const runtime = new PersonalBrowserCdpRuntime({ endpoint: 'ws://127.0.0.1:9222/devtools/browser/test-id', webSocketFactory: () => socket, delay: async () => undefined });
+    try {
+      await runtime.Run(['snapshot']);
+      await expect(runtime.Run(['fill', '@e1', '广东佛山'])).rejects.toMatchObject({ code: selectionOnly ? 'BROWSER_SELECT_REQUIRED' : 'BROWSER_FILL_VALUE_MISMATCH', statusUnknown: false });
+      expect(socket.sent.filter(message => message.method === 'Input.insertText')).toHaveLength(selectionOnly ? 0 : 1);
+    } finally { await runtime.Close(); }
+  });
+
+  it.each(['select', 'check'] as const)('%s 在点击或事件处理后未保留状态时返回结果未知', async command => {
+    const socket = new TranscriptSocket();
+    socket.snapshotItems = [{ selector: '#choice', tag: command === 'select' ? 'select' : 'input', role: command === 'select' ? 'combobox' : 'checkbox', type: command === 'select' ? '' : 'checkbox', name: '选项' }];
+    const runtime = new PersonalBrowserCdpRuntime({ endpoint: 'ws://127.0.0.1:9222/devtools/browser/test-id', webSocketFactory: () => socket, delay: async () => undefined });
+    try {
+      await runtime.Run(['snapshot']);
+      socket.controlValueMatches = false;
+      await expect(runtime.Run(command === 'select' ? ['select', '@e1', '目标'] : ['check', '@e1'])).rejects.toMatchObject({ code: 'BROWSER_COMMAND_FAILED', statusUnknown: true });
     } finally { await runtime.Close(); }
   });
 

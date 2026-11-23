@@ -12,6 +12,7 @@ import {
 } from './personal-browser-cdp-runtime';
 import { BrowserExtensionBridge, BrowserExtensionBridgeError, type BrowserTaskCleanupOutcome } from './browser-extension-bridge';
 import { CreatePersonalBrowserExtensionRuntime } from './personal-browser-extension-runtime';
+import { EgoBrowserRuntimeProvider, type EgoBrowserProvider, type EgoWorkspaceBinding, type EgoWorkspaceRuntime } from './ego-browser-runtime';
 import {
   AgentBrowserError,
   BrowserFormService,
@@ -36,6 +37,9 @@ const FixedSessionId = 'avery-default';
 const BossActionIntervalMs = 2_000;
 const BossActionTools = new Set<BrowserToolName>([
   'BrowserNavigate', 'BrowserClick', 'BrowserFill', 'BrowserFillForm', 'BrowserSelect', 'BrowserSetChecked', 'BrowserPressKey', 'BrowserUploadFile', 'BrowserSwitchTab', 'BrowserGoBack',
+]);
+const BrowserObservationTools = new Set<BrowserToolName>([
+  'BrowserScreenshot', 'BrowserSnapshot', 'BrowserReadPage', 'BrowserInspectForm', 'BrowserValidateForm', 'BrowserWait',
 ]);
 
 async function AwaitBeforeDeadline<T>(work: Promise<T>, deadline: number, now: () => number): Promise<T> {
@@ -176,12 +180,22 @@ export interface AgentBrowserRuntimeOptions {
   externalBrowserPaths?: Partial<Record<'chrome' | 'edge' | 'ego', string>>;
   /** 仅供契约测试替换扩展任务驱动。 */
   createExtensionRuntime?: (input: { bridge: BrowserExtensionBridge; engine: 'chrome' | 'edge' | 'ego'; now: () => number; delay: NonNullable<AgentBrowserRuntimeOptions['delay']> }) => PersonalBrowserRuntimePort;
+  /** ego 原生工作区驱动；检测只握手，首个任务命令才创建独立空间。 */
+  egoBrowserProvider?: EgoBrowserProvider;
   /** 仅记录表单字段阶段、耗时和错误码，不得包含填写值。 */
   recordLog?: (level: 'INFO' | 'WARN', event: string, detail: string) => void;
 }
 
+/** 当前会话的持久空间绑定和单次用户接管授权。 */
+export interface BrowserWorkspaceScope {
+  read(): EgoWorkspaceBinding | undefined;
+  save(workspace: EgoWorkspaceBinding | undefined): Promise<void>;
+  userApproved: boolean;
+}
+
 /** 浏览器任务串行 Runtime；页面引用、文件解析、取消与收尾策略均由此边界持有。 */
 export class AgentBrowserRuntime implements BrowserAutomationPort {
+  private workspaceScope?: BrowserWorkspaceScope;
   private readonly runtimeRoot: string;
   private readonly resolveUploadFile: AgentBrowserRuntimeOptions['resolveUploadFile'];
   private readonly now: () => number;
@@ -190,6 +204,7 @@ export class AgentBrowserRuntime implements BrowserAutomationPort {
   private readonly formDriver: BrowserFormDriver;
   private readonly createExtensionRuntime: NonNullable<AgentBrowserRuntimeOptions['createExtensionRuntime']>;
   private readonly browserExtensionBridge: BrowserExtensionBridge;
+  private readonly egoBrowserProvider: EgoBrowserProvider;
   private readonly closeBridgeOnClose: boolean;
   private readonly externalBrowserPaths: Partial<Record<'chrome' | 'edge' | 'ego', string>>;
   private readonly recordLog?: AgentBrowserRuntimeOptions['recordLog'];
@@ -209,6 +224,8 @@ export class AgentBrowserRuntime implements BrowserAutomationPort {
   private browserEngine: BrowserEngine = 'edge';
   private lastBossActionAt = 0;
   private personalBrowserRuntime: PersonalBrowserRuntimePort | null = null;
+  /** 原生空间断线/被接管后，当前任务不得通过重建空间绕过停止；只在任务边界解除。 */
+  private egoTaskError: { code: string; message: string } | null = null;
   private closeTaskTabs = true;
   /** 策略随任务身份冻结；运行中修改设置仅影响下一次新任务，不能改变旧任务的断线清理。 */
   private readonly runtimeClosePolicies = new WeakMap<PersonalBrowserRuntimePort, boolean>();
@@ -224,6 +241,7 @@ export class AgentBrowserRuntime implements BrowserAutomationPort {
     this.delay = options.delay ?? ((milliseconds, signal) => Delay(milliseconds, undefined, signal ? { signal } : undefined));
     this.createExtensionRuntime = options.createExtensionRuntime ?? CreatePersonalBrowserExtensionRuntime;
     this.browserExtensionBridge = options.browserExtensionBridge;
+    this.egoBrowserProvider = options.egoBrowserProvider ?? new EgoBrowserRuntimeProvider();
     this.closeBridgeOnClose = options.closeBridgeOnClose !== false;
     this.externalBrowserPaths = options.externalBrowserPaths ?? {};
     this.recordLog = options.recordLog;
@@ -276,6 +294,7 @@ export class AgentBrowserRuntime implements BrowserAutomationPort {
     if (this.browserEngine === value) return;
     if (this.personalBrowserRuntime) await this.RetireBrowserInstance();
     this.browserEngine = value;
+    this.egoTaskError = null;
     this.lastRuntimeError = null;
     this.InvalidateRefs();
   }
@@ -285,21 +304,43 @@ export class AgentBrowserRuntime implements BrowserAutomationPort {
     this.closeTaskTabs = value;
   }
 
-  /** 个人浏览器只建立浏览器级连接；任务标签页由首个页面工具按需创建。 */
+  /** ego 首个命令创建专属空间；Chrome/Edge 只建立扩展连接，标签页按需创建。 */
   private async EnsurePersonalBrowserRuntime(options: { signal?: AbortSignal; deadline?: number } = {}): Promise<PersonalBrowserRuntimePort> {
-    if (this.personalBrowserRuntime?.IsConnected()) return this.personalBrowserRuntime;
+    const scope = this.workspaceScope;
+    const workspace = scope?.read();
+    if (this.browserEngine === 'ego' && this.egoTaskError && !workspace) throw new AgentBrowserError(this.egoTaskError.code, this.egoTaskError.message);
+    if (workspace && workspace.state !== 'agent' && !scope?.userApproved) {
+      throw new AgentBrowserError('BROWSER_WORKSPACE_CONFIRMATION_REQUIRED', 'Use BrowserWorkspace resume to confirm returning control of the original workspace.');
+    }
+    if (this.personalBrowserRuntime?.IsConnected() && !this.egoTaskError) return this.personalBrowserRuntime;
     if (this.personalBrowserRuntime) {
+      const lostEgoSpace = this.browserEngine === 'ego';
       // 连接状态不再承载任务授权；断线后可按任务持久授权重新建立受限连接。
-      const cleanup = await this.ReleasePersonalBrowserRuntime(this.personalBrowserRuntime, this.now() + BrowserTaskCleanupTimeoutMs);
+      const cleanup = lostEgoSpace && workspace
+        ? await this.RetireBrowserInstance(undefined, true)
+        : await this.ReleasePersonalBrowserRuntime(this.personalBrowserRuntime, this.now() + BrowserTaskCleanupTimeoutMs);
       if (cleanup.status !== 'confirmed') {
         this.recordLog?.('WARN', 'browser.task_cleanup', `status=${cleanup.status} task=${cleanup.browserTaskId ?? 'none'} code=${cleanup.code ?? 'none'} closedTabs=${cleanup.closedTabs} unknownTabs=${cleanup.unknownTabs ?? 'unknown'}`);
       }
       this.personalBrowserRuntime = null;
+      if (lostEgoSpace && !workspace) {
+        this.egoTaskError = { code: 'BROWSER_EGO_UNAVAILABLE', message: 'ego 任务工作区连接已断开，请结束当前任务后重新开始。' };
+        throw new AgentBrowserError(this.egoTaskError.code, this.egoTaskError.message);
+      }
     }
     try {
       const closeTabs = this.closeTaskTabs;
-      await this.browserExtensionBridge.EnsureConnected(this.browserEngine, options);
-      const runtime = this.createExtensionRuntime({ bridge: this.browserExtensionBridge, engine: this.browserEngine, now: this.now, delay: this.delay });
+      let runtime: PersonalBrowserRuntimePort;
+      if (this.browserEngine === 'ego') {
+        // 原生传输的目标枚举、导航和清理均限定在新建空间，绝不回退到个人标签页。
+        runtime = await this.egoBrowserProvider.CreateRuntime({
+          closeTabs, ...(scope ? { recoverable: true } : {}),
+          ...(workspace ? { workspace, userApproved: scope?.userApproved } : {}),
+        });
+      } else {
+        await this.browserExtensionBridge.EnsureConnected(this.browserEngine, options);
+        runtime = this.createExtensionRuntime({ bridge: this.browserExtensionBridge, engine: this.browserEngine, now: this.now, delay: this.delay });
+      }
       this.runtimeClosePolicies.set(runtime, closeTabs);
       const browserTaskId = runtime.GetBrowserTaskId?.();
       if (browserTaskId && this.retiredBrowserTaskIds.has(browserTaskId)) {
@@ -307,10 +348,22 @@ export class AgentBrowserRuntime implements BrowserAutomationPort {
         throw new AgentBrowserError('BROWSER_TASK_RETIRED', 'A retired browserTaskId cannot be reused.');
       }
       try { await runtime.Connect(options); }
-      catch (error) { await runtime.Close(); throw error; }
+      catch (error) {
+        // 原生握手已经返回空间时，即使首次目标查询失败，也要保留原绑定供下一轮重连。
+        try { await this.SaveEgoWorkspace(runtime); }
+        finally { await runtime.Close(); }
+        // 原生创建超时不允许自动重建第二个空间；迟到创建由原进程负责收尾。
+        if (this.browserEngine === 'ego' && error instanceof PersonalBrowserCdpError && ['BROWSER_COMMAND_FAILED', 'BROWSER_COMMAND_TIMEOUT', 'BROWSER_START_FAILED'].includes(error.code)) {
+          throw new PersonalBrowserCdpError('BROWSER_EGO_UNAVAILABLE', error.message, error.statusUnknown);
+        }
+        throw error;
+      }
       this.personalBrowserRuntime = runtime;
       this.running = true;
+      this.egoTaskError = null;
       this.lastRuntimeError = null;
+      await this.SaveEgoWorkspace(runtime);
+      if (scope) scope.userApproved = false;
       return runtime;
     } catch (error) {
       if (error instanceof BrowserExtensionBridgeError) throw new AgentBrowserError(error.code, error.message, error.statusUnknown);
@@ -322,7 +375,8 @@ export class AgentBrowserRuntime implements BrowserAutomationPort {
   /** 按创建时冻结的策略关闭或交还当前任务页面，并撤销权限；共享 Bridge 保持在线。 */
   private async ReleasePersonalBrowserRuntime(runtime: PersonalBrowserRuntimePort, deadline: number): Promise<BrowserTaskCleanupOutcome> {
     const browserTaskId = runtime.GetBrowserTaskId?.() ?? null;
-    const closeTabs = this.runtimeClosePolicies.get(runtime) ?? true;
+    const workspace = this.workspaceScope?.read();
+    const closeTabs = (this.runtimeClosePolicies.get(runtime) ?? true) && !workspace?.keep;
     if (browserTaskId) this.retiredBrowserTaskIds.add(browserTaskId);
     let outcome: BrowserTaskCleanupOutcome = { status: 'confirmed', browserTaskId, closedTabs: 0, unknownTabs: 0 };
     if (runtime.CloseTask) {
@@ -342,6 +396,9 @@ export class AgentBrowserRuntime implements BrowserAutomationPort {
         message: cleanupError.message.slice(0, 300), closedTabs: 0, unknownTabs: statusUnknown ? null : 0,
       });
     }
+    if (outcome.status === 'confirmed' && workspace && this.workspaceScope) {
+      await this.workspaceScope.save((outcome.retainedTabs ?? 0) > 0 || !closeTabs ? { ...workspace, state: 'released' } : undefined);
+    }
     return outcome;
   }
 
@@ -350,7 +407,7 @@ export class AgentBrowserRuntime implements BrowserAutomationPort {
   }
 
   /** 只释放当前任务页；Bridge 的归属由构造期决定。 */
-  private async RetireBrowserInstance(deadline = this.now() + BrowserTaskCleanupTimeoutMs): Promise<BrowserTaskCleanupOutcome> {
+  private async RetireBrowserInstance(deadline = this.now() + BrowserTaskCleanupTimeoutMs, preserve = false): Promise<BrowserTaskCleanupOutcome> {
     const runtime = this.personalBrowserRuntime;
     const browserTaskId = runtime?.GetBrowserTaskId?.() ?? null;
     this.personalBrowserRuntime = null;
@@ -360,7 +417,8 @@ export class AgentBrowserRuntime implements BrowserAutomationPort {
     this.InvalidateRefs();
     this.formService.Clear();
     this.formReviews.Clear();
-    const outcome = runtime
+    if (runtime && preserve) await AwaitBeforeDeadline(runtime.Close(), deadline, this.now);
+    const outcome = runtime && !preserve
       ? await this.ReleasePersonalBrowserRuntime(runtime, deadline)
       : { status: 'confirmed' as const, browserTaskId, closedTabs: 0, unknownTabs: 0 };
     if (outcome.status !== 'confirmed') {
@@ -375,11 +433,16 @@ export class AgentBrowserRuntime implements BrowserAutomationPort {
       throw new AgentBrowserError('BROWSER_CRON_ACCESS_REQUIRED', 'This CronTask was not authorized to use the personal browser when it was created. Create and confirm a new task.');
     }
     const runtime = await this.EnsurePersonalBrowserRuntime(options);
-    try { return await runtime.Run(command, options); }
+    try {
+      return await runtime.Run(command, options);
+    }
     catch (error) {
+      if (this.browserEngine === 'ego' && error instanceof PersonalBrowserCdpError && ['BROWSER_VISIBLE_USER_ACTION_REQUIRED', 'BROWSER_TASK_RETIRED', 'BROWSER_EGO_UNAVAILABLE'].includes(error.code)) {
+        this.egoTaskError = { code: error.code, message: error.message };
+      }
       if (error instanceof PersonalBrowserCdpError) throw new AgentBrowserError(error.code, error.message, error.statusUnknown);
       throw error;
-    }
+    } finally { await this.SaveEgoWorkspace(runtime); }
   }
   private RunCommand(command: string[], options: { signal?: AbortSignal; deadline?: number; json?: boolean; stdin?: string } = {}): Promise<BrowserCommandEnvelope> {
     const task = this.commandTail.then(() => this.RunNow(command, options));
@@ -456,6 +519,8 @@ export class AgentBrowserRuntime implements BrowserAutomationPort {
           }
         } catch (error) {
           if (options.signal?.aborted || (error instanceof AgentBrowserError && error.code === 'CANCELLED')) throw error;
+          // 已派发写操作但无法核实结果时，必须把不确定性上交给工具层暂停，不能跳到下一字段。
+          if (error instanceof AgentBrowserError && error.statusUnknown) throw error;
           const reason = error instanceof AgentBrowserError && (error.statusUnknown || error.code === 'BROWSER_COMMAND_TIMEOUT')
             ? 'field_timeout'
             : 'batch_failed';
@@ -528,13 +593,15 @@ export class AgentBrowserRuntime implements BrowserAutomationPort {
         }
       } catch (error) {
         if (options.signal?.aborted || (error instanceof AgentBrowserError && error.code === 'CANCELLED')) throw error;
+        if (error instanceof AgentBrowserError && error.statusUnknown) throw error;
         if (error instanceof AgentBrowserError && (error.statusUnknown || error.code === 'BROWSER_COMMAND_TIMEOUT')) {
           skipped.push({ fieldId: `field-${operation.ref.replace(/^@/, '')}`, label: operation.label, reason: 'field_timeout' });
           LogField('timeout', operation, startedAt, error.code);
           await DismissSafely(operation);
           continue;
         }
-        const reason = error instanceof AgentBrowserError && /covered by/i.test(error.message) ? 'element_covered' : 'dynamic_action_failed';
+        const reason = error instanceof AgentBrowserError && error.code === 'BROWSER_FORM_MENU_NOT_READY' ? 'menu_not_ready'
+          : error instanceof AgentBrowserError && /covered by/i.test(error.message) ? 'element_covered' : 'dynamic_action_failed';
         skipped.push({ fieldId: `field-${operation.ref.replace(/^@/, '')}`, label: operation.label, reason });
         const code = error instanceof AgentBrowserError ? error.code : reason;
         LogField('failed', operation, startedAt, code);
@@ -832,11 +899,11 @@ export class AgentBrowserRuntime implements BrowserAutomationPort {
           const code = error instanceof AgentBrowserError ? error.code : 'BROWSER_COMMAND_FAILED';
           this.lastRuntimeError = { code, message: error instanceof Error ? error.message : 'Browser navigation failed.' };
           // 风控页面必须留在可见窗口供用户核对，不能关闭后换新实例自动重试。
-          if (code !== 'BROWSER_SITE_RISK_DETECTED') await this.RetireBrowserInstance();
+          if (code !== 'BROWSER_SITE_RISK_DETECTED' && !this.workspaceScope?.read()) await this.RetireBrowserInstance();
           // 导航不产生投递、上传或消息副作用；仅对传输/启动故障进行一次全新实例重试。
           const recoverable = error instanceof AgentBrowserError && !error.statusUnknown
             && ['BROWSER_COMMAND_FAILED', 'BROWSER_COMMAND_TIMEOUT', 'BROWSER_START_FAILED'].includes(error.code);
-          if (attempt === 0 && recoverable && !signal?.aborted) continue;
+          if (attempt === 0 && recoverable && !signal?.aborted && !this.workspaceScope?.read()) continue;
           if (error instanceof AgentBrowserError && error.statusUnknown) return { data: { code: error.code, message: error.message }, status: 'status_unknown' };
           throw error;
         }
@@ -960,10 +1027,14 @@ export class AgentBrowserRuntime implements BrowserAutomationPort {
         ...(proposal.toolName === 'BrowserPressKey' ? { referencesPreserved } : {}),
       }, status: 'succeeded' };
     } catch (error) {
+      // 观察超时只有读回执丢失，不存在需要用户核对的页面写入结果。
+      if (error instanceof AgentBrowserError && error.code === 'BROWSER_COMMAND_TIMEOUT' && BrowserObservationTools.has(proposal.toolName)) {
+        throw new AgentBrowserError(error.code, error.message);
+      }
       const retireForFailure = error instanceof AgentBrowserError
         && (error.code === 'BROWSER_START_FAILED'
           || (error.code === 'BROWSER_COMMAND_TIMEOUT' && proposal.toolName !== 'BrowserFillForm'));
-      if (retireForFailure && error instanceof AgentBrowserError) {
+      if (retireForFailure && error instanceof AgentBrowserError && !this.workspaceScope?.read()) {
         this.lastRuntimeError = { code: error.code, message: error.message };
         await this.RetireBrowserInstance();
       }
@@ -1036,21 +1107,32 @@ export class AgentBrowserRuntime implements BrowserAutomationPort {
     extension?: ReturnType<BrowserExtensionBridge['Status']>;
     connection?: { connected: boolean; state: 'online' | 'offline' };
   }> {
+    if (this.browserEngine === 'ego') {
+      const status = await this.egoBrowserProvider.GetStatus(probeConnection);
+      if (status.connected && !this.egoTaskError && this.lastRuntimeError?.code !== 'BROWSER_SITE_RISK_DETECTED') this.lastRuntimeError = null;
+      return {
+        available: status.available, running: status.connected, pageRevision: this.pageRevision, engine: 'ego',
+        state: !status.available ? 'not_installed' : this.lastRuntimeError || this.egoTaskError ? 'unhealthy' : status.connected ? 'ready' : 'stopped',
+        connection: { connected: status.connected, state: status.connected ? 'online' : 'offline' },
+        ...(this.egoTaskError ? { message: this.egoTaskError.message } : this.lastRuntimeError ? { message: this.lastRuntimeError.message } : status.message ? { message: status.message } : {}),
+        ...(this.currentUrl ? { currentUrl: this.currentUrl } : {}),
+      };
+    }
     const browserPath = this.externalBrowserPaths[this.browserEngine];
     const available = Boolean(browserPath && existsSync(browserPath));
     try {
       await this.browserExtensionBridge.Start();
-      if (probeConnection && !this.browserExtensionBridge.IsConnected()) {
+      if (probeConnection && !this.browserExtensionBridge.IsConnected(this.browserEngine)) {
         await this.browserExtensionBridge.EnsureConnected(this.browserEngine, { deadline: this.now() + DefaultCommandTimeoutMs });
       }
-      if (this.browserExtensionBridge.IsConnected() && this.lastRuntimeError?.code !== 'BROWSER_SITE_RISK_DETECTED') this.lastRuntimeError = null;
+      if (this.browserExtensionBridge.IsConnected(this.browserEngine) && this.lastRuntimeError?.code !== 'BROWSER_SITE_RISK_DETECTED') this.lastRuntimeError = null;
     } catch (error) {
       this.lastRuntimeError = {
         code: error instanceof BrowserExtensionBridgeError ? error.code : 'BROWSER_EXTENSION_BRIDGE_UNAVAILABLE',
         message: error instanceof Error ? error.message : 'Avery browser bridge could not start.',
       };
     }
-    const extension = this.browserExtensionBridge.Status();
+    const extension = this.browserExtensionBridge.Status(this.browserEngine);
     const running = extension.connected;
     const state = !available ? 'not_installed' : this.lastRuntimeError ? 'unhealthy' : running ? 'ready' : 'stopped';
     return {
@@ -1065,18 +1147,85 @@ export class AgentBrowserRuntime implements BrowserAutomationPort {
     this.formReviews.Clear();
   }
 
+  /** Host 绑定当前任务；模型只传工作区动作，原生 ID 由宿主独占。 */
+  SetWorkspaceScope(scope?: BrowserWorkspaceScope): void { this.workspaceScope = scope; }
+
+  private async SaveEgoWorkspace(runtime: PersonalBrowserRuntimePort): Promise<void> {
+    const scope = this.workspaceScope;
+    const next = (runtime as EgoWorkspaceRuntime).GetWorkspace?.();
+    if (!scope || !next) return;
+    const current = scope.read();
+    if (current?.id === next.id && current.targetId === next.targetId && current.state === next.state
+      && current.ownedTargetIds === next.ownedTargetIds) return;
+    await scope.save({ ...next, ...(current?.keep ? { keep: true } : {}) });
+  }
+
+  SuspendWorkspace(): Promise<BrowserTaskCleanupOutcome> {
+    this.egoTaskError = null;
+    return this.RetireBrowserInstance(undefined, true);
+  }
+
+  ManageWorkspace(action: 'open' | 'handoff' | 'resume' | 'close' | 'keep', options: { signal?: AbortSignal; deadline?: number }): Promise<{ state: string; needsConfirmation?: boolean }> {
+    const task = this.commandTail.then(async () => {
+      options.signal?.throwIfAborted();
+      const scope = this.workspaceScope;
+      if (this.browserEngine !== 'ego' || this.unattended || !scope) throw new AgentBrowserError('BROWSER_WORKSPACE_UNAVAILABLE', 'Workspace control is unavailable in this run.');
+      let workspace = scope.read();
+      if (!workspace && ['resume', 'keep', 'handoff'].includes(action)) {
+        throw new AgentBrowserError('BROWSER_TASK_RETIRED', 'This operation requires an existing workspace.');
+      }
+      if (action === 'close' && !workspace) return { state: 'closed' };
+      if (workspace && workspace.state !== 'agent' && !scope.userApproved) {
+        if (action === 'resume') return { state: workspace.state, needsConfirmation: true };
+        throw new AgentBrowserError('BROWSER_WORKSPACE_CONFIRMATION_REQUIRED', 'The user controls this workspace. Request resume first.');
+      }
+      let runtime: EgoWorkspaceRuntime;
+      try { runtime = await this.EnsurePersonalBrowserRuntime(options); }
+      catch (error) {
+        if (action === 'resume' && error instanceof AgentBrowserError && error.code === 'BROWSER_VISIBLE_USER_ACTION_REQUIRED') {
+          return { state: 'delegated', needsConfirmation: true };
+        }
+        throw error;
+      }
+      workspace = scope.read();
+      if (!workspace) throw new AgentBrowserError('BROWSER_EGO_UNAVAILABLE', 'Ego did not return a workspace identity.');
+      if (action === 'keep') {
+        await scope.save({ ...workspace, keep: true });
+        return { state: 'keep_at_completion' };
+      }
+      if (action === 'handoff') {
+        if (!runtime.HandoffWorkspace) throw new AgentBrowserError('BROWSER_WORKSPACE_UNAVAILABLE', 'Ego workspace handoff is unavailable.');
+        try {
+          await runtime.HandoffWorkspace(options.deadline ?? this.now() + BrowserTaskCleanupTimeoutMs);
+          await scope.save({ ...workspace, state: 'delegated' });
+        } finally { await this.SuspendWorkspace(); }
+        return { state: 'delegated', needsConfirmation: true };
+      }
+      if (action === 'close') {
+        const outcome = await this.CloseTask(options);
+        if (outcome.status !== 'confirmed') throw new AgentBrowserError(outcome.code ?? 'STATUS_UNKNOWN', outcome.message ?? 'Workspace cleanup outcome is unknown.');
+        return { state: scope.read()?.state ?? 'closed' };
+      }
+      return { state: 'agent' };
+    });
+    this.commandTail = task.then(() => undefined, () => undefined);
+    return task;
+  }
+
   /** Host 在任务结束时调用；按冻结策略关闭或交还页面，不关闭共享扩展 Bridge。 */
   async CloseTask(options: { deadline?: number } = {}): Promise<BrowserTaskCleanupOutcome> {
-    return await this.RetireBrowserInstance(options.deadline ?? this.now() + BrowserTaskCleanupTimeoutMs);
+    try { return await this.RetireBrowserInstance(options.deadline ?? this.now() + BrowserTaskCleanupTimeoutMs); }
+    finally { this.egoTaskError = null; }
   }
 
   async Close(): Promise<void> {
-    await this.RetireBrowserInstance();
+    await this.RetireBrowserInstance(undefined, Boolean(this.workspaceScope?.read()));
     if (this.closeBridgeOnClose) await this.browserExtensionBridge.Close().catch(() => undefined);
     this.scheduledCronTaskId = null;
     this.scheduledBrowserTaskGrant = null;
     this.unattended = false;
     this.lastRuntimeError = null;
+    this.egoTaskError = null;
     this.refs.clear();
     this.formService.Clear();
     this.formReviews.Clear();

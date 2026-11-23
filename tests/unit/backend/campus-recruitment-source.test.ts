@@ -19,6 +19,16 @@ const Input = (extra = {}) => JobCollectionInputSchema.parse({ channel: 'campus_
 const Signal = () => new AbortController().signal;
 
 describe('校招公告发现与缓存', () => {
+  it('公告岗位关键词预筛忽略大小写、空格和符号差异，不提前丢弃匹配企业入口', async () => {
+    const f = await Fixture();
+    f.request.mockImplementation(async url => ({ url, status: 200, body: url === CampusRecruitmentUrl ? Html() : JSON.stringify([
+      Row({ positions: 'ＡＩ · 产品－经理' }), Row({ positions: '算法工程师', appLink: 'https://other.zhiye.com/jobs' }),
+    ]) }));
+    const result = await new CampusRecruitmentSource(f.path, f.transport).Discover(Input({ keyword: 'a.I_产品 经理' }), Signal());
+    expect(result.discovery).toMatchObject({ total: 2, matched: 1, sources: 1 });
+    expect(result.sources[0].url).toBe('https://test.zhiye.com/jobs');
+  });
+
   it.each(['2026届及以后', '26届起', '2026届及以上', '2026-2027届', '２６／２７届', '26、27届', '2026年9月至2027年8月毕业', '不限届别（26届也可）'])('保留不能确定已失效的范围：%s', (batch) => {
     expect(IsExpiredCampusRecruitment(batch)).toBe(false);
   });

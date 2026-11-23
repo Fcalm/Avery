@@ -18,7 +18,7 @@ const cleanup: Array<() => Promise<void> | void> = [];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
 function Repository() {
   const db = new Database(':memory:'); cleanup.push(() => db.close());
-  db.exec(`CREATE TABLE jobs(id TEXT PRIMARY KEY, payload_json TEXT NOT NULL, is_favorite INTEGER NOT NULL, channel TEXT NOT NULL, match_score REAL, deadline INTEGER, revision INTEGER, created_at INTEGER, updated_at INTEGER, deleted_at INTEGER);
+  db.exec(`CREATE TABLE jobs(id TEXT PRIMARY KEY, payload_json TEXT NOT NULL, is_favorite INTEGER NOT NULL, channel TEXT NOT NULL, deadline INTEGER, revision INTEGER, created_at INTEGER, updated_at INTEGER, deleted_at INTEGER);
     CREATE TABLE applications(id TEXT PRIMARY KEY, job_id TEXT, status TEXT);
     CREATE TABLE audit_events(id TEXT PRIMARY KEY, actor_type TEXT, action TEXT, entity_type TEXT, entity_id TEXT, metadata_json TEXT, created_at INTEGER);`);
   return { db, repo: new JobRepository({ db }) };
@@ -50,6 +50,75 @@ async function Finished(service: JobLibraryCollectionService) {
 }
 
 describe('批量采集入库', () => {
+  it('BOSS 检查51个、筛除43个后超时，8个合格岗位在继续浏览前已落盘并保留', async () => {
+    let visited!: () => void;
+    const inspected = new Promise<void>(resolve => { visited = resolve; });
+    const { service, repo, directory } = await Service({ taskTimeoutMs: () => 220_000, collectBoss: async ({ accept, signal }) => {
+      for (let index = 0; index < 51; index++) {
+        const entry = NormalizeCollectedAtsJob({ ...Job(String(index)), title: index < 43 ? '运营实习生' : 'Ａｉ · 产品－经理（实习）', jobType: 'intern', education: '本科' });
+        await accept({ ...entry, platform: 'boss_zhipin', job: { ...entry.job, channel: 'boss_zhipin' } });
+      }
+      visited();
+      await new Promise<void>((_resolve, reject) => {
+        const stop = () => reject(new Error('浏览器等待被超时取消'));
+        if (signal.aborted) stop(); else signal.addEventListener('abort', stop, { once: true });
+      });
+    } });
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      await service.StartJobCollection({ channel: 'boss_zhipin', keyword: 'ai产品经理', keywordScope: 'title', city: '广州', targetCount: 20,
+        jobSeekingTypes: ['intern'], educations: ['bachelor'] });
+      await inspected;
+      expect(repo.Query({}).total).toBe(8);
+      expect(await service.GetJobCollectionTask()).toMatchObject({ status: 'running', scanned: 51, inserted: 8, collected: 8 });
+      expect(JSON.parse(await readFile(join(directory, 'job-collection/state.json'), 'utf8')).tasks[0]).toMatchObject({ status: 'running', inserted: 8, collected: 8 });
+      await vi.advanceTimersByTimeAsync(220_000);
+      const task = await Finished(service);
+      expect(task).toMatchObject({ status: 'timed_out', scanned: 51, inserted: 8, collected: 8, failedWrites: 0 });
+      expect(task.warnings).toContain('检查过程筛除：关键词 43，求职类型 0（未知 0），学历 0（未知 0）。');
+      expect(repo.Query({}).total).toBe(8);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('BOSS 取消时等待单条在途写入确认，保留已提交岗位并阻止下一条入库', async () => {
+    let writing!: () => void, release!: () => void;
+    const inWrite = new Promise<void>(resolve => { writing = resolve; });
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    let save!: (batch: CollectedJob[]) => JobImportResult;
+    const importJobs = vi.fn(async (batch: CollectedJob[]) => { writing(); await gate; return save(batch); });
+    const { service, repo } = await Service({ importJobs, collectBoss: async ({ accept }) => {
+      for (const id of ['first', 'after-cancel']) await accept(NormalizeCollectedAtsJob(Job(id)));
+    } });
+    save = batch => repo.ImportCollectedJobs(batch);
+    const task = await service.StartJobCollection({ channel: 'boss_zhipin', keyword: '开发', city: '全国', targetCount: 20 });
+    await inWrite;
+    const cancelling = service.CancelJobCollection(task.taskId);
+    release();
+    expect(await cancelling).toMatchObject({ status: 'cancelled', scanned: 1, inserted: 1, collected: 1, failedWrites: 0 });
+    expect(importJobs).toHaveBeenCalledOnce();
+    expect(importJobs.mock.calls[0][0]).toHaveLength(1);
+    expect(repo.Query({}).total).toBe(1);
+  });
+
+  it.each(['company_website', 'boss_zhipin'] as const)('%s 标题与全文筛选使用相同关键词规范化，保留字段范围及原始正文', async channel => {
+    const jobs: NormalizedJob[] = [
+      { ...Job('title'), title: 'ＡＩ · 产品－经理（实习）' },
+      { ...Job('jd'), title: '业务实习生', description: '负责 ai / 产品_经理 工作' },
+      { ...Job('cross-fields'), title: 'AI', company: '产品经理工作室', description: '负责业务' },
+      { ...Job('unrelated'), title: '算法工程师', description: '负责模型训练' },
+    ];
+    const { service, repo } = await Service({ runner: { Run: async () => Result(jobs) }, collectBoss: async ({ accept }) => {
+      for (const job of jobs) await accept(NormalizeCollectedAtsJob(job));
+    } });
+    const input = { channel, keyword: 'a.I＿产品 经 理', targetCount: 20, ...(channel === 'boss_zhipin' ? { city: '全国' } : {}) };
+    await service.StartJobCollection({ ...input, keywordScope: 'title' });
+    expect(await Finished(service)).toMatchObject({ scanned: 4, inserted: 1, collected: 1 });
+    expect(repo.ListAll()[0].title).toBe('ＡＩ · 产品－经理（实习）');
+    await service.StartJobCollection({ ...input, keywordScope: 'all' });
+    expect(await Finished(service)).toMatchObject({ scanned: 4, inserted: 1, existing: 1, collected: 2 });
+    expect(repo.ListAll().map(job => job.title).sort()).toEqual(['业务实习生', 'ＡＩ · 产品－经理（实习）'].sort());
+  });
+
   it('名称范围不接收仅JD提到关键词的岗位，保留原全文搜索兼容行为',async()=>{
     const {service,repo}=await Service({runner:{Run:async()=>Result([{...Job('a'),title:'算法工程师',description:'与产品经理协作'},{...Job('b'),title:'产品经理',description:'产品设计'}])}});
     await service.StartJobCollection({channel:'company_website',keyword:'产品',keywordScope:'title',targetCount:10});expect(await Finished(service)).toMatchObject({collected:1});expect(repo.Query({}).total).toBe(1);
@@ -136,15 +205,15 @@ describe('批量采集入库', () => {
     expect(await Finished(service)).toMatchObject({ collected: 37, inserted: 0, existing: 37 });
     expect(repo.ListAll()).toHaveLength(37);
   });
-  it('更新来源事实，保留收藏、分数、用户编辑、备注及已投递状态，墓碑不复活', () => {
+  it('更新来源事实，保留收藏、用户编辑、备注及已投递状态，墓碑不复活', () => {
     const { repo, db } = Repository();
     const entry = NormalizeCollectedAtsJob(Job()); repo.ImportCollectedJobs([entry]);
     const old = repo.FindById(entry.job.id);
-    repo.Upsert({ ...old, title: '用户标题', jd: '', favorite: true, matchScore: 95, note: '用户备注', contactStatus: 'contacted' }, old.revision);
+    repo.Upsert({ ...old, title: '用户标题', jd: '', favorite: true, note: '用户备注', contactStatus: 'contacted' }, old.revision);
     db.prepare('INSERT INTO applications VALUES (?, ?, ?)').run('a', entry.job.id, '已投递');
     const updated = { ...entry, job: { ...entry.job, title: '来源新标题', city: '北京', jd: '来源新JD' } };
     expect(repo.ImportCollectedJobs([updated]).items[0].status).toBe('existing');
-    expect(repo.FindById(entry.job.id)).toMatchObject({ title: '用户标题', jd: '', city: '北京', favorite: true, matchScore: 95, note: '用户备注', contactStatus: 'contacted' });
+    expect(repo.FindById(entry.job.id)).toMatchObject({ title: '用户标题', jd: '', city: '北京', favorite: true, note: '用户备注', contactStatus: 'contacted' });
     expect(repo.Query({ view: 'applied' }).total).toBe(1);
     // 来源偶然与用户标题同值也不会解除用户编辑保护。
     repo.ImportCollectedJobs([{ ...updated, job: { ...updated.job, title: '用户标题' } }]);

@@ -35,6 +35,27 @@ export async function ResolveEgoBrowserExecutable(): Promise<string | null> {
   return null;
 }
 
+export interface EgoWorkspaceBinding {
+  id: number;
+  name: string;
+  state: 'agent' | 'delegated' | 'released';
+  targetId?: string;
+  ownedTargetIds?: string[];
+  keep?: boolean;
+}
+
+export type EgoWorkspaceRuntime = PersonalBrowserRuntimePort & {
+  GetWorkspace?(): EgoWorkspaceBinding | undefined;
+  HandoffWorkspace?(deadline: number): Promise<BrowserTaskCleanupOutcome>;
+};
+
+interface EgoRuntimeOptions {
+  closeTabs?: boolean;
+  recoverable?: boolean;
+  workspace?: EgoWorkspaceBinding;
+  userApproved?: boolean;
+}
+
 type SocketEvent = { data?: string; error?: Error; code?: number; reason?: string };
 
 /** 随机端口、随机令牌的本机专用通道，只有固定 ego 引导进程可成为 CDP 传输端。 */
@@ -48,8 +69,9 @@ class EgoBrowserSocket {
   private startupOutput = '';
   private closing = false;
   private cleanup?: { resolve(value: BrowserTaskCleanupOutcome): void; reject(error: Error): void };
+  workspace?: EgoWorkspaceBinding;
 
-  constructor(private readonly executable: string, private readonly taskId: string, private readonly options: PersonalBrowserCommandOptions, private readonly closeTabs: boolean) {
+  constructor(private readonly executable: string, private readonly taskId: string, private readonly options: PersonalBrowserCommandOptions, private readonly config: EgoRuntimeOptions) {
     void this.Open().catch((error: unknown) => {
       if (!this.closing) this.events.emit('error', { error: error instanceof Error ? error : new Error('ego connection failed.') });
       this.close();
@@ -97,6 +119,8 @@ class EgoBrowserSocket {
             if (this.closing) return;
             clearTimeout(this.startupTimer);
             this.startupOutput = '';
+            this.workspace = { ...this.config.workspace, id: Number(message.spaceId), name: this.config.workspace?.name ?? `Avery ${this.taskId}`, state: 'agent' };
+            if (Array.isArray(message.ownedTargetIds) && message.ownedTargetIds.every((id) => typeof id === 'string')) this.workspace.ownedTargetIds = message.ownedTargetIds;
             this.readyState = 1; this.events.emit('open', {});
           } else if (message.closed === true) {
             this.cleanup?.resolve({ status: 'confirmed', browserTaskId: this.taskId, closedTabs: Number(message.closedTabs) || 0, unknownTabs: 0,
@@ -107,7 +131,14 @@ class EgoBrowserSocket {
             this.cleanup?.reject(error); this.cleanup = undefined;
             this.events.emit('error', { error }); this.close();
           } else if (Number.isSafeInteger(message.id)) {
-            this.events.emit('message', { data: line });
+            if (this.workspace && typeof message.workspaceTarget === 'string') this.workspace = { ...this.workspace, targetId: message.workspaceTarget };
+            if (this.workspace && Array.isArray(message.ownedTargetIds) && message.ownedTargetIds.every((id) => typeof id === 'string')) {
+              this.workspace = { ...this.workspace, ownedTargetIds: message.ownedTargetIds };
+            }
+            // 空间遥测只供宿主持久化，CDP Runtime 仍接收原有窄协议。
+            delete message.workspaceTarget;
+            delete message.ownedTargetIds;
+            this.events.emit('message', { data: JSON.stringify(message) });
           } else { socket.destroy(); return; }
         }
       });
@@ -119,7 +150,11 @@ class EgoBrowserSocket {
     if (this.closing || this.options.signal?.aborted) { this.close(); return; }
     const address = this.server.address();
     if (!address || typeof address === 'string') throw new Error('ego bridge has no local address.');
-    const script = `(${EgoBrowserBootstrap.toString()})(${JSON.stringify({ port: address.port, token, name: `Avery ${this.taskId}`, closeTabs: this.closeTabs })})`;
+    const script = `(${EgoBrowserBootstrap.toString()})(${JSON.stringify({
+      port: address.port, token, name: this.config.workspace?.name ?? `Avery ${this.taskId}`,
+      closeTabs: this.config.closeTabs, recoverable: this.config.recoverable,
+      resume: this.config.workspace, userApproved: this.config.userApproved,
+    })})`;
     const launch = BuildEgoNativeLaunch(this.executable, script, await IsEgoHostElevated());
     if (this.closing || this.options.signal?.aborted) { this.close(); return; }
     this.startupTimer = setTimeout(() => {
@@ -150,12 +185,12 @@ class EgoBrowserSocket {
     this.socket.write(`${data}\n`);
   }
 
-  async CloseTask(deadline: number, closeTabs: boolean): Promise<BrowserTaskCleanupOutcome> {
+  async CloseTask(deadline: number, closeTabs: boolean, handoff = false): Promise<BrowserTaskCleanupOutcome> {
     if (this.readyState !== 1 || !this.socket) throw new PersonalBrowserCdpError('BROWSER_EGO_UNAVAILABLE', 'ego task cleanup could not be confirmed.', true);
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => { this.cleanup = undefined; reject(new PersonalBrowserCdpError('BROWSER_COMMAND_TIMEOUT', 'ego task cleanup timed out.', true)); }, Math.max(1, deadline - Date.now()));
       this.cleanup = { resolve: (value) => { clearTimeout(timer); resolve(value); }, reject: (error) => { clearTimeout(timer); reject(error); } };
-      this.socket!.write(`${JSON.stringify({ close: true, closeTabs })}\n`);
+      this.socket!.write(`${JSON.stringify(handoff ? { handoff: true } : { close: true, closeTabs })}\n`);
     });
   }
 
@@ -179,7 +214,7 @@ class EgoBrowserSocket {
 
 export interface EgoBrowserProvider {
   GetStatus(probe: boolean): Promise<{ available: boolean; connected: boolean; message?: string }>;
-  CreateRuntime(options?: { closeTabs?: boolean }): Promise<PersonalBrowserRuntimePort>;
+  CreateRuntime(options?: EgoRuntimeOptions): Promise<EgoWorkspaceRuntime>;
 }
 
 /** ego 只提供新空间与原生传输；填写、快照、校验仍执行 Avery 的生产 Runtime。 */
@@ -210,18 +245,25 @@ export class EgoBrowserRuntimeProvider implements EgoBrowserProvider {
     return { available: true, connected: this.lastProbe?.connected === true, ...(this.lastProbe?.message ? { message: this.lastProbe.message } : {}) };
   }
 
-  async CreateRuntime(options: { closeTabs?: boolean } = {}): Promise<PersonalBrowserRuntimePort> {
+  async CreateRuntime(options: EgoRuntimeOptions = {}): Promise<EgoWorkspaceRuntime> {
     const executable = await this.resolveExecutable();
     if (!executable) throw new PersonalBrowserCdpError('BROWSER_EGO_UNAVAILABLE', 'ego lite is not installed. Open ego lite before continuing.');
     const taskId = `ego-${randomUUID()}`;
     let transport: EgoBrowserSocket | undefined;
     const runtime = new PersonalBrowserCdpRuntime({
       endpoint: 'ws://127.0.0.1:1/devtools/browser/ego', browserTaskId: taskId, taskTargetIdentity: 'cdp_target',
-      webSocketFactory: (_endpoint, connectionOptions) => transport = new EgoBrowserSocket(executable, taskId, connectionOptions ?? {}, options.closeTabs !== false),
+      webSocketFactory: (_endpoint, connectionOptions) => transport = new EgoBrowserSocket(executable, taskId, connectionOptions ?? {}, options),
     });
-    return Object.assign(runtime, { CloseTask: async (cleanupOptions: { deadline: number; closeTabs?: boolean }) => {
-      if (!transport) return { status: 'confirmed' as const, browserTaskId: taskId, closedTabs: 0, unknownTabs: 0 };
-      return transport.CloseTask(cleanupOptions.deadline, cleanupOptions.closeTabs ?? (options.closeTabs !== false));
-    } });
+    return Object.assign(runtime, {
+      GetWorkspace: () => transport?.workspace,
+      HandoffWorkspace: async (deadline: number) => {
+        if (!transport) throw new PersonalBrowserCdpError('BROWSER_EGO_UNAVAILABLE', 'The workspace is not connected.');
+        return transport.CloseTask(deadline, false, true);
+      },
+      CloseTask: async (cleanupOptions: { deadline: number; closeTabs?: boolean }) => {
+        if (!transport) return { status: 'confirmed' as const, browserTaskId: taskId, closedTabs: 0, unknownTabs: 0 };
+        return transport.CloseTask(cleanupOptions.deadline, cleanupOptions.closeTabs ?? (options.closeTabs !== false));
+      },
+    });
   }
 }

@@ -8,6 +8,7 @@ import { AtsPublicTransport } from './ats/public-transport';
 import { AtsError, type PublicTransport } from './ats/types';
 import { CheckResponse } from './ats/adapters';
 import { JobCityMatches } from '../repositories/job-query';
+import { MatchesCollectionKeyword } from './job-collection-keyword';
 
 export const CampusRecruitmentUrl = 'https://campus.sma-wiki.cn/campus/campus_recruit.html?channel=bz';
 const BaseUrl = new URL('.', CampusRecruitmentUrl);
@@ -118,7 +119,7 @@ export class CampusRecruitmentSource {
       if (request.batch && !row.batch.includes(request.batch)) return false;
       if (request.city && request.city !== '全国' && row.location && !/全国|各地|多地|多城市/.test(row.location) && !JobCityMatches(row.location, request.city)) return false;
       // 公告摘要缺失或以“等”省略时保留候选，最终由官网岗位条件筛选。
-      if (request.keyword && row.positions && !/等|\.\.\.|…/.test(row.positions) && !row.positions.toLowerCase().includes(request.keyword.toLowerCase())) return false;
+      if (request.keyword && row.positions && !/等|\.\.\.|…/.test(row.positions) && !MatchesCollectionKeyword(row.positions, request.keyword)) return false;
       return true;
     });
     const sources = new Map<string, RecruitmentSource>(), reasons: Record<string, number> = {};

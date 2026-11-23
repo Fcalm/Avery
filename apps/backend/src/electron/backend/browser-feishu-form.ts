@@ -1,4 +1,4 @@
-import type { FormFillOperation } from './browser-form-service';
+import { DynamicOptionPrefix, type FormFillOperation } from './browser-form-service';
 
 /** combobox 模式允许直接录入学校；普通 Select 的内部搜索词不能当成已选业务值。 */
 export const FeishuSelectValueScript = `
@@ -89,9 +89,9 @@ export function FeishuSelectOptionsExpression(operation: FormFillOperation): str
         element.setAttribute('data-avery-option-had-'+suffix,element.hasAttribute(attribute)?'1':'0');
         element.setAttribute('data-avery-option-'+suffix,element.getAttribute(attribute)||'');
       }
-      element.setAttribute('aria-label',label.slice(0,120));
+      element.setAttribute('aria-label',${JSON.stringify(DynamicOptionPrefix)}+label.slice(0,120));
       labels.push(label.slice(0,120));
     }
-    return {ready:true,observedOptions:[...new Set(labels)].slice(0,40),optionsTruncated:labels.length>40};
+    return {ready:true,scoped:true,observedOptions:[...new Set(labels)].slice(0,40),optionsTruncated:labels.length>40};
   })()`;
 }

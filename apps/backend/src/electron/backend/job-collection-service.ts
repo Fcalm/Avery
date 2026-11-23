@@ -687,7 +687,7 @@ export class JobCollectionService implements JobCollectionPort {
     const saved = await this.saveJob({
       jobId, company: candidate.company, title: candidate.title, city: candidate.city, salary: candidate.salary,
       experience: candidate.experience, ...(candidate.jobType ? { jobSeekingType: candidate.jobType } : {}), channel: candidate.platform === 'boss_zhipin' ? 'boss_zhipin' : 'company_website', favorite: false,
-      url: candidate.url, jd: candidate.jd, ...(input.matchScore === undefined ? {} : { matchScore: input.matchScore }),
+      url: candidate.url, jd: candidate.jd,
       sourceJobId: candidate.sourceJobId, education: candidate.education, collectedAt: candidate.collectedAt,
     });
     collection.savedCandidateIds.add(candidate.candidateId);

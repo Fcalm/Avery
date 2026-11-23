@@ -1,5 +1,5 @@
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash, createHmac, randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { execFile, spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
@@ -547,6 +547,7 @@ async function RunLivePreflight(browserParts, { engine, allowBrowserLaunch = fal
   // Bridge 是整个 preflight 与后续 Runtime 的同一实例；先启动监听，再只
   // 观察握手状态。此期间不创建 Host/provider，不调用 Request/Launch/tab。
   const handshake = await WaitForPb03Handshake({
+    engine,
     bridge,
     expectedVersion: ExpectedExtensionVersion,
     expectedProtocolRevision: ExpectedExtensionProtocolRevision,
@@ -683,7 +684,7 @@ function HumanReadableSummary(summary) {
 }
 
 async function BrowserConnectionEvidence(bridge, engine) {
-  const reported = bridge.Status();
+  const reported = bridge.Status(engine);
   const port = Number.isSafeInteger(reported?.port) ? reported.port : 0;
   const listening = port > 0 ? await IsTcpPortListening(port) : false;
   const bindAvailable = listening ? false : await IsTcpPortBindable(port);
@@ -1588,7 +1589,8 @@ async function Main() {
                 : 'skipped_already_performed';
       } else {
         try {
-          const token = String(JSON.parse(await readFile(bridgeStatePath, 'utf8')).token || '');
+          const pairingKey = String(JSON.parse(await readFile(bridgeStatePath, 'utf8')).token || '');
+          const token = createHmac('sha256', pairingKey).update(`avery-browser-engine:${engine}`).digest('hex');
           const restore = await RestorePb03Pairing({
             ...restoreOptions,
             token,
