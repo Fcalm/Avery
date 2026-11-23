@@ -1,11 +1,13 @@
 import { randomUUID } from 'node:crypto';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import type { EvalDatasetCase, EvalPromptCandidate, EvalUserSimulatorStrategy } from '@avery/contracts';
+import type { EvalDatasetCase, EvalPromptCandidate, EvalProvider, EvalUserSimulatorStrategy } from '@avery/contracts';
+import type { EvaluationCredentials } from './evaluation-models';
 import type { CompiledInstructions, ScenarioSnapshot } from '@avery/agent-sdk';
 import { BuildDefaultPromptFragments, CompilePrompt, DefaultScenario } from '@avery/agent-modules-defaults';
 import { AgentHost } from '../agent-host';
 import { EvalTestBusiness } from './eval-test-business';
+import { EvalInteractionScript } from './eval-interaction-script';
 import { CountEvalModelTurns } from './eval-runner-metrics';
 
 export interface PromptEvalCaseInput {
@@ -14,6 +16,8 @@ export interface PromptEvalCaseInput {
   candidate: EvalPromptCandidate & { compiledPrompt?: CompiledInstructions };
   testCase: EvalDatasetCase;
   model: string;
+  provider?: EvalProvider;
+  credentialPort?: EvaluationCredentials;
   toolNames: string[];
   maxModelTurns: number;
   userSimulator: EvalUserSimulatorStrategy;
@@ -31,12 +35,15 @@ export interface PromptEvalCaseResult {
 /** 使用正式 AgentHost/Kernel 执行 Prompt 案例，同时把业务端口和状态目录替换为 CaseRun 独占实现。 */
 export class PromptEvalRunner {
   private credentialPort: any;
+  private readonly providerFetch?: typeof fetch;
 
-  constructor({ credentialPort }: { credentialPort: any }) {
+  constructor({ credentialPort, providerFetch }: { credentialPort: any; providerFetch?: typeof fetch }) {
     this.credentialPort = credentialPort;
+    this.providerFetch = providerFetch;
   }
 
   async Execute(input: PromptEvalCaseInput): Promise<PromptEvalCaseResult> {
+    const script = new EvalInteractionScript(input.testCase);
     const userDataPath = join(input.caseRoot, 'user-data');
     const projectPath = join(input.caseRoot, 'project');
     await Promise.all([mkdir(userDataPath, { recursive: true }), mkdir(projectPath, { recursive: true })]);
@@ -68,6 +75,7 @@ export class PromptEvalRunner {
     let pendingResumeConfirmation: string | null = null;
     let pendingQuestions: { interactionId: string; questions: Array<{ id: string }> } | null = null;
     const host = new AgentHost({
+      providerFetch: this.providerFetch,
       userDataPath,
       workspacePath: projectPath,
       Emit: (raw: unknown) => {
@@ -79,7 +87,7 @@ export class PromptEvalRunner {
       },
       business,
       observability: observable,
-      credentialPort: this.credentialPort,
+      credentialPort: input.credentialPort ?? this.credentialPort,
       resolveProjectEnvironment: (projectId: string) => projectId === 'eval-project' ? { rootPath: projectPath, projectId, name: 'eval-project' } : null,
       compileInstructions: (_scenarioId, toolPolicyHash) => {
         const compiled = CompilePrompt(fragments, scenario.id, toolPolicyHash, 'eval-1');
@@ -94,6 +102,7 @@ export class PromptEvalRunner {
     let currentRequestId: string | null = null;
     const Abort = () => { if (currentRequestId) host.Cancel(currentRequestId); };
     input.signal.addEventListener('abort', Abort, { once: true });
+    let rejectedOnce = false;
     try {
       let content = input.testCase.input.userMessage;
       for (let segment = 0; segment < Math.min(30, input.maxModelTurns); segment += 1) {
@@ -105,6 +114,7 @@ export class PromptEvalRunner {
           sessionId: `eval-session-${input.caseRunId}`,
           content,
           model: input.model,
+          provider: input.provider ?? 'DeepSeek',
           confirmationMode: 'fully_trusted',
           projectId: 'eval-project',
           resumeId: (input.testCase.fixtures.resume as any)?.id ?? (input.testCase.fixtures.resume ? 'eval-resume' : undefined),
@@ -117,7 +127,10 @@ export class PromptEvalRunner {
           const interactionId = pendingResumeConfirmation;
           pendingResumeConfirmation = null;
           currentRequestId = requestId;
-          await host.RespondToInteraction({ kind: 'approval', sessionId: `eval-session-${input.caseRunId}`, requestId, interactionId, approved: input.userSimulator !== 'scripted' || segment > 0 });
+          const approved = input.userSimulator === 'scripted' ? script.Next('confirmation').accepted === true : input.userSimulator === 'reject_submit_once' && !rejectedOnce ? (rejectedOnce = true, false) : true;
+          events.push({ type: 'simulator_confirmation', createdAt: Date.now(), payload: { interactionId, accepted: approved, source: 'simulator', scriptIndex: script.consumed } });
+          const outcome = await host.RespondToInteraction({ kind: 'approval', sessionId: `eval-session-${input.caseRunId}`, requestId, interactionId, approved });
+          events.push({ type: 'interaction_result', createdAt: Date.now(), payload: { interactionId, outcome } });
           if (input.signal.aborted) throw Object.assign(new Error('Evaluation case was cancelled.'), { code: 'CANCELLED' });
           continue;
         }
@@ -125,11 +138,16 @@ export class PromptEvalRunner {
           const question = pendingQuestions as { interactionId: string; questions: Array<{ id: string }> };
           pendingQuestions = null;
           currentRequestId = requestId;
-          await host.RespondToInteraction({ kind: 'answer', sessionId: `eval-session-${input.caseRunId}`, requestId, interactionId: question.interactionId, answers: Object.fromEntries(question.questions.map((item) => [item.id, '请基于已有测试资料继续；无法确认的内容请明确标记【待确认】。'])) });
+          const answers = input.userSimulator === 'scripted' ? script.Answers(question.questions) : Object.fromEntries(question.questions.map((item) => [item.id, '请基于已有测试资料继续；无法确认的内容请明确标记【待确认】。']));
+          events.push({ type: 'user_input', createdAt: Date.now(), payload: { interactionId: question.interactionId, answers, source: 'simulator', scriptIndex: script.consumed } });
+          const outcome = await host.RespondToInteraction({ kind: 'answer', sessionId: `eval-session-${input.caseRunId}`, requestId, interactionId: question.interactionId, answers });
+          events.push({ type: 'interaction_result', createdAt: Date.now(), payload: { interactionId: question.interactionId, outcome } });
           continue;
         }
         break;
       }
+      if (pendingResumeConfirmation || pendingQuestions) throw Object.assign(new Error('案例达到交互轮数上限，仍有未处理的交互。'), { code: 'EVAL_INTERACTION_LIMIT' });
+      if (input.userSimulator === 'scripted') script.AssertComplete();
       const usageEvents = events.filter((event) => event.type === 'provider_usage');
       const usage = usageEvents.reduce((total, event) => {
         const fact = (event.payload.usage ?? (event.payload.payload as any)?.usage) as any;
@@ -154,6 +172,7 @@ export class PromptEvalRunner {
         },
       };
     } catch (error) {
+      events.push({ type: 'simulator_stopped', createdAt: Date.now(), payload: { consumed: script.consumed, code: (error as { code?: string })?.code ?? 'EVAL_CASE_FAILED' } });
       if (error && typeof error === 'object') Object.assign(error, { evalEvidence: { events: [...events], finalState: business.Snapshot() } });
       throw error;
     } finally {

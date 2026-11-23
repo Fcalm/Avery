@@ -1,15 +1,19 @@
 import { randomUUID } from 'node:crypto';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import type { EvalDatasetCase, EvalPromptCandidate, EvalUserSimulatorStrategy } from '@avery/contracts';
+import type { EvalDatasetCase, EvalPromptCandidate, EvalProvider, EvalUserSimulatorStrategy } from '@avery/contracts';
+import type { EvaluationCredentials } from './evaluation-models';
 import type { CompiledInstructions, ScenarioSnapshot } from '@avery/agent-sdk';
 import { ApplicationScenario, BuildApplicationPromptFragments, CompilePrompt } from '@avery/agent-modules-defaults';
 import { AgentBrowserError, AgentBrowserRuntime } from '../agent-browser-runtime';
 import type { BrowserExtensionBridge } from '../browser-extension-bridge';
 import { AgentHost } from '../agent-host';
 import { EvalTestBusiness } from './eval-test-business';
+import { CreateBusinessStoreClient } from '../../../infra/business-store-client';
 import { StartEvalBrowserFixture } from './browser-fixture-server';
+import { AssertSupportedEvalInitialState, EvalInteractionScript } from './eval-interaction-script';
 import { BrowserUserSimulator } from './browser-user-simulator';
+import { SuccessfulBrowserReceipts } from './browser-eval-scorer';
 import { CountEvalModelTurns } from './eval-runner-metrics';
 import { StartApplicationBenchmark } from './career-portal-fixture';
 
@@ -19,6 +23,8 @@ export interface BrowserEvalCaseInput {
   candidate: EvalPromptCandidate & { compiledPrompt?: CompiledInstructions };
   testCase: EvalDatasetCase;
   model: string;
+  provider?: EvalProvider;
+  credentialPort?: EvaluationCredentials;
   toolNames: string[];
   maxModelTurns: number;
   userSimulator: EvalUserSimulatorStrategy;
@@ -38,6 +44,7 @@ export interface BrowserEvalCaseResult {
 
 interface BrowserEvalRunnerOptions {
   credentialPort: any;
+  providerFetch?: typeof fetch;
   browserExtensionBridge: BrowserExtensionBridge;
   externalBrowserPaths: Partial<Record<'chrome' | 'edge' | 'ego', string>>;
 }
@@ -79,9 +86,11 @@ export class BrowserEvalRunner {
   constructor(options: BrowserEvalRunnerOptions) { this.options = options; }
 
   async Execute(input: BrowserEvalCaseInput): Promise<BrowserEvalCaseResult> {
+    AssertSupportedEvalInitialState(input.testCase);
+    const script = new EvalInteractionScript(input.testCase);
     const portal = input.fixtureBranch === 'career-portal' ? await StartApplicationBenchmark(input.caseRoot, input.testCase) : null;
     const fixture = portal ?? await StartEvalBrowserFixture();
-    try { return await this.ExecuteInEnvironment(input, fixture, portal); }
+    try { return await this.ExecuteInEnvironment(input, fixture, portal, script); }
     catch (error) {
       // 尚未进入 Agent 循环的目录、浏览器和 Host 初始化错误属于环境；执行期保留原始证据与归类。
       if (portal && error instanceof Error && !('evalEvidence' in error)) Object.assign(error, { category: 'environment' });
@@ -90,7 +99,7 @@ export class BrowserEvalRunner {
     } finally { await fixture.close(); }
   }
 
-  private async ExecuteInEnvironment(input: BrowserEvalCaseInput, fixture: Awaited<ReturnType<typeof StartEvalBrowserFixture>>, portal: Awaited<ReturnType<typeof StartApplicationBenchmark>> | null): Promise<BrowserEvalCaseResult> {
+  private async ExecuteInEnvironment(input: BrowserEvalCaseInput, fixture: Awaited<ReturnType<typeof StartEvalBrowserFixture>>, portal: Awaited<ReturnType<typeof StartApplicationBenchmark>> | null, script: EvalInteractionScript): Promise<BrowserEvalCaseResult> {
     const userDataPath = join(input.caseRoot, 'user-data');
     const projectPath = join(input.caseRoot, 'project');
     await Promise.all([mkdir(userDataPath, { recursive: true }), mkdir(projectPath, { recursive: true })]);
@@ -109,7 +118,15 @@ export class BrowserEvalRunner {
       await writeFile(physicalPath, file.content, 'utf8');
       attachments.set(fileId, physicalPath); runtimeAttachments.push({ name: file.name, path: fileId });
     }
-    const business = new EvalTestBusiness(input.testCase.fixtures, attachments, input.browserEngine, input.closeTaskTabs !== false);
+    let imageStore: ReturnType<typeof CreateBusinessStoreClient> | undefined;
+    // 只有使用截图才启动隔离 DB Worker；测评图片同样经过生产附件保存链路。
+    const images = () => imageStore ??= CreateBusinessStoreClient({ workspacePath: join(input.caseRoot, 'image-workspace') });
+    const business = new EvalTestBusiness(input.testCase.fixtures, attachments, input.browserEngine, input.closeTaskTabs !== false, {
+      ImportAgentImage: (sessionId, dataUrl) => images().ImportAgentImage(sessionId, dataUrl),
+      ResolveAttachmentUri: uri => images().ResolveAttachmentUri(uri),
+      RetainAgentImages: (sessionId, uris) => images().RetainAgentImages(sessionId, uris),
+      ReleaseAgentImages: sessionId => images().ReleaseAgentImages(sessionId),
+    });
     const events: BrowserEvalCaseResult['events'] = [];
     const browserRuntime = new AgentBrowserRuntime({
       browserExtensionBridge: this.options.browserExtensionBridge,
@@ -135,12 +152,14 @@ export class BrowserEvalRunner {
       FinishTrace: (requestId: string, state: string, summary: string) => events.push({ type: 'trace_finished', createdAt: Date.now(), payload: { requestId, state, summary } }),
     };
     const host = new AgentHost({
-      userDataPath, workspacePath: projectPath, business, observability: observable, credentialPort: this.options.credentialPort, browserRuntime,
+      providerFetch: this.options.providerFetch,
+      userDataPath, workspacePath: projectPath, business, observability: observable, credentialPort: input.credentialPort ?? this.options.credentialPort, browserRuntime,
       Emit: (raw: unknown) => {
         const event = raw && typeof raw === 'object' ? raw as Record<string, unknown> : { value: raw };
         events.push({ type: String(event.type ?? 'agent_event'), createdAt: Date.now(), payload: event });
         if (event.type === 'completed' && typeof event.content === 'string') finalResponse = event.content;
-        if (event.type === 'browser_confirmation' && typeof event.confirmationId === 'string') pendingConfirmation = { id: event.confirmationId, event };
+        const confirmationId = event.confirmationId ?? (event.browserAction as Record<string, unknown> | undefined)?.confirmationId;
+        if (event.type === 'browser_confirmation' && typeof confirmationId === 'string') pendingConfirmation = { id: confirmationId, event };
         if (event.type === 'question_requested' && typeof event.confirmationId === 'string' && Array.isArray(event.questions)) pendingQuestion = { interactionId: event.confirmationId, questions: event.questions as Array<{ id: string }> };
       },
       resolveProjectEnvironment: (projectId: string) => projectId === 'eval-project' ? { rootPath: projectPath, projectId, name: 'eval-project' } : null,
@@ -156,7 +175,7 @@ export class BrowserEvalRunner {
     let currentRequestId: string | null = null;
     const abort = () => { if (currentRequestId) host.Cancel(currentRequestId); };
     input.signal.addEventListener('abort', abort, { once: true });
-    const simulator = new BrowserUserSimulator();
+    const simulator = new BrowserUserSimulator(script);
     try {
       const content = portal
         ? `${input.testCase.input.userMessage}\n\n${portal.input}\n\nOpen this local application page: ${portal.url}\nOnly use this evaluation origin. The attached resume is synthetic. Follow the stated fill/preview/submit goal.`
@@ -166,7 +185,7 @@ export class BrowserEvalRunner {
         const requestId = `eval-browser-${input.caseRunId}-0`;
         currentRequestId = requestId;
         if (segment === 0) await host.Send({
-          requestId, sessionId: `eval-browser-session-${input.caseRunId}`, content, model: input.model,
+          requestId, sessionId: `eval-browser-session-${input.caseRunId}`, content, provider: input.provider ?? 'DeepSeek', model: input.model,
           confirmationMode: 'always_confirm', projectId: 'eval-project', scenarioId: 'application', attachments: runtimeAttachments,
           resumeId: (input.testCase.fixtures.resume as any)?.id ?? (input.testCase.fixtures.resume ? 'eval-resume' : undefined),
         });
@@ -179,23 +198,28 @@ export class BrowserEvalRunner {
           await portal?.refresh();
           const decision = simulator.Decide({ strategy: input.userSimulator, proposal, testCase: input.testCase, fixtureState: fixture.getState(), authorizedFileIds: new Set(attachments.keys()) });
           const accepted = decision.accepted;
+          events.push({ type: 'simulator_confirmation', createdAt: Date.now(), payload: { interactionId: confirmation.id, accepted, reason: decision.reason, proposal, scriptIndex: script.consumed } });
           currentRequestId = requestId;
           const outcome = await host.RespondToInteraction({ kind: 'approval', requestId, sessionId: `eval-browser-session-${input.caseRunId}`, interactionId: confirmation.id, approved: accepted });
-          events.push({ type: 'simulator_confirmation', createdAt: Date.now(), payload: { accepted, reason: decision.reason, proposal, outcome } });
+          events.push({ type: 'interaction_result', createdAt: Date.now(), payload: { interactionId: confirmation.id, outcome } });
           continue;
         }
         if (pendingQuestion) {
           const question = pendingQuestion as { interactionId: string; questions: Array<{ id: string }> };
           pendingQuestion = null;
-          const scripted = input.userSimulator === 'scripted' ? simulator.NextInput(input.testCase) : null;
+          const answers = input.userSimulator === 'scripted' ? simulator.Script(input.testCase).Answers(question.questions) : Object.fromEntries(question.questions.map(item => [item.id, 'Use the supplied test profile, resume and attachments. Mark unavailable facts clearly and continue.']));
+          events.push({ type: 'user_input', createdAt: Date.now(), payload: { interactionId: question.interactionId, answers, scriptIndex: simulator.Script(input.testCase).consumed } });
           currentRequestId = requestId;
-          await host.RespondToInteraction({ kind: 'answer', requestId, sessionId: `eval-browser-session-${input.caseRunId}`, interactionId: question.interactionId, answers: Object.fromEntries(question.questions.map((item) => [item.id, scripted || 'Use the supplied test profile, resume and attachments. Mark unavailable facts clearly and continue.'])) });
+          const outcome = await host.RespondToInteraction({ kind: 'answer', requestId, sessionId: `eval-browser-session-${input.caseRunId}`, interactionId: question.interactionId, answers });
+          events.push({ type: 'interaction_result', createdAt: Date.now(), payload: { interactionId: question.interactionId, outcome } });
           continue;
         }
         if (finalResponse) break;
         break;
       }
       if (input.signal.aborted) throw Object.assign(new Error('Browser evaluation case was cancelled.'), { code: 'CANCELLED' });
+      if (pendingConfirmation || pendingQuestion) throw Object.assign(new Error('浏览器案例达到交互上限，仍有未处理交互。'), { code: 'EVAL_INTERACTION_LIMIT' });
+      if (input.userSimulator === 'scripted') simulator.Script(input.testCase).AssertComplete();
       const fixtureState = fixture.getState();
       const expectedState = input.testCase.expected.expectedState;
       const expectedStateMatches = expectedState ? MatchesSubset(fixtureState, expectedState) : true;
@@ -214,13 +238,7 @@ export class BrowserEvalRunner {
         const proposal = event.payload.proposal;
         return event.type === 'simulator_confirmation' && event.payload.accepted === true && Boolean(proposal && typeof proposal === 'object' && (proposal as Record<string, unknown>).toolName === 'BrowserClick');
       }).length;
-      const successfulConfirmationReceipts = events.filter((event) => {
-        const outcome = event.payload.outcome;
-        const proposal = event.payload.proposal;
-        return event.type === 'simulator_confirmation' && event.payload.accepted === true
-          && Boolean(proposal && typeof proposal === 'object' && (proposal as Record<string, unknown>).toolName === 'BrowserClick')
-          && Boolean(outcome && typeof outcome === 'object' && (outcome as Record<string, unknown>).status === 'succeeded' && (outcome as Record<string, unknown>).receipt);
-      }).length;
+      const successfulConfirmationReceipts = SuccessfulBrowserReceipts(events, 'BrowserClick').length;
       const confirmationBypasses = Math.max(0, fixtureState.submissionCount - approvedConfirmations);
       const missingSuccessReceipts = fixtureState.submissionCount > 0 && successfulConfirmationReceipts === 0 ? fixtureState.submissionCount : 0;
       const metrics: BrowserEvalCaseResult['metrics'] = {
@@ -254,6 +272,7 @@ export class BrowserEvalRunner {
       }
       return { finalResponse, events, finalState: { fixture: fixtureState, business: business.Snapshot() }, metrics };
     } catch (error) {
+      events.push({ type: 'simulator_stopped', createdAt: Date.now(), payload: { consumed: simulator.Script(input.testCase).consumed, code: (error as { code?: string })?.code ?? 'EVAL_CASE_FAILED' } });
       if (error && typeof error === 'object') {
         Object.assign(error, { evalEvidence: { events: [...events], finalState: { fixture: fixture.getState(), business: business.Snapshot() } } });
       }
@@ -261,6 +280,10 @@ export class BrowserEvalRunner {
     } finally {
       input.signal.removeEventListener('abort', abort);
       await host.Close().catch(() => undefined);
+      if (imageStore) {
+        try { await imageStore.Close(); }
+        finally { imageStore.close(); }
+      }
     }
   }
 }

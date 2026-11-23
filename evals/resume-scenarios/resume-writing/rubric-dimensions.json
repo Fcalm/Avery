@@ -1,0 +1,8 @@
+[
+  { "id": "factFidelity", "label": "事实与口径保真", "weight": 25 },
+  { "id": "roleRelevance", "label": "岗位相关性", "weight": 25 },
+  { "id": "evidenceExpression", "label": "行动与成果表达", "weight": 20 },
+  { "id": "writingQuality", "label": "语言与信息密度", "weight": 15 },
+  { "id": "resumeStructure", "label": "结构与可解析性", "weight": 10 },
+  { "id": "scopeControl", "label": "交付范围与边界", "weight": 5 }
+]

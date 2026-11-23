@@ -1,0 +1,8 @@
+[
+  { "id": "jdAlignment", "label": "岗位要求拆解与映射", "weight": 25 },
+  { "id": "evidenceAccuracy", "label": "证据与事实准确性", "weight": 25 },
+  { "id": "gapDiagnosis", "label": "差距诊断与判断", "weight": 20 },
+  { "id": "actionableAdvice", "label": "优化建议与改写", "weight": 15 },
+  { "id": "communication", "label": "结构与可读性", "weight": 10 },
+  { "id": "boundaries", "label": "范围与诚信边界", "weight": 5 }
+]

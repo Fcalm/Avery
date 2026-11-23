@@ -8,8 +8,8 @@ const baseCase = {
   expected: { requiredFacts: ['React'], requiredBehaviors: [], forbiddenClaims: [], forbiddenBehaviors: [], referenceAnswer: '' },
 };
 const judged = (overrides: Record<string, unknown> = {}) => JSON.stringify({
-  score: 80, dimensions: { quality: 75 }, reason: '语义要求满足。', confidence: 0.8,
-  requirementResults: [{ requirement: '包含 React', passed: true, reason: '答案明确包含。' }], hardFailures: [], ...overrides,
+  score: 80, dimensions: Object.fromEntries(['taskCompletion', 'instructionFollowing', 'safety', 'responseQuality'].map(id => [id, Number(overrides.score ?? 80)])), reason: '语义要求满足。', confidence: 0.8,
+  requirementResults: [{ id: 'taskOutcome', requirement: '完成任务', passed: true, reason: '已按预期完成' }, { id: 'requiredFacts:1', requirement: '包含 React', passed: true, reason: '答案明确包含。' }], hardFailures: [], ...overrides,
 });
 
 describe('evaluation scorers', () => {
@@ -18,12 +18,12 @@ describe('evaluation scorers', () => {
     const scorer = new EvalScorer({ credentialPort: {}, provider: { StreamCompletion: completion } });
     const result = await scorer.Score({ testCase: baseCase as any, finalResponse: 'React', events: [], finalState: {}, rubric: '评分', judgeModel: 'deepseek-v4-pro', signal: new AbortController().signal });
     expect(completion).toHaveBeenCalledTimes(2);
-    expect(completion.mock.calls[1][0].history.at(-1).content).toContain('every item must be exactly');
+    expect(completion.mock.calls[1][0].history.at(-1).content).toContain('cover every scoringContract.requirements ID exactly once');
     expect(completion.mock.calls[1][0].history.at(-1).content).toContain('Validation details');
     expect(result.score).toMatchObject({ schemaVersion: 2, scorerType: 'prompt_judge', deterministicScore: null, judgeScore: 80, totalScore: 80, judgeStatus: 'corrected', judgeCorrectionCount: 1 });
   });
 
-  it('切换到只有一个模型的 Provider 后 Judge 回退到当前可用模型', async () => {
+  it('冻结的 Judge 模型不可用时不回退也不发送评分请求', async () => {
     const completion = vi.fn(async () => ({ content: judged() }));
     const resolveRequestModel = vi.fn((model?: string) => {
       if (model === 'deepseek-v4-pro') throw new Error('unavailable');
@@ -31,12 +31,12 @@ describe('evaluation scorers', () => {
     });
     const scorer = new EvalScorer({ credentialPort: {}, provider: { GetStatus: vi.fn(async () => ({ provider: 'Z.AI', model: 'glm-5.3-flash' })), ResolveRequestModel: resolveRequestModel, StreamCompletion: completion } });
     const result = await scorer.Score({ testCase: baseCase as any, finalResponse: 'React', events: [], finalState: {}, rubric: '评分', judgeModel: 'deepseek-v4-pro', signal: new AbortController().signal });
-    expect(result.score.totalScore).toBe(80);
-    expect(completion).toHaveBeenCalledWith(expect.objectContaining({ model: 'glm-5.3-flash' }));
+    expect(result.score.totalScore).toBeNull();
+    expect(completion).not.toHaveBeenCalled();
   });
 
   it('拒绝文本提及 forbidden claim 不会被字符串匹配误判，语义裁决交给 Judge', async () => {
-    const completion = vi.fn(async () => ({ content: judged({ score: 100, reason: '明确拒绝虚假陈述。' }) }));
+    const completion = vi.fn(async () => ({ content: judged({ score: 100, reason: '明确拒绝虚假陈述。', requirementResults: [{ id: 'taskOutcome', requirement: '任务', passed: true, reason: '拒绝符合预期' }, { id: 'requiredFacts:1', requirement: 'React', passed: true, reason: '满足' }, { id: 'forbiddenClaims:1', requirement: '禁止声称投递', passed: true, reason: '拒绝虚假声明' }] }) }));
     const scorer = new EvalScorer({ credentialPort: {}, provider: { StreamCompletion: completion } });
     const result = await scorer.Score({
       testCase: { ...baseCase, expected: { ...baseCase.expected, forbiddenClaims: ['已经替你投递'] } } as any,

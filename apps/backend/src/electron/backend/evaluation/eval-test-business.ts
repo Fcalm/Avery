@@ -1,5 +1,13 @@
 import { randomUUID } from 'node:crypto';
 
+/** 测评只使用 CaseRun 内的隔离附件存储，不能回退到生产工作空间。 */
+interface EvalImageStore {
+  ImportAgentImage(sessionId: string, dataUrl: string): Promise<unknown>;
+  ResolveAttachmentUri(uri: string): Promise<unknown>;
+  RetainAgentImages(sessionId: string, uris: string[]): Promise<unknown>;
+  ReleaseAgentImages(sessionId: string): Promise<unknown>;
+}
+
 /** 每个 CaseRun 独占的最小业务端口；所有写入仅修改内存副本，绝不连接生产 BusinessStore。 */
 export class EvalTestBusiness {
   private profiles: unknown[];
@@ -7,7 +15,7 @@ export class EvalTestBusiness {
   private snapshots = new Map<string, { sessionSnapshotJson: string; toolSnapshotJson: string }>();
   private attachments: Map<string, string>;
 
-  constructor(fixtures: { profile?: unknown[]; resume?: Record<string, unknown> }, attachments: Map<string, string> = new Map(), private readonly browserEngine?: 'chrome' | 'edge' | 'ego', private readonly closeTaskTabs = true) {
+  constructor(fixtures: { profile?: unknown[]; resume?: Record<string, unknown> }, attachments: Map<string, string> = new Map(), private readonly browserEngine?: 'chrome' | 'edge' | 'ego', private readonly closeTaskTabs = true, private readonly imageStore?: EvalImageStore) {
     this.profiles = structuredClone(fixtures.profile ?? []);
     const resume = fixtures.resume && typeof fixtures.resume === 'object'
       ? { id: 'eval-resume', name: '测评简历', content: '', summary: '', targetRoles: [], revision: 1, ...structuredClone(fixtures.resume) }
@@ -38,7 +46,22 @@ export class EvalTestBusiness {
     this.snapshots.set(sessionId, structuredClone(snapshots));
     return { updated: true };
   }
-  ResolveAttachmentUri(uri: string): string | null { return this.attachments.get(uri) ?? null; }
+  ResolveAttachmentUri(uri: string): unknown {
+    const physicalPath = this.attachments.get(uri);
+    return physicalPath ? { physicalPath } : this.imageStore?.ResolveAttachmentUri(uri) ?? null;
+  }
+  ImportAgentImage(sessionId: string, dataUrl: string): Promise<unknown> {
+    if (!this.imageStore) throw new Error('Evaluation image storage is unavailable.');
+    return this.imageStore.ImportAgentImage(sessionId, dataUrl);
+  }
+  async RetainAgentImages(sessionId: string, uris: string[]): Promise<void> {
+    const persisted = uris.filter(uri => !this.attachments.has(uri));
+    if (persisted.length) {
+      if (!this.imageStore) throw new Error('Evaluation image storage is unavailable.');
+      await this.imageStore.RetainAgentImages(sessionId, persisted);
+    }
+  }
+  async ReleaseAgentImages(sessionId: string): Promise<void> { await this.imageStore?.ReleaseAgentImages(sessionId); }
 
   Snapshot(): { profiles: unknown[]; resumes: unknown[] } {
     return { profiles: structuredClone(this.profiles), resumes: structuredClone(this.resumes) };

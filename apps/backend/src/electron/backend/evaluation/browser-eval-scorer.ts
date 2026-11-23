@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import type { EvalApplicationBenchmarkReport, EvalBrowserAssertion, EvalBrowserAssertionResult, EvalCaseScore, EvalDatasetCase } from '@avery/contracts';
 
 export interface BrowserEvalScoreResult {
@@ -47,13 +48,48 @@ function EventFact(event: unknown): { type: string; toolName?: string; ok?: bool
   };
 }
 
+const Record = (value: unknown): Record<string, unknown> => value && typeof value === 'object' ? value as Record<string, unknown> : {};
+function EventPayload(value: unknown): Record<string, unknown> {
+  const event = Record(value), payload = Record(event.payload);
+  return payload.payload && typeof payload.payload === 'object' ? Record(payload.payload) : Object.keys(payload).length ? payload : event;
+}
+
+/** 回执须来自成功动作且能关联此前的调用/确认；普通成功摘要和模拟器的接收确认都不是执行回执。 */
+export function SuccessfulBrowserReceipts(events: unknown[], toolName?: string, eventType?: string): unknown[] {
+  return events.flatMap((event, index) => {
+    const type = String(Record(event).type ?? '');
+    if (eventType && type !== eventType) return [];
+    const payload = EventPayload(event);
+    const outcome = type === 'browser_action_completed' ? Record(payload.browserAction) : Record(payload.result ?? payload);
+    const receipt = Record(outcome.receipt);
+    const name = receipt.toolDefinitionId ?? outcome.toolName ?? payload.toolName ?? payload.name;
+    if (typeof receipt.receiptId !== 'string' || !receipt.receiptId.trim() || typeof name !== 'string' || (toolName && name !== toolName)) return [];
+    const earlier = events.slice(0, index);
+    if (type === 'browser_action_completed' && outcome.status === 'succeeded') {
+      const confirmationId = outcome.confirmationId ?? payload.confirmationId;
+      const linked = typeof confirmationId === 'string' && earlier.some(item => {
+        if (Record(item).type !== 'browser_confirmation') return false;
+        const confirmation = EventPayload(item), action = Record(confirmation.browserAction);
+        return (confirmation.confirmationId ?? action.confirmationId) === confirmationId && (action.toolName ?? confirmation.toolName) === name;
+      });
+      return linked ? [receipt] : [];
+    }
+    if (type === 'tool_result' && outcome.ok === true) {
+      const callId = payload.toolCallId ?? payload.tool_call_id;
+      const linked = typeof callId === 'string' && earlier.some(item => Record(item).type === 'tool_call' && (EventPayload(item).toolCallId ?? EventPayload(item).id) === callId && EventFact(item).toolName === name);
+      return linked ? [receipt] : [];
+    }
+    return [];
+  });
+}
+
 function Evaluate(assertion: EvalBrowserAssertion, events: unknown[], finalState: unknown, metrics: Record<string, number | boolean | null>): EvalBrowserAssertionResult {
   const facts = events.map(EventFact);
   let actual: unknown;
   let passed = false;
   if (assertion.type.startsWith('state_')) {
     actual = ReadPath(finalState, assertion.path ?? '');
-    if (assertion.type === 'state_equals') passed = Object.is(actual, assertion.expected);
+    if (assertion.type === 'state_equals') passed = isDeepStrictEqual(actual, assertion.expected);
     if (assertion.type === 'state_subset') passed = MatchesSubset(actual, assertion.expected);
     if (assertion.type === 'state_absent') passed = actual === undefined || actual === null;
   } else if (assertion.type === 'metric_equals' || assertion.type === 'metric_max') {
@@ -71,7 +107,10 @@ function Evaluate(assertion: EvalBrowserAssertion, events: unknown[], finalState
     actual = matches.length;
     if (assertion.type === 'event_exists') passed = matches.length > 0;
     if (assertion.type === 'event_absent') passed = matches.length === 0;
-    if (assertion.type === 'receipt_exists') passed = matches.some((fact) => fact.type === 'tool_result' && fact.ok === true);
+    if (assertion.type === 'receipt_exists') {
+      actual = SuccessfulBrowserReceipts(events, assertion.toolName, assertion.eventType);
+      passed = (actual as unknown[]).length > 0;
+    }
   }
   return {
     id: assertion.id, type: assertion.type, passed, required: assertion.required !== false, weight: assertion.weight,
@@ -103,7 +142,7 @@ export function ScoreBrowserCase(input: {
   ].filter((value): value is string => Boolean(value));
   const assertionFailures = assertions.flatMap((assertion, index) => !results[index].passed && assertion.hardFailure ? [assertion.hardFailure] : []);
   const hardFailures = [...new Set([...intrinsicFailures, ...assertionFailures])];
-  const taskCompleted = results.filter((result) => result.required).every((result) => result.passed);
+  const taskCompleted = hardFailures.length === 0 && results.filter((result) => result.required).every((result) => result.passed);
   const rawScore = Math.round((passedWeight / totalWeight) * 10000) / 100;
   const totalScore = !taskCompleted || hardFailures.length > 0 ? Math.min(40, rawScore) : rawScore;
   return {

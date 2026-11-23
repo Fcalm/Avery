@@ -7,6 +7,7 @@ import { AssertEvaluationDeveloperModePreserved, EvalService, FindEvalSnapshotDi
 import { EvalArtifactStore } from '../../../apps/backend/src/electron/backend/evaluation/eval-artifact-store';
 import { CountEvalModelTurns } from '../../../apps/backend/src/electron/backend/evaluation/eval-runner-metrics';
 import { BuildBrowserEvalPromptFragments } from '../../../apps/backend/src/electron/backend/evaluation/browser-eval-runner';
+import { EvaluationTestCredentials } from '../../fixtures/evaluation-credentials';
 
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
@@ -63,7 +64,7 @@ describe('Agent evaluation service', () => {
     expect(FindEvalSnapshotDifferences(base, { ...base, config: { ...base.config, executionProvider: 'Z.AI' } })).toContain('config.executionProvider');
   });
 
-  it('切换 Provider 后 Run 快照与 Runner 使用当前唯一可用模型', async () => {
+  it('项目模型不可用时拒绝启动，不跟随全局供应商静默回退', async () => {
     const root = await mkdtemp(join(tmpdir(), 'avery-eval-provider-switch-')); roots.push(root);
     const store = new ObservabilityStore(root);
     const execute = vi.fn(async () => ({
@@ -79,9 +80,9 @@ describe('Agent evaluation service', () => {
     await service.Initialize();
     let project = await service.CreateProject({ ...projectInput, config: { ...projectInput.config, candidates: [projectInput.config.candidates[0]] } });
     await service.ImportDataset(project.id, dataset, project.rubric, project.revision); project = await service.ReadProject(project.id);
-    const run = await service.StartRun(project.id); const completed = await WaitForTerminal(service, run.id);
-    expect(execute).toHaveBeenCalledWith(expect.objectContaining({ model: 'glm-5.3-flash' }));
-    expect((completed.snapshot as any).config).toMatchObject({ executionProvider: 'Z.AI', executionModel: 'glm-5.3-flash', judgeProvider: 'Z.AI', judgeModel: 'glm-5.3-flash' });
+    await expect(service.StartRun(project.id)).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
+    expect(execute).not.toHaveBeenCalled();
+    expect(await service.ListRuns(project.id)).toEqual([]);
     await service.Close(); store.Close();
   });
   it('JSONL 任一坏行或重复 ID 会整体拒绝并报告行号', () => {
@@ -92,7 +93,7 @@ describe('Agent evaluation service', () => {
   it('未知 Prompt Fragment 覆盖和重复工具名不能静默进入项目', async () => {
     const root = await mkdtemp(join(tmpdir(), 'avery-eval-config-')); roots.push(root);
     const store = new ObservabilityStore(root);
-    const service = new EvalService({ userDataPath: root, store, credentialPort: {}, getStoredSettings: async () => ({ developerMode: true }), Emit: vi.fn() });
+    const service = new EvalService({ userDataPath: root, store, credentialPort: EvaluationTestCredentials(), getStoredSettings: async () => ({ developerMode: true }), Emit: vi.fn() });
     await service.Initialize();
     await expect(service.CreateProject({ ...projectInput, config: { ...projectInput.config, candidates: [{ id: 'a', name: 'A', promptOverrides: { 'missing/fragment': 'x' } }] } })).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
     await expect(service.CreateProject({ ...projectInput, config: { ...projectInput.config, toolNames: ['ReadResume', 'ReadResume'] } })).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
@@ -102,7 +103,7 @@ describe('Agent evaluation service', () => {
   it('关闭开发者模式时 Backend 服务拒绝读写测评', async () => {
     const root = await mkdtemp(join(tmpdir(), 'avery-eval-gate-')); roots.push(root);
     const store = new ObservabilityStore(root);
-    const service = new EvalService({ userDataPath: root, store, credentialPort: {}, getStoredSettings: async () => ({ developerMode: false }), Emit: vi.fn() });
+    const service = new EvalService({ userDataPath: root, store, credentialPort: EvaluationTestCredentials(), getStoredSettings: async () => ({ developerMode: false }), Emit: vi.fn() });
     await service.Initialize();
     await expect(service.ListProjects()).rejects.toMatchObject({ code: 'PERMISSION_DENIED' });
     await service.Close();
@@ -123,7 +124,7 @@ describe('Agent evaluation service', () => {
       };
     });
     const service = new EvalService({
-      userDataPath: root, store, credentialPort: {}, getStoredSettings: async () => ({ developerMode: true }), Emit: vi.fn(),
+      userDataPath: root, store, credentialPort: EvaluationTestCredentials(), getStoredSettings: async () => ({ developerMode: true }), Emit: vi.fn(),
       promptRunner: { Execute: execute } as any,
       scorer: scorer as any,
     });
@@ -147,7 +148,7 @@ describe('Agent evaluation service', () => {
     expect(snapshotText).not.toContain(root);
     const frozen = completed.snapshot as any;
     expect(frozen.environment.maxConcurrency).toBe(2);
-    expect(frozen.versions.scorer).toBe('prompt-judge-3');
+    expect(frozen.versions.scorer).toBe('prompt-judge-5');
     expect(frozen.toolDefinitions.map((definition: any) => definition.function.name)).toEqual(['ReadResume']);
     expect(frozen.config.candidates[0].compiledPrompt.manifest.toolPolicyHash).toBe(frozen.toolsetHash);
     const preview = await service.PreviewProject(project.id);
@@ -176,7 +177,7 @@ describe('Agent evaluation service', () => {
       throw Object.assign(new Error('fixture failed'), { code: 'FIXTURE_FAILED', evalEvidence: { events: [{ type: 'tool_call', createdAt: 1, payload: { name: 'ReadResume' } }], finalState: { partial: true } } });
     });
     const service = new EvalService({
-      userDataPath: root, store, credentialPort: {}, getStoredSettings: async () => ({ developerMode: true }), Emit: vi.fn(),
+      userDataPath: root, store, credentialPort: EvaluationTestCredentials(), getStoredSettings: async () => ({ developerMode: true }), Emit: vi.fn(),
       promptRunner: { Execute: execute } as any, scorer: scorer as any,
     });
     await service.Initialize();
@@ -203,7 +204,7 @@ describe('Agent evaluation service', () => {
       };
     });
     const service = new EvalService({
-      userDataPath: root, store, credentialPort: {}, getStoredSettings: async () => ({ developerMode: true }), Emit: vi.fn(),
+      userDataPath: root, store, credentialPort: EvaluationTestCredentials(), getStoredSettings: async () => ({ developerMode: true }), Emit: vi.fn(),
       promptRunner: { Execute: execute } as any,
       scorer: scorer as any,
     });
@@ -252,7 +253,7 @@ describe('Agent evaluation service', () => {
       return { finalResponse: 'done', events: [], finalState: {}, metrics: { modelTurns: 1, toolCalls: 0, toolErrors: 0, promptTokens: 1, completionTokens: 1, totalTokens: 2, completed: true } };
     });
     const service = new EvalService({
-      userDataPath: root, store, credentialPort: {}, getStoredSettings: async () => ({ developerMode: true }), Emit: vi.fn(),
+      userDataPath: root, store, credentialPort: EvaluationTestCredentials(), getStoredSettings: async () => ({ developerMode: true }), Emit: vi.fn(),
       promptRunner: { Execute: execute } as any, scorer: scorer as any,
     });
     await service.Initialize();
@@ -281,7 +282,7 @@ describe('Agent evaluation service', () => {
       metrics: { taskCompleted: true, modelTurns: 2, toolCalls: 3, toolErrors: 0, promptTokens: 2, completionTokens: 2, totalTokens: 4 },
     }));
     const service = new EvalService({
-      userDataPath: root, store, credentialPort: {}, getStoredSettings: async () => ({ developerMode: true, browserEngine, closeTaskTabs }), Emit: vi.fn(),
+      userDataPath: root, store, credentialPort: EvaluationTestCredentials(), getStoredSettings: async () => ({ developerMode: true, browserEngine, closeTaskTabs }), Emit: vi.fn(),
       browserRunner: { Execute: browserExecute } as any, scorer: scorer as any,
     });
     await service.Initialize();
@@ -317,7 +318,7 @@ describe('Agent evaluation service', () => {
     const invalidCase = { ...legacyCase, expected: { ...legacyCase.expected, expectedState: undefined } };
     await expect(service.ImportDataset(project.id, JSON.stringify(invalidCase), project.rubric, project.revision)).rejects.toThrow(/acf-001/);
     const obsoleteCase = { ...legacyCase, browser: { fixtureVersion: '1' } };
-    await expect(service.ImportDataset(project.id, JSON.stringify(obsoleteCase), project.rubric, project.revision)).rejects.toThrow(/Fixture 版本不受支持.*acf-001/);
+    await expect(service.ImportDataset(project.id, JSON.stringify(obsoleteCase), project.rubric, project.revision)).rejects.toMatchObject({ code: 'VALIDATION_ERROR', details: { preview: { diagnostics: [expect.objectContaining({ caseId: 'acf-001', declaredVersion: '1', expectedVersion: '2' })] } } });
     expect(await service.ListDatasetVersions(project.id)).toHaveLength(2);
     await service.Close();
     store.Close();
@@ -326,7 +327,7 @@ describe('Agent evaluation service', () => {
   it('测试集版本库支持列表、切换与删除，删除当前版本时自动回退', async () => {
     const root = await mkdtemp(join(tmpdir(), 'avery-eval-ds-versions-')); roots.push(root);
     const store = new ObservabilityStore(root);
-    const service = new EvalService({ userDataPath: root, store, credentialPort: {}, getStoredSettings: async () => ({ developerMode: true }), Emit: vi.fn(), promptRunner: { Execute: vi.fn() } as any, scorer: scorer as any });
+    const service = new EvalService({ userDataPath: root, store, credentialPort: EvaluationTestCredentials(), getStoredSettings: async () => ({ developerMode: true }), Emit: vi.fn(), promptRunner: { Execute: vi.fn() } as any, scorer: scorer as any });
     await service.Initialize();
     let project = await service.CreateProject(projectInput);
     const datasetB = JSON.stringify({ ...JSON.parse(dataset), id: 'case-2' });
@@ -353,7 +354,10 @@ describe('Agent evaluation service', () => {
     expect(project.datasetVersion).toBe(secondVersion);
     versions = await service.ListDatasetVersions(project.id);
     expect(versions).toHaveLength(1);
-    await expect(service.DeleteDatasetVersion(project.id, secondVersion, project.revision)).rejects.toThrow(/至少保留一个/);
+    project = await service.DeleteDatasetVersion(project.id, secondVersion, project.revision);
+    expect(project).toMatchObject({ datasetVersion: null, datasetCaseCount: 0 });
+    expect(await service.ListDatasetVersions(project.id)).toEqual([]);
+    expect(await service.ValidateProject(project.id)).toMatchObject({ valid: false });
     await service.Close();
     store.Close();
   });
@@ -362,7 +366,7 @@ describe('Agent evaluation service', () => {
     const root = await mkdtemp(join(tmpdir(), 'avery-eval-single-candidate-')); roots.push(root);
     const store = new ObservabilityStore(root);
     const execute = vi.fn(async () => ({ finalResponse: 'answer', events: [], finalState: {}, metrics: { modelTurns: 1, toolCalls: 0, toolErrors: 0, promptTokens: 1, completionTokens: 1, totalTokens: 2, completed: true } }));
-    const service = new EvalService({ userDataPath: root, store, credentialPort: {}, getStoredSettings: async () => ({ developerMode: true }), Emit: vi.fn(), promptRunner: { Execute: execute } as any, scorer: scorer as any });
+    const service = new EvalService({ userDataPath: root, store, credentialPort: EvaluationTestCredentials(), getStoredSettings: async () => ({ developerMode: true }), Emit: vi.fn(), promptRunner: { Execute: execute } as any, scorer: scorer as any });
     await service.Initialize();
     let project = await service.CreateProject(projectInput);
     await service.ImportDataset(project.id, dataset, project.rubric, project.revision);
@@ -383,7 +387,7 @@ describe('Agent evaluation service', () => {
     const store = new ObservabilityStore(root);
     const scoreSpy = vi.fn(async () => ({ score: { deterministicScore: null, judgeScore: 80, totalScore: 80, dimensions: {}, hardFailures: [], reason: 'ok', confidence: 0.9 }, details: { objective: {}, judgeRaw: [] } }));
     const service = new EvalService({
-      userDataPath: root, store, credentialPort: {}, getStoredSettings: async () => ({ developerMode: true }), Emit: vi.fn(),
+      userDataPath: root, store, credentialPort: EvaluationTestCredentials(), getStoredSettings: async () => ({ developerMode: true }), Emit: vi.fn(),
       promptRunner: { Execute: vi.fn(async () => ({ finalResponse: 'answer', events: [], finalState: {}, metrics: { modelTurns: 1, toolCalls: 0, toolErrors: 0, promptTokens: 1, completionTokens: 1, totalTokens: 2, completed: true } })) } as any,
       scorer: { Score: scoreSpy } as any,
     });

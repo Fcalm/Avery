@@ -1,10 +1,13 @@
 import type { EvalDatasetCase, EvalUserSimulatorStrategy } from '@avery/contracts';
+import { EvalInteractionScript } from './eval-interaction-script';
 import type { EvalBrowserFixtureState } from './browser-fixture-server';
 
 /** 固定策略用户模拟器；它只能收窄确认，不得改变工具白名单或绕过 Browser Runtime 校验。 */
 export class BrowserUserSimulator {
   private rejectedSubmit = false;
-  private scriptedIndex = 0;
+  private script?: EvalInteractionScript;
+  constructor(script?: EvalInteractionScript) { this.script = script; }
+  Script(testCase: EvalDatasetCase): EvalInteractionScript { return this.script ??= new EvalInteractionScript(testCase); }
 
   Decide(input: {
     strategy: EvalUserSimulatorStrategy;
@@ -31,19 +34,13 @@ export class BrowserUserSimulator {
       this.rejectedSubmit = true; return { accepted: false, reason: 'scripted_rejection' };
     }
     if (strategy === 'scripted') {
-      const responses = testCase.browser?.scriptedResponses ?? [];
-      const response = responses[this.scriptedIndex];
-      if (response?.kind === 'confirmation') this.scriptedIndex += 1;
-      return { accepted: response?.accepted === true, reason: 'scripted' };
+      const response = this.Script(testCase).Next('confirmation');
+      return { accepted: response.accepted === true, reason: 'scripted' };
     }
     return { accepted: true, reason: 'valid' };
   }
 
   NextInput(testCase: EvalDatasetCase): string | null {
-    const responses = testCase.browser?.scriptedResponses ?? [];
-    const response = responses[this.scriptedIndex];
-    if (response?.kind !== 'input') return null;
-    this.scriptedIndex += 1;
-    return response.content ?? null;
+    return this.Script(testCase).Next('input').content ?? null;
   }
 }

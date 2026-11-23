@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { z } from 'zod';
 import type { CompiledInstructions } from '@avery/agent-sdk';
 import type {
-  EvalCaseRun, EvalCaseRunDetail, EvalDatasetCase, EvalDatasetVersion, EvalEvent, EvalProject, EvalProjectInput, EvalPromptCandidate,
+  EvalCaseRun, EvalCaseRunDetail, EvalDatasetCase, EvalDatasetVersion, EvalDatasetImportPreview, EvalEvent, EvalProject, EvalProjectInput, EvalPromptCandidate,
   EvalRun, EvalRunDetail, EvalRunSummary,
 } from '@avery/contracts';
 import { ApplicationScenario, BuildApplicationPromptFragments, BuildDefaultPromptFragments, CompilePrompt, CreateDefaultModules, DefaultScenario } from '@avery/agent-modules-defaults';
@@ -13,27 +13,33 @@ import { PromptEvalRunner } from './prompt-eval-runner';
 import { EvalScorer } from './eval-scorer';
 import { BrowserEvalRunner } from './browser-eval-runner';
 import { BrowserExtensionBridge } from '../browser-extension-bridge';
-import { ResolveBrowserAssertions, ScoreBrowserCase } from './browser-eval-scorer';
+import { ScoreBrowserCase } from './browser-eval-scorer';
 import { NormalizeEvalTrace } from './eval-trace';
-import { BuildApplicationBenchmarkDataset, ValidateApplicationBenchmarkCase, ApplicationBenchmarkVersion } from './career-portal-fixture';
+import { BuildApplicationBenchmarkDataset, ApplicationBenchmarkVersion } from './career-portal-fixture';
+import { DatasetEnvironment, DatasetTemplate, DiagnoseDataset } from './dataset-validation';
+import { ResolveEvalDimensions } from './evaluation-rubric';
+import { SummarizeEvalCases } from './eval-summary';
+import { CompareEvalSamples } from './eval-comparison';
+import { EvaluationToolPolicy } from './evaluation-tools';
+import { FreezeEvaluationCredentials, ValidateEvaluationModels, type EvaluationCredentials } from './evaluation-models';
 
 const Id = z.string().min(1).max(200).regex(/^[A-Za-z0-9._-]+$/);
-const CurrentBrowserFixtureVersion = '2';
 const CandidateSchema = z.object({
   id: Id,
   name: z.string().trim().min(1).max(200),
   promptOverrides: z.record(z.string().min(1).max(200), z.string().max(100000)),
 }).strict();
 const ConfigSchema = z.object({
-  executionProvider: z.literal('DeepSeek'),
+  executionProvider: z.enum(['DeepSeek', 'Z.AI', 'MIMO', '自定义']),
   executionModel: z.string().trim().min(1).max(200),
-  judgeProvider: z.literal('DeepSeek').optional(),
+  judgeProvider: z.enum(['DeepSeek', 'Z.AI', 'MIMO', '自定义']).optional(),
   judgeModel: z.string().trim().min(1).max(200).optional(),
   candidates: z.array(CandidateSchema).min(1).max(20),
-  toolNames: z.array(z.string().min(1).max(100)).max(50),
+  toolNames: z.array(z.string().min(1).max(100)).max(50).optional(),
   userSimulator: z.enum(['approve_valid', 'reject_submit_once', 'scripted']),
   maxModelTurns: z.number().int().min(1).max(100),
   repeatCount: z.number().int().min(1).max(10),
+  rubricDimensions: z.array(z.object({ id: z.string().regex(/^[A-Za-z][A-Za-z0-9_-]{0,99}$/), label: z.string().trim().min(1).max(100), weight: z.number().positive().max(100) }).strict()).min(1).max(20).optional(),
   fixtureBranch: z.enum(['clean', 'realistic-dom', 'career-portal']).optional(),
 }).strict();
 const ProjectInputSchema = z.object({
@@ -45,6 +51,11 @@ const ProjectInputSchema = z.object({
   judgePrompt: z.string().max(100000).optional(),
   judgeStrictJson: z.boolean().optional(),
 }).strict();
+const ScriptedResponseSchema = z.union([
+  z.object({ kind: z.literal('confirmation'), accepted: z.boolean() }).strict(),
+  z.object({ kind: z.literal('input'), content: z.string().max(10000) }).strict(),
+  z.object({ kind: z.literal('input'), answers: z.record(z.string().min(1), z.string().max(10000)) }).strict(),
+]);
 const DatasetCaseSchema = z.object({
   id: Id,
   category: z.string().max(100).default('general'),
@@ -64,6 +75,7 @@ const DatasetCaseSchema = z.object({
     forbiddenActions: z.array(z.string().max(200)).max(100).optional(),
   }).strict(),
   tags: z.array(z.string().max(100)).max(100).default([]),
+  scriptedResponses: z.array(ScriptedResponseSchema).max(100).optional(),
   browser: z.object({
     benchmark: z.object({ scenarioId: z.string().min(1).max(100), goal: z.enum(['fill', 'preview', 'submit']) }).strict().optional(),
     fixtureVersion: z.string().max(100).optional(), seed: z.number().int().optional(),
@@ -71,7 +83,7 @@ const DatasetCaseSchema = z.object({
     initialState: z.record(z.string(), z.unknown()).optional(),
     expectedTargets: z.array(z.string().max(200)).max(100).optional(),
     forbiddenTargets: z.array(z.string().max(200)).max(100).optional(),
-    scriptedResponses: z.array(z.object({ kind: z.enum(['confirmation', 'input']), accepted: z.boolean().optional(), content: z.string().max(10000).optional() }).strict()).max(100).optional(),
+    scriptedResponses: z.array(ScriptedResponseSchema).max(100).optional(),
     assertions: z.array(z.object({
       id: Id, type: z.enum(['state_equals', 'state_subset', 'state_absent', 'event_exists', 'event_absent', 'event_order', 'receipt_exists', 'metric_equals', 'metric_max']),
       path: z.string().max(500).optional(), expected: z.unknown().optional(), eventType: z.string().max(200).optional(), toolName: z.string().max(200).optional(),
@@ -108,16 +120,6 @@ export function ParseEvalDataset(jsonl: string): EvalDatasetCase[] {
   return cases;
 }
 
-function BrowserCaseValidationErrors(cases: EvalDatasetCase[]): string[] {
-  const missing = cases.filter((testCase) => !testCase.browser?.benchmark && ResolveBrowserAssertions(testCase).length === 0).map((testCase) => testCase.id);
-  const incompatible = cases.filter((testCase) => testCase.browser?.fixtureVersion && testCase.browser.fixtureVersion !== (testCase.browser.benchmark ? ApplicationBenchmarkVersion : CurrentBrowserFixtureVersion)).map((testCase) => testCase.id);
-  return [
-    ...cases.flatMap(ValidateApplicationBenchmarkCase),
-    ...(missing.length ? [`以下浏览器案例缺少 Assertions 或 expected.expectedState：${missing.join('、')}`] : []),
-    ...(incompatible.length ? [`以下浏览器案例的 Fixture 版本不受支持（当前为 ${CurrentBrowserFixtureVersion}）：${incompatible.join('、')}`] : []),
-  ];
-}
-
 /** 在固定上限内执行 CaseRun；任一基础设施异常后停止领取新任务，但等待已启动任务稳定退出。 */
 export async function RunEvaluationTaskPool<T>(tasks: Array<() => Promise<T>>, maxConcurrency: number, signal: AbortSignal): Promise<T[]> {
   const requestedConcurrency = Number.isInteger(maxConcurrency) && maxConcurrency > 0 ? maxConcurrency : 1;
@@ -150,24 +152,33 @@ export async function RunEvaluationTaskPool<T>(tasks: Array<() => Promise<T>>, m
 const StrictComparisonFields = [
   'runnerType', 'datasetVersion', 'toolsetHash', 'versions', 'config.executionProvider', 'config.executionModel', 'config.judgeProvider', 'config.judgeModel',
   'config.toolNames', 'config.fixtureBranch', 'config.maxModelTurns', 'config.userSimulator',
-  'environment.repeatCount', 'environment.maxConcurrency',
+  'environment.repeatCount', 'environment.maxConcurrency', 'environment.browserEngine', 'environment.closeTaskTabs',
+  'rubric', 'judgePrompt', 'judgeStrictJson', 'config.rubricDimensions', 'models', 'cases', 'toolDefinitions',
 ] as const;
+
+function CanonicalEvalValue(value: unknown): string {
+  const normalize = (item: unknown): unknown => Array.isArray(item) ? item.map(normalize) : item && typeof item === 'object' ? Object.fromEntries(Object.entries(item).sort(([a], [b]) => a.localeCompare(b)).map(([key, child]) => [key, normalize(child)])) : item;
+  return JSON.stringify(normalize(value));
+}
 
 /** Prompt 候选差异是实验变量；这里只比较必须保持一致的运行控制变量。 */
 export function FindEvalSnapshotDifferences(leftSnapshot: unknown, rightSnapshot: unknown): string[] {
   const read = (value: unknown, path: string) => path.split('.').reduce<unknown>((current, key) => (
     current && typeof current === 'object' ? (current as Record<string, unknown>)[key] : undefined
   ), value);
-  return StrictComparisonFields.filter((field) => JSON.stringify(read(leftSnapshot, field)) !== JSON.stringify(read(rightSnapshot, field)));
+  return StrictComparisonFields.filter((field) => CanonicalEvalValue(read(leftSnapshot, field)) !== CanonicalEvalValue(read(rightSnapshot, field)));
 }
 
-function ValidateProjectConfig(config: z.infer<typeof ConfigSchema>, runnerType: 'prompt' | 'browser'): void {
+function ValidateProjectConfig(config: z.infer<typeof ConfigSchema> & { toolNames: string[] }, runnerType: 'prompt' | 'browser'): void {
+  ResolveEvalDimensions(config.rubricDimensions);
   if (runnerType === 'prompt' && (!config.judgeProvider || !config.judgeModel)) {
     throw Object.assign(new Error('Prompt evaluation requires a Judge provider and model.'), { code: 'VALIDATION_ERROR' });
   }
   const candidateIds = config.candidates.map((candidate) => candidate.id);
   if (new Set(candidateIds).size !== candidateIds.length) throw Object.assign(new Error('Evaluation candidate ids must be unique.'), { code: 'VALIDATION_ERROR' });
   if (new Set(config.toolNames).size !== config.toolNames.length) throw Object.assign(new Error('Evaluation tool names must be unique.'), { code: 'VALIDATION_ERROR' });
+  const invalidTools = EvaluationToolPolicy(runnerType, config.toolNames).invalid;
+  if (invalidTools.length) throw Object.assign(new Error(`当前测评场景不支持这些工具：${invalidTools.join('、')}。请修正工具配置。`), { code: 'VALIDATION_ERROR', details: { invalidTools } });
   const fragmentIds = new Set((runnerType === 'browser' ? BuildApplicationPromptFragments() : BuildDefaultPromptFragments()).map((fragment) => fragment.id));
   const unknownOverrides = config.candidates.flatMap((candidate) => Object.keys(candidate.promptOverrides).filter((id) => !fragmentIds.has(id)).map((id) => `${candidate.id}:${id}`));
   if (unknownOverrides.length) throw Object.assign(new Error(`Evaluation prompt overrides contain unknown fragment ids: ${unknownOverrides.join(', ')}.`), { code: 'VALIDATION_ERROR' });
@@ -175,6 +186,7 @@ function ValidateProjectConfig(config: z.infer<typeof ConfigSchema>, runnerType:
 
 interface EvalServiceOptions {
   userDataPath: string;
+  providerFetch?: typeof fetch;
   store: any;
   credentialPort: any;
   getStoredSettings: () => Promise<Record<string, unknown>>;
@@ -208,7 +220,9 @@ export class EvalService {
   private committingRuns = new Set<string>();
   private userDataPath: string;
   private artifactEventTail: Promise<void> = Promise.resolve();
+  private datasetMutations = new Map<string, Promise<unknown>>();
   private credentialPort: any;
+  private runCredentials = new Map<string, EvaluationCredentials>();
   private defaultBrowserEngine: 'chrome' | 'edge';
 
   constructor(options: EvalServiceOptions) {
@@ -219,10 +233,11 @@ export class EvalService {
     this.credentialPort = options.credentialPort;
     this.defaultBrowserEngine = options.externalBrowserPaths?.edge ? 'edge' : options.externalBrowserPaths?.chrome ? 'chrome' : 'edge';
     this.artifacts = new EvalArtifactStore(options.userDataPath);
-    this.promptRunner = options.promptRunner ?? new PromptEvalRunner({ credentialPort: options.credentialPort });
-    this.scorer = options.scorer ?? new EvalScorer({ credentialPort: options.credentialPort });
+    this.promptRunner = options.promptRunner ?? new PromptEvalRunner({ credentialPort: options.credentialPort, providerFetch: options.providerFetch });
+    this.scorer = options.scorer ?? new EvalScorer({ credentialPort: options.credentialPort, providerFetch: options.providerFetch });
     this.browserRunner = options.browserRunner ?? new BrowserEvalRunner({
       credentialPort: options.credentialPort,
+      providerFetch: options.providerFetch,
       browserExtensionBridge: options.browserExtensionBridge ?? new BrowserExtensionBridge({
         statePath: join(options.userDataPath, 'browser-extension', 'bridge.json'),
         browserPaths: options.externalBrowserPaths,
@@ -233,6 +248,61 @@ export class EvalService {
 
   async Initialize(): Promise<void> {
     await Promise.all([this.artifacts.Initialize(), this.store.RecoverInterruptedEvalRuns()]);
+    const pending: Array<{ project_id: string }> = await this.store.ListEvalDatasetCleanupRecords();
+    for (const id of new Set(pending.map(row => row.project_id))) await this.WithDatasetLock(id, () => this.CleanupDatasets(id));
+  }
+
+  /** 同项目文件落盘、登记、删除及重新导入按序完成，避免清理任务误删刚重导的同哈希文件。 */
+  private async WithDatasetLock<T>(projectId: string, work: () => Promise<T>): Promise<T> {
+    const previous = this.datasetMutations.get(projectId) ?? Promise.resolve();
+    const operation = previous.catch(() => undefined).then(work);
+    this.datasetMutations.set(projectId, operation);
+    try { return await operation; }
+    finally { if (this.datasetMutations.get(projectId) === operation) this.datasetMutations.delete(projectId); }
+  }
+
+  /** 元数据先提交；文件清理失败保留持久任务，不能让已成功的删除看似失败并诱发重复提交。 */
+  private async CleanupDatasets(projectId: string): Promise<void> {
+    const pending: Array<{ version: string }> = await this.store.ListEvalDatasetCleanupRecords(projectId);
+    const versions: Array<{ version: string }> = await this.store.ListEvalDatasetVersionRecords(projectId);
+    for (const row of pending) {
+      try {
+        if (!versions.some(item => item.version === row.version)) await this.artifacts.DeleteDataset(projectId, row.version);
+        await this.store.CompleteEvalDatasetCleanup(projectId, row.version);
+      } catch {
+        try { await this.store.RecordLog('WARN', 'evaluation.dataset_cleanup_pending', `project=${projectId}; version=${row.version}`); }
+        catch { /* 清理任务已持久化，日志失败不能撤销元数据提交。 */ }
+      }
+    }
+  }
+
+  private InspectDataset(project: any, jsonl: string): EvalDatasetImportPreview {
+    try { return DiagnoseDataset(project, ParseEvalDataset(jsonl), jsonl); }
+    catch (error) {
+      const environment = DatasetEnvironment(project);
+      const details = (error as { details?: { line?: number; issues?: Array<{ path: unknown[]; message: string }> } })?.details;
+      return {
+        valid: false, caseCount: 0, environment,
+        expectedFixtureVersion: environment === 'prompt' ? null : environment === 'career-portal' ? ApplicationBenchmarkVersion : '2',
+        templateJsonl: DatasetTemplate(project),
+        diagnostics: [{ line: details?.line ?? null, code: 'DATASET_SCHEMA_INVALID', declaredVersion: null, expectedVersion: null,
+          message: error instanceof Error ? error.message : '测试集无法解析。',
+          action: details?.issues?.map(issue => `${issue.path.join('.')}: ${issue.message}`).join('；') || '请使用当前环境模板，每行填写一个 JSON 案例，ID 不重复，文件不超过 8 MiB。' }],
+      };
+    }
+  }
+
+  private RequireCompatibleDataset(project: any, jsonl: string): EvalDatasetCase[] {
+    const preview = this.InspectDataset(project, jsonl);
+    if (!preview.valid) throw Object.assign(new Error(preview.diagnostics.map(item => `第 ${item.line ?? '?'} 行${item.caseId ? `（${item.caseId}）` : ''}：${item.message}`).join('；')), { code: 'VALIDATION_ERROR', details: { preview } });
+    return ParseEvalDataset(jsonl);
+  }
+
+  /** 不写文件或业务状态；导入时仍重新校验，以防预检后输入或项目配置变化。 */
+  async PreviewDatasetImport(projectId: string, jsonl: string): Promise<EvalDatasetImportPreview> {
+    await this.RequireDeveloperMode();
+    const project = await this.store.ReadEvalProjectRecord(Id.parse(projectId));
+    return this.InspectDataset(project, jsonl);
   }
 
   private async RequireDeveloperMode(): Promise<void> {
@@ -248,9 +318,10 @@ export class EvalService {
   async CreateProject(input: EvalProjectInput): Promise<EvalProject> {
     await this.RequireDeveloperMode();
     const parsed = ProjectInputSchema.parse(input);
-    ValidateProjectConfig(parsed.config, parsed.runnerType);
+    const config = { ...parsed.config, toolNames: parsed.config.toolNames ?? EvaluationToolPolicy(parsed.runnerType).defaults };
+    ValidateProjectConfig(config, parsed.runnerType);
     const now = Date.now();
-    const created = await this.store.CreateEvalProjectRecord({ ...parsed, id: parsed.id ?? `eval-${randomUUID()}`, createdAt: now, updatedAt: now });
+    const created = await this.store.CreateEvalProjectRecord({ ...parsed, config, id: parsed.id ?? `eval-${randomUUID()}`, createdAt: now, updatedAt: now });
     if (parsed.runnerType === 'browser' && parsed.config.fixtureBranch === 'career-portal') {
       await this.ImportDataset(created.id, BuildApplicationBenchmarkDataset(), '', created.revision);
       return this.ReadProject(created.id);
@@ -262,12 +333,15 @@ export class EvalService {
     await this.RequireDeveloperMode();
     Id.parse(id);
     const parsed = ProjectInputSchema.parse(input);
-    ValidateProjectConfig(parsed.config, parsed.runnerType);
-    // 输入未携带 judgePrompt/judgeStrictJson 时沿用现值：旧调用方不传这些字段不应清空评判配置。
-    const current = await this.store.ReadEvalProjectRecord(id);
-    const judgePrompt = parsed.judgePrompt ?? current.judgePrompt ?? '';
-    const judgeStrictJson = parsed.judgeStrictJson ?? current.judgeStrictJson === true;
-    return this.PublicProject(await this.store.UpdateEvalProjectRecord(id, { ...parsed, judgePrompt, judgeStrictJson, updatedAt: Date.now() }, expectedRevision));
+    return this.WithDatasetLock(id, async () => {
+      // 输入未携带 judgePrompt/judgeStrictJson 时沿用现值：旧调用方不传这些字段不应清空评判配置。
+      const current = await this.store.ReadEvalProjectRecord(id);
+      const config = { ...parsed.config, toolNames: parsed.config.toolNames ?? current.config.toolNames };
+      ValidateProjectConfig(config, parsed.runnerType);
+      const judgePrompt = parsed.judgePrompt ?? current.judgePrompt ?? '';
+      const judgeStrictJson = parsed.judgeStrictJson ?? current.judgeStrictJson === true;
+      return this.PublicProject(await this.store.UpdateEvalProjectRecord(id, { ...parsed, config, judgePrompt, judgeStrictJson, updatedAt: Date.now() }, expectedRevision));
+    });
   }
 
   async ReadProject(id: string): Promise<EvalProject> { await this.RequireDeveloperMode(); return this.PublicProject(await this.store.ReadEvalProjectRecord(Id.parse(id))); }
@@ -275,43 +349,59 @@ export class EvalService {
   async DeleteProject(id: string): Promise<{ deleted: boolean }> {
     await this.RequireDeveloperMode();
     const projectId = Id.parse(id);
-    const result = await this.store.DeleteEvalProjectRecord(projectId);
-    if (result.deleted) await this.artifacts.DeleteProjectDatasets(projectId);
-    return result;
+    return this.WithDatasetLock(projectId, async () => {
+      const result = await this.store.DeleteEvalProjectRecord(projectId);
+      if (result.deleted) await this.artifacts.DeleteProjectDatasets(projectId);
+      return result;
+    });
   }
 
   async ImportDataset(projectId: string, jsonl: string, rubric: string, expectedRevision: number): Promise<any> {
     await this.RequireDeveloperMode();
     Id.parse(projectId);
     if (typeof rubric !== 'string' || rubric.length > 100000) throw Object.assign(new Error('Evaluation rubric is invalid.'), { code: 'VALIDATION_ERROR' });
-    const cases = ParseEvalDataset(jsonl);
-    const projectToImport = await this.store.ReadEvalProjectRecord(projectId);
-    if (projectToImport.runnerType === 'browser') {
-      const errors = BrowserCaseValidationErrors(cases);
-      if (errors.length) throw Object.assign(new Error(errors.join('；')), { code: 'VALIDATION_ERROR', details: { errors } });
-    }
-    const normalized = cases.map((testCase) => JSON.stringify(testCase)).join('\n');
-    const datasetVersion = createHash('sha256').update(normalized).digest('hex');
-    const datasetKey = await this.artifacts.WriteDataset(projectId, datasetVersion, normalized);
-    // 类别取首题的 category：版本库用它展示"评估类别"，与单题类别字段保持同源。
-    const project = await this.store.ImportEvalDatasetRecord(projectId, datasetKey, rubric, datasetVersion, cases.length, cases[0]?.category ?? 'general', expectedRevision, Date.now());
-    return { projectId, datasetVersion, caseCount: cases.length, revision: project.revision };
+    return this.WithDatasetLock(projectId, async () => {
+      await this.CleanupDatasets(projectId);
+      const projectToImport = await this.store.ReadEvalProjectRecord(projectId);
+      const cases = this.RequireCompatibleDataset(projectToImport, jsonl);
+      const normalized = cases.map((testCase) => JSON.stringify(testCase)).join('\n');
+      const datasetVersion = createHash('sha256').update(normalized).digest('hex');
+      // 先登记可能的孤立文件，覆盖落盘后、登记事务前应用退出的窗口；成功导入会在事务中撤销任务。
+      await this.store.QueueEvalDatasetCleanupIfUnreferenced(projectId, datasetVersion);
+      let datasetKey: string;
+      try { datasetKey = await this.artifacts.WriteDataset(projectId, datasetVersion, normalized); }
+      catch (error) {
+        await this.store.QueueEvalDatasetCleanupIfUnreferenced(projectId, datasetVersion);
+        throw error;
+      }
+      // 类别取首题的 category：版本库用它展示"评估类别"，与单题类别字段保持同源。
+      let project: any;
+      try { project = await this.store.ImportEvalDatasetRecord(projectId, datasetKey, rubric, datasetVersion, cases.length, cases[0]?.category ?? 'general', expectedRevision, Date.now()); }
+      catch (error) {
+        await this.store.QueueEvalDatasetCleanupIfUnreferenced(projectId, datasetVersion);
+        await this.CleanupDatasets(projectId);
+        throw error;
+      }
+      return { projectId, datasetVersion, caseCount: cases.length, revision: project.revision };
+    });
   }
 
   /** 版本库读取：登记行 + 当前指针 + 引用计数一次给全，供评测集选择器直接渲染。 */
   async ListDatasetVersions(projectId: string): Promise<EvalDatasetVersion[]> {
     await this.RequireDeveloperMode();
     Id.parse(projectId);
-    const project = await this.store.ReadEvalProjectRecord(projectId);
-    const rows = await this.store.ListEvalDatasetVersionRecords(projectId);
-    return rows.map((row: any) => ({
-      version: row.version,
-      caseCount: row.case_count,
-      category: row.category ?? 'general',
-      importedAt: row.created_at,
-      isCurrent: row.version === project.datasetVersion,
-      runCount: this.store.CountEvalRunsForDatasetVersion(projectId, row.version),
-    }));
+    return this.WithDatasetLock(projectId, async () => {
+      const project = await this.store.ReadEvalProjectRecord(projectId);
+      const rows = await this.store.ListEvalDatasetVersionRecords(projectId);
+      return rows.map((row: { version: string; case_count: number; category?: string; created_at: number; run_count: number }) => ({
+        version: row.version,
+        caseCount: row.case_count,
+        category: row.category ?? 'general',
+        importedAt: row.created_at,
+        isCurrent: row.version === project.datasetVersion,
+        runCount: Number(row.run_count),
+      }));
+    });
   }
 
   /** 项目指针切到历史版本；文件缺失说明登记与磁盘漂移，拒绝指向不可运行的数据集。 */
@@ -319,30 +409,27 @@ export class EvalService {
     await this.RequireDeveloperMode();
     Id.parse(projectId);
     if (!/^[A-Za-z0-9._-]{1,200}$/.test(version)) throw Object.assign(new Error('Evaluation dataset version is invalid.'), { code: 'VALIDATION_ERROR' });
-    const row = (await this.store.ListEvalDatasetVersionRecords(projectId)).find((item: any) => item.version === version);
-    if (!row) throw Object.assign(new Error('Evaluation dataset version was not found.'), { code: 'NOT_FOUND' });
-    await this.artifacts.ReadDataset(projectId, version);
-    const datasetKey = `datasets/${projectId}/${version}.jsonl`;
-    return this.PublicProject(await this.store.SelectEvalDatasetVersionRecord(projectId, datasetKey, version, row.case_count, expectedRevision, Date.now()));
+    return this.WithDatasetLock(projectId, async () => {
+      await this.CleanupDatasets(projectId);
+      const row = (await this.store.ListEvalDatasetVersionRecords(projectId)).find((item: any) => item.version === version);
+      if (!row) throw Object.assign(new Error('Evaluation dataset version was not found.'), { code: 'NOT_FOUND' });
+      const project = await this.store.ReadEvalProjectRecord(projectId);
+      this.RequireCompatibleDataset(project, await this.artifacts.ReadDataset(projectId, version));
+      const datasetKey = `datasets/${projectId}/${version}.jsonl`;
+      return this.PublicProject(await this.store.SelectEvalDatasetVersionRecord(projectId, datasetKey, version, row.case_count, expectedRevision, Date.now()));
+    });
   }
 
-  /** 删除一个版本：登记行与文件一起删；删的是当前版本时自动切回最近的剩余版本。 */
+  /** 删除登记与指针变更同事务；最后一版清空指针，文件清理任务可在失败后重试。 */
   async DeleteDatasetVersion(projectId: string, version: string, expectedRevision: number): Promise<EvalProject> {
     await this.RequireDeveloperMode();
     Id.parse(projectId);
     if (!/^[A-Za-z0-9._-]{1,200}$/.test(version)) throw Object.assign(new Error('Evaluation dataset version is invalid.'), { code: 'VALIDATION_ERROR' });
-    const rows = await this.store.ListEvalDatasetVersionRecords(projectId);
-    if (rows.length <= 1) throw Object.assign(new Error('至少保留一个测试集版本。'), { code: 'VALIDATION_ERROR' });
-    const target = rows.find((item: any) => item.version === version);
-    if (!target) throw Object.assign(new Error('Evaluation dataset version was not found.'), { code: 'NOT_FOUND' });
-    await this.store.DeleteEvalDatasetVersionRecord(projectId, version);
-    await this.artifacts.DeleteDataset(projectId, version);
-    const project = await this.store.ReadEvalProjectRecord(projectId);
-    if (project.datasetVersion !== version) return this.PublicProject(project);
-    // 已跑过的 Run 读取自己的冻结快照，指针回退只影响之后的评测，结果不受影响。
-    const fallback = (await this.store.ListEvalDatasetVersionRecords(projectId))[0];
-    const datasetKey = `datasets/${projectId}/${fallback.version}.jsonl`;
-    return this.PublicProject(await this.store.SelectEvalDatasetVersionRecord(projectId, datasetKey, fallback.version, fallback.case_count, expectedRevision, Date.now()));
+    return this.WithDatasetLock(projectId, async () => {
+      const project = await this.store.DeleteEvalDatasetVersionRecord(projectId, version, expectedRevision, Date.now());
+      await this.CleanupDatasets(projectId);
+      return this.PublicProject(project);
+    });
   }
 
   async ValidateProject(id: string): Promise<{ valid: boolean; errors: string[] }> {
@@ -354,15 +441,15 @@ export class EvalService {
     if (!record.config.candidates.length) errors.push('至少需要一个 Prompt 候选。');
     const supportedTools = record.runnerType === 'browser' ? ApplicationScenario.toolNames : DefaultScenario.toolNames;
     if (!record.config.toolNames.every((name: string) => supportedTools.includes(name))) errors.push('测评包含当前场景不支持的工具。');
+    try { await ValidateEvaluationModels(record.config, record.runnerType, await FreezeEvaluationCredentials(this.credentialPort)); }
+    catch (error) { errors.push(error instanceof Error ? error.message : '模型配置无法读取。'); }
     if (record.runnerType === 'browser' && !record.config.toolNames.some((name: string) => name.startsWith('Browser'))) errors.push('浏览器测评至少需要一个 Browser 工具。');
     if (record.runnerType === 'browser' && !record.config.fixtureBranch) errors.push('浏览器测评必须选择 Fixture 分支。');
-    if (record.runnerType === 'browser' && record.datasetVersion) {
+    if (record.datasetVersion) {
       try {
-        const cases = ParseEvalDataset(await this.artifacts.ReadDataset(record.id, record.datasetVersion));
-        errors.push(...BrowserCaseValidationErrors(cases));
-        if (cases.some(testCase => Boolean(testCase.browser?.benchmark) !== (record.config.fixtureBranch === 'career-portal'))) errors.push('拟真平台案例必须使用网申填写测评环境，不能混用旧招聘 Fixture。');
+        this.RequireCompatibleDataset(record, await this.artifacts.ReadDataset(record.id, record.datasetVersion));
       } catch (error) {
-        errors.push(error instanceof Error ? error.message : '浏览器测试集无法读取。');
+        errors.push(error instanceof Error ? error.message : '测试集无法读取。');
       }
     }
     return { valid: errors.length === 0, errors };
@@ -387,24 +474,10 @@ export class EvalService {
     });
     return {
       schemaVersion: 1, createdAt: Date.now(), projectId: project.id, projectRevision: project.revision,
-      runnerType: project.runnerType, config: { ...runConfig, candidates }, rubric: project.rubric, judgePrompt: project.judgePrompt ?? '', judgeStrictJson: project.judgeStrictJson === true,
+      runnerType: project.runnerType, config: { ...runConfig, rubricDimensions: ResolveEvalDimensions(runConfig.rubricDimensions), candidates }, rubric: project.rubric, judgePrompt: project.judgePrompt ?? '', judgeStrictJson: project.judgeStrictJson === true,
       datasetVersion: project.datasetVersion, cases, toolDefinitions: definitions, toolsetHash,
-      versions: { snapshot: 2, promptRunner: 2, browserRunner: 3, scorer: project.runnerType === 'browser' ? 'browser-deterministic-3' : 'prompt-judge-3', assertions: 1, trace: 1, application: '0.1.0', ...(runConfig.fixtureBranch === 'career-portal' ? { benchmark: ApplicationBenchmarkVersion } : {}) },
+      versions: { snapshot: 4, promptRunner: 4, browserRunner: 5, scorer: project.runnerType === 'browser' ? 'browser-deterministic-4' : 'prompt-judge-5', assertions: 2, trace: 2, rubric: 1, summary: 2, application: '0.1.0', ...(runConfig.fixtureBranch === 'career-portal' ? { benchmark: ApplicationBenchmarkVersion } : {}) },
       environment: { repeatCount: runConfig.repeatCount, maxConcurrency: project.runnerType === 'browser' ? 1 : 2 },
-    };
-  }
-
-  /** 旧测评项目不会随全局 Provider 设置迁移；Run 创建时冻结实际可用的 Provider/模型，避免跨供应商发送旧模型名。 */
-  private async ResolveRunConfig(project: any): Promise<any> {
-    const stored = await this.credentialPort?.Load?.();
-    const activeProvider = ['DeepSeek', 'Z.AI', 'MIMO', '自定义'].includes(stored?.provider) ? stored.provider : null;
-    const activeModel = typeof stored?.model === 'string' && stored.model.trim() ? stored.model.trim() : null;
-    if (!activeProvider || !activeModel || activeProvider === project.config.executionProvider) return project.config;
-    return {
-      ...project.config,
-      executionProvider: activeProvider,
-      executionModel: activeModel,
-      ...(project.runnerType === 'prompt' ? { judgeProvider: activeProvider, judgeModel: activeModel } : {}),
     };
   }
 
@@ -421,6 +494,7 @@ export class EvalService {
       projectRevision: project.revision,
       generatedAt: Date.now(),
       toolsetHash: snapshot.toolsetHash,
+      tools: EvaluationToolPolicy(project.runnerType, project.config.toolNames),
       productionPrompt,
       // Renderer 只获得可编辑的生产 Prompt 正文，不接触文件系统或编译实现。
       fragments: productionFragments.map((fragment) => ({
@@ -440,34 +514,41 @@ export class EvalService {
 
   async StartRun(projectId: string, candidateId?: string): Promise<EvalRun> {
     await this.RequireDeveloperMode();
-    const validation = await this.ValidateProject(projectId);
-    if (!validation.valid) throw Object.assign(new Error(validation.errors.join('；')), { code: 'VALIDATION_ERROR', details: { errors: validation.errors } });
-    const project = await this.store.ReadEvalProjectRecord(projectId);
-    const runConfig = await this.ResolveRunConfig(project);
-    let candidates = runConfig.candidates as Array<EvalPromptCandidate>;
-    if (candidateId !== undefined) {
-      // 单选候选语义：快照只冻结本次运行的候选，快照哈希因此随候选不同而不同。
-      if (!candidates.some((candidate) => candidate.id === candidateId)) {
-        throw Object.assign(new Error('指定的 Prompt 候选不存在。'), { code: 'VALIDATION_ERROR' });
+    Id.parse(projectId);
+    return this.WithDatasetLock(projectId, async () => {
+      const validation = await this.ValidateProject(projectId);
+      if (!validation.valid) throw Object.assign(new Error(validation.errors.join('；')), { code: 'VALIDATION_ERROR', details: { errors: validation.errors } });
+      const project = await this.store.ReadEvalProjectRecord(projectId);
+      const credentials = await FreezeEvaluationCredentials(this.credentialPort);
+      const actualModels = await ValidateEvaluationModels(project.config, project.runnerType, credentials);
+      const runConfig = project.config;
+      let candidates = runConfig.candidates as Array<EvalPromptCandidate>;
+      if (candidateId !== undefined) {
+        // 单选候选语义：快照只冻结本次运行的候选，快照哈希因此随候选不同而不同。
+        if (!candidates.some((candidate) => candidate.id === candidateId)) {
+          throw Object.assign(new Error('指定的 Prompt 候选不存在。'), { code: 'VALIDATION_ERROR' });
+        }
+        candidates = candidates.filter((candidate) => candidate.id === candidateId);
       }
-      candidates = candidates.filter((candidate) => candidate.id === candidateId);
-    }
-    const cases = ParseEvalDataset(await this.artifacts.ReadDataset(project.id, project.datasetVersion));
-    const snapshot = this.BuildSnapshot(project, cases, { ...runConfig, candidates });
-    if (project.runnerType === 'browser') {
-      const settings = await this.getStoredSettings();
-      const browserEngine = settings.browserEngine === 'chrome' || settings.browserEngine === 'edge' || settings.browserEngine === 'ego' ? settings.browserEngine : this.defaultBrowserEngine;
-      (snapshot.environment as Record<string, unknown>).browserEngine = browserEngine;
-      (snapshot.environment as Record<string, unknown>).closeTaskTabs = settings.closeTaskTabs !== false;
-    }
-    const snapshotHash = createHash('sha256').update(JSON.stringify(snapshot)).digest('hex');
-    const id = `run-${randomUUID()}`;
-    const record = await this.store.CreateEvalRunRecord({ id, projectId, projectName: project.name, runnerType: project.runnerType, status: 'queued', snapshotHash, snapshot, createdAt: Date.now() });
-    await this.artifacts.WriteJson(id, 'snapshot.json', snapshot);
-    this.queue.push(id);
-    this.EmitEvent({ type: 'run_status', runId: id, message: '测评已进入队列' });
-    void this.ProcessQueue();
-    return this.PublicRun(record);
+      const cases = this.RequireCompatibleDataset(project, await this.artifacts.ReadDataset(project.id, project.datasetVersion));
+      const snapshot = this.BuildSnapshot(project, cases, { ...runConfig, candidates });
+      snapshot.models = actualModels;
+      if (project.runnerType === 'browser') {
+        const settings = await this.getStoredSettings();
+        const browserEngine = settings.browserEngine === 'chrome' || settings.browserEngine === 'edge' || settings.browserEngine === 'ego' ? settings.browserEngine : this.defaultBrowserEngine;
+        (snapshot.environment as Record<string, unknown>).browserEngine = browserEngine;
+        (snapshot.environment as Record<string, unknown>).closeTaskTabs = settings.closeTaskTabs !== false;
+      }
+      const snapshotHash = createHash('sha256').update(JSON.stringify(snapshot)).digest('hex');
+      const id = `run-${randomUUID()}`;
+      const record = await this.store.CreateEvalRunRecord({ id, projectId, projectName: project.name, runnerType: project.runnerType, status: 'queued', snapshotHash, snapshot, createdAt: Date.now() });
+      await this.artifacts.WriteJson(id, 'snapshot.json', snapshot);
+      this.runCredentials.set(id, credentials);
+      this.queue.push(id);
+      this.EmitEvent({ type: 'run_status', runId: id, message: '测评已进入队列' });
+      void this.ProcessQueue();
+      return this.PublicRun(record);
+    });
   }
 
   private PublicRun(record: any): EvalRun {
@@ -508,20 +589,7 @@ export class EvalService {
       const snapshot = run.snapshot as any;
       const projectConfig = snapshot.config;
       const cases = snapshot.cases as EvalDatasetCase[];
-      const plannedCaseIds = new Map<string, string>();
-      for (const testCase of cases) {
-        for (const candidate of projectConfig.candidates as Array<EvalPromptCandidate & { compiledPrompt: CompiledInstructions }>) {
-          for (let repeatIndex = 0; repeatIndex < projectConfig.repeatCount; repeatIndex += 1) {
-            this.ThrowIfCancelled(controller.signal);
-            const caseRunId = `case-${randomUUID()}`;
-            plannedCaseIds.set(`${testCase.id}\u0000${candidate.id}\u0000${repeatIndex}`, caseRunId);
-            await this.store.UpsertEvalCaseRunRecord({
-              id: caseRunId, runId, candidateId: candidate.id, candidateName: candidate.name, caseId: testCase.id,
-              repeatIndex, status: 'queued', createdAt: Date.now(), metrics: {},
-            });
-          }
-        }
-      }
+      const plannedCaseIds = new Map<string, string>((await this.store.ListEvalCaseRunRecords(runId)).map((item: EvalCaseRun) => [`${item.caseId}\u0000${item.candidateId}\u0000${item.repeatIndex}`, item.id]));
       const caseTasks: Array<() => Promise<EvalCaseRun>> = [];
       for (const testCase of cases) {
         for (const candidate of projectConfig.candidates as Array<EvalPromptCandidate & { compiledPrompt: CompiledInstructions }>) {
@@ -537,7 +605,8 @@ export class EvalService {
                 await mkdir(caseRoot, { recursive: true });
                 const startedAt = Date.now();
                 const commonInput = {
-                  runId, caseRunId, candidate, testCase, model: projectConfig.executionModel,
+                  runId, caseRunId, candidate, testCase, provider: projectConfig.executionProvider, model: projectConfig.executionModel,
+                  credentialPort: this.runCredentials.get(runId),
                   toolNames: projectConfig.toolNames, maxModelTurns: projectConfig.maxModelTurns,
                   userSimulator: projectConfig.userSimulator, caseRoot, signal: controller.signal,
                 };
@@ -557,15 +626,13 @@ export class EvalService {
                   ? ScoreBrowserCase({ testCase, events: result.events, finalState: result.finalState, metrics: result.metrics })
                   : await this.scorer.Score({
                     testCase, finalResponse: result.finalResponse, events: result.events, finalState: result.finalState, metrics: result.metrics,
-                    rubric: snapshot.rubric, judgePrompt: snapshot.judgePrompt, strictJson: snapshot.judgeStrictJson === true, judgeModel: projectConfig.judgeModel!, signal: controller.signal,
+                    rubric: snapshot.rubric, rubricDimensions: projectConfig.rubricDimensions, judgePrompt: snapshot.judgePrompt, strictJson: snapshot.judgeStrictJson === true, judgeProvider: projectConfig.judgeProvider, judgeModel: projectConfig.judgeModel!, credentialPort: this.runCredentials.get(runId), signal: controller.signal,
                   });
                 this.ThrowIfCancelled(controller.signal);
                 const judgeUsage = 'usage' in scoreResult ? scoreResult.usage : undefined;
                 const metrics = {
                   ...result.metrics,
-                  taskCompleted: run.runnerType === 'browser'
-                    ? scoreResult.score.taskCompleted === true
-                    : typeof result.metrics.taskCompleted === 'boolean' ? result.metrics.taskCompleted : Boolean(result.finalResponse),
+                  taskCompleted: scoreResult.score.scoreStatus === 'unscored' || typeof scoreResult.score.taskCompleted !== 'boolean' ? null : scoreResult.score.taskCompleted,
                   promptTokens: result.metrics.promptTokens == null && !judgeUsage ? null : Number(result.metrics.promptTokens ?? 0) + Number(judgeUsage?.promptTokens ?? 0),
                   completionTokens: result.metrics.completionTokens == null && !judgeUsage ? null : Number(result.metrics.completionTokens ?? 0) + Number(judgeUsage?.completionTokens ?? 0),
                   totalTokens: result.metrics.totalTokens == null && !judgeUsage ? null : Number(result.metrics.totalTokens ?? 0) + Number(judgeUsage?.totalTokens ?? 0),
@@ -595,7 +662,7 @@ export class EvalService {
                 const status = controller.signal.aborted ? 'cancelled' : 'failed';
                 const record = await this.store.UpsertEvalCaseRunRecord({
                   id: caseRunId, runId, candidateId: candidate.id, candidateName: candidate.name, caseId: testCase.id, repeatIndex,
-                  status, finalResponse: '', metrics: { environmentFailure: (error as { category?: unknown })?.category === 'environment' }, error: { code, message: error instanceof Error ? error.message : 'Evaluation case failed.' },
+                  status, finalResponse: '', metrics: { environmentFailure: (error as { category?: unknown })?.category === 'environment', taskCompleted: controller.signal.aborted || (error as { category?: unknown })?.category === 'environment' ? null : false }, error: { code, message: error instanceof Error ? error.message : 'Evaluation case failed.' },
                   createdAt, completedAt: Date.now(),
                 });
                 if (controller.signal.aborted) throw error;
@@ -632,25 +699,12 @@ export class EvalService {
     } finally {
       this.committingRuns.delete(runId);
       this.controllers.delete(runId);
+      this.runCredentials.delete(runId);
     }
   }
 
   private Summarize(caseRuns: EvalCaseRun[], startedAt: number): EvalRunSummary {
-    const completed = caseRuns.filter((item) => item.status === 'completed');
-    const scores = completed.map((item) => item.score?.totalScore).filter((value): value is number => typeof value === 'number');
-    const attempted = caseRuns.filter((item) => (item.status === 'completed' || item.status === 'failed') && item.metrics.environmentFailure !== true && item.score?.benchmark?.outcome !== 'needs_review');
-    const numberMetric = (key: string) => caseRuns.reduce((sum, item) => sum + (typeof item.metrics[key] === 'number' ? item.metrics[key] as number : 0), 0);
-    const promptTokens = numberMetric('promptTokens'); const completionTokens = numberMetric('completionTokens');
-    return {
-      totalCaseRuns: caseRuns.length, completedCaseRuns: completed.length,
-      unscoredCaseRuns: completed.filter((item) => item.score?.totalScore === null).length,
-      failedCaseRuns: caseRuns.filter((item) => item.status === 'failed').length,
-      cancelledCaseRuns: caseRuns.filter((item) => item.status === 'cancelled').length,
-      averageScore: scores.length ? scores.reduce((sum, value) => sum + value, 0) / scores.length : null,
-      taskCompletionRate: attempted.length ? attempted.filter((item) => item.metrics.taskCompleted === true).length / attempted.length : null,
-      toolErrorCount: numberMetric('toolErrors'), modelTurns: numberMetric('modelTurns'), durationMs: Date.now() - startedAt,
-      usage: { source: promptTokens + completionTokens > 0 ? 'provider' : 'unavailable', promptTokens, completionTokens, totalTokens: promptTokens + completionTokens },
-    };
+    return SummarizeEvalCases(caseRuns, startedAt);
   }
 
   async CancelRun(runId: string): Promise<{ cancelled: boolean }> {
@@ -662,7 +716,10 @@ export class EvalService {
     const queuedIndex = this.queue.indexOf(runId);
     if (queuedIndex >= 0) {
       this.queue.splice(queuedIndex, 1);
-      await this.store.UpdateEvalRunRecord(runId, { status: 'cancelled', error: { code: 'CANCELLED', message: 'Evaluation cancelled before execution.' }, completedAt: Date.now() });
+      this.runCredentials.delete(runId);
+      const cases: EvalCaseRun[] = await this.store.ListEvalCaseRunRecords(runId);
+      for (const item of cases) if (item.status === 'queued') await this.store.UpsertEvalCaseRunRecord({ ...item, status: 'not_run', completedAt: Date.now() });
+      await this.store.UpdateEvalRunRecord(runId, { status: 'cancelled', summary: this.Summarize(await this.store.ListEvalCaseRunRecords(runId), Date.now()), error: { code: 'CANCELLED', message: 'Evaluation cancelled before execution.' }, completedAt: Date.now() });
       this.EmitEvent({ type: 'run_status', runId, message: '排队中的测评已取消' });
       return { cancelled: true };
     }
@@ -689,7 +746,7 @@ export class EvalService {
     await this.RequireDeveloperMode();
     const [left, right] = await Promise.all([this.ReadRun(leftRunId), this.ReadRun(rightRunId)]);
     const differingSnapshotFields = FindEvalSnapshotDifferences(left.snapshot, right.snapshot);
-    return { left, right, strictComparison: differingSnapshotFields.length === 0, differingSnapshotFields };
+    return { left, right, strictComparison: differingSnapshotFields.length === 0, differingSnapshotFields, samples: CompareEvalSamples(left, right) };
   }
 
   HasActiveRuns(): boolean { return Boolean(this.activeRunId || this.queue.length); }
@@ -698,9 +755,12 @@ export class EvalService {
   async Close(): Promise<void> {
     for (const controller of this.controllers.values()) controller.abort(Object.assign(new Error('Application is shutting down.'), { code: 'CANCELLED' }));
     const queued = this.queue.splice(0);
-    await Promise.all(queued.map((runId) => this.store.UpdateEvalRunRecord(runId, {
-      status: 'cancelled', error: { code: 'CANCELLED', message: 'Evaluation cancelled because the application stopped.' }, completedAt: Date.now(),
-    }).catch(() => undefined)));
+    for (const runId of queued) this.runCredentials.delete(runId);
+    for (const runId of queued) {
+      const cases: EvalCaseRun[] = await this.store.ListEvalCaseRunRecords(runId);
+      for (const item of cases) if (item.status === 'queued') await this.store.UpsertEvalCaseRunRecord({ ...item, status: 'not_run', completedAt: Date.now() });
+      await this.store.UpdateEvalRunRecord(runId, { status: 'cancelled', summary: this.Summarize(await this.store.ListEvalCaseRunRecords(runId), Date.now()), error: { code: 'CANCELLED', message: 'Evaluation cancelled because the application stopped.' }, completedAt: Date.now() });
+    }
     const deadline = Date.now() + 5000;
     while (this.activeRunId && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
     await this.artifactEventTail;

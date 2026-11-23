@@ -1,19 +1,26 @@
 import { mkdir, readFile, realpath, writeFile, appendFile, rm } from 'node:fs/promises';
 import { dirname, join, resolve, sep } from 'node:path';
 
-const SensitiveKey = /^(?:api[_-]?key|x-api-key|authorization|token|cookie|set-cookie)$/i;
+const SensitiveKey = /^(?:api[_-]?key|x-api-key|authorization|token|access[_-]?token|refresh[_-]?token|secret|client[_-]?secret|password|captcha|cookie|set-cookie)$/i;
+const ThoughtKey = /^(?:reasoning(?:_content|Content)?|thinking(?:_content|Content)?|chain_of_thought)$/i;
 
 /** 先按结构脱敏再序列化，避免 Bearer 正则跨越 JSON 字段并破坏证据。 */
 function ScrubArtifactValue(value: unknown, key = ''): unknown {
+  if (ThoughtKey.test(key)) return undefined;
   if (SensitiveKey.test(key)) return '[REDACTED]';
   if (typeof value === 'string') {
+    // 工具参数和供应商 JSON 包装仍按结构过滤，不能让嵌套思考通过字符串绕过。
+    if (/^[\s]*[\[{]/.test(value)) {
+      try { return JSON.stringify(ScrubArtifactValue(JSON.parse(value))); } catch { /* 普通正文保留为可观察文本。 */ }
+    }
     return value
-      .replace(/Bearer\s+\S+/gi, 'Bearer [REDACTED]')
+      .replace(/Bearer\s+[^\s"'<>]+/gi, 'Bearer [REDACTED]')
       .replace(/\bsk-[A-Za-z0-9_-]+\b/g, '[REDACTED_API_KEY]')
       .replace(/\b[A-Za-z]:\\[^\s"'<>]*/g, '[REDACTED_PATH]');
   }
-  if (Array.isArray(value)) return value.map((item) => ScrubArtifactValue(item));
+  if (Array.isArray(value)) return value.map((item) => ScrubArtifactValue(item)).filter(item => item !== undefined);
   if (value && typeof value === 'object') {
+    if (/(?:thinking|reasoning)/i.test(String((value as { type?: unknown }).type ?? ''))) return undefined;
     return Object.fromEntries(Object.entries(value).map(([field, item]) => [field, ScrubArtifactValue(item, field)]));
   }
   return value;
@@ -45,6 +52,7 @@ export class EvalArtifactStore {
   }
 
   async WriteJson(runId: string, fileName: string, value: unknown): Promise<void> {
+    if (ScrubArtifactValue(value) === undefined) return;
     await this.Initialize();
     const target = this.Path(runId, fileName);
     await mkdir(dirname(target), { recursive: true });
@@ -52,6 +60,7 @@ export class EvalArtifactStore {
   }
 
   async WriteCaseJson(runId: string, caseRunId: string, fileName: string, value: unknown): Promise<void> {
+    if (ScrubArtifactValue(value) === undefined) return;
     await this.Initialize();
     const target = this.Path(runId, 'cases', caseRunId, fileName);
     await mkdir(dirname(target), { recursive: true });
@@ -59,6 +68,7 @@ export class EvalArtifactStore {
   }
 
   async AppendEvent(runId: string, value: unknown): Promise<void> {
+    if (ScrubArtifactValue(value) === undefined) return;
     await this.Initialize();
     const target = this.Path(runId, 'events.jsonl');
     await mkdir(dirname(target), { recursive: true });
@@ -67,6 +77,7 @@ export class EvalArtifactStore {
   }
 
   async AppendCaseEvent(runId: string, caseRunId: string, fileName: string, value: unknown): Promise<void> {
+    if (ScrubArtifactValue(value) === undefined) return;
     await this.Initialize();
     const target = this.Path(runId, 'cases', caseRunId, fileName);
     await mkdir(dirname(target), { recursive: true });
@@ -91,7 +102,12 @@ export class EvalArtifactStore {
     const target = resolve(this.dataRoot, 'datasets', projectId, `${version}.jsonl`);
     if (!target.startsWith(`${this.dataRoot}${sep}`)) throw Object.assign(new Error('Evaluation dataset path escapes its root.'), { code: 'PERMISSION_DENIED' });
     await mkdir(dirname(target), { recursive: true });
-    await writeFile(target, jsonl, 'utf8');
+    // 同哈希内容不可覆盖；防止重导改写正在被旧 Run 读取的文件。
+    try { await writeFile(target, jsonl, { encoding: 'utf8', flag: 'wx' }); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+      if (await readFile(target, 'utf8') !== jsonl) throw Object.assign(new Error('测试集同版本文件内容不一致，请先删除该版本后重新导入。'), { code: 'VALIDATION_ERROR' });
+    }
     return `datasets/${projectId}/${version}.jsonl`;
   }
 
