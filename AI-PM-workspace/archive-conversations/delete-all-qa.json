@@ -1,0 +1,46 @@
+[
+  {
+    "name": "交付页不含多选或全选",
+    "pass": true
+  },
+  {
+    "name": "筛选下确认明确全部归档及总数",
+    "pass": true
+  },
+  {
+    "name": "取消不删除任何记录",
+    "pass": true
+  },
+  {
+    "name": "单条操作确认仍显示标题项目",
+    "pass": true
+  },
+  {
+    "name": "Esc 取消清空",
+    "pass": true
+  },
+  {
+    "name": "确认清空包括筛选外全部归档",
+    "pass": true
+  },
+  {
+    "name": "布局 1280×900",
+    "pass": true
+  },
+  {
+    "name": "布局 1024×768",
+    "pass": true
+  },
+  {
+    "name": "布局 800×640",
+    "pass": true
+  },
+  {
+    "name": "布局 390×844",
+    "pass": true
+  },
+  {
+    "name": "布局 320×568",
+    "pass": true
+  }
+]

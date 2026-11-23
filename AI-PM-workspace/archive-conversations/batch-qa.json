@@ -1,0 +1,107 @@
+{
+  "checks": [
+    {
+      "name": "未勾选时禁止批量删除",
+      "pass": true
+    },
+    {
+      "name": "多选与半选状态",
+      "pass": true
+    },
+    {
+      "name": "二次确认包含数量与目标列表",
+      "pass": true
+    },
+    {
+      "name": "取消保留记录及勾选",
+      "pass": true
+    },
+    {
+      "name": "排序保留选择",
+      "pass": true
+    },
+    {
+      "name": "搜索变化清空勾选",
+      "pass": true
+    },
+    {
+      "name": "全选仅选当前项目结果",
+      "pass": true
+    },
+    {
+      "name": "再次全选取消全部勾选",
+      "pass": true
+    },
+    {
+      "name": "批量删除当前结果后显示筛选空态",
+      "pass": true
+    },
+    {
+      "name": "未选中的其他会话保留",
+      "pass": true
+    },
+    {
+      "name": "单条恢复回归与失效勾选清理",
+      "pass": true
+    },
+    {
+      "name": "单条删除回归",
+      "pass": true
+    },
+    {
+      "name": "批量确认时到期不会计入删除成功数量",
+      "pass": true
+    },
+    {
+      "name": "全选一键删除全部及空态",
+      "pass": true
+    },
+    {
+      "name": "多选布局 1280×900",
+      "pass": true
+    },
+    {
+      "name": "多选布局 1024×768",
+      "pass": true
+    },
+    {
+      "name": "多选布局 800×640",
+      "pass": true
+    },
+    {
+      "name": "多选布局 390×844",
+      "pass": true
+    },
+    {
+      "name": "多选布局 320×568",
+      "pass": true
+    }
+  ],
+  "layouts": [
+    {
+      "width": 1280,
+      "height": 900,
+      "fit": true
+    },
+    {
+      "width": 1024,
+      "height": 768,
+      "fit": true
+    },
+    {
+      "width": 800,
+      "height": 640,
+      "fit": true
+    },
+    {
+      "width": 390,
+      "height": 844,
+      "fit": true
+    },
+    {
+      "width": 320,
+      "height": 568,
+      "fit": true
+    }
+  ]
+}

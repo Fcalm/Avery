@@ -34,6 +34,7 @@
 - [浏览器快照与增量观察](./21-browser-snapshot-delta.md)：稳定节点引用、精简和增量输出契约，以及 P0、P1 验证顺序。
 - [上下文压缩](./22-context-compaction-plan.md)：预算保留、完整工具批次、浏览器恢复及 `/compact` 意图翻译。
 - [网申填写测评](./23-application-benchmark.md)：开发者工具中的拟真平台入口、内置场景、业务成绩、产物目录和验证命令。
+- [Goal 模式工程参考](./24-goal-engineering-reference.md) 记录 Claude Code 的运行机制、Avery 的续跑和审核方案，以及测评与发布验收标准。
 
 对应产品与总体架构依据：
 

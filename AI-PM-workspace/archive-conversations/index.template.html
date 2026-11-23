@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>已归档对话 · Avery</title>
+<style>
+/* EMBEDDED_ASSETS */
+:root{color-scheme:light;--bg:#fff;--surface:#fafafa;--surface-2:#f4f4f5;--raised:#fff;--border:#e8e8ea;--border-2:#d8d8dc;--text:#18181b;--text-2:#55555e;--text-3:#8b8b94;--accent:#17654f;--accent-hover:#12543f;--accent-soft:#eaf2ee;--danger:#b4413c;--danger-soft:rgba(180,65,60,.08);--scrim:rgba(24,24,27,.36);--ease:cubic-bezier(.16,1,.3,1);--shadow-lg:0 12px 40px -12px rgba(24,24,27,.22)}
+*{box-sizing:border-box}body{margin:0;color:var(--text);background:var(--bg);font:14px/1.55 "Segoe UI Variable Text","Segoe UI",system-ui,sans-serif}button,input,select{font:inherit;color:inherit}button{border:0;background:none;cursor:pointer}a{color:inherit}button:disabled{cursor:default;opacity:.5}button,input,select{outline-offset:3px} :focus-visible{outline:2px solid var(--accent)}::selection{background:#b6dfc6;color:#153b2b}.ph{font-size:17px;flex-shrink:0}button{transition:background .16s var(--ease),color .16s var(--ease)}
+.app{height:100dvh;display:grid;grid-template-rows:56px minmax(0,1fr)}.topbar{display:flex;align-items:center;gap:16px;padding:0 22px;border-bottom:1px solid var(--border)}.brand{display:flex;align-items:center;gap:7px;font-size:18px;font-weight:650;letter-spacing:-.5px}.brand .ph{font-size:24px;color:var(--accent)}.divider{height:19px;width:1px;background:var(--border)}.crumb{display:flex;gap:10px;align-items:center;color:var(--text-2);font-size:13px}.crumb .ph{font-size:12px;color:var(--text-3)}.crumb strong{font-weight:550;color:var(--text)}.layout{min-height:0;display:grid;grid-template-columns:268px minmax(0,1fr)}.sidebar{display:flex;flex-direction:column;min-height:0;background:var(--surface);border-right:1px solid var(--border);padding:22px 12px 12px}.side-title{margin:3px 12px 23px;font-size:13px;font-weight:600;color:var(--text-2)}.nav{display:flex;flex-direction:column;gap:4px}.nav-item{height:38px;padding:0 12px;display:flex;align-items:center;gap:11px;border-radius:10px;color:var(--text-2);font-size:13px}.nav-item.active{color:var(--text);background:var(--surface-2);font-weight:600}.nav-item.active .ph{color:var(--accent)}.nav .break{height:1px;background:var(--border);margin:12px}.user{margin-top:auto;display:flex;align-items:center;gap:10px;padding:10px 9px}.avatar{display:grid;place-items:center;width:30px;height:30px;border-radius:10px;background:var(--accent-soft);color:var(--accent);font-weight:600}.user span:last-child{font-size:13px;font-weight:550}.main{min-width:0;overflow:auto}.content{max-width:1100px;margin:0 auto;padding:34px 42px 48px;animation:viewIn .35s var(--ease)}.heading{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:25px}.heading-left{display:flex;align-items:center;gap:10px}h1{margin:0;font-size:21px;font-weight:660;letter-spacing:-.03em}.count{font-family:Manrope,sans-serif;font-size:12px;color:var(--text-2);background:var(--surface-2);border-radius:999px;padding:1px 8px}.retention{display:flex;align-items:center;gap:6px;color:var(--text-2);font-size:12px;white-space:nowrap}.retention .ph{font-size:14px}.toolbar{display:flex;gap:8px;align-items:center;margin-bottom:16px}.search{display:flex;align-items:center;gap:8px;min-width:100px;flex:1;height:36px;border:1px solid var(--border);border-radius:10px;padding:0 10px;background:var(--raised)}.search:focus-within{border-color:var(--accent);box-shadow:0 0 0 2px var(--accent-soft)}.search .ph{font-size:15px;color:var(--text-3)}.search input{border:0;outline:none;width:100%;min-width:0;background:none;font-size:12.5px}.search input::placeholder{color:var(--text-3)}select{height:36px;border:1px solid var(--border);border-radius:10px;background:var(--raised);font-size:12px;padding:0 29px 0 11px;max-width:160px;cursor:pointer}.table-wrap{border:1px solid var(--border);border-radius:14px;overflow:hidden}.table{width:100%;border-collapse:collapse;table-layout:fixed}.table th{height:39px;background:var(--surface);color:var(--text-2);text-align:left;font-size:11.5px;font-weight:500}.table th,.table td{padding:0 16px}.table th:first-child{width:43%}.table th:nth-child(2){width:21%}.table th:nth-child(3){width:18%}.table th:last-child{width:18%;text-align:right}.table td{height:70px;border-top:1px solid var(--border);font-size:12.5px}.table tbody tr{transition:background .16s var(--ease)}.table tbody tr:hover{background:var(--surface)}.title-cell{display:flex;align-items:center;gap:10px;min-width:0}.title-cell>.ph{color:var(--text-3);font-size:17px}.title{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;overflow-wrap:anywhere;font-size:13px;font-weight:550;line-height:1.65}.project{display:flex;gap:6px;align-items:center;min-width:0;color:var(--text-2);font-size:12px}.project .ph{font-size:14px}.project span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.missing{color:var(--text-3)}.deadline{font-size:12px;font-variant-numeric:tabular-nums;white-space:nowrap;color:var(--text-2)}.deadline.urgent{color:var(--danger);font-weight:550}.deadline.urgent::before{content:"";display:inline-block;vertical-align:2px;width:5px;height:5px;margin-right:6px;border-radius:999px;background:var(--danger)}.actions{display:flex;align-items:center;justify-content:flex-end;gap:3px;white-space:nowrap}.action{display:inline-flex;gap:5px;align-items:center;padding:6px;border-radius:10px;font-size:12px;color:var(--text-2)}.action .ph{font-size:14px}.restore:hover{background:var(--accent-soft);color:var(--accent)}.delete:hover{background:var(--danger-soft);color:var(--danger)}.empty{padding:64px 16px;text-align:center}.empty>.ph{font-size:26px;color:var(--text-3);margin-bottom:12px}.empty p{margin:0 0 12px;color:var(--text-2);font-size:13px}.empty button{color:var(--accent);font-size:12px}.empty[hidden]{display:none}.toast{position:fixed;bottom:26px;left:50%;transform:translateX(-50%);background:var(--text);color:var(--bg);padding:9px 15px;border-radius:999px;display:flex;align-items:center;gap:8px;box-shadow:var(--shadow-lg);font-size:12.5px;max-width:calc(100vw - 32px);z-index:5;animation:toastIn .25s var(--ease)}.toast .ph{font-size:15px;color:#73d6aa}.toast[hidden]{display:none}dialog{color:var(--text);width:min(392px,calc(100vw - 32px));max-height:calc(100dvh - 32px);overflow:auto;background:var(--raised);border:1px solid var(--border);border-radius:14px;padding:18px 18px 16px;box-shadow:var(--shadow-lg)}dialog[open]{animation:dialogIn .25s var(--ease)}dialog::backdrop{background:var(--scrim)}.dialog-head{display:flex;align-items:center;justify-content:space-between;gap:8px}.dialog-head h2{margin:0;font-size:15px;font-weight:640}.close{display:grid;place-items:center;width:26px;height:26px;border-radius:10px;color:var(--text-3)}.close:hover{background:var(--surface-2);color:var(--text)}.close .ph{font-size:15px}.subject{margin:13px 0 10px;padding:11px 12px;background:var(--surface);border:1px solid var(--border);border-radius:10px}.subject strong{font-size:13px;font-weight:550;overflow-wrap:anywhere;display:block}.subject .project{margin-top:5px}.dialog-text{margin:0;color:var(--text-2);font-size:12.5px;line-height:1.7}.dialog-foot{display:flex;gap:8px;justify-content:flex-end;margin-top:18px}.btn{min-height:32px;padding:5px 13px;border:1px solid var(--border);border-radius:10px;font-size:12.5px;font-weight:550}.btn:hover{background:var(--surface-2)}.btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}.btn.primary:hover{background:var(--accent-hover)}.btn.danger{background:var(--danger);border-color:var(--danger);color:#fff}.btn.danger:hover{background:#a1382f}@keyframes viewIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}@keyframes dialogIn{from{opacity:0;transform:scale(.97)}to{opacity:1;transform:scale(1)}}@keyframes toastIn{from{opacity:0;translate:0 8px}to{opacity:1;translate:0 0}}
+.content{max-width:980px;padding:34px 30px 46px}.heading h1{font-size:30px;font-weight:680;line-height:1.15}.nav{gap:1px}.nav-item{height:34px;padding:0 10px;font-size:13.5px}.nav-item.active{color:var(--accent);background:var(--accent-soft)}
+@media(min-width:1300px){.table th:first-child{width:42%}.table th:nth-child(2){width:22%}.table th:nth-child(3){width:19%}.table th:last-child{width:17%}}
+@media(max-width:1120px){.layout{grid-template-columns:220px minmax(0,1fr)}.content{padding:28px 24px}.table th,.table td{padding-left:12px;padding-right:12px}.table th:first-child{width:36%}.table th:nth-child(2){width:22%}.table th:nth-child(3){width:20%}.table th:last-child{width:22%}}
+@media(max-width:850px){.layout{grid-template-columns:180px minmax(0,1fr)}.content{padding:24px 18px}.table th:first-child{width:40%}.table th:nth-child(2){width:24%}.table th:nth-child(3){width:20%}.table th:last-child{width:16%}.actions{gap:0}.action{width:28px;height:30px;justify-content:center;padding:0}.action span{display:none}.retention{font-size:11px}}
+@media(max-width:650px){.app{grid-template-rows:50px minmax(0,1fr)}.topbar{padding:0 16px;gap:12px}.brand{font-size:17px}.crumb{font-size:12px}.layout{grid-template-columns:minmax(0,1fr)}.sidebar{display:none}.content{padding:24px 16px}.heading{align-items:flex-start;margin-bottom:20px;gap:8px}h1{font-size:19px}.retention{margin-top:5px}.toolbar{flex-wrap:wrap}.search{flex-basis:100%}select{max-width:none;flex:1}.table thead{display:none}.table,.table tbody{display:block}.table tr{display:grid;grid-template-columns:minmax(0,1fr) auto;padding:14px 12px;column-gap:12px;row-gap:7px;border-bottom:1px solid var(--border)}.table tr:last-child{border-bottom:0}.table td{display:block;height:auto;border:0;padding:0}.table td:first-child{grid-column:1;grid-row:1}.title-cell{gap:8px}.table td:nth-child(2){grid-row:2;grid-column:1;padding-left:25px}.table td:nth-child(3){grid-row:3;grid-column:1;padding-left:25px}.table td:nth-child(4){grid-row:1 / 4;grid-column:2;align-self:center}.actions{flex-direction:column;gap:5px}.action{width:auto;height:28px;padding:4px 6px}.action span{display:inline}.deadline{font-size:11.5px}.title{font-size:12.5px}.project{font-size:11.5px}.table-wrap{border-radius:14px}}
+.delete-all{display:inline-flex;align-items:center;justify-content:center;gap:6px;flex-shrink:0;min-height:36px;padding:0 11px;border:1px solid var(--border);border-radius:10px;color:var(--danger);font-size:12px;white-space:nowrap}.delete-all .ph{font-size:14px}.delete-all:hover:not(:disabled){background:var(--danger-hover,var(--danger-soft));background:rgba(180,65,60,.08)}.subject[hidden]{display:none}.subject[hidden]+.dialog-text{margin-top:12px}
+@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}}
+</style>
+</head>
+<body>
+<div class="app">
+  <header class="topbar"><div class="brand"><i class="ph ph-sparkle" aria-hidden="true"></i>Avery</div><div class="divider"></div><div class="crumb"><span>设置</span><i class="ph ph-caret-right" aria-hidden="true"></i><strong>已归档对话</strong></div></header>
+  <div class="layout">
+    <aside class="sidebar" aria-label="设置导航">
+      <div class="side-title">设置</div>
+      <nav class="nav">
+        <span class="nav-item"><i class="ph ph-gear-six" aria-hidden="true"></i>常规</span>
+        <span class="nav-item"><i class="ph ph-user-circle" aria-hidden="true"></i>个性化</span>
+        <span class="nav-item"><i class="ph ph-sliders-horizontal" aria-hidden="true"></i>模型配置</span>
+        <span class="nav-item"><i class="ph ph-globe" aria-hidden="true"></i>浏览器控制</span>
+        <a href="#archived" class="nav-item active" aria-current="page" style="text-decoration:none"><i class="ph ph-archive" aria-hidden="true"></i>已归档对话</a>
+        <div class="break"></div>
+        <span class="nav-item"><i class="ph ph-code" aria-hidden="true"></i>开发者模式</span>
+      </nav>
+      <div class="user"><span class="avatar">F</span><span>Fanwei</span></div>
+    </aside>
+    <main class="main" id="archived">
+      <div class="content">
+        <div class="heading"><div class="heading-left"><h1>已归档对话</h1><span class="count" id="count" aria-label="归档对话数量">8</span></div><span class="retention" title="按归档时间起算；历史对话未设清理时间时不参与自动清理"><i class="ph ph-clock" aria-hidden="true"></i>归档后保留 30 天</span></div>
+        <div class="toolbar">
+          <label class="search"><i class="ph ph-magnifying-glass" aria-hidden="true"></i><input id="search" type="search" aria-label="搜索归档对话" placeholder="搜索对话标题" autocomplete="off"></label>
+          <select id="project" aria-label="筛选所属项目"><option value="all">全部项目</option></select>
+          <select id="sort" aria-label="排序方式"><option value="expiry">最早清理优先</option><option value="archive">最近归档优先</option></select>
+          <button type="button" class="delete-all" id="deleteAll"><i class="ph ph-trash" aria-hidden="true"></i>删除所有对话</button>
+        </div>
+        <div class="table-wrap">
+          <table class="table" aria-label="已归档对话"><thead><tr><th scope="col">对话标题</th><th scope="col">所属项目</th><th scope="col">自动清理剩余</th><th scope="col">操作</th></tr></thead><tbody id="rows"></tbody></table>
+          <div class="empty" id="empty" hidden><i class="ph ph-archive" aria-hidden="true"></i><p id="emptyText">暂无归档对话</p><button type="button" id="clearFilters" hidden>清除筛选</button></div>
+        </div>
+      </div>
+    </main>
+  </div>
+</div>
+<dialog id="confirm" aria-labelledby="dialogTitle" aria-describedby="dialogText">
+  <div class="dialog-head"><h2 id="dialogTitle">恢复对话？</h2><button class="close" id="closeDialog" aria-label="关闭确认框"><i class="ph ph-x" aria-hidden="true"></i></button></div>
+  <div class="subject"><strong id="dialogSubject"></strong><div class="project"><i class="ph ph-folder-simple" aria-hidden="true"></i><span id="dialogProject"></span></div></div>
+  <p class="dialog-text" id="dialogText"></p>
+  <div class="dialog-foot"><button class="btn" id="cancel" autofocus>取消</button><button class="btn primary" id="commit">确认恢复</button></div>
+</dialog>
+<div class="toast" id="toast" role="status" aria-live="polite" hidden><i class="ph ph-check-circle" aria-hidden="true"></i><span id="toastText"></span></div>
+<script>
+const $ = selector => document.querySelector(selector);
+const day = 86400000;
+const start = Date.now();
+// 仅维护原型内的演示记录，刷新页面后重置；不连接真实会话。
+let conversations = [
+  {id:'a1',title:'字节跳动 · 产品经理一面准备',project:'秋招 2027',expires:start+9*3600000+24*60000,archived:start-29*day},
+  {id:'a2',title:'筛选上海 AI 产品经理岗位',project:'AI 产品经理',expires:start+2*day+5*3600000,archived:start-27*day},
+  {id:'a3',title:'根据岗位要求优化简历中的项目经历，并整理面试追问',project:'AI 产品经理',expires:start+6*day,archived:start-24*day},
+  {id:'a4',title:'腾讯 · 用户研究岗位匹配',project:'暑期实习',expires:start+12*day,archived:start-18*day},
+  {id:'a5',title:'准备英文自我介绍',project:null,expires:start+19*day,archived:start-11*day},
+  {id:'a6',title:'整理本周投递与面试进度',project:'秋招 2027',expires:start+29*day,archived:start-day},
+  {id:'a7',title:'复盘上一轮求职经历',project:'春招 2026',missing:true,expires:start+3*day,archived:start-27*day},
+  {id:'a8',title:'梳理职业方向与目标公司',project:null,expires:null,archived:start-50*day}
+].map(item=>({...item,archived:item.expires===null?item.archived:item.expires-30*day}));
+let pending = null, origin = null, toastTimer;
+const dialog = $('#confirm');
+function icon(name) { const node=document.createElement('i'); node.className='ph ph-'+name; node.setAttribute('aria-hidden','true'); return node; }
+function notify(message) { $('#toastText').textContent=message; $('#toast').hidden=false; clearTimeout(toastTimer); toastTimer=setTimeout(()=>$('#toast').hidden=true,3200); }
+function remaining(expires) {
+  if(expires===null) return '未设定';
+  const minutes=Math.max(1,Math.ceil((expires-Date.now())/60000));
+  if(minutes>=1440) { const hours=Math.floor(minutes%1440/60); return Math.floor(minutes/1440)+' 天'+(hours?' '+hours+' 小时':''); }
+  if(minutes>=60) return Math.floor(minutes/60)+' 小时 '+minutes%60+' 分钟';
+  return minutes+' 分钟';
+}
+function projectName(item) { return item.project ? item.project+(item.missing?'（已移除）':'') : '未分组'; }
+function render() {
+  const query=$('#search').value.trim().toLocaleLowerCase();
+  const project=$('#project').value;
+  const list=conversations.filter(item=>item.title.toLocaleLowerCase().includes(query) && (project==='all'||(item.project||'none')===project));
+  list.sort($('#sort').value==='expiry' ? (a,b)=>(a.expires??Infinity)-(b.expires??Infinity) : (a,b)=>b.archived-a.archived);
+  $('#rows').replaceChildren();
+  for(const item of list) {
+    const row=document.createElement('tr');row.dataset.id=item.id;
+    const titleCell=document.createElement('td'), titleWrap=document.createElement('div'), title=document.createElement('span');
+    titleWrap.className='title-cell';title.className='title';title.textContent=item.title;title.title=item.title;
+    titleWrap.append(icon('chats-circle'),title);titleCell.append(titleWrap);
+    const projectCell=document.createElement('td'),projectWrap=document.createElement('div'),projectText=document.createElement('span');
+    projectWrap.className='project'+(!item.project||item.missing?' missing':'');projectText.textContent=projectName(item);projectText.title=projectName(item);projectWrap.append(icon('folder-simple'),projectText);projectCell.append(projectWrap);
+    const timeCell=document.createElement('td'),time=document.createElement('span');time.className='deadline'+(item.expires!==null&&item.expires-Date.now()<day?' urgent':'');time.textContent=remaining(item.expires);time.title=item.expires===null?'历史对话未设清理时间':new Date(item.expires).toLocaleString('zh-CN',{hour12:false})+' 自动清理';timeCell.append(time);
+    const actionCell=document.createElement('td'),actions=document.createElement('div');actions.className='actions';
+    for(const [action,label,glyph] of [['restore','恢复','arrows-counter-clockwise'],['delete','删除','trash']]) {
+      const button=document.createElement('button');button.type='button';button.className='action '+action;button.dataset.action=action;button.setAttribute('aria-label',label+'：'+item.title);button.title=label;const text=document.createElement('span');text.textContent=label;button.append(icon(glyph),text);button.addEventListener('click',()=>begin(item,action,button));actions.append(button);
+    }
+    actionCell.append(actions);row.append(titleCell,projectCell,timeCell,actionCell);$('#rows').append(row);
+  }
+  $('#count').textContent=list.length;
+  $('#empty').hidden=list.length>0;
+  $('.table').hidden=list.length===0;
+  $('#emptyText').textContent=conversations.length?'没有找到匹配的对话':'暂无归档对话';
+  $('#clearFilters').hidden=!conversations.length;
+  $('#deleteAll').disabled=!conversations.length;
+}
+function begin(item,action,button) {
+  $('.subject').hidden=false;
+  pending={id:item.id,action};origin=button;
+  $('#dialogTitle').textContent=action==='delete'?'永久删除对话？':'恢复对话？';
+  $('#dialogSubject').textContent=item.title;$('#dialogProject').textContent=projectName(item);
+  $('#dialogText').textContent=action==='delete'?'对话及其中的消息将被永久删除，无法恢复。':item.missing?'原项目已移除，恢复后对话将回到「最近」的未分组列表，并停止自动清理。':'对话将回到「最近」'+(item.project?'的「'+item.project+'」项目':'的未分组列表')+'，并停止自动清理。';
+  $('#commit').textContent=action==='delete'?'永久删除':'确认恢复';$('#commit').className='btn '+(action==='delete'?'danger':'primary');dialog.showModal();$('#cancel').focus();
+}
+function cancel() { pending=null;dialog.close();origin?.focus(); }
+$('#closeDialog').addEventListener('click',cancel);$('#cancel').addEventListener('click',cancel);
+dialog.addEventListener('cancel',event=>{event.preventDefault();cancel();});
+dialog.addEventListener('keydown',event=>{
+  if(event.key!=='Tab')return;
+  const buttons=[...dialog.querySelectorAll('button:not(:disabled)')];
+  const index=buttons.indexOf(document.activeElement);
+  const next=(index+(event.shiftKey?-1:1)+buttons.length)%buttons.length;
+  event.preventDefault();buttons[next].focus();
+});
+dialog.addEventListener('click',event=>{if(event.target===dialog){const rect=dialog.getBoundingClientRect();if(event.clientX<rect.left||event.clientX>rect.right||event.clientY<rect.top||event.clientY>rect.bottom)cancel();}});
+$('#commit').addEventListener('click',()=>{
+  if(!pending)return;
+  if(pending.action==='delete-all') {
+    const count=conversations.length;
+    conversations=[];pending=null;dialog.close();$('#search').value='';$('#project').value='all';render();
+    notify(count?'已永久删除全部 '+count+' 个已归档对话':'暂无归档对话');$('#search').focus();return;
+  }
+  const item=conversations.find(item=>item.id===pending.id);
+  if(!item || (item.expires!==null&&item.expires<=Date.now())) { conversations=conversations.filter(item=>item.id!==pending.id);pending=null;dialog.close();render();notify('对话已自动清理');$('#search').focus();return; }
+  const action=pending.action;const nextIndex=[...$('#rows').children].findIndex(row=>row.dataset.id===item.id);
+  conversations=conversations.filter(candidate=>candidate.id!==item.id);pending=null;dialog.close();render();notify(action==='delete'?'对话已永久删除':'对话已恢复');
+  const rows=[...$('#rows').children];(rows[Math.min(nextIndex,rows.length-1)]?.querySelector('button')||$('#search')).focus();
+});
+for(const project of [...new Set(conversations.map(item=>item.project))]) {const option=document.createElement('option');option.value=project||'none';option.textContent=project||'未分组';$('#project').append(option);}
+$('#deleteAll').addEventListener('click',()=>{
+  if(!conversations.length)return;
+  pending={action:'delete-all'};origin=$('#deleteAll');$('.subject').hidden=true;
+  $('#dialogTitle').textContent='删除所有已归档对话？';
+  $('#dialogText').textContent='将永久删除全部 '+conversations.length+' 个已归档对话及其中的消息，包含当前筛选未显示的对话，无法恢复。';
+  $('#commit').textContent='永久删除全部';$('#commit').className='btn danger';dialog.showModal();$('#cancel').focus();
+});
+$('#search').addEventListener('input',render);$('#project').addEventListener('change',render);$('#sort').addEventListener('change',render);
+$('#clearFilters').addEventListener('click',()=>{$('#search').value='';$('#project').value='all';render();$('#search').focus();});
+setInterval(()=>{const expired=conversations.filter(item=>item.expires!==null&&item.expires<=Date.now());if(expired.length){conversations=conversations.filter(item=>item.expires===null||item.expires>Date.now());render();notify('已自动清理 '+expired.length+' 个对话');}else{document.querySelectorAll('#rows tr').forEach(row=>{const item=conversations.find(item=>item.id===row.dataset.id);const node=row.querySelector('.deadline');node.textContent=remaining(item.expires);node.classList.toggle('urgent',item.expires!==null&&item.expires-Date.now()<day);});}},30000);
+render();
+</script>
+</body>
+</html>

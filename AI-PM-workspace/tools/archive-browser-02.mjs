@@ -1,0 +1,31 @@
+const task=await taskSpace(1);const page=task.page('p1');
+await page.reload();
+const checks=[];
+function check(name,pass){checks.push({name,pass});if(!pass)throw new Error(name);}
+const count=()=>page.evaluate(()=>document.querySelectorAll('#rows tr').length);
+check('初始 8 条会话',await count()===8);
+await page.click('loc=css:tr[data-id="a1"] button[data-action="restore"]');
+check('恢复弹出二次确认且默认焦点在取消',await page.evaluate(()=>document.querySelector('#confirm').open&&document.activeElement.id==='cancel'));
+await page.click('loc=css:#cancel');check('取消恢复不移除会话',await count()===8);
+await page.click('loc=css:tr[data-id="a1"] button[data-action="delete"]');
+check('删除显示不可恢复说明',await page.evaluate(()=>document.querySelector('#confirm').open&&document.querySelector('#dialogText').textContent.includes('无法恢复')));
+await page.keyboard.press('Escape');check('Esc 取消删除',await count()===8);
+await page.click('loc=css:tr[data-id="a1"] button[data-action="restore"]');await page.click('loc=css:#commit');
+check('确认恢复移出归档列表',await count()===7);
+await page.click('loc=css:tr[data-id="a2"] button[data-action="delete"]');await page.click('loc=css:#commit');
+check('确认删除移除指定行',await count()===6);
+await page.fill('loc=css:#search','不存在的对话');
+check('搜索无结果显示空态',await page.evaluate(()=>!document.querySelector('#empty').hidden&&!document.querySelector('#clearFilters').hidden));
+await page.click('loc=css:#clearFilters');check('清除筛选恢复列表',await count()===6);
+await page.selectOption('loc=css:#project','none');check('未分组项目筛选',await count()===2);
+await page.selectOption('loc=css:#project','all');await page.selectOption('loc=css:#sort','archive');
+check('按最近归档排序',await page.evaluate(()=>document.querySelector('#rows tr').dataset.id==='a6'));
+await page.click('loc=css:tr[data-id="a7"] button[data-action="restore"]');
+check('项目已移除时说明恢复去向',await page.evaluate(()=>document.querySelector('#dialogText').textContent.includes('未分组')));
+await page.click('loc=css:#cancel');
+check('历史无截止时间明确显示未设定',await page.evaluate(()=>document.querySelector('tr[data-id="a8"] .deadline').textContent==='未设定'));
+for(const id of ['a3','a4','a5','a6','a7','a8']){await page.click('loc=css:tr[data-id="'+id+'"] button[data-action="delete"]');await page.click('loc=css:#commit');}
+check('清空后显示真正空态',await page.evaluate(()=>document.querySelector('#emptyText').textContent==='暂无归档对话'&&document.querySelector('#clearFilters').hidden));
+await page.reload();check('刷新重置演示数据',await count()===8);
+const {writeFile}=await import('node:fs/promises');await writeFile('D:/Avery/project/AI-PM-workspace/archive-conversations/interaction-qa.json',JSON.stringify(checks,null,2));
+console.log(checks);console.log(await page.snapshot());

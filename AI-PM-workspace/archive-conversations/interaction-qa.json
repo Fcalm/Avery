@@ -1,0 +1,62 @@
+[
+  {
+    "name": "初始 8 条会话",
+    "pass": true
+  },
+  {
+    "name": "恢复弹出二次确认且默认焦点在取消",
+    "pass": true
+  },
+  {
+    "name": "取消恢复不移除会话",
+    "pass": true
+  },
+  {
+    "name": "删除显示不可恢复说明",
+    "pass": true
+  },
+  {
+    "name": "Esc 取消删除",
+    "pass": true
+  },
+  {
+    "name": "确认恢复移出归档列表",
+    "pass": true
+  },
+  {
+    "name": "确认删除移除指定行",
+    "pass": true
+  },
+  {
+    "name": "搜索无结果显示空态",
+    "pass": true
+  },
+  {
+    "name": "清除筛选恢复列表",
+    "pass": true
+  },
+  {
+    "name": "未分组项目筛选",
+    "pass": true
+  },
+  {
+    "name": "按最近归档排序",
+    "pass": true
+  },
+  {
+    "name": "项目已移除时说明恢复去向",
+    "pass": true
+  },
+  {
+    "name": "历史无截止时间明确显示未设定",
+    "pass": true
+  },
+  {
+    "name": "清空后显示真正空态",
+    "pass": true
+  },
+  {
+    "name": "刷新重置演示数据",
+    "pass": true
+  }
+]

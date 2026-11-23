@@ -1,0 +1,41 @@
+const task=await taskSpace(2);const page=task.page('p1');const checks=[];
+function check(name,pass){checks.push({name,pass});if(!pass)throw new Error(name);}
+const state=()=>page.evaluate(()=>({rows:document.querySelectorAll('#rows tr').length,selected:document.querySelectorAll('#rows input:checked').length,disabled:document.querySelector('#batchDelete').disabled,all:document.querySelector('#selectAll').checked,mixed:document.querySelector('#selectAll').indeterminate,open:document.querySelector('#confirm').open}));
+check('未勾选时禁止批量删除',(await state()).disabled);
+await page.click('loc=css:tr[data-id="a1"] input');await page.click('loc=css:tr[data-id="a2"] input');
+check('多选与半选状态',(await state()).selected===2&&(await state()).mixed);
+await page.click('loc=css:#batchDelete');
+check('二次确认包含数量与目标列表',await page.evaluate(()=>document.querySelector('#dialogTitle').textContent==='永久删除 2 个对话？'&&document.querySelectorAll('#batchSubjects li').length===2&&document.activeElement.id==='cancel'));
+await page.keyboard.press('Escape');check('取消保留记录及勾选',(await state()).rows===8&&(await state()).selected===2);
+await page.selectOption('loc=css:#sort','archive');check('排序保留选择',(await state()).selected===2);
+await page.fill('loc=css:#search','产品经理');check('搜索变化清空勾选',(await state()).selected===0&&(await state()).disabled);
+await page.fill('loc=css:#search','');await page.selectOption('loc=css:#project','AI 产品经理');await page.click('loc=css:#selectAll');
+check('全选仅选当前项目结果',(await state()).rows===2&&(await state()).selected===2&&(await state()).all);
+await page.click('loc=css:#selectAll');check('再次全选取消全部勾选',(await state()).selected===0&&(await state()).disabled);
+await page.click('loc=css:#selectAll');await page.click('loc=css:#batchDelete');await page.click('loc=css:#commit');
+check('批量删除当前结果后显示筛选空态',await page.evaluate(()=>document.querySelector('#emptyText').textContent==='没有找到匹配的对话'&&document.querySelector('#rows').children.length===0));
+await page.selectOption('loc=css:#project','all');check('未选中的其他会话保留',(await state()).rows===6);
+await page.click('loc=css:tr[data-id="a1"] input');await page.click('loc=css:tr[data-id="a1"] button[data-action="restore"]');await page.click('loc=css:#commit');
+check('单条恢复回归与失效勾选清理',(await state()).rows===5&&(await state()).selected===0);
+await page.click('loc=css:tr[data-id="a4"] button[data-action="delete"]');await page.click('loc=css:#commit');check('单条删除回归',(await state()).rows===4);
+await page.reload();await page.click('loc=css:tr[data-id="a1"] input');await page.click('loc=css:tr[data-id="a2"] input');await page.click('loc=css:#batchDelete');
+await page.evaluate(()=>{conversations.find(item=>item.id==='a1').expires=Date.now()-1;});await page.click('loc=css:#commit');
+check('批量确认时到期不会计入删除成功数量',await page.evaluate(()=>document.querySelector('#toastText').textContent==='已永久删除 1 个对话，另有 1 个已自动清理'&&conversations.length===6));
+await page.reload();await page.click('loc=css:#selectAll');await page.click('loc=css:#batchDelete');await page.click('loc=css:#commit');
+check('全选一键删除全部及空态',await page.evaluate(()=>document.querySelector('#emptyText').textContent==='暂无归档对话'&&document.querySelector('#selectionBar').hidden));
+await page.reload();await page.click('loc=css:tr[data-id="a1"] input');await page.click('loc=css:tr[data-id="a2"] input');
+const layouts=[];
+for(const [width,height]of [[1280,900],[1024,768],[800,640],[390,844],[320,568]]){
+ await page.cdp('Emulation.setDeviceMetricsOverride',{width,height,deviceScaleFactor:1,mobile:false});
+ const fit=await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth&&[...document.querySelectorAll('.actions')].every(node=>node.scrollWidth<=node.clientWidth+1));
+ check('多选布局 '+width+'×'+height,fit);layouts.push({width,height,fit});
+ if(width===390)await page.screenshot({path:'D:/Avery/project/AI-PM-workspace/archive-conversations/preview-mobile.png'});
+}
+await page.cdp('Emulation.setDeviceMetricsOverride',{width:1280,height:900,deviceScaleFactor:1,mobile:false});
+await page.evaluate(async()=>{await Promise.all(document.getAnimations().map(animation=>animation.finished));});
+await page.screenshot({path:'D:/Avery/project/AI-PM-workspace/archive-conversations/preview-desktop.png'});
+await page.click('loc=css:#batchDelete');await page.evaluate(async()=>{await Promise.all(document.getAnimations().map(animation=>animation.finished));});
+await page.screenshot({path:'D:/Avery/project/AI-PM-workspace/archive-conversations/preview-batch-confirm.png'});
+await page.click('loc=css:#cancel');
+const{writeFile}=await import('node:fs/promises');await writeFile('D:/Avery/project/AI-PM-workspace/archive-conversations/batch-qa.json',JSON.stringify({checks,layouts},null,2));
+console.log(checks);await task.finish({keep:[]});

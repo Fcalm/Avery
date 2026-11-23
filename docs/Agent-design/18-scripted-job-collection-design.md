@@ -170,8 +170,7 @@ sessionId
 ```json
 {
   "collectionId": "collection-001",
-  "candidateId": "candidate-003",
-  "matchScore": 86
+  "candidateId": "candidate-003"
 }
 ```
 
@@ -180,7 +179,7 @@ Host 必须：
 1. 校验 `collectionId` 属于当前会话。
 2. 校验集合未过期且 `candidateId` 存在。
 3. 从缓存复制采集器生成的规范岗位字段。
-4. 只接受 Agent 提供的允许决策字段，例如 `matchScore`。
+4. 不接收或生成岗位匹配评分。
 5. 使用平台与来源岗位 ID 执行业务幂等和去重。
 6. 成功后返回正式 `jobId` 与岗位 revision。
 

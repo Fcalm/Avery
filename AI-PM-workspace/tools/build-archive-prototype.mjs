@@ -1,0 +1,13 @@
+import { readFile, writeFile, copyFile, mkdir } from 'node:fs/promises';
+const base = new URL('../archive-conversations/', import.meta.url);
+const root = new URL('../../', import.meta.url);
+const font = await readFile(new URL('public/fonts/phosphor/Phosphor-Regular.woff2', root));
+const manrope = await readFile(new URL('public/fonts/manrope/Manrope-Variable-Latin.woff2', root));
+const phosphor = (await readFile(new URL('src/styles/phosphor.css', root), 'utf8')).replace(/@font-face\s*\{[\s\S]*?\}/g, '');
+const assets = `@font-face{font-family:Phosphor;src:url(data:font/woff2;base64,${font.toString('base64')}) format('woff2');font-display:block}@font-face{font-family:Manrope;src:url(data:font/woff2;base64,${manrope.toString('base64')}) format('woff2');font-weight:200 800;font-display:swap}\n${phosphor}`;
+const template = await readFile(new URL('index.template.html', base), 'utf8');
+await writeFile(new URL('index.html', base), template.replace('/* EMBEDDED_ASSETS */', assets));
+await mkdir(new URL('licenses/',base),{recursive:true});
+await copyFile(new URL('public/fonts/phosphor/LICENSE',root),new URL('licenses/Phosphor-LICENSE.txt',base));
+await copyFile(new URL('public/fonts/manrope/OFL.txt',root),new URL('licenses/Manrope-OFL.txt',base));
+console.log('已生成独立 HTML：' + new URL('index.html', base).pathname);

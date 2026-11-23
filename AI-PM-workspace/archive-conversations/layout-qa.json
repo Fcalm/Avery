@@ -1,0 +1,90 @@
+{
+  "checks": [
+    {
+      "name": "键盘焦点保留在确认框",
+      "pass": true
+    },
+    {
+      "name": "点击遮罩取消且不删除",
+      "pass": true
+    },
+    {
+      "name": "确认期间到期不会误报恢复成功",
+      "pass": true
+    },
+    {
+      "name": "布局 1280×900",
+      "pass": true
+    },
+    {
+      "name": "布局 1280×768",
+      "pass": true
+    },
+    {
+      "name": "布局 1024×768",
+      "pass": true
+    },
+    {
+      "name": "布局 800×640",
+      "pass": true
+    },
+    {
+      "name": "布局 390×844",
+      "pass": true
+    },
+    {
+      "name": "布局 320×568",
+      "pass": true
+    }
+  ],
+  "layouts": [
+    {
+      "width": 1280,
+      "height": 900,
+      "noHorizontalOverflow": true,
+      "actionsFit": true,
+      "count": 8,
+      "allIconsMapped": true
+    },
+    {
+      "width": 1280,
+      "height": 768,
+      "noHorizontalOverflow": true,
+      "actionsFit": true,
+      "count": 8,
+      "allIconsMapped": true
+    },
+    {
+      "width": 1024,
+      "height": 768,
+      "noHorizontalOverflow": true,
+      "actionsFit": true,
+      "count": 8,
+      "allIconsMapped": true
+    },
+    {
+      "width": 800,
+      "height": 640,
+      "noHorizontalOverflow": true,
+      "actionsFit": true,
+      "count": 8,
+      "allIconsMapped": true
+    },
+    {
+      "width": 390,
+      "height": 844,
+      "noHorizontalOverflow": true,
+      "actionsFit": true,
+      "count": 8,
+      "allIconsMapped": true
+    },
+    {
+      "width": 320,
+      "height": 568,
+      "noHorizontalOverflow": true,
+      "actionsFit": true,
+      "count": 8,
+      "allIconsMapped": true
+    }
+  ]
+}
