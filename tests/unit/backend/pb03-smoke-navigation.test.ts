@@ -494,9 +494,10 @@ describe('PB-03 fixture BrowserNavigate result handling', () => {
     }
   });
 
-  it('waits for the switched child before Snapshot and exposes semantic Snapshot timeout as the first failure', async () => {
+  it('preserves task tabs after a semantic Snapshot timeout and recovers on the same child', async () => {
     const fixture = await CreateFixtureServer();
-    const bridge = CreateMockExtensionBridge({ emptySnapshotTargetId: 'pb03-child-target' });
+    const bridgeOptions = { emptySnapshotTargetId: 'pb03-child-target' as string | undefined };
+    const bridge = CreateMockExtensionBridge(bridgeOptions);
     const observation: Record<string, any> = { providerTurns: 0 };
     let clock = Date.now();
     const harness = await CreateHostHarness(fixture.url, bridge, observation, false, {
@@ -526,9 +527,30 @@ describe('PB-03 fixture BrowserNavigate result handling', () => {
       await expect(runtime.Execute({ proposal: childSnapshot })).rejects.toMatchObject({
         code: 'BROWSER_COMMAND_TIMEOUT',
         message: 'The task page did not become ready for a semantic snapshot in time.',
+        statusUnknown: false,
       });
-      expect(bridge.CloseTask).toHaveBeenCalledWith('chrome', taskId, expect.any(Object));
+      expect(bridge.CloseTask).not.toHaveBeenCalled();
+      expect(runtime.GetBrowserTaskId()).toBe(taskId);
+      expect(bridge.GetTaskTargets(taskId!)).toEqual([
+        expect.objectContaining({ tabId: 902, active: false }),
+        expect.objectContaining({ tabId: 903, active: true, attached: true }),
+      ]);
+
+      bridgeOptions.emptySnapshotTargetId = undefined;
+      const retry = await runtime.Prepare({ toolName: 'BrowserSnapshot', arguments: {} });
+      await expect(runtime.Execute({ proposal: retry })).resolves.toMatchObject({
+        status: 'succeeded', data: { currentUrl: fixture.url.replace('/application', '/child') },
+      });
+      expect(runtime.GetBrowserTaskId()).toBe(taskId);
+      expect(bridge.GetProtocolMethods().filter(method => method === 'Target.createTarget')).toHaveLength(1);
+
+      await expect(runtime.CloseTask()).resolves.toMatchObject({
+        status: 'confirmed', browserTaskId: taskId, closedTabs: 2, unknownTabs: 0,
+      });
+      expect(bridge.CloseTask).toHaveBeenCalledExactlyOnceWith('chrome', taskId, expect.any(Object));
       expect(runtime.GetBrowserTaskId()).toBeUndefined();
+      expect(bridge.GetTaskTargets(taskId!)).toHaveLength(0);
+      expect(bridge.GetUserTargets().map(tab => tab.tabId)).toEqual([901]);
     } finally {
       await harness.host.Close();
     }

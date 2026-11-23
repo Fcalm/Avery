@@ -1,5 +1,6 @@
+import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
-import { mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -13,10 +14,15 @@ const { CreateBusinessStoreClient } = require(resolve('apps/backend/dist/infra/b
 const roots: string[] = [];
 afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
 
-async function Fixture() {
+async function CreateFixtureRoot() {
   const parent = process.env.AVERY_TEST_ARTIFACT_DIR ?? tmpdir();
   await mkdir(parent, { recursive: true });
   const root = await mkdtemp(join(parent, 'archive-retention-')); roots.push(root);
+  return root;
+}
+
+async function Fixture() {
+  const root = await CreateFixtureRoot();
   const business = CreateBusinessStoreClient({ workspacePath: join(root, 'workspace'), smoke: true });
   await business.ready;
   const cleanup = vi.fn(async (_id: string) => undefined);
@@ -29,28 +35,70 @@ async function Fixture() {
 
 describe('归档生命周期真实业务 Worker', () => {
   it('v18 工作空间升级后保留旧归档和消息且不追溯计时，迁移前产生可恢复备份', async () => {
-    const f = await Fixture(); let business = f.business;
+    const workspacePath = join(await CreateFixtureRoot(), 'workspace');
+    await mkdir(workspacePath);
+    const migrationRoot = resolve('migrations', 'business');
+    const { migrations } = JSON.parse(await readFile(join(migrationRoot, 'manifest.json'), 'utf8')) as {
+      migrations: Array<{ version: number; kind: 'sql' | 'js'; file: string; checksumSeed: string }>;
+    };
+    const v18Migrations = migrations.filter(entry => entry.version <= 18);
+    const targetVersion = Math.max(...migrations.map(entry => entry.version));
+    const message = { id: 'old-message', role: 'user', content: '应保留的正文' };
+    const Database = require('better-sqlite3');
+    const oldDb = new Database(join(workspacePath, 'avery.db'));
     try {
-      await business.CreateConversation({ id: 'old', title: '升级前归档' });
-      await business.AppendConversationMessages('old', [{ id: 'old-message', role: 'user', content: '应保留的正文' }]);
-      await business.Query("UPDATE conversations SET archived=1 WHERE id='old' RETURNING id");
-      await business.Close(); business.close();
-      const Database = require('better-sqlite3');
-      const db = new Database(join(f.root, 'workspace', 'avery.db'));
-      try {
-        db.exec(`DROP INDEX idx_conversations_archive_expiry;
-          ALTER TABLE conversations DROP COLUMN archived_at;
-          ALTER TABLE conversations DROP COLUMN auto_delete_at;
-          DROP TABLE conversation_cleanup;
-          DELETE FROM schema_migrations WHERE version=19;
-          UPDATE workspace_meta SET schema_version=18;`);
-      } finally { db.close(); }
-      business = CreateBusinessStoreClient({ workspacePath: join(f.root, 'workspace'), smoke: true }); await business.ready;
-      expect((await business.LoadViewModel()).conversations[0]).toMatchObject({ id: 'old', archived: true, archivedAt: null, autoDeleteAt: null, messages: [{ content: '应保留的正文' }] });
+      oldDb.pragma('foreign_keys = ON');
+      // 从空库正向应用历史迁移，保留 v18 当时的表结构和校验记录。
+      for (const entry of v18Migrations) {
+        const file = join(migrationRoot, entry.file);
+        if (entry.kind === 'sql') oldDb.exec(await readFile(file, 'utf8'));
+        else require(file).up(oldDb);
+        oldDb.prepare('INSERT INTO schema_migrations(version, checksum, applied_at) VALUES (?, ?, ?)')
+          .run(entry.version, createHash('sha256').update(entry.checksumSeed).digest('hex'), 1);
+      }
+      oldDb.exec(`
+        INSERT INTO workspace_meta(id, workspace_id, created_at, updated_at, last_opened_at, app_version, schema_version)
+        VALUES ('workspace', 'legacy-workspace', 1, 1, 1, '0.2.5', 18);
+        INSERT INTO conversations(id, title, archived, created_at, updated_at, last_used_at)
+        VALUES ('old', '升级前归档', 1, 1, 1, 1);
+      `);
+      oldDb.prepare('INSERT INTO conversation_messages(id, conversation_id, role, content, created_at, updated_at) VALUES (?, ?, ?, ?, 1, 1)')
+        .run(message.id, 'old', message.role, message.content);
+    } finally { oldDb.close(); }
+
+    const business = CreateBusinessStoreClient({ workspacePath, smoke: true });
+    try {
+      await business.ready;
+      expect(await business.GetDatabaseRecoveryStatus()).toMatchObject({ mode: 'healthy' });
+      expect(await business.Query("SELECT schema_version FROM workspace_meta WHERE id = 'workspace'"))
+        .toEqual([{ schema_version: targetVersion }]);
+      const { conversations } = await business.LoadViewModel();
+      expect(conversations.find((row: { id: string }) => row.id === 'old'))
+        .toMatchObject({ id: 'old', title: '升级前归档', archived: true, archivedAt: null, autoDeleteAt: null, messages: [message] });
       expect(await business.ListExpiredConversations(Date.now() + 100 * 86_400_000)).toEqual([]);
-      const { readdir } = await import('node:fs/promises');
-      expect((await readdir(join(f.root, 'workspace', 'backups'))).some(name => name.startsWith('daily-pre-upgrade-v18-to-v19-'))).toBe(true);
-    } finally { await f.service.Close(); await business.Close(); business.close(); }
+
+      const backupsPath = join(workspacePath, 'backups');
+      const backups = await readdir(backupsPath);
+      expect(backups).toEqual([expect.stringContaining(`daily-pre-upgrade-v18-to-v${targetVersion}-`)]);
+      const backupPath = join(backupsPath, backups[0]);
+      const databasePath = join(backupPath, 'avery.db');
+      const checksum = createHash('sha256').update(await readFile(databasePath)).digest('hex');
+      expect(JSON.parse(await readFile(join(backupPath, 'manifest.json'), 'utf8'))).toMatchObject({
+        type: 'pre_upgrade', fromSchemaVersion: 18, toSchemaVersion: targetVersion, database: { file: 'avery.db', sha256: checksum },
+      });
+      const backupDb = new Database(databasePath, { readonly: true, fileMustExist: true });
+      try {
+        expect(backupDb.pragma('integrity_check', { simple: true })).toBe('ok');
+        expect(backupDb.prepare('SELECT schema_version FROM workspace_meta').get()).toEqual({ schema_version: 18 });
+        expect(backupDb.prepare('SELECT version FROM schema_migrations ORDER BY version').all())
+          .toEqual(v18Migrations.map(({ version }) => ({ version })));
+        expect(backupDb.prepare('SELECT archived FROM conversations WHERE id = ?').get('old')).toEqual({ archived: 1 });
+        expect(backupDb.prepare('SELECT id, role, content FROM conversation_messages WHERE conversation_id = ?').all('old'))
+          .toEqual([message]);
+      } finally { backupDb.close(); }
+    } finally {
+      try { await business.Close(); } finally { business.close(); }
+    }
   });
   it('时间由后端保存，重复归档不续期，恢复清空期限且重启保持；旧归档不猜测时间', async () => {
     const f = await Fixture();

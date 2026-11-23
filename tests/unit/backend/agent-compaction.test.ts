@@ -37,7 +37,9 @@ async function Host() {
   const state = {
     modules: h.modules, modelConfigurations, statePath: path.join(root, 'agent-state.json'),
     histories: new Map([['s', history]]), tasks: new Map(), toolLedger: new Map(),
-    executingSessions: new Set(), deletingSessions: new Set(), compactRequests: new Set(), controllers: new Map(), requestSessions: new Map(),
+    executingSessions: new Set(), deletingSessions: new Set(), changingGoals: new Set<string>(),
+    compactRequests: new Set(), controllers: new Map(), requestSessions: new Map(),
+    stateLoaded: true, stateReady: Promise.resolve(),
     pausedRuns: new Map(), browserRunId: null, sessionUsage: new Map(), compressionCount: 0,
     conversationRecorders: new Map(),
     business: { SaveConversationPresentation: vi.fn(async (_id, presentation) => { presentations.push(structuredClone(presentation)); return { saved: true }; }) },
@@ -152,10 +154,13 @@ describe('手动压缩命令与归档', () => {
   it('状态落盘失败回退旧历史，原文归档不覆盖原视图', async () => {
     const h = await Host();
     h.state.sessionUsage.set('s', { source: 'actual', compressionCount: 2, contextPending: false });
-    h.state.SaveState.mockImplementation(() => { throw new Error('disk failure'); });
+    h.state.SaveState.mockRejectedValue(new Error('disk failure'));
     await expect(h.host.CompactSession({ requestId: 'c', sessionId: 's' })).rejects.toThrow('disk failure');
     expect(h.state.histories.get('s')).toBe(h.history);
     expect(h.state.sessionUsage.get('s')).toMatchObject({ compressionCount: 2, contextPending: false });
+    expect(h.state.executingSessions.size).toBe(0);
+    expect(h.state.controllers.size).toBe(0);
+    expect(h.state.compactRequests.size).toBe(0);
   });
 
   it('手动压缩后上下文进度待测，累计真实用量不被估算值替换', async () => {
@@ -179,20 +184,28 @@ describe('手动压缩命令与归档', () => {
     const h = await Host();
     let resolve!: (value: { content: string; toolCalls: typeof call[] }) => void;
     h.modules.modelProvider.StreamCompletion = vi.fn(() => new Promise((done) => { resolve = done; }));
-    const pending = h.host.CompactSession({ requestId: 'c', sessionId: 's' });
+    // 提前登记失败处理，翻译尚未启动时抛出的错误也由本用例结算。
+    const pending = h.host.CompactSession({ requestId: 'c', sessionId: 's' }).catch((error: unknown) => error);
     await vi.waitFor(() => expect(resolve).toBeTypeOf('function'));
-    await h.host.Cancel('c');
+    await expect(h.host.Cancel('c')).resolves.toMatchObject({ cancelled: true });
     resolve({ content: '', toolCalls: [call] });
-    await expect(pending).rejects.toThrow();
+    await expect(pending).resolves.toMatchObject({ name: 'AbortError' });
     expect(h.modules.modelProvider.CreateSummary).not.toHaveBeenCalled();
     expect(h.state.histories.get('s')).toBe(h.history);
+    expect(h.state.executingSessions.size).toBe(0);
+    expect(h.state.controllers.size).toBe(0);
+    expect(h.state.compactRequests.size).toBe(0);
   });
 
-  it('忙碌会话拒绝手动压缩，空历史不发模型请求', async () => {
+  it('忙碌或正在调整目标的会话拒绝手动压缩，空历史不发模型请求', async () => {
     const h = await Host();
     h.state.executingSessions.add('s');
     await expect(h.host.CompactSession({ requestId: 'c', sessionId: 's' })).rejects.toMatchObject({ code: 'AGENT_BUSY' });
-    h.state.executingSessions.clear(); h.state.histories.clear();
+    h.state.executingSessions.clear();
+    h.state.changingGoals.add('s');
+    await expect(h.host.CompactSession({ requestId: 'c', sessionId: 's' })).rejects.toMatchObject({ code: 'AGENT_BUSY' });
+    h.state.changingGoals.clear();
+    h.state.histories.clear();
     expect(await h.host.CompactSession({ requestId: 'c', sessionId: 's' })).toMatchObject({ compacted: false });
     expect(h.modules.modelProvider.StreamCompletion).not.toHaveBeenCalled();
   });
