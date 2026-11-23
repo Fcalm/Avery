@@ -5,17 +5,9 @@ import { join } from 'node:path';
 const parentPort = (process as any).parentPort as { postMessage(message: unknown): void; once(event: string, listener: (...args: any[]) => void): unknown; on(event: string, listener: (...args: any[]) => void): unknown } | undefined;
 const PostMessage = (message: unknown): void => parentPort?.postMessage(message);
 
-// 子进程 stderr 不回流主进程控制台，统一经 parentPort 上报未捕获异常以便诊断；注册须早于后续 require。
-process.on('uncaughtException', (error) => {
-  try {
-    PostMessage({ kind: 'backend-error', code: 'UNCAUGHT', message: String((error as any)?.stack || error) });
-  } catch { /* 上报失败时保持默认退出。 */ }
-});
-process.on('unhandledRejection', (reason) => {
-  try {
-    PostMessage({ kind: 'backend-error', code: 'UNHANDLED', message: String((reason as any)?.stack || reason) });
-  } catch { /* 上报失败时保持默认行为。 */ }
-});
+// 必须早于领域加载注册，故障进程不能仅记录错误后继续接受新的对话。
+const { InstallBackendFatalHandlers } = require('./infra/backend-fatal.js') as typeof import('./infra/backend-fatal');
+InstallBackendFatalHandlers(PostMessage);
 
 // 必须在依赖 pdf-parse 的模块 require 之前注入，否则其 bundle 顶层引用 DOMMatrix 会抛 ReferenceError。
 const { InstallBrowserPolyfills } = require('./electron/backend/pdf-polyfills.js') as { InstallBrowserPolyfills(): void };
@@ -32,12 +24,14 @@ const { CreateCredentialClient } = require('./electron/backend/credential-client
 const { AgentRunService } = require('./electron/backend/services/agent-run-service.js') as any;
 const { DeveloperService } = require('./electron/backend/services/developer-service.js') as any;
 const { AgentHost } = require('./electron/backend/agent-host.js') as any;
-const { BrowserExtensionBridge } = require('./electron/backend/browser-extension-bridge.js') as any;
+const { CreateProviderFetch } = require('./infra/provider-fetch.js') as typeof import('./infra/provider-fetch');
+const { BrowserExtensionBridge } = require('./electron/backend/browser-extension-bridge.js') as typeof import('./electron/backend/browser-extension-bridge');
 const { ResumeLockStore } = require('./electron/backend/resume-lock-store.js') as any;
 const { EvalService, AssertEvaluationDeveloperModePreserved } = require('./electron/backend/evaluation/eval-service.js') as any;
 const { CronRunnerService } = require('./electron/backend/services/cron-runner-service.js') as any;
 const { JobLibraryCollectionService } = require('./electron/backend/job-library-collection-service.js') as typeof import('./electron/backend/job-library-collection-service');
 const { CollectBossJobsToLibrary } = require('./electron/backend/job-collection-service.js') as typeof import('./electron/backend/job-collection-service');
+const { ConversationRetentionService } = require('./electron/backend/services/conversation-retention-service.js') as typeof import('./electron/backend/services/conversation-retention-service');
 
 /** 组装业务/可观测性 DB Worker、Agent 运行时与 Router，经 parentPort 服务 Main 命令；桌面能力与凭据经反向 RPC 交由 Main 适配器执行。 */
 async function Bootstrap(): Promise<void> {
@@ -48,10 +42,6 @@ async function Bootstrap(): Promise<void> {
   const defaultWorkspacePath = String(app.defaultWorkspacePath ?? '');
   let currentWorkspacePath = String(app.workspacePath || defaultWorkspacePath);
   const externalBrowserPaths = app.externalBrowserPaths && typeof app.externalBrowserPaths === 'object' ? app.externalBrowserPaths : undefined;
-  const browserExtensionBridge = new BrowserExtensionBridge({
-    statePath: join(userDataPath, 'browser-extension', 'bridge.json'),
-    browserPaths: externalBrowserPaths,
-  });
   const smoke = Boolean(app.smoke);
 
   const desktop = CreateDesktopCapabilityClient(PostMessage);
@@ -61,9 +51,18 @@ async function Bootstrap(): Promise<void> {
     if (message?.kind === 'desktop-result') desktop.OnMessage(message);
   });
   const credentialPort = CreateCredentialClient(desktop);
+  // Utility Process 的 Chromium 网络栈跟随系统代理；不替换全局 fetch，避免改变采集器等独立网络边界。
+  const { net } = require('electron') as typeof import('electron');
+  const providerFetch = CreateProviderFetch((input, init) => net.fetch(input instanceof URL ? input.toString() : input, { ...init, bypassCustomProtocolHandlers: true }));
   const host = CreateWorkerHost({ workspacePath: currentWorkspacePath, userDataPath, smoke });
+  const browserExtensionBridge = new BrowserExtensionBridge({
+    statePath: join(userDataPath, 'browser-extension', 'bridge.json'),
+    browserPaths: externalBrowserPaths,
+    recordLog: (level, event, detail) => host.observability.RecordLog(level, event, detail),
+  });
   await host.Ready();
   await host.observability.RecoverInterruptedTraces();
+  await host.business.RecoverInterruptedConversations();
 
   // 项目环境映射：渲染层只持有 projectId 掩码，真实目录路径只存在 Backend 内存。
   const projectEnvironments = new Map<string, { path: string; name: string }>();
@@ -71,23 +70,27 @@ async function Bootstrap(): Promise<void> {
 
   let cronRunner: any = null;
   const agent = new AgentHost({
+    providerFetch,
     userDataPath,
     workspacePath: currentWorkspacePath,
     Emit: (event: unknown) => PostMessage({ kind: 'event', channel: 'agent:stream', payload: event }),
     business: host.business,
+    stateStore: host.observability,
     observability: host.observability,
     credentialPort,
     resolveProjectEnvironment: (projectId: string) => projectEnvironments.get(projectId) || null,
     resumeLockStore,
     externalBrowserPaths,
     browserExtensionBridge,
-    renderResumeFile: (input: { resume: { name: string; summary: string; content: string }; format: 'pdf' | 'png'; assetId: string }) => desktop.Call('ExportResumeAsset', [{ workspacePath: currentWorkspacePath, ...input }]),
+    renderResumeFile: ({ signal, ...input }: { resume: { name: string; summary: string; content: string }; format: 'pdf' | 'png'; assetId: string; signal?: AbortSignal }) => desktop.Call('ExportResumeAsset', [{ workspacePath: currentWorkspacePath, ...input }], { signal }),
     onCronScheduleChanged: () => cronRunner?.Sync(),
   });
 
+  await agent.Ready();
   const agentRunService = new AgentRunService({ agentHost: agent, selectModuleDirectory: () => desktop.Call('SelectModuleDirectory') });
   const developerService = new DeveloperService({ agentHost: agent });
   const evaluationService = new EvalService({
+    providerFetch,
     userDataPath,
     store: host.observability,
     credentialPort,
@@ -120,12 +123,19 @@ async function Bootstrap(): Promise<void> {
   await cronRunner.Initialize();
 
   let migrating = false;
+  const conversationRetention = new ConversationRetentionService({
+    business: host.business,
+    agent,
+    changed: () => PostMessage({ kind: 'event', channel: 'workspace:conversations-changed', payload: { type: 'conversations_changed' } }),
+    report: error => console.error('归档会话维护失败:', error),
+  });
 
   /** 工作空间迁移编排：Agent 空闲校验、弹目录选择、复制校验并切换业务 Worker；迁移全程门禁写命令，原目录保留为安全副本。 */
   async function MigrateWorkspace(): Promise<any> {
     if (agent.IsBusy() || evaluationService.HasActiveRuns() || jobCollection.HasActiveTask()) throw new Error('Cannot migrate the workspace while an Agent, evaluation or collection run is active.');
     migrating = true;
     try {
+      await conversationRetention.Suspend();
       const destinationPath = await desktop.Call('SelectWorkspaceDirectory');
       if (!destinationPath) return { ...(await host.business.GetStatus()), migration: { succeeded: false, cancelled: true } };
       const result = await host.business.CopyWorkspaceTo(destinationPath);
@@ -136,6 +146,8 @@ async function Bootstrap(): Promise<void> {
       return { ...(await host.business.GetStatus()), migration: { succeeded: true, retainedSource: true, integrity: result.integrity } };
     } finally {
       migrating = false;
+      conversationRetention.Resume();
+      void conversationRetention.Sweep().catch(error => console.error('迁移后归档会话维护失败:', error));
     }
   }
 
@@ -162,12 +174,10 @@ async function Bootstrap(): Promise<void> {
   };
 
   const conversations = {
-    ...Facade(['CreateConversation', 'RenameConversation', 'SetConversationPinned', 'SetConversationArchived', 'AppendConversationMessages', 'CompleteConversationMessage', 'RemoveConversationMessage']),
-    DeleteConversation: async (conversationId: string) => {
-      const result = await guardedBusiness.DeleteConversation(conversationId);
-      await agent.DeleteSessionResources(conversationId);
-      return result;
-    },
+    ...Facade(['CreateConversation', 'RenameConversation', 'SetConversationPinned', 'AppendConversationMessages', 'CompleteConversationMessage', 'RemoveConversationMessage']),
+    SetConversationArchived: (id: string, archived: boolean, revision?: number) => conversationRetention.SetConversationArchived(id, archived, revision),
+    DeleteConversation: (id: string) => conversationRetention.DeleteConversation(id),
+    DeleteArchivedConversations: (items: import('@avery/contracts').ArchivedConversationSelection[]) => conversationRetention.DeleteArchivedConversations(items),
   };
   const resumes = Facade(['UpsertResume', 'RenameResume', 'DeleteResume', 'GetResumeRevisions', 'GetResumeRevision', 'RestoreResumeRevision', 'DeleteResumeRevision']);
   const jobs = Facade(['UpsertJob', 'QueryJobs', 'SetJobFavorite', 'DeleteJob', 'DeleteJobs']);
@@ -181,6 +191,18 @@ async function Bootstrap(): Promise<void> {
     },
   };
   const workspace = Facade(['GetStatus', 'LoadViewModel', 'ImportAttachment', 'CleanupAttachments', 'GetWorkspaceRecoveryStatus', 'RecoverWorkspaceOperations', 'GetDatabaseRecoveryStatus', 'RestoreLatestBackup', 'RestoreBackup', 'ExportRecoveryDiagnostic', 'CreateBackup']);
+  // 恢复也可能替换业务数据库，不能与旧数据库上的删除/补清理交错。
+  for (const method of ['RecoverWorkspaceOperations', 'RestoreLatestBackup', 'RestoreBackup']) {
+    workspace[method] = async (...args: unknown[]) => {
+      if (migrating) throw Object.assign(new Error('工作空间正在维护，请稍后重试。'), { code: 'WORKSPACE_BUSY' });
+      migrating = true;
+      try { await conversationRetention.Suspend(); return await guardedBusiness[method](...args); }
+      finally {
+        migrating = false; conversationRetention.Resume();
+        void conversationRetention.Sweep().catch(error => console.error('恢复后归档会话维护失败:', error));
+      }
+    };
+  }
 
   const backend = CreateBackend({
     container: {
@@ -213,6 +235,7 @@ async function Bootstrap(): Promise<void> {
   });
 
   PostMessage({ kind: 'ready', pid: process.pid });
+  conversationRetention.Start();
   setTimeout(() => { void guardedBusiness.CleanupAttachments().catch(() => undefined); }, 5000);
 
   // utilityProcess 子进程侧消息为 MessageEvent 包装（{ data, ports }），需解包后再按 kind 分发。
@@ -250,6 +273,8 @@ async function Bootstrap(): Promise<void> {
       return;
     }
     if (typed.kind === 'shutdown') {
+      await conversationRetention.Close();
+      desktop.Close();
       cronRunner.Close();
       await jobCollection.Close();
       await evaluationService.Close();

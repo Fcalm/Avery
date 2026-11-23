@@ -20,11 +20,11 @@ export {
   JobUpsertSchema, ProfileItemSchema, ProfileItemsSchema, ResumeUpsertSchema, SettingsSubmitSchema,
 } from './write-schemas';
 export type {
-  ApplicationDto, AttachmentDto, ChatMessageDto, ChatMessageInput, ChatMessageSkill, ConversationDto, ConversationResourceView, JobDto,
+  ApplicationDto, AttachmentDto, ChatMessageDto, ChatMessageInput, ChatMessageSkill, ConversationDto, ConversationResourceView, JobDto, ArchivedConversationSelection, ArchivedConversationDeleteResult,
   ProfileItemDto, ResumeDto, ResumeRevisionDocumentDto, ResumeRevisionDto, SettingsDto, WorkspaceStatusDto, WorkspaceViewModel,
 } from './dto';
 export {
-  ApplicationStatusValues, ChannelValues, JobSeekingTypeValues, JobScoreValues, ProfileCategoryValues,
+  ApplicationStatusValues, ChannelValues, JobSeekingTypeValues, ProfileCategoryValues,
 } from './enums';
 export {
   CronTaskScenarioSchema, CronTaskStateSchema, CronRunStateSchema, CronDayOfWeekSchema, BrowserTaskGrantPurposeSchema,
@@ -32,7 +32,7 @@ export {
 } from './cron-task';
 export type { CronSchedule, CreateCronTaskInput, UpdateCronTaskInput, CronTaskState, CronRunState, BrowserTaskGrantPurpose, BrowserTaskGrant, CronTaskDto, CronRunDto } from './cron-task';
 export type {
-  ApplicationStatus, Channel, JobSeekingType, JobScore, ProfileCategory,
+  ApplicationStatus, Channel, JobSeekingType, ProfileCategory,
 } from './enums';
 export { BridgeNamespaces } from './bridge';
 export type { BridgeNamespaceName } from './bridge';
@@ -43,10 +43,12 @@ export type {
 } from './bridge';
 export type {
   DesktopEvaluationBridge, EvalApplicationBenchmarkReport, EvalBrowserAssertion, EvalBrowserAssertionResult, EvalBrowserAssertionType, EvalCaseRun, EvalCaseRunDetail, EvalCaseRunStatus, EvalCaseScore, EvalComparison, EvalDatasetCase, EvalDatasetImportResult,
-  EvalEvent, EvalExpectedResult, EvalDatasetVersion, EvalProject, EvalProjectConfig, EvalProjectInput, EvalPromptCandidate, EvalPromptPreview,
-  EvalRequirementResult, EvalRunnerType, EvalRun, EvalRunDetail, EvalRunStatus, EvalRunSummary, EvalTraceNode, EvalTraceNodeType, EvalUserSimulatorStrategy,
+  EvalEvent, EvalExpectedResult, EvalDatasetVersion, EvalDatasetDiagnostic, EvalDatasetImportPreview, EvalProject, EvalProjectConfig, EvalProjectInput, EvalProvider, EvalPromptCandidate, EvalPromptPreview,
+  EvalRequirementResult, EvalRubricDimension, EvalScriptedResponse, EvalRunnerType, EvalRun, EvalRunDetail, EvalRunStatus, EvalRunSummary, EvalTraceNode, EvalTraceNodeType, EvalUserSimulatorStrategy,
 } from './evaluation';
 export { AgentInteractionResponseSchema } from './agent-interaction';
+export { AgentGoalChangeSchema, type AgentGoalChange } from './write-schemas';
 export type { AgentInteractionResponse } from './agent-interaction';
 export * from './model-configuration';
+export type { AgentGoalState } from './bridge';
 export * from './app-update';

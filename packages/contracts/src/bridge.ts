@@ -1,5 +1,5 @@
 import type {
-  ApplicationDto, AttachmentDto, ChatMessageInput, ConversationDto, JobDto, ProfileItemDto,
+  ApplicationDto, AttachmentDto, ChatMessageInput, ConversationDto, JobDto, ProfileItemDto, ArchivedConversationSelection, ArchivedConversationDeleteResult,
   ResumeDto, ResumeRevisionDocumentDto, ResumeRevisionDto, SettingsDto, WorkspaceStatusDto, WorkspaceViewModel,
 } from './dto';
 import type { WriteCommandOptions } from './envelope';
@@ -32,7 +32,13 @@ export interface AgentSendRequest {
   scenarioId?: 'default' | 'application';
   /** 用户从命令面板明确选择的 Skill；宿主只接受本会话冻结快照内且场景允许的技能。 */
   selectedSkillId?: string;
+  /** 目标只由明确的用户发送动作创建或恢复，工具和后台任务不能启动。 */
+  goal?: 'start' | 'continue';
+  /** 面板继续绑定其所显示的目标运行，防止迟到的点击恢复别的目标。 */
+  goalRequestId?: string;
 }
+
+export type AgentGoalState = import('@avery/agent-sdk').GoalProgress;
 
 export interface BrowserActionState {
   confirmationId?: string;
@@ -77,7 +83,8 @@ export interface AgentStreamEvent {
   /** 面向用户的过程事件与宿主确认后的完整投影，不含原始工具参数。 */
   activity?: import('@avery/agent-sdk').ConversationActivity;
   presentation?: import('@avery/agent-sdk').ConversationPresentation;
-  type: 'conversation_save_error' | 'conversation_activity' | 'conversation_updated' | 'thinking_delta' | 'content_delta' | 'completed' | 'cancelled' | 'error' | 'run_released' | 'run_resumed' | 'resume_updated' | 'resume_created' | 'profile_updated' | 'resume_confirmation' | 'cron_task_confirmation' | 'cron_task_changed' | 'cron_run_completed' | 'task_created' | 'task_updated' | 'task_deleted' | 'question_requested' | 'waiting_user_input' | 'waiting_confirmation' | 'paused' | 'browser_confirmation' | 'browser_action_completed' | 'browser_user_action';
+  goal?: AgentGoalState;
+  type: import('@avery/agent-sdk').AgentStreamEvent['type'];
   requestId?: string;
   sessionId?: string;
   delta?: string;
@@ -120,6 +127,7 @@ export interface AgentObservability {
 
 /** 单会话的助手运行状态；用于恢复输入栏 usage、模型与确认权限，不含真实路径或凭据。 */
 export interface AgentSessionAssistantState {
+  goal?: AgentGoalState;
   /** 同一会话的 Todo 与待处理交互；重进页面时恢复，不读取其它会话。 */
   tasks?: Array<{ id: string; title: string; description: string; status: string }>;
   pendingEvents?: AgentStreamEvent[];
@@ -175,6 +183,9 @@ export interface DesktopAgentBridge {
   GetModelConfiguration: (input: import('./model-configuration').GetModelConfigurationInput) => Promise<import('./model-configuration').ResolvedModelConfiguration>;
   /** 原子保存单模型个人覆盖；revision 冲突时拒绝覆盖其他窗口的更新。 */
   SaveModelConfiguration: (input: import('./model-configuration').SaveModelConfigurationInput) => Promise<import('./model-configuration').ResolvedModelConfiguration>;
+  GetGoalModelTiers: () => Promise<import('./model-configuration').GoalModelTiersConfiguration>;
+  SaveGoalModelTiers: (input: import('./model-configuration').SaveGoalModelTiersInput) => Promise<import('./model-configuration').GoalModelTiersConfiguration>;
+  ChangeGoal: (input: import('./write-schemas').AgentGoalChange) => Promise<{ goal?: AgentGoalState }>;
   Configure: (config: AgentConfiguration) => Promise<{ configured: boolean }>;
   TestConnection: (config: AgentConfiguration) => Promise<{ connected: boolean }>;
   GetBalance: () => Promise<{ available: boolean; balances: Array<{ currency: string; totalBalance: string }> }>;
@@ -243,7 +254,9 @@ export interface WorkspaceBridge {
   SaveSettings: (settings: Partial<SettingsDto>, options?: WriteCommandOptions) => Promise<{ saved: boolean }>;
   CreateConversation: (conversation: { id: string; title: string; scenarioId?: 'default' | 'application'; projectId?: string; projectName?: string }, options?: WriteCommandOptions) => Promise<ConversationDto>;
   SetConversationPinned: (id: string, pinned: boolean, expectedRevision?: number, options?: WriteCommandOptions) => Promise<{ id: string; pinned: boolean; revision: number }>;
-  SetConversationArchived: (id: string, archived: boolean, expectedRevision?: number, options?: WriteCommandOptions) => Promise<{ id: string; archived: boolean; revision: number }>;
+  SetConversationArchived: (id: string, archived: boolean, expectedRevision?: number, options?: WriteCommandOptions) => Promise<{ id: string; archived: boolean; revision: number; archivedAt: number | null; autoDeleteAt: number | null }>;
+  DeleteArchivedConversations: (items: ArchivedConversationSelection[], options?: WriteCommandOptions) => Promise<ArchivedConversationDeleteResult>;
+  OnConversationsChanged: (listener: () => void) => () => void;
   RenameConversation: (id: string, title: string, expectedRevision?: number, options?: WriteCommandOptions) => Promise<{ id: string; title: string; revision: number }>;
   DeleteConversation: (id: string, options?: WriteCommandOptions) => Promise<{ id: string }>;
   AppendConversationMessages: (conversationId: string, messages: ChatMessageInput[], options?: WriteCommandOptions) => Promise<{ conversationId: string; count: number }>;
@@ -292,7 +305,7 @@ export interface WorkspaceBridge {
 /** Bridge 方法清单：preload 暴露的方法名唯一来源，供一致性冒烟校验与契约生成使用。 */
 export const BridgeNamespaces = {
   agent: [
-    'Configure', 'TestConnection', 'GetBalance', 'GetProviderUsage', 'GetModels', 'GetProviderCatalog', 'GetModelConfiguration', 'SaveModelConfiguration', 'Send', 'Cancel', 'RespondToInteraction', 'UpdateConfirmationMode', 'UpdateReasoningEffort', 'ConfirmResumeEdit', 'ConfirmCronTask',
+    'Configure', 'TestConnection', 'GetBalance', 'GetProviderUsage', 'GetModels', 'GetProviderCatalog', 'GetModelConfiguration', 'SaveModelConfiguration', 'GetGoalModelTiers', 'SaveGoalModelTiers', 'ChangeGoal', 'Send', 'Cancel', 'RespondToInteraction', 'UpdateConfirmationMode', 'UpdateReasoningEffort', 'ConfirmResumeEdit', 'ConfirmCronTask',
     'ConfirmBrowserAction', 'GetBrowserRuntimeStatus', 'GetCronBrowserAccess', 'RevokeCronBrowserAccess',
     'AcquireResumeEditLock', 'ReleaseResumeEditLock', 'GetStatus',
     'GetObservability', 'GetTraceEvents', 'DeleteTraces', 'SetTraceRetention', 'ClearObservability',
@@ -301,7 +314,7 @@ export const BridgeNamespaces = {
   ] as const,
   workspace: [
     'GetStatus', 'GetViewModel', 'GetSettings', 'SaveSettings',
-    'CreateConversation', 'RenameConversation', 'SetConversationPinned', 'SetConversationArchived', 'DeleteConversation', 'AppendConversationMessages',
+    'CreateConversation', 'RenameConversation', 'SetConversationPinned', 'SetConversationArchived', 'DeleteConversation', 'DeleteArchivedConversations', 'OnConversationsChanged', 'AppendConversationMessages',
     'CompleteConversationMessage', 'RemoveConversationMessage', 'UpsertResume', 'RenameResume',
     'DeleteResume', 'UpsertJob', 'QueryJobs', 'SetJobFavorite', 'DeleteJob', 'DeleteJobs', 'UpsertApplication',
     'ListRecruitmentSources', 'SetRecruitmentSourceEnabled', 'StartJobCollection', 'GetJobCollectionTask', 'CancelJobCollection',
@@ -312,7 +325,7 @@ export const BridgeNamespaces = {
   ] as const,
   evaluation: [
     'CreateProject', 'UpdateProject', 'ReadProject', 'ListProjects', 'DeleteProject',
-    'ImportDataset', 'ValidateProject', 'PreviewProject', 'StartRun', 'CancelRun', 'ReadRun', 'ListRuns',
+    'ImportDataset', 'PreviewDatasetImport', 'ValidateProject', 'PreviewProject', 'StartRun', 'CancelRun', 'ReadRun', 'ListRuns',
     'ReadCaseResult', 'CompareRuns', 'OnEvent',
   ] as const satisfies readonly (keyof DesktopEvaluationBridge)[],
 } as const;

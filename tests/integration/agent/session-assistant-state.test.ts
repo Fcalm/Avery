@@ -63,7 +63,7 @@ describe('AgentHost 会话助手状态', () => {
     }
   });
 
-  it('将模型和确认权限写入业务会话快照，并在新宿主重载时校验失效模型后回退', async () => {
+  it('从快照恢复会话和读取本地配置不联网，只有显式获取才请求模型列表', async () => {
     const root = mkdtempSync(join(tmpdir(), 'avery-session-assistant-state-'));
     directories.push(root);
     const snapshots = new Map<string, any>();
@@ -74,10 +74,10 @@ describe('AgentHost 会话助手状态', () => {
       GetConversationSnapshots: async (sessionId: string) => snapshots.get(sessionId) ?? null,
       SetConversationSnapshots: async (sessionId: string, value: unknown) => { snapshots.set(sessionId, structuredClone(value)); },
     };
-    let availableModels = ['deepseek-v4-flash', 'deepseek-v4-pro'];
-    vi.stubGlobal('fetch', vi.fn(async (url: string) => String(url).endsWith('/models')
-      ? ModelsResponse(availableModels)
-      : CompletionResponse()));
+    const fetch = vi.fn(async (url: string) => String(url).endsWith('/models')
+      ? ModelsResponse(['deepseek-v4-flash'])
+      : CompletionResponse());
+    vi.stubGlobal('fetch', fetch);
 
     const firstObservability = new ObservabilityStore(join(root, 'first'));
     const first = new AgentHost({
@@ -101,7 +101,6 @@ describe('AgentHost 会话助手状态', () => {
       firstObservability.Close();
     }
 
-    availableModels = ['deepseek-v4-flash'];
     const restoredObservability = new ObservabilityStore(join(root, 'restored'));
     const restored = new AgentHost({
       userDataPath: join(root, 'restored'), workspacePath: root, Emit: () => undefined, business, observability: restoredObservability,
@@ -112,11 +111,22 @@ describe('AgentHost 会话助手状态', () => {
     });
 
     try {
+      fetch.mockClear();
+      await expect(restored.GetProviderCatalog()).resolves.toMatchObject({ providers: expect.any(Array) });
       await expect(restored.GetSessionAssistantState('state-session')).resolves.toMatchObject({
-        model: 'deepseek-v4-flash', confirmationMode: 'allow_low_risk', reasoningEffort: 'xhigh',
+        model: 'deepseek-v4-pro', confirmationMode: 'allow_low_risk', reasoningEffort: 'xhigh',
       });
+      expect(fetch).not.toHaveBeenCalled();
+      await expect(restored.GetModels('DeepSeek')).resolves.toMatchObject({ models: ['deepseek-v4-flash'] });
+      expect(fetch).toHaveBeenCalledExactlyOnceWith('https://api.deepseek.com/models', expect.any(Object));
+
       await expect(restored.UpdateReasoningEffort('state-session', 'max')).resolves.toEqual({ updated: true, reasoningEffort: 'max' });
+      const snapshot = snapshots.get('state-session');
+      const toolSnapshot = JSON.parse(snapshot.toolSnapshotJson);
+      toolSnapshot.assistantState.model = 'unsupported-model';
+      snapshots.set('state-session', { ...snapshot, toolSnapshotJson: JSON.stringify(toolSnapshot) });
       await expect(restored.ReloadSession('state-session')).resolves.toMatchObject({ reloaded: true });
+      await expect(restored.GetSessionAssistantState('state-session')).resolves.toMatchObject({ model: 'deepseek-v4-flash' });
       expect(JSON.parse(snapshots.get('state-session').toolSnapshotJson).assistantState).toEqual({
         provider: 'DeepSeek', model: 'deepseek-v4-flash', confirmationMode: 'allow_low_risk', reasoningEffort: 'max',
       });

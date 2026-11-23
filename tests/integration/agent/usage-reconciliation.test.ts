@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AgentHost } from '../../../apps/backend/src/electron/backend/agent-host';
 import { ObservabilityStore } from '../../../apps/backend/src/observability-store';
+import { AgentStateStore } from '../../../apps/backend/src/agent-state-store';
 
 const directories: string[] = [];
 
@@ -61,8 +62,9 @@ describe('Agent Usage 三方对账', () => {
         source: 'provider', promptTokens: 11, completionTokens: 7, totalTokens: 18, cachedInputTokens: 8,
         reportedRequestCount: 1, unreportedRequestCount: 0,
       });
-      const persisted = JSON.parse(readFileSync(join(userDataPath, 'agent-state.json'), 'utf8')) as { sessionUsage: Array<[string, unknown]> };
-      expect(Object.fromEntries(persisted.sessionUsage)['session-usage-1']).toMatchObject(expected);
+      const reader = new AgentStateStore(userDataPath);
+      try { expect(Object.fromEntries(reader.Read().state.sessionUsage as Array<[string, unknown]>)['session-usage-1']).toMatchObject(expected); }
+      finally { reader.Close(); }
     } finally {
       await host.Close();
       observability.Close();

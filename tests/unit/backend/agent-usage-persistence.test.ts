@@ -35,5 +35,6 @@ describe('AgentHost 会话 usage 恢复', () => {
       promptTokens: 20, completionTokens: 8, totalTokens: 28, reportedRequestCount: 2, unreportedRequestCount: 1,
     });
     expect((await host.GetSessionAssistantState('another-session')).usage).toMatchObject({ source: 'unavailable', promptTokens: 0, completionTokens: 0, totalTokens: 0 });
+    await host.Close();
   });
 });

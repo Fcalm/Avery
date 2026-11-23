@@ -17,9 +17,12 @@ export interface ProviderTransportPolicy {
 }
 
 export const DefaultProviderTransportPolicy: ProviderTransportPolicy = {
-  maxAttempts: 3, initialDelayMs: 1000, maxDelayMs: 10_000,
+  maxAttempts: 4, initialDelayMs: 2000, maxDelayMs: 16_000,
   connectionTimeoutMs: 60_000, idleTimeoutMs: 90_000, nonstreamTimeoutMs: 180_000,
 };
+
+/** 默认重连依次等待 2、4、16 秒；按首间隔缩放，额外尝试保持最高档并受最大间隔限制。 */
+const RecoveryDelayMultipliers = [1, 2, 8] as const;
 
 /** 只携带稳定诊断码与脱敏消息；原始 cause 留给宿主，不复制请求体或凭据。 */
 export class ProviderTransportError extends Error {
@@ -74,11 +77,26 @@ export class ProviderAttempt {
   }
 }
 
+/** 仅使用稳定错误码生成可见诊断，不把请求地址、凭据或上游错误正文带入提示。 */
+export function ProviderConnectionMessage(error: unknown): string {
+  const record = error && typeof error === 'object' ? error as { name?: unknown; code?: unknown; message?: unknown; cause?: { code?: unknown } } : {};
+  const code = String(record.code ?? record.cause?.code ?? /^net::(ERR_[A-Z0-9_]+)/.exec(String(record.message ?? ''))?.[1] ?? '');
+  if (/ENOTFOUND|EAI_AGAIN|ERR_NAME_NOT_RESOLVED|ERR_DNS_/.test(code)) return '无法解析模型服务域名，请检查网络、DNS 或系统代理后重试。';
+  if (/ERR_PROXY_|ERR_TUNNEL_/.test(code)) return '无法连接系统代理，请检查代理服务后重试。';
+  if (record.name === 'TimeoutError' || /ETIMEDOUT|UND_ERR_CONNECT_TIMEOUT|ERR_TIMED_OUT|ERR_CONNECTION_TIMED_OUT/.test(code)) return '连接模型服务超时，请检查网络或系统代理后重试。';
+  return '模型连接中断，请检查网络或稍后继续。';
+}
+
 function NormalizeTransportError(error: unknown): ProviderTransportError {
   if (error instanceof ProviderTransportError) return error;
   const record = error && typeof error === 'object' ? error as { name?: unknown; code?: unknown; message?: unknown; cause?: { code?: unknown } } : {};
-  if (/ECONN|ETIMEDOUT|EAI_AGAIN|UND_ERR/.test(String(record.code ?? record.cause?.code ?? '')) || /fetch failed|failed to fetch|terminated|network/i.test(String(record.message ?? ''))) {
-    return new ProviderTransportError('PROVIDER_CONNECTION_INTERRUPTED', '模型连接中断，请检查网络或稍后继续。', { cause: error, retryable: true, allowFallback: record.message === 'terminated' });
+  // 响应头成功后读取 body 仍可能由 Chromium 抛出纯文本错误，不能只识别 fetch 建连阶段的 code。
+  const nativeCode = /^net::(ERR_[A-Z0-9_]+)/.exec(String(record.message ?? ''))?.[1];
+  const code = String(record.code ?? record.cause?.code ?? nativeCode ?? '');
+  const interruptedBody = /ERR_(?:CONTENT_LENGTH_MISMATCH|INCOMPLETE_CHUNKED_ENCODING|HTTP2_PROTOCOL_ERROR|QUIC_PROTOCOL_ERROR|EMPTY_RESPONSE)/.test(code);
+  if (interruptedBody || /ECONN|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|UND_ERR|ERR_(?:NAME_NOT_RESOLVED|DNS_|INTERNET_DISCONNECTED|NETWORK_CHANGED|CONNECTION_|TIMED_OUT|PROXY_CONNECTION_FAILED|TUNNEL_CONNECTION_FAILED)/.test(code) || /fetch failed|failed to fetch|terminated|network/i.test(String(record.message ?? ''))) {
+    const cause = nativeCode ? Object.assign(new Error('模型响应传输中断。', { cause: error }), { code: nativeCode }) : error;
+    return new ProviderTransportError('PROVIDER_CONNECTION_INTERRUPTED', ProviderConnectionMessage(error), { cause, retryable: true, allowFallback: interruptedBody || record.message === 'terminated' });
   }
   return new ProviderTransportError('PROVIDER_REQUEST_FAILED', error instanceof Error ? error.message : '模型请求失败。', { cause: error });
 }
@@ -116,7 +134,7 @@ export async function WithProviderRecovery<T>(perform: (scope: ProviderAttempt, 
       if (attempt >= attempts) throw new ProviderTransportError(failure.code, `模型连接恢复失败（已尝试 ${attempts} 次），请稍后继续。${failure.message}`, { cause: failure, status: failure.status });
       if (mode === 'stream' && failure.allowFallback && attempt >= attempts - 1) mode = 'nonstream';
       const delayMs = Math.max(0, Math.min(options.policy.maxDelayMs,
-        Math.max(options.policy.initialDelayMs * 2 ** (attempt - 1), failure.retryAfterMs ?? 0)));
+        Math.max(options.policy.initialDelayMs * RecoveryDelayMultipliers[Math.min(attempt - 1, RecoveryDelayMultipliers.length - 1)], failure.retryAfterMs ?? 0)));
       // 先撤销本次未完成输出，再展示重连状态；工具调用尚未离开 Provider。
       options.onRecovery?.({ attempt: attempt + 1, maxAttempts: attempts, delayMs, mode, code: failure.code });
       scope.Dispose();

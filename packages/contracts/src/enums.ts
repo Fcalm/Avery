@@ -15,7 +15,3 @@ export type ApplicationStatus = (typeof ApplicationStatusValues)[number];
 /** 档案分类：个人信息、教育/工作/项目经历、求职意向、技能证书及其他资料。 */
 export const ProfileCategoryValues = ['application', 'project', 'work', 'education', 'job_intention', 'skill_certificate', 'other'] as const;
 export type ProfileCategory = (typeof ProfileCategoryValues)[number];
-
-/** 岗位匹配分档：待计算 / 较差 / 优良 / 极好。 */
-export const JobScoreValues = ['pending', 'poor', 'good', 'excellent'] as const;
-export type JobScore = (typeof JobScoreValues)[number];

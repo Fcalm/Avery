@@ -428,11 +428,25 @@ describe('agent-modules-defaults', () => {
     const saveCandidate = vi.fn(async () => ({ jobId: 'job-boss-a1', jobRevision: 2 }));
     const context = CreateToolContext({ scenarioId: 'application', ports: { ...CreateToolContext().ports, jobCollection: { Collect: vi.fn(), SaveCandidate: saveCandidate } } });
     const result = await CreateToolsModule(CreatePorts()).ExecuteToolCall({
-      id: 'save-collected-1', type: 'function', function: { name: 'SaveJob', arguments: JSON.stringify({ collectionId: 'collection-1', candidateId: 'candidate-1', matchScore: 88 }) },
+      id: 'save-collected-1', type: 'function', function: { name: 'SaveJob', arguments: JSON.stringify({ collectionId: 'collection-1', candidateId: 'candidate-1' }) },
     }, context);
 
     expect(saveCandidate).not.toHaveBeenCalled();
     expect(JSON.parse(result.content)).toMatchObject({ ok: false, code: 'JOB_COLLECTION_EXPIRED' });
+  });
+
+  it('岗位工具不再暴露或接收匹配分，读取只保留入库时间和薪资排序', async () => {
+    const tools = CreateToolsModule(CreatePorts());
+    const definitions = tools.GetToolDefinitions('application');
+    const save = definitions.find(tool => tool.definition.function.name === 'SaveJob')!;
+    const read = definitions.find(tool => tool.definition.function.name === 'ReadJobs')!;
+    expect(JSON.stringify(save.definition.function.parameters)).not.toContain('matchScore');
+    expect(read.definition.function.parameters).toMatchObject({ properties: { sort: { enum: ['created', 'salary'] } } });
+    const context = CreateToolContext({ scenarioId: 'application' });
+    const result = await tools.ExecuteToolCall({ id: 'retired-score', type: 'function', function: {
+      name: 'SaveJob', arguments: JSON.stringify({ jobId: 'job-1', company: '企业', title: '产品经理', url: 'https://example.com/jobs/1', matchScore: 90 }),
+    } }, context);
+    expect(JSON.parse(result.content)).toMatchObject({ ok: false, code: 'INVALID_TOOL_ARGUMENTS' });
   });
 
   it('ReadJobs 在两个场景均只读且无需简历；采集声明写入和浏览器资源', async () => {

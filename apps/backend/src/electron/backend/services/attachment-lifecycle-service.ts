@@ -4,7 +4,7 @@ import { GetNow, WriteAudit } from '../../repositories/helpers';
 
 /** 无引用附件默认保留 30 天，符合产品数据保护约束。 */
 export const ThirtyDaysMs = 30 * 24 * 60 * 60 * 1000;
-const OwnerTypes = new Set(['conversation', 'message', 'profile', 'resume']);
+const OwnerTypes = new Set(['conversation', 'message', 'profile', 'resume', 'agent']);
 
 export function ExtractAttachmentIds(value: unknown): string[] {
   const ids = new Set<string>();
@@ -64,10 +64,30 @@ export class AttachmentLifecycleService {
     return this.ReplaceLinks(ownerType, ownerId, null);
   }
 
+  /** Agent 历史与压缩归档共用会话级引用；只追加，不因当前历史被压缩而解除保护。 */
+  RetainAgentImages(sessionId: string, uris: string[]): void {
+    if (typeof sessionId !== 'string' || !sessionId || sessionId.length > 200 || !Array.isArray(uris)) throw new Error('Invalid Agent image references.');
+    const ids = [...new Set(uris.map(uri => {
+      if (typeof uri !== 'string' || !/^attachment:\/\/[^/\s]+\//.test(uri)) throw new Error('Invalid image attachment URI.');
+      return ExtractAttachmentIds(uri)[0];
+    }))];
+    this.db.transaction(() => {
+      const lookup = this.db.prepare('SELECT 1 FROM attachments WHERE id=? AND deleted_at IS NULL');
+      const insert = this.db.prepare("INSERT OR IGNORE INTO attachment_links(attachment_id,owner_type,owner_id,created_at) VALUES(?,'agent',?,?)");
+      const protect = this.db.prepare('UPDATE attachments SET orphaned_at=NULL,cleanup_error=NULL WHERE id=?');
+      for (const id of ids) {
+        if (!lookup.get(id)) throw Object.assign(new Error('历史图片附件不可用，请恢复原图片后继续；原上下文未改变。'), { code: 'STORAGE_ERROR', details: { reason: 'IMAGE_ATTACHMENT_UNAVAILABLE' } });
+        const added = insert.run(id, sessionId, GetNow());
+        if (added.changes) protect.run(id);
+      }
+    })();
+  }
+
   RemoveConversationLinks(conversationId: string): void {
     const messageIds = this.db.prepare('SELECT id FROM conversation_messages WHERE conversation_id = ?').all(conversationId).map((row: any) => row.id);
     const run = this.db.transaction(() => {
       this.RemoveLinks('conversation', conversationId);
+      this.RemoveLinks('agent', conversationId);
       for (const id of messageIds) this.RemoveLinks('message', id);
     });
     run();

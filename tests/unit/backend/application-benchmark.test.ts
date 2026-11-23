@@ -1,3 +1,4 @@
+import { EvaluationTestCredentials } from '../../fixtures/evaluation-credentials';
 import { mkdir, mkdtemp, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { PDFParse } from 'pdf-parse';
@@ -114,10 +115,10 @@ describe('拟真网申平台与 Avery 测评接入', () => {
         return { finalResponse: '已填写并保存，未提交。', events: [], finalState: { benchmark }, metrics: { environmentFailure: benchmark.report.outcome === 'environment_failure', promptTokens: null, completionTokens: null, totalTokens: null } };
       } finally { await portal.close(); }
     });
-    const service = new EvalService({ userDataPath: dataRoot, store, credentialPort: { Load: async () => ({ provider: 'MIMO', model: 'mimo-v2.6-flash' }) }, getStoredSettings: async () => ({ developerMode: true }), Emit: () => {}, browserRunner: { Execute: execute } as any });
+    const service = new EvalService({ userDataPath: dataRoot, store, credentialPort: EvaluationTestCredentials(), getStoredSettings: async () => ({ developerMode: true }), Emit: () => {}, browserRunner: { Execute: execute } as any });
     try {
       await service.Initialize();
-      let project = await service.CreateProject({ name: '拟真网申', runnerType: 'browser', config: { executionProvider: 'DeepSeek', executionModel: 'deepseek-flash', candidates: [{ id: 'a', name: 'A', promptOverrides: {} }], toolNames: ['BrowserRunScript', 'BrowserFillForm', 'BrowserNavigate'], userSimulator: 'approve_valid', repeatCount: 1, maxModelTurns: 100, fixtureBranch: 'career-portal' } });
+      let project = await service.CreateProject({ name: '拟真网申', runnerType: 'browser', config: { executionProvider: 'MIMO', executionModel: 'mimo-v2.6-flash', candidates: [{ id: 'a', name: 'A', promptOverrides: {} }], toolNames: ['BrowserRunScript', 'BrowserFillForm', 'BrowserNavigate'], userSimulator: 'approve_valid', repeatCount: 1, maxModelTurns: 100, fixtureBranch: 'career-portal' } });
       expect(project.datasetCaseCount).toBe(8); expect((await service.ValidateProject(project.id)).valid).toBe(true);
       await service.ImportDataset(project.id, [cases[0], { ...cases[0], id: 'portal-environment' }].map(item => JSON.stringify(item)).join('\n'), '', project.revision); project = await service.ReadProject(project.id);
       const started = await service.StartRun(project.id);

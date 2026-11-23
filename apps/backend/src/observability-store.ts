@@ -1,6 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
+import { AgentStateStore } from './agent-state-store';
+import { SummarizeEvalCases } from './electron/backend/evaluation/eval-summary';
+import type { AgentStatePatch, AgentStateSnapshot } from './infra/agent-state-contract';
 
 const Database = require('better-sqlite3') as any;
 
@@ -14,9 +17,12 @@ export class ObservabilityStore {
   databasePath: string;
   db: any;
   traceRetention: number;
+  private runtimeState?: AgentStateStore;
+  private readonly userDataPath: string;
 
   /** 初始化不随工作空间迁移的本地日志数据库。 */
   constructor(userDataPath: string) {
+    this.userDataPath = userDataPath;
     mkdirSync(userDataPath, { recursive: true });
     this.databasePath = join(userDataPath, 'observability.db');
     this.db = new Database(this.databasePath);
@@ -90,6 +96,12 @@ export class ObservabilityStore {
         completed_at INTEGER
       );
       CREATE INDEX IF NOT EXISTS idx_evaluation_runs_project ON evaluation_runs(project_id, created_at DESC);
+      CREATE TABLE IF NOT EXISTS evaluation_dataset_cleanup (
+        project_id TEXT NOT NULL,
+        version TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        PRIMARY KEY(project_id, version)
+      );
       CREATE TABLE IF NOT EXISTS evaluation_case_runs (
         id TEXT PRIMARY KEY,
         run_id TEXT NOT NULL,
@@ -288,23 +300,29 @@ export class ObservabilityStore {
 
   /** 原子替换测试集索引；正文只保存在受控 Artifact 目录，数据库不承载大文本。 */
   ImportEvalDatasetRecord(id: string, datasetKey: string, rubric: string, datasetVersion: string, caseCount: number, category: string, expectedRevision: number, updatedAt: number): any {
-    const result = this.db.prepare(`UPDATE evaluation_projects SET dataset_jsonl = ?, dataset_version = ?, dataset_case_count = ?, rubric = ?, revision = revision + 1, updated_at = ?
-      WHERE id = ? AND revision = ?`)
-      .run(datasetKey, datasetVersion, caseCount, rubric, updatedAt, id, expectedRevision);
-    if (result.changes !== 1) {
-      const exists = this.db.prepare('SELECT revision FROM evaluation_projects WHERE id = ?').get(id);
-      if (!exists) throw Object.assign(new Error('Evaluation project was not found.'), { code: 'NOT_FOUND' });
-      throw Object.assign(new Error('Evaluation project revision conflict.'), { code: 'REVISION_CONFLICT', details: { expectedRevision, actualRevision: exists.revision } });
-    }
-    // 版本库登记：导入即冻结一个版本，正文由 Artifact 目录按版本哈希落盘。
-    this.db.prepare('INSERT OR REPLACE INTO evaluation_dataset_versions(project_id, version, case_count, category, created_at) VALUES(?, ?, ?, ?, ?)')
-      .run(id, datasetVersion, caseCount, category, updatedAt);
-    return this.ReadEvalProjectRecord(id);
+    return this.db.transaction(() => {
+      const result = this.db.prepare(`UPDATE evaluation_projects SET dataset_jsonl = ?, dataset_version = ?, dataset_case_count = ?, rubric = ?, revision = revision + 1, updated_at = ?
+        WHERE id = ? AND revision = ?`)
+        .run(datasetKey, datasetVersion, caseCount, rubric, updatedAt, id, expectedRevision);
+      if (result.changes !== 1) {
+        const exists = this.db.prepare('SELECT revision FROM evaluation_projects WHERE id = ?').get(id);
+        if (!exists) throw Object.assign(new Error('Evaluation project was not found.'), { code: 'NOT_FOUND' });
+        throw Object.assign(new Error('Evaluation project revision conflict.'), { code: 'REVISION_CONFLICT', details: { expectedRevision, actualRevision: exists.revision } });
+      }
+      // 版本库登记：导入即冻结一个版本，正文由 Artifact 目录按版本哈希落盘。
+      this.db.prepare('INSERT INTO evaluation_dataset_versions(project_id, version, case_count, category, created_at) VALUES(?, ?, ?, ?, ?) ON CONFLICT(project_id, version) DO NOTHING')
+        .run(id, datasetVersion, caseCount, category, updatedAt);
+      // 重导同内容会重新使用文件，必须撤销之前待执行的删除任务。
+      this.db.prepare('DELETE FROM evaluation_dataset_cleanup WHERE project_id = ? AND version = ?').run(id, datasetVersion);
+      return this.ReadEvalProjectRecord(id);
+    })();
   }
 
   /** 版本库列表：按导入时间倒序，供评测集选择器与管理对话框使用。 */
   ListEvalDatasetVersionRecords(projectId: string): any[] {
-    return this.db.prepare('SELECT * FROM evaluation_dataset_versions WHERE project_id = ? ORDER BY created_at DESC, version DESC').all(projectId);
+    return this.db.prepare(`SELECT v.*, (SELECT COUNT(*) FROM evaluation_runs r WHERE r.project_id = v.project_id
+      AND json_extract(r.snapshot_json, '$.datasetVersion') = v.version) AS run_count
+      FROM evaluation_dataset_versions v WHERE v.project_id = ? ORDER BY v.created_at DESC, v.version DESC`).all(projectId);
   }
 
   /** 指向某版本的 Run 数量：Run 快照冻结了 datasetVersion，用 JSON1 直接读取，不展开快照正文。 */
@@ -326,9 +344,38 @@ export class ObservabilityStore {
     return this.ReadEvalProjectRecord(id);
   }
 
-  /** 只删除版本登记行；版本文件与项目指针回退由 EvalService 编排。 */
-  DeleteEvalDatasetVersionRecord(projectId: string, version: string): void {
-    this.db.prepare('DELETE FROM evaluation_dataset_versions WHERE project_id = ? AND version = ?').run(projectId, version);
+  /** revision、登记删除、指针回退/清空及清理任务必须同事务提交，任何冲突都不产生删除副作用。 */
+  DeleteEvalDatasetVersionRecord(projectId: string, version: string, expectedRevision: number, updatedAt: number): any {
+    return this.db.transaction(() => {
+      const current = this.ReadEvalProjectRecord(projectId);
+      if (current.revision !== expectedRevision) throw Object.assign(new Error('Evaluation project revision conflict.'), { code: 'REVISION_CONFLICT', details: { expectedRevision, actualRevision: current.revision } });
+      const deleted = this.db.prepare('DELETE FROM evaluation_dataset_versions WHERE project_id = ? AND version = ?').run(projectId, version);
+      if (!deleted.changes) throw Object.assign(new Error('Evaluation dataset version was not found.'), { code: 'NOT_FOUND' });
+      const fallback = current.datasetVersion === version
+        ? this.db.prepare('SELECT version, case_count FROM evaluation_dataset_versions WHERE project_id = ? ORDER BY created_at DESC, version DESC LIMIT 1').get(projectId)
+        : { version: current.datasetVersion, case_count: current.datasetCaseCount };
+      this.db.prepare(`UPDATE evaluation_projects SET dataset_jsonl = ?, dataset_version = ?, dataset_case_count = ?, revision = revision + 1, updated_at = ? WHERE id = ?`)
+        .run(fallback?.version ? `datasets/${projectId}/${fallback.version}.jsonl` : '', fallback?.version ?? null, fallback?.case_count ?? 0, updatedAt, projectId);
+      this.db.prepare('INSERT OR IGNORE INTO evaluation_dataset_cleanup(project_id, version, created_at) VALUES(?, ?, ?)').run(projectId, version, updatedAt);
+      return this.ReadEvalProjectRecord(projectId);
+    })();
+  }
+
+  /** 导入事务失败后的孤立文件也登记重试；仍被版本库引用的文件绝不进入删除队列。 */
+  QueueEvalDatasetCleanupIfUnreferenced(projectId: string, version: string): void {
+    this.db.prepare(`INSERT OR IGNORE INTO evaluation_dataset_cleanup(project_id, version, created_at)
+      SELECT ?, ?, ? WHERE NOT EXISTS(SELECT 1 FROM evaluation_dataset_versions WHERE project_id = ? AND version = ?)`)
+      .run(projectId, version, Date.now(), projectId, version);
+  }
+
+  ListEvalDatasetCleanupRecords(projectId?: string): Array<{ project_id: string; version: string }> {
+    return projectId === undefined
+      ? this.db.prepare('SELECT project_id, version FROM evaluation_dataset_cleanup ORDER BY created_at').all()
+      : this.db.prepare('SELECT project_id, version FROM evaluation_dataset_cleanup WHERE project_id = ? ORDER BY created_at').all(projectId);
+  }
+
+  CompleteEvalDatasetCleanup(projectId: string, version: string): void {
+    this.db.prepare('DELETE FROM evaluation_dataset_cleanup WHERE project_id = ? AND version = ?').run(projectId, version);
   }
 
   /** 返回项目配置及内部数据集逻辑键；Renderer DTO 由 EvalService 剔除 datasetJsonl。 */
@@ -361,11 +408,21 @@ export class ObservabilityStore {
   }
 
   CreateEvalRunRecord(record: any): any {
-    this.db.prepare(`INSERT INTO evaluation_runs(
-      id, project_id, project_name, runner_type, status, snapshot_hash, snapshot_json, summary_json, error_json, created_at, started_at, completed_at
-    ) VALUES(?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, NULL, NULL)`)
-      .run(record.id, record.projectId, record.projectName, record.runnerType, record.status, record.snapshotHash, JSON.stringify(record.snapshot), record.createdAt);
-    return this.ReadEvalRunRecord(record.id);
+    // Run 与全部计划题目在同一事务创建，排队取消或进程中断也不会丢失分母。
+    return this.db.transaction(() => {
+      this.db.prepare(`INSERT INTO evaluation_runs(
+        id, project_id, project_name, runner_type, status, snapshot_hash, snapshot_json, summary_json, error_json, created_at, started_at, completed_at
+      ) VALUES(?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, NULL, NULL)`)
+        .run(record.id, record.projectId, record.projectName, record.runnerType, record.status, record.snapshotHash, JSON.stringify(record.snapshot), record.createdAt);
+      for (const testCase of record.snapshot?.cases ?? []) {
+        for (const candidate of record.snapshot.config?.candidates ?? []) {
+          for (let repeatIndex = 0; repeatIndex < (record.snapshot.config?.repeatCount ?? 1); repeatIndex += 1) {
+            this.UpsertEvalCaseRunRecord({ id: `case-${randomUUID()}`, runId: record.id, candidateId: candidate.id, candidateName: candidate.name, caseId: testCase.id, repeatIndex, status: 'queued', metrics: {}, createdAt: record.createdAt });
+          }
+        }
+      }
+      return this.ReadEvalRunRecord(record.id);
+    })();
   }
 
   UpdateEvalRunRecord(id: string, patch: any): any {
@@ -431,13 +488,35 @@ export class ObservabilityStore {
   RecoverInterruptedEvalRuns(): any {
     const now = GetNow();
     const error = JSON.stringify({ code: 'INTERRUPTED', message: 'Evaluation run was interrupted when the application stopped.' });
-    const result = this.db.prepare("UPDATE evaluation_runs SET status = 'failed', error_json = ?, completed_at = ? WHERE status NOT IN ('completed', 'failed', 'cancelled')").run(error, now);
-    this.db.prepare("UPDATE evaluation_case_runs SET status = 'failed', error_json = ?, completed_at = ? WHERE status NOT IN ('completed', 'failed', 'cancelled', 'not_run')").run(error, now);
-    return { recovered: result.changes };
+    return this.db.transaction(() => {
+      const runs = this.db.prepare("SELECT id FROM evaluation_runs WHERE status NOT IN ('completed', 'failed', 'cancelled')").all().map((row: { id: string }) => this.ReadEvalRunRecord(row.id));
+      for (const run of runs) {
+        this.db.prepare("UPDATE evaluation_case_runs SET status = 'not_run', completed_at = ? WHERE run_id = ? AND status = 'queued'").run(now, run.id);
+        this.db.prepare("UPDATE evaluation_case_runs SET status = 'failed', error_json = ?, completed_at = ? WHERE run_id = ? AND status IN ('running', 'scoring')").run(error, now, run.id);
+        this.UpdateEvalRunRecord(run.id, { status: 'failed', error: JSON.parse(error), completedAt: now, summary: SummarizeEvalCases(this.ListEvalCaseRunRecords(run.id), run.startedAt ?? now, now) });
+      }
+      return { recovered: runs.length };
+    })();
   }
 
-  /** 关闭用户目录日志数据库。 */
+  /** 恢复状态使用独立数据库，复用当前 DB Worker；清空诊断数据不会删除运行事实。 */
+  ReadAgentState(options?: { includeHistory?: boolean }): AgentStateSnapshot {
+    this.runtimeState ??= new AgentStateStore(this.userDataPath);
+    return this.runtimeState.Read(options?.includeHistory !== false);
+  }
+  ReadAgentHistory(sessionId: string): unknown[] {
+    this.runtimeState ??= new AgentStateStore(this.userDataPath);
+    return this.runtimeState.ReadHistory(sessionId);
+  }
+  CommitAgentState(patch: AgentStatePatch): { revision: number } {
+    this.runtimeState ??= new AgentStateStore(this.userDataPath);
+    return this.runtimeState.Commit(patch);
+  }
+
+  /** 关闭用户目录日志数据库及运行状态数据库。 */
   Close(): void {
+    this.runtimeState?.Close();
+    this.runtimeState = undefined;
     try {
       this.db?.close();
     } catch {

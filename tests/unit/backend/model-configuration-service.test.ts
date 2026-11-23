@@ -15,6 +15,25 @@ function Directory(image: boolean, output = 8192) {
 }
 
 describe('模型目录、个人覆盖与统一生效配置', () => {
+  it('历史三档配置读取为次级与高级，只有显式保存才写回两档', async () => {
+    const root = await Root();
+    const file = join(root, 'goal-model-tiers.json');
+    const secondary = { ...identity, baseUrl: 'https://api.deepseek.com' };
+    const advanced = { ...secondary, model: 'deepseek-v4-pro' };
+    const tiers = [secondary, { ...secondary, model: 'deepseek-v4-flash' }, advanced];
+    const original = JSON.stringify({ version: 1, revision: 4, tiers });
+    await writeFile(file, original);
+    const service = new ModelConfigurationService({ userDataPath: root });
+    const validate = vi.fn(async () => {});
+
+    await expect(service.GetGoalModelTiers()).resolves.toEqual({ revision: 4, tiers: [secondary, advanced] });
+    await expect(service.SaveGoalModelTiers({ expectedRevision: 4, tiers }, validate)).rejects.toThrow();
+    expect(validate).not.toHaveBeenCalled();
+    expect(await readFile(file, 'utf8')).toBe(original);
+    await service.SaveGoalModelTiers({ expectedRevision: 4, tiers: [secondary, advanced] }, validate);
+    expect(JSON.parse(await readFile(file, 'utf8'))).toEqual({ version: 1, revision: 5, tiers: [secondary, advanced] });
+  });
+
   it('无需网络即可识别 DeepSeek Flash 图片能力，并隔离同名第三方模型', async () => {
     const fetch = vi.fn();
     const service = new ModelConfigurationService({ userDataPath: await Root(), fetch });

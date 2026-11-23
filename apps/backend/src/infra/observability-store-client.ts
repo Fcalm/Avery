@@ -4,6 +4,8 @@ import { CreateRpcWorker, type RpcWorker } from './worker-rpc';
 export interface ObservabilityStoreClientOptions {
   userDataPath: string;
   smoke?: boolean;
+  /** 源码测试同样使用已构建的真实 Worker；生产默认仍由包内路径定位。 */
+  workerPath?: string;
 }
 
 /**
@@ -12,7 +14,7 @@ export interface ObservabilityStoreClientOptions {
  * 动态方法门面使用 any 的原因同 business-store-client。
  */
 export function CreateObservabilityStoreClient(options: ObservabilityStoreClientOptions): any {
-  const workerPath = join(__dirname, '..', 'workers', 'observability-worker.js');
+  const workerPath = options.workerPath ?? join(__dirname, '..', 'workers', 'observability-worker.js');
   const rpc: RpcWorker = CreateRpcWorker({
     workerPath,
     workerData: { userDataPath: options.userDataPath, smoke: options.smoke ?? false },

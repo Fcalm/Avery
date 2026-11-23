@@ -6,6 +6,7 @@ import {
 import * as path from 'node:path';
 import { GetNow, CreateId } from '../../repositories/helpers';
 import { MarkItDownAttachmentConverter, type AttachmentMarkdownConverter } from '../markitdown-attachment-converter';
+import { DetectSupportedImageMimeType } from '../vision-input';
 
 /** 原子创建工作空间内需要的目录，避免附件和备份服务各自处理目录初始化。 */
 export function EnsureWorkspaceDirectories(workspacePath: string): void {
@@ -208,7 +209,7 @@ export class WorkspaceService {
   ResolveAttachmentUri(uri: string): any {
     const matched = /^attachment:\/\/([^/]+)\//.exec(String(uri));
     if (!matched) throw new Error('The attachment URI is invalid.');
-    const attachment = this.db.prepare('SELECT id, original_name, mime_type, storage_key FROM attachments WHERE id = ? AND deleted_at IS NULL').get(matched[1]);
+    const attachment = this.db.prepare('SELECT id, original_name, mime_type, storage_key, sha256 FROM attachments WHERE id = ? AND deleted_at IS NULL').get(matched[1]);
     if (!attachment) throw new Error('The attachment is unavailable.');
     const attachmentRoot = realpathSync(path.resolve(this.workspacePath, 'attachments'));
     const candidatePath = path.resolve(this.workspacePath, attachment.storage_key);
@@ -217,7 +218,52 @@ export class WorkspaceService {
     const physicalPath = realpathSync(candidatePath);
     const realRelative = path.relative(attachmentRoot, physicalPath);
     if (!realRelative || realRelative.startsWith('..') || path.isAbsolute(realRelative)) throw new Error('The attachment storage entry escapes the workspace.');
-    return { id: attachment.id, name: attachment.original_name, mimeType: attachment.mime_type, physicalPath };
+    return { id: attachment.id, name: attachment.original_name, mimeType: attachment.mime_type, physicalPath, sha256: attachment.sha256 };
+  }
+
+  /** 仅后端调用：截图复用附件的内容寻址文件和恢复日志，不运行 OCR；文件与引用保存完成后才交给模型。 */
+  ImportAgentImage(sessionId: string, dataUrl: string): { uri: string; mimeType: string; sha256: string; detail: 'auto' } {
+    this.workspaceOperations.RequireWritable();
+    if (typeof sessionId !== 'string' || !sessionId || sessionId.length > 200) throw new Error('Invalid image session.');
+    // 与附件表共用 5 MiB 限制；不自动重编码或缩图，避免同一图片在重放时改变内容。
+    if (typeof dataUrl !== 'string' || dataUrl.length > Math.ceil(5 * 1024 * 1024 / 3) * 4 + 64) throw new Error('Image attachment must be no larger than 5 MiB.');
+    const match = /^data:(image\/(?:png|jpeg|gif|webp));base64,([A-Za-z0-9+/]+={0,2})$/.exec(dataUrl);
+    if (!match) throw new Error('Invalid image attachment data.');
+    const bytes = Buffer.from(match[2], 'base64');
+    const mimeType = DetectSupportedImageMimeType(bytes);
+    if (!mimeType || !bytes.length || bytes.length > 5 * 1024 * 1024 || bytes.toString('base64') !== match[2] || mimeType !== match[1]) throw new Error('Invalid image attachment content.');
+    const sha256 = createHash('sha256').update(bytes).digest('hex');
+    const storageKey = `attachments/${sha256}`;
+    const file = this.attachmentLifecycle.SafeWorkspaceFile('attachments', sha256);
+    const existing = this.db.prepare('SELECT id FROM attachments WHERE sha256=?').get(sha256);
+    const id = existing?.id ?? CreateId();
+    const name = `browser-screenshot.${mimeType === 'image/jpeg' ? 'jpg' : mimeType.slice(6)}`;
+    const now = GetNow();
+    const operationId = this.workspaceOperations.Begin('import_attachment', { attachmentId: id, sha256, originalName: name, mimeType, byteSize: bytes.length, storageKey, createdAt: now });
+    try {
+      if (!existsSync(file)) {
+        const temporary = `${file}.${randomUUID()}.tmp`;
+        try { writeFileSync(temporary, bytes, { flag: 'wx' }); renameSync(temporary, file); }
+        finally { if (existsSync(temporary)) unlinkSync(temporary); }
+      }
+      else {
+        const entry = lstatSync(file);
+        if (!entry.isFile() || entry.isSymbolicLink() || createHash('sha256').update(readFileSync(file)).digest('hex') !== sha256) throw new Error('Image attachment storage content changed.');
+      }
+      this.workspaceOperations.Advance(operationId, 'file_written');
+      this.db.transaction(() => {
+        this.db.prepare(`INSERT INTO attachments(id,sha256,original_name,mime_type,byte_size,storage_key,parse_status,created_at,orphaned_at)
+          VALUES(?,?,?,?,?,?,'ready',?,?) ON CONFLICT(sha256) DO UPDATE SET deleted_at=NULL,cleanup_error=NULL`)
+          .run(id, sha256, name, mimeType, bytes.length, storageKey, now, now);
+        this.attachmentLifecycle.RetainAgentImages(sessionId, [`attachment://${id}/${name}`]);
+        this.workspaceOperations.Advance(operationId, 'db_committed');
+        this.workspaceOperations.Advance(operationId, 'completed');
+      })();
+      return { uri: `attachment://${id}/${name}`, mimeType, sha256, detail: 'auto' };
+    } catch (error) {
+      this.workspaceOperations.MarkRollback(operationId, 'IMAGE_ATTACHMENT_SAVE_FAILED');
+      throw Object.assign(new Error('截图附件保存失败，图片未发送给模型。', { cause: error }), { code: 'STORAGE_ERROR', details: { reason: 'IMAGE_ATTACHMENT_SAVE_FAILED' } });
+    }
   }
 
   /**

@@ -41,7 +41,7 @@ export function CountDocumentLineChanges(before: string, after: string): { added
 export class ConversationDocumentChanges {
   private baselines = new Map<string, DocumentBaseline>();
 
-  constructor(private readonly changed: (requestId: string, resource: ConversationResource) => void, private readonly persist: () => void) {}
+  constructor(private readonly changed: (requestId: string, resource: ConversationResource) => void, private readonly persist: () => void | Promise<void>) {}
 
   Restore(value: unknown): void {
     if (!Array.isArray(value)) return;
@@ -69,7 +69,7 @@ export class ConversationDocumentChanges {
         const before = await read(input.resume.id);
         const saved = await source.Save(input);
         this.Record(requestId, { kind: 'resume', id: saved.id, title: input.resume.name, revision: saved.revision }, before?.content ?? '', input.resume.content);
-        this.persist();
+        await this.persist();
         return saved;
       },
     };
@@ -84,7 +84,7 @@ export class ConversationDocumentChanges {
         for (const item of input.profiles) {
           this.Record(requestId, { kind: 'profile', id: item.id, title: item.title }, previous.get(item.id)?.content ?? '', item.content);
         }
-        this.persist();
+        await this.persist();
         return saved;
       },
     };

@@ -38,7 +38,7 @@ export class ConversationRepository {
   /** 读取全部会话与其消息，供页面启动时组装会话侧 ViewModel；时间为 UTC epoch 毫秒，revision 供外部冲突校验。
    * scenario_id 历史遗留默认值是 'resume-copilot'，读取时统一归一为 'default'，前端无需感知旧值。 */
   ListAll(): any[] {
-    const conversations = this.db.prepare('SELECT id, title, revision, updated_at, pinned, archived, scenario_id, environment_id, environment_name FROM conversations ORDER BY last_used_at DESC').all();
+    const conversations = this.db.prepare('SELECT id, title, revision, updated_at, pinned, archived, archived_at, auto_delete_at, scenario_id, environment_id, environment_name FROM conversations ORDER BY last_used_at DESC').all();
     return conversations.map((conversation: any) => ({
       id: conversation.id,
       title: conversation.title,
@@ -46,6 +46,8 @@ export class ConversationRepository {
       updatedAt: conversation.updated_at,
       pinned: conversation.pinned === 1,
       archived: conversation.archived === 1,
+      archivedAt: conversation.archived_at ?? null,
+      autoDeleteAt: conversation.auto_delete_at ?? null,
       scenarioId: conversation.scenario_id === 'application' ? 'application' : 'default',
       projectId: conversation.environment_id ?? null,
       projectName: conversation.environment_name ?? null,
@@ -77,6 +79,7 @@ export class ConversationRepository {
     // 项目分组以 projectId 为键，只有 half 配置（只有 id 或只有名称）无法稳定分组，直接拒绝。
     if (Boolean(projectId) !== Boolean(projectName)) throw new Error('Conversation project environment is invalid.');
     const now = GetNow();
+    if (this.db.prepare('SELECT 1 FROM conversation_cleanup WHERE conversation_id = ?').get(id)) throw Object.assign(new Error('会话正在清理，请稍后重试。'), { code: 'RESOURCE_LOCKED' });
     this.db.prepare('INSERT INTO conversations(id, title, scenario_id, environment_id, environment_name, revision, created_at, updated_at, last_used_at) VALUES(?, ?, ?, ?, ?, 1, ?, ?, ?)')
       .run(id, title, scenarioId, projectId ?? null, projectName ?? null, now, now, now);
     WriteAudit(this.db, 'user', 'create', 'conversation', id, {});
@@ -98,14 +101,15 @@ export class ConversationRepository {
   }
 
   /** 删除会话；保留定时任务运行历史并解除其对话关联，消息和附件链接随会话一并清理。 */
-  Delete(id: string): any {
+  Delete(id: string, actor: 'user' | 'system' = 'user'): any {
     if (typeof id !== 'string' || id.length === 0 || id.length > 200) throw new Error('Conversation id is invalid.');
     const run = this.db.transaction(() => {
+      this.db.prepare('INSERT OR IGNORE INTO conversation_cleanup(conversation_id, created_at) VALUES(?, ?)').run(id, GetNow());
       this.attachmentLifecycle.RemoveConversationLinks(id);
       // cron_runs 需保留执行审计，但其 conversation_id 外键默认禁止删除；先断开关联再删会话。
       this.db.prepare('UPDATE cron_runs SET conversation_id = NULL WHERE conversation_id = ?').run(id);
       this.db.prepare('DELETE FROM conversations WHERE id = ?').run(id);
-      WriteAudit(this.db, 'user', 'delete', 'conversation', id, {});
+      WriteAudit(this.db, actor, 'delete', 'conversation', id, {});
     });
     run();
     return { id };
@@ -135,14 +139,47 @@ export class ConversationRepository {
   SetArchived(id: string, archived: boolean, expectedRevision?: number): any {
     if (typeof id !== 'string' || id.length === 0 || id.length > 200) throw new Error('Conversation id is invalid.');
     if (typeof archived !== 'boolean') throw new Error('Conversation archived flag is invalid.');
-    const existing = this.db.prepare('SELECT revision FROM conversations WHERE id = ?').get(id);
-    if (!existing) throw new Error('Conversation was not found.');
-    AssertRevision(existing, expectedRevision, 'conversation', id);
-    const nextRevision = existing.revision + 1;
-    const result = this.db.prepare('UPDATE conversations SET archived = ?, revision = ? WHERE id = ?').run(archived ? 1 : 0, nextRevision, id);
-    if (!result.changes) throw new Error('Conversation was not found.');
-    WriteAudit(this.db, 'user', 'set-archived', 'conversation', id, { archived });
-    return { id, archived, revision: nextRevision };
+    return this.db.transaction(() => {
+      const existing = this.db.prepare('SELECT revision, archived, archived_at, auto_delete_at FROM conversations WHERE id = ?').get(id);
+      if (!existing) throw new Error('Conversation was not found.');
+      AssertRevision(existing, expectedRevision, 'conversation', id);
+      // 重复归档不能延长保留期；恢复后再次归档才建立新期限。
+      if ((existing.archived === 1) === archived) return { id, archived, revision: existing.revision, archivedAt: existing.archived_at ?? null, autoDeleteAt: existing.auto_delete_at ?? null };
+      const nextRevision = existing.revision + 1;
+      const archivedAt = archived ? GetNow() : null;
+      const autoDeleteAt = archivedAt === null ? null : archivedAt + 30 * 86_400_000;
+      this.db.prepare('UPDATE conversations SET archived = ?, archived_at = ?, auto_delete_at = ?, revision = ? WHERE id = ?').run(archived ? 1 : 0, archivedAt, autoDeleteAt, nextRevision, id);
+      WriteAudit(this.db, 'user', 'set-archived', 'conversation', id, { archived });
+      return { id, archived, revision: nextRevision, archivedAt, autoDeleteAt };
+    })();
+  }
+
+  /** 在删除事务内重新检查归档和版本；自动清理还要重新核对期限。 */
+  DeleteArchived(id: string, expectedRevision: number, dueBefore?: number): { id: string; deleted: boolean; reason?: 'not_found' | 'changed' } {
+    if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 1) throw new Error('Conversation revision is invalid.');
+    return this.db.transaction(() => {
+      const row = this.db.prepare('SELECT revision, archived, auto_delete_at FROM conversations WHERE id = ?').get(id);
+      if (!row) return { id, deleted: false, reason: 'not_found' as const };
+      if (row.archived !== 1 || row.revision !== expectedRevision || (dueBefore !== undefined && (row.auto_delete_at === null || row.auto_delete_at > dueBefore))) return { id, deleted: false, reason: 'changed' as const };
+      this.Delete(id, dueBefore === undefined ? 'user' : 'system');
+      return { id, deleted: true };
+    })();
+  }
+
+  /** 仅返回有明确期限的到期快照；不读取消息正文，单批限制工作量。 */
+  ListExpired(now: number): Array<{ id: string; expectedRevision: number }> {
+    return this.db.prepare('SELECT id, revision AS expectedRevision FROM conversations WHERE archived = 1 AND auto_delete_at IS NOT NULL AND auto_delete_at <= ? ORDER BY auto_delete_at, id LIMIT 100').all(now);
+  }
+
+  ListPendingCleanup(): string[] {
+    return this.db.prepare('SELECT conversation_id FROM conversation_cleanup ORDER BY created_at, conversation_id LIMIT 100').all().map((row: { conversation_id: string }) => row.conversation_id);
+  }
+
+  CompleteCleanup(id: string): void { this.db.prepare('DELETE FROM conversation_cleanup WHERE conversation_id = ?').run(id); }
+
+  /** 正式宿主在运行准备阶段验证记录仍存在，防止删除后的迟到请求重建私有历史。 */
+  AssertAvailable(id: string): void {
+    if (!this.db.prepare('SELECT 1 FROM conversations WHERE id = ?').get(id)) throw Object.assign(new Error('对话不存在或已被删除。'), { code: 'NOT_FOUND' });
   }
 
   /** 向会话追加消息；按消息 ID upsert，重复投递不会产生重复记录。 */
@@ -167,6 +204,21 @@ export class ConversationRepository {
       .all(conversationId).flatMap((row: { presentation_json: string }) => {
         const value = ReadPresentation(row.presentation_json); return value ? [value] : [];
       });
+  }
+
+  /** 后端重启时只结算遗留 running 投影；等待审批和已完成的事实保持原样，不恢复执行工具。 */
+  RecoverInterrupted(): { recovered: number } {
+    return this.db.transaction(() => {
+      let recovered = 0;
+      const rows = this.db.prepare('SELECT conversation_id,presentation_json FROM conversation_messages WHERE presentation_json IS NOT NULL').all() as Array<{ conversation_id: string; presentation_json: string }>;
+      for (const row of rows) {
+        const presentation = ReadPresentation(row.presentation_json);
+        if (!presentation || presentation.status !== 'running') continue;
+        const next = ApplyConversationActivity(presentation, { kind: 'status', status: 'failed', error: '上次运行已中断，已完成操作的记录已保留。请核对结果后继续，原操作不会自动重放。' }, presentation.sequence + 1, GetNow());
+        if (this.SavePresentation(row.conversation_id, next).saved) recovered++;
+      }
+      return { recovered };
+    })();
   }
 
   /** 向会话追加消息；按消息 ID upsert，重复投递不会产生重复记录。 */

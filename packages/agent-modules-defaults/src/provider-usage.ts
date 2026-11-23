@@ -1,4 +1,5 @@
 import type { ProviderAccountUsage, ProviderAmount } from '@avery/agent-sdk';
+import { ProviderConnectionMessage } from './provider-transport';
 
 /** 只访问已知官方地址，禁止把其它供应商的凭据交给 DeepSeek 或任意自定义地址。 */
 export const AccountUsageEndpoints = {
@@ -55,7 +56,7 @@ export async function QueryProviderAccountUsage(provider: string, apiKey: string
     if (!balances) return { ...base, status: 'error', message: '接口返回的余额格式暂不支持，请前往控制台查看。' };
     // is_available=false 只说明余额不足以调用 API，仍须展示供应商返回的真实零/负余额。
     return { ...base, status: 'ready', balances, updatedAt: new Date().toISOString() };
-  } catch {
-    return { ...base, status: 'error', message: '连接失败或查询超时，请稍后刷新。' };
+  } catch (error) {
+    return { ...base, status: 'error', message: ProviderConnectionMessage(error) };
   }
 }

@@ -110,7 +110,6 @@ export interface JobCollectionPort {
     sessionId: string;
     collectionId: string;
     candidateId: string;
-    matchScore?: number;
   }): Promise<{ jobId: string; jobRevision: number }>;
 }
 
@@ -142,7 +141,7 @@ export interface JobLibraryPort {
     detailLevel?: 'count' | 'brief' | 'summary' | 'detail';
     jobSeekingTypes?: Array<'intern' | 'campus_recruitment' | 'social_recruitment'>;
     educations?: Array<'college' | 'bachelor' | 'master' | 'doctor'>;
-    view?: 'all' | 'favorites' | 'pending' | 'applied'; sort?: 'created' | 'score';
+    view?: 'all' | 'favorites' | 'pending' | 'applied'; sort?: 'created' | 'salary';
   }): Promise<Record<string, unknown>>;
 }
 
@@ -248,6 +247,8 @@ export interface BrowserActionProposal {
 
 /** 浏览器窄端口：准备阶段只校验并分类，执行阶段只接受冻结提案，底层驱动不向模型暴露。 */
 export interface BrowserAutomationPort {
+  /** 工作区动作由 Host 绑定到当前任务，调用方不能提交浏览器或原生空间标识。 */
+  ManageWorkspace?(action: 'open' | 'handoff' | 'resume' | 'close' | 'keep', options: { signal?: AbortSignal; deadline?: number }): Promise<{ state: string; needsConfirmation?: boolean }>;
   Prepare(input: { toolName: BrowserToolName; arguments: Record<string, unknown> }): Promise<BrowserActionProposal>;
   Execute(input: { proposal: BrowserActionProposal; signal?: AbortSignal; deadline?: number }): Promise<{ data: unknown; status: 'succeeded' | 'status_unknown' }>;
   /** probeConnection 仅由用户显式检测触发；普通状态读取不得启动浏览器。 */
@@ -336,6 +337,8 @@ export interface ToolPorts {
   bossContact?: BossContactPort;
   urlRead?: UrlReadPort;
   browser?: BrowserAutomationPort;
+  /** 截图必须先由宿主存入附件并保护会话引用；不得返回只在当前请求存在的图片。 */
+  images?: { Save(dataUrl: string, signal?: AbortSignal): Promise<NonNullable<AgentMessage['imageAttachments']>[number]> };
   skill?: SkillReadPort;
   cronTask?: CronTaskPort;
   applicationTracking?: ApplicationTrackingPort;
@@ -365,9 +368,11 @@ export interface ToolContext {
   pendingBrowserActions?: Map<string, unknown>;
   emit: (event: AgentStreamEvent) => void;
   /** 工具改动会话状态后回调宿主持久化（如任务保存）。 */
-  persistSessionState: () => void;
+  persistSessionState: () => void | Promise<void>;
   /** 当前 Run 标识；Todo 等 Run 级实体优先使用该标识作用域。 */
   runId?: string;
+  /** 显式恢复同一个目标可跨请求复用完全相同的写操作回执，审计仍记录真实 Run ID。 */
+  idempotencyScope?: string;
   /** 当前 Execution 的取消信号；所有可取消异步调用必须接收。 */
   signal?: AbortSignal;
   /** 绝对截止时间（epoch ms）；超时与取消共用。 */

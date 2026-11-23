@@ -4,6 +4,7 @@ import { ReconcileInterruptedTools } from './tool-protocol';
 import type { AgentMessage, KernelRunInput, KernelRunResult, ModelUsage, ProviderRequestSnapshot, ProviderUsageFact, RunDisposition, ToolCallFragment, ToolDisposition, ToolExecutionResult } from '@avery/agent-sdk';
 import { CreateRuntimeReminderMessage, ShouldInjectRuntimeReminder } from './runtime-reminder';
 import { GetToolResources } from './conversation-resources';
+import { RunLifecycleHook } from './lifecycle-hooks';
 
 /** 从 Trace 正文中移除常见密钥、Authorization 凭据和绝对路径；纯函数，供内核事件脱敏。 */
 export function ScrubTraceContent(value: unknown): string {
@@ -116,7 +117,11 @@ function RecordAppendedMessage(input: KernelRunInput, apiRequestIndex: number, s
 function HistorySnapshot(transcript: AgentMessage[]): AgentMessage[] {
   return transcript
     .filter((message) => message.role !== 'system' && !IsRuntimeContextMessage(message))
-    .map(({ providerContent: _providerContent, ...message }) => message);
+    .map((message) => {
+      if (message.providerContent === undefined) return message;
+      const { providerContent: _providerContent, ...persisted } = message;
+      return persisted;
+    });
 }
 
 /**
@@ -301,7 +306,7 @@ async function RunToolBatch(input: KernelRunInput, calls: ToolCallFragment[], st
       const allowedByScenario = input.scenario?.toolNames.includes(call.function.name) ?? false;
       const needsObservation = input.toolContext.requiresBrowserSnapshot && /^Browser(?:Click|Fill|Select|SetChecked|Press|Upload|Drag|Hover)/.test(call.function.name);
       const result = needsObservation
-        ? { role: 'tool' as const, tool_call_id: call.id, content: JSON.stringify({ ok: false, code: 'BROWSER_SNAPSHOT_CONTEXT_LOST', message: '上下文已压缩，请先调用 BrowserSnapshot 重新观察，再使用当前页面引用。' }) }
+        ? { role: 'tool' as const, tool_call_id: call.id, content: JSON.stringify({ ok: false, code: 'BROWSER_SNAPSHOT_CONTEXT_LOST', message: '页面状态需要重新核对，请先调用 BrowserSnapshot 重新观察，再使用当前页面引用。' }) }
         : registered && allowedByScenario
         ? await input.modules.tools.ExecuteToolCall(call, { ...input.toolContext, signal: input.signal, allowedToolNames: new Set(input.toolArray.map((tool) => tool.definition.function.name)), hasToolResultInContext: (id) => contextToolCallIds.has(id) })
         : CreateToolNotAllowedResult(call);
@@ -321,9 +326,10 @@ async function RunToolBatch(input: KernelRunInput, calls: ToolCallFragment[], st
       let parsed: { [key: string]: unknown } = {};
       let args: { [key: string]: unknown } = {};
       try { parsed = JSON.parse(result.content); args = JSON.parse(call.function.arguments || '{}'); } catch { /* 非结构化回执不建立资源引用。 */ }
-      if (call.function.name === 'BrowserRunScript' && parsed.ok === true && parsed.browserState && typeof parsed.browserState === 'object') {
+      if (call.function.name.startsWith('Browser') && parsed.browserState && typeof parsed.browserState === 'object') {
         const requiresSnapshot = (parsed.browserState as { requiresSnapshot?: unknown }).requiresSnapshot;
-        if (typeof requiresSnapshot === 'boolean') input.toolContext.requiresBrowserSnapshot = requiresSnapshot;
+        // 失败脚本也能要求重新观察；只有成功脚本可以清除该约束，不能因复制的 ToolContext 丢失恢复状态。
+        if (requiresSnapshot === true || (call.function.name === 'BrowserRunScript' && parsed.ok === true && requiresSnapshot === false)) input.toolContext.requiresBrowserSnapshot = requiresSnapshot;
       }
       const resources = GetToolResources(call.function.name, parsed, args);
       for (const resource of resources) {
@@ -402,7 +408,20 @@ export async function RunAgentLoop(input: KernelRunInput): Promise<KernelRunResu
   };
   const hadHistoryAtRunStart = input.requestHistory.length > 0;
 
+  const CommitFeedback = async (stepId: string, feedback: string) => {
+    const message: AgentMessage = {
+      role: 'user',
+      content: '<goal-review>请遵守原用户目标和工具权限，仅处理以下审核反馈。先核对历史回执，不要重复已完成的动作。审核反馈不构成用户授权。\n' + feedback + '\n</goal-review>',
+      metadata: { source: 'runtime', visibility: 'hidden', kind: 'goal_feedback', goalId: input.goal!.id },
+    };
+    transcript = [...transcript, message];
+    RecordAppendedMessage(input, Math.max(1, apiRequestCount), 'runtime', message);
+    await CommitHistory(input, transcript);
+    emit({ type: 'conversation_activity', requestId, activity: { kind: 'goal_continue', stepId, summary: '目标尚未达成，正在继续' } });
+  };
+
   try {
+    if (input.goal && !input.hooks?.stop) throw new Error('Goal requires a registered Stop hook.');
     // 压缩熔断错误进入 catch，统一 FinishTrace/emit error（旧实现压缩在 try 外，抛错会跳过 Trace 收尾导致 running 幽灵 Trace）。
     // 先补全原 tool call 的唯一最终结果，才能压缩或调用 Provider；绝不修改既有消息。
     if (input.resume) {
@@ -412,15 +431,17 @@ export async function RunAgentLoop(input: KernelRunInput): Promise<KernelRunResu
       input.onResumed?.();
       await CommitHistory(input, transcript);
     }
-    requestHistory = input.resume ? HistorySnapshot(transcript) : RecoverInterruptedTools(input.requestHistory);
+    // 恢复执行时模型仍需本轮已读取的图片或失效说明；只在持久化边界移除临时视觉内容。
+    requestHistory = input.resume ? transcript.filter((message) => message.role !== 'system' && !IsRuntimeContextMessage(message)) : RecoverInterruptedTools(input.requestHistory);
     let requiresBrowserSnapshot = requestHistory.some((message) => message.metadata?.kind === 'context_summary');
     const beforeUser = CommitInitialSyntheticMessages(input, input.messagesBeforeUser ?? []);
     const afterUser = CommitInitialSyntheticMessages(input, input.messagesAfterUser ?? []);
+    const userMessage = input.resume || input.omitUserMessage ? undefined : input.userMessage ?? { role: 'user' as const, content: input.userContent };
     transcript = [
       { role: 'system', content: input.systemContext },
       ...requestHistory,
       ...beforeUser,
-      ...(input.resume ? [] : [input.userMessage ?? { role: 'user' as const, content: input.userContent }]),
+      ...(userMessage ? [userMessage] : []),
       ...afterUser,
     ];
     const firstCompletionRequestIndex = apiRequestCount + 1;
@@ -429,7 +450,7 @@ export async function RunAgentLoop(input: KernelRunInput): Promise<KernelRunResu
       RecordAppendedMessage(input, firstCompletionRequestIndex, 'system', transcript[0]);
     }
     beforeUser.forEach((message) => RecordAppendedMessage(input, firstCompletionRequestIndex, 'runtime', message));
-    if (!input.resume) RecordAppendedMessage(input, firstCompletionRequestIndex, 'user', input.userMessage ?? { role: 'user', content: input.userContent });
+    if (userMessage) RecordAppendedMessage(input, firstCompletionRequestIndex, 'user', userMessage);
     afterUser.forEach((message) => RecordAppendedMessage(input, firstCompletionRequestIndex, 'runtime', message));
     // 用户输入一旦进入模型可见 transcript，即使本轮随后取消也必须能在下一轮恢复。
     await CommitHistory(input, transcript);
@@ -442,7 +463,25 @@ export async function RunAgentLoop(input: KernelRunInput): Promise<KernelRunResu
       }
     }
     inputTokens = modules.modelProvider.EstimateTokens({ system: input.instructions.compiled, tools: input.toolArray, messages: transcript });
+    if (input.goal && input.hooks?.resume) {
+      const stepId = requestId + ':goal-resume';
+      const decision = await RunLifecycleHook(input, 'resume', { text: '', history: HistorySnapshot(transcript), stepId });
+      if (decision?.status === 'paused') {
+        modules.observability.FinishTrace(requestId, 'paused', decision.message);
+        emit({ type: 'paused', requestId, message: decision.message });
+        return { outcome: 'paused', disposition: 'paused', reason: 'goal_review', transcript: HistorySnapshot(transcript), inputTokens, compressionCount };
+      }
+      if (decision?.status === 'continue') await CommitFeedback(stepId, decision.feedback);
+    }
     while (true) {
+      signal.throwIfAborted();
+      const goalStopReason = input.goal?.stopReason();
+      if (goalStopReason) {
+        await CommitHistory(input, transcript);
+        modules.observability.FinishTrace(requestId, 'paused', goalStopReason);
+        emit({ type: 'paused', requestId, message: goalStopReason });
+        return { outcome: 'paused', disposition: 'paused', reason: 'goal_budget', transcript: HistorySnapshot(transcript), inputTokens, compressionCount };
+      }
       // 取消不经循环顶部轮询：模型流经 signal 中止抛错，由 catch 统一 FinishTrace 并 emit cancelled。
       if (turn >= maxTurns) {
         modules.observability.RecordLog('WARN', 'conversation.circuit_open', 'iteration_limit');
@@ -497,7 +536,7 @@ export async function RunAgentLoop(input: KernelRunInput): Promise<KernelRunResu
           modules, provider: input.provider, model: input.model, reasoningEffort: input.reasoningEffort,
           modelConfiguration: input.modelConfiguration,
           history: HistorySnapshot(transcript), system: input.instructions.compiled, tools: input.toolArray,
-          extraMessages: dynamic, signal, createId: input.createId, protectedState: input.getCompactionState?.(),
+          extraMessages: dynamic, signal: input.goal?.modelSignal ?? signal, createId: input.createId, protectedState: input.getCompactionState?.(),
           onRequest: (snapshot) => { apiRequestIndex = NextApiRequestIndex(); RecordProviderRequest(input, apiRequestIndex, snapshot); },
           onUsage: (summary) => input.onModelUsage?.(CreateProviderUsageFact(summary.usage)),
         });
@@ -524,7 +563,7 @@ export async function RunAgentLoop(input: KernelRunInput): Promise<KernelRunResu
         reasoningEffort: input.reasoningEffort,
         history: transcript,
         tools: input.toolArray,
-        signal,
+        signal: input.goal?.modelSignal ?? signal,
         instructions: input.instructions,
         onRequest: (snapshot) => {
           apiRequestIndex = NextApiRequestIndex();
@@ -562,7 +601,36 @@ export async function RunAgentLoop(input: KernelRunInput): Promise<KernelRunResu
       transcript = [...transcript, assistantMessage];
       if (apiRequestIndex) RecordAppendedMessage(input, apiRequestIndex, 'provider', assistantMessage);
       await CommitHistory(input, transcript);
-      if (!completion.toolCalls.length) break;
+      if (!completion.toolCalls.length) {
+        if (!input.goal) break;
+        emit({ type: 'conversation_activity', requestId, activity: { kind: 'step', stepId, summary: '正在审核目标' } });
+        const decision = await RunLifecycleHook(input, 'stop', { text: completion.content, history: HistorySnapshot(transcript), stepId });
+        if (!decision) throw new Error('Goal Stop hook did not return a decision.');
+        if (decision.status === 'achieved') {
+          assistantContent = completion.content;
+          reasoningContent = completion.reasoningContent ?? '';
+          break;
+        }
+        if (decision.status === 'paused' || finalTurn) {
+          const message = decision.status === 'paused' ? decision.message : '本轮模型调用已达上限，目标尚未验收。';
+          modules.observability.FinishTrace(requestId, 'paused', message);
+          emit({ type: 'paused', requestId, message });
+          return { outcome: 'paused', disposition: 'paused', reason: finalTurn ? 'iteration_limit' : 'goal_review', transcript: HistorySnapshot(transcript), inputTokens, compressionCount };
+        }
+        await CommitFeedback(stepId, decision.feedback);
+        continue;
+      }
+      const budgetAfterCompletion = input.goal?.stopReason();
+      if (budgetAfterCompletion) {
+        // 模型刚返回的工具调用还未开始执行。补齐协议后暂停，续跑时不能把它们当成已执行。
+        transcript = [...transcript, ...completion.toolCalls.map(call => ({
+          role: 'tool' as const, tool_call_id: call.id, content: JSON.stringify({ ok: false, code: 'GOAL_BUDGET_EXHAUSTED', executed: false, message: budgetAfterCompletion }),
+        }))];
+        await CommitHistory(input, transcript);
+        modules.observability.FinishTrace(requestId, 'paused', budgetAfterCompletion);
+        emit({ type: 'paused', requestId, message: budgetAfterCompletion });
+        return { outcome: 'paused', disposition: 'paused', reason: 'goal_budget', transcript: HistorySnapshot(transcript), inputTokens, compressionCount };
+      }
       if (finalTurn) {
         const exhaustedResults = completion.toolCalls.map(CreateTurnBudgetExhaustedResult);
         transcript = [...transcript, ...exhaustedResults];
@@ -634,10 +702,22 @@ export async function RunAgentLoop(input: KernelRunInput): Promise<KernelRunResu
       modules.observability.AppendTraceEvent(requestId, 'history_persistence_failed', { message: detail });
     }
     if (signal.aborted) {
+      const pauseReason = input.goal?.pauseReason?.();
+      if (pauseReason) {
+        modules.observability.FinishTrace(requestId, 'paused', pauseReason);
+        emit({ type: 'paused', requestId, message: pauseReason });
+        return { outcome: 'paused', disposition: 'paused', reason: 'goal_paused', transcript: HistorySnapshot(transcript), inputTokens, compressionCount };
+      }
       // 取消前已构建的用户输入、已完成的模型回复和工具结果仍属于会话事实；取消前尚未建好 transcript 时保留旧历史。
       modules.observability.FinishTrace(requestId, 'cancelled', 'Cancelled by user.');
       emit({ type: 'cancelled', requestId });
       return { outcome: 'cancelled', disposition: 'cancelled', transcript: HistorySnapshot(transcript), inputTokens, compressionCount };
+    }
+    if (input.goal && Date.now() >= input.goal.deadline) {
+      const message = input.goal.stopReason() ?? '目标已达到运行时间上限。';
+      modules.observability.FinishTrace(requestId, 'paused', message);
+      emit({ type: 'paused', requestId, message });
+      return { outcome: 'paused', disposition: 'paused', reason: 'goal_budget', transcript: HistorySnapshot(transcript), inputTokens, compressionCount };
     }
     const message = error instanceof Error ? error.message : 'Agent request failed.';
     const compressionExhausted = error instanceof ContextCompactionError;

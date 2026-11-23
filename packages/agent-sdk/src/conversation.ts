@@ -1,6 +1,12 @@
 /** 面向用户的会话投影，与调试 Trace 分离；只保存可展示的正文、状态和资源引用。 */
 export type ConversationRunStatus = 'running' | 'completed' | 'waiting' | 'paused' | 'cancelled' | 'failed' | 'interrupted';
 export type ConversationToolStatus = 'running' | 'succeeded' | 'waiting' | 'paused' | 'failed' | 'cancelled' | 'skipped';
+const GoalReviewStatuses = ['reviewing', 'achieved', 'continue', 'waiting', 'paused', 'blocked', 'interrupted'] as const;
+export interface ConversationGoalReview {
+  phase: 'stop' | 'resume';
+  status: typeof GoalReviewStatuses[number];
+  summary: string;
+}
 export interface ConversationResource {
   kind: 'resume' | 'profile' | 'job' | 'application' | 'file';
   id: string;
@@ -13,9 +19,10 @@ export interface ConversationResource {
   lineChanges?: { added: number; removed: number };
 }
 export type ConversationPart =
-  | { id: string; stepId: string; type: 'text'; text: string }
+  | { id: string; stepId: string; type: 'text'; text: string; intermediate?: boolean }
   | { id: string; stepId: string; type: 'reasoning'; text: string }
   | { id: string; stepId: string; type: 'tool'; toolCallId: string; name: string; status: ConversationToolStatus; summary: string; startedAt: number; completedAt?: number }
+  | ({ id: string; stepId: string; type: 'goal_review' } & ConversationGoalReview)
   | { id: string; stepId: string; type: 'resource'; resource: ConversationResource; toolCallId?: string };
 export interface ConversationPresentation {
   version: 1;
@@ -33,7 +40,7 @@ export interface ConversationPresentation {
   statusMessage?: string;
 }
 export interface ConversationActivity {
-  kind: 'step' | 'text' | 'reasoning' | 'tool' | 'resource' | 'status';
+  kind: 'step' | 'text' | 'reasoning' | 'tool' | 'resource' | 'status' | 'goal_continue' | 'goal_review';
   stepId?: string;
   partId?: string;
   delta?: string;
@@ -41,6 +48,7 @@ export interface ConversationActivity {
   name?: string;
   toolStatus?: ConversationToolStatus;
   summary?: string;
+  goalReview?: ConversationGoalReview;
   resource?: ConversationResource;
   status?: ConversationRunStatus;
   error?: string;
@@ -60,6 +68,7 @@ export function ApplyConversationActivity(
   let parts = current.parts;
   const stepId = activity.stepId ?? parts.at(-1)?.stepId ?? current.requestId;
   if (activity.kind === 'step' && activity.reset) parts = parts.filter(part => part.stepId !== stepId || (part.type !== 'text' && part.type !== 'reasoning'));
+  if (activity.kind === 'goal_continue') parts = parts.map(part => part.stepId === stepId && part.type === 'text' ? { ...part, intermediate: true } : part);
   if ((activity.kind === 'text' || activity.kind === 'reasoning') && activity.partId && activity.delta) {
     const existing = parts.find((part) => part.id === activity.partId);
     parts = existing
@@ -75,6 +84,10 @@ export function ApplyConversationActivity(
       ...(activity.toolStatus && activity.toolStatus !== 'running' ? { completedAt: now } : {}),
     };
     parts = existing ? parts.map((part) => part.id === id ? tool : part) : [...parts, tool];
+  } else if (activity.kind === 'goal_review' && activity.goalReview && activity.partId) {
+    const review: ConversationPart = { id: activity.partId, stepId, type: 'goal_review', ...activity.goalReview };
+    parts = parts.some(part => part.id === review.id)
+      ? parts.map(part => part.id === review.id ? review : part) : [...parts, review];
   } else if (activity.kind === 'resource' && activity.resource) {
     const resource = activity.resource;
     const id = 'resource:' + resource.kind + ':' + resource.id + ':' + (resource.revision ?? '');
@@ -99,11 +112,13 @@ export function ApplyConversationActivity(
   const status = activity.kind === 'status' ? activity.status ?? current.status : current.status;
   const statusMessage = activity.kind === 'status'
     ? status === 'waiting' || status === 'paused' ? activity.summary ?? current.statusMessage : undefined
-    : activity.kind === 'step' ? activity.summary
-      : activity.kind === 'text' || activity.kind === 'reasoning' || activity.kind === 'tool' ? undefined : current.statusMessage;
+    : activity.kind === 'step' || activity.kind === 'goal_continue' ? activity.summary
+      : activity.kind === 'text' || activity.kind === 'reasoning' || activity.kind === 'tool' || activity.kind === 'goal_review' ? undefined : current.statusMessage;
   if (activity.kind === 'status' && status !== 'running') {
     parts = parts.map((part) => part.type === 'tool' && part.status === 'running'
       ? { ...part, status: status === 'waiting' ? 'waiting' : status === 'cancelled' ? 'cancelled' : status === 'completed' ? 'skipped' : status === 'paused' ? 'paused' : 'failed', completedAt: now }
+      : part.type === 'goal_review' && part.status === 'reviewing'
+        ? { ...part, status: 'interrupted', summary: '本次审核已中断。' }
       : part);
   }
   // 等待和暂停仍属于同一轮；终态冻结用时，恢复执行时清除上一段终态时间。
@@ -122,7 +137,7 @@ export function ApplyConversationActivity(
 export function GetConversationResult(presentation: ConversationPresentation): string {
   let lastTool = -1;
   presentation.parts.forEach((part, index) => { if (part.type === 'tool') lastTool = index; });
-  return presentation.parts.slice(lastTool + 1).flatMap((part) => part.type === 'text' ? [part.text] : []).join('\n\n');
+  return presentation.parts.slice(lastTool + 1).flatMap((part) => part.type === 'text' && !part.intermediate ? [part.text] : []).join('\n\n');
 }
 
 /** 每轮每份资料只保留最后保存的产物；首尾正文相同的修改不占用卡片。旧记录不补造行数。 */
@@ -153,6 +168,8 @@ export function IsConversationPresentation(value: unknown): value is Conversatio
     && Array.isArray(candidate.parts) && candidate.parts.every((part) => {
       if (!part || typeof part.id !== 'string' || typeof part.stepId !== 'string') return false;
       if (part.type === 'text' || part.type === 'reasoning') return typeof part.text === 'string';
+      if (part.type === 'goal_review') return (part.phase === 'stop' || part.phase === 'resume')
+        && GoalReviewStatuses.includes(part.status) && typeof part.summary === 'string';
       if (part.type === 'tool') return typeof part.toolCallId === 'string' && typeof part.name === 'string' && typeof part.summary === 'string'
         && Number.isFinite(part.startedAt) && (part.completedAt === undefined || Number.isFinite(part.completedAt))
         && ['running', 'succeeded', 'waiting', 'paused', 'failed', 'cancelled', 'skipped'].includes(part.status);

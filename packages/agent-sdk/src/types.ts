@@ -260,6 +260,8 @@ export interface AgentMessage {
     uri: string;
     mimeType: 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp';
     detail?: 'low' | 'high' | 'original' | 'auto';
+    /** 首次读取的字节哈希；后续重放不得在同一引用下接受不同图片。旧消息可缺失。 */
+    sha256?: string;
   }>;
   tool_calls?: ToolCallFragment[];
   tool_call_id?: string;
@@ -278,6 +280,12 @@ export interface AgentMessage {
       visibility: 'hidden';
       /** 仅在当前模型请求可见的业务只读快照，禁止写入会话历史。 */
       kind: 'runtime_context';
+    }
+    | {
+      source: 'runtime';
+      visibility: 'hidden';
+      kind: 'goal_feedback';
+      goalId: string;
     }
     | {
       source: 'runtime';

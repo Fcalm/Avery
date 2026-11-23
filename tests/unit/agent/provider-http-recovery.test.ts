@@ -12,7 +12,7 @@ describe('真实 HTTP 模型恢复', () => {
         response.writeHead(200, { 'Content-Type': 'text/event-stream', 'Content-Length': 100000 });
         response.write('data: {"choices":[{"delta":{"content":"失败半截"}}]}\n\n');
         setTimeout(() => response.destroy(), 15);
-      } else if (modes.length === 2) {
+      } else if (modes.length <= 3) {
         response.writeHead(200, { 'Content-Type': 'text/event-stream' }); response.end('data: {broken json}\n\n');
       } else {
         response.writeHead(200, { 'Content-Type': 'application/json' });
@@ -29,9 +29,10 @@ describe('真实 HTTP 模型恢复', () => {
       const completion = await provider.StreamCompletion({ requestId: 'local-http', provider: '自定义', model: 'fixture-model', reasoningEffort: 'medium', history: [], tools: [], signal: new AbortController().signal,
         instructions: { compiled: 'local fixture' } as never, onDelta: delta => deltas.push(delta.content) });
       expect(completion.content).toBe('已恢复完整答复'); expect(deltas).toEqual(['已恢复完整答复']);
-      expect(modes).toEqual([true, true, false]);
+      expect(modes).toEqual([true, true, true, false]);
       expect(startedAt[1] - startedAt[0]).toBeGreaterThanOrEqual(20);
       expect(startedAt[2] - startedAt[1]).toBeGreaterThanOrEqual(40);
+      expect(startedAt[3] - startedAt[2]).toBeGreaterThanOrEqual(100);
     } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); }
   });
 });

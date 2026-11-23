@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { AgentHost } from '../../../apps/backend/src/electron/backend/agent-host';
+import { AgentStateStore } from '../../../apps/backend/src/agent-state-store';
 import { ObservabilityStore } from '../../../apps/backend/src/observability-store';
 
 const directories: string[] = [];
@@ -28,6 +29,7 @@ describe('AgentHost 会话删除清理', () => {
         ResolveAttachmentUri: async () => null,
       },
     });
+    await host.Ready();
     const state = host as any;
     const deletedSessionId = 'conversation-deleted';
     const keptSessionId = 'conversation-kept';
@@ -37,8 +39,8 @@ describe('AgentHost 会话删除清理', () => {
 
     try {
       for (const key of ['histories', 'tasks', 'projectEnvironments', 'sessionSnapshots', 'sessionUsage', 'sessionScenarios', 'sessionAssistantStates', 'sessionResumeBindings', 'loadedSkills', 'loadedSkillResources']) {
-        state[key].set(deletedSessionId, key === 'tasks' || key === 'loadedSkills' ? new Map() : key === 'loadedSkillResources' ? new Set() : { sessionId: deletedSessionId });
-        state[key].set(keptSessionId, key === 'tasks' || key === 'loadedSkills' ? new Map() : key === 'loadedSkillResources' ? new Set() : { sessionId: keptSessionId });
+        state[key].set(deletedSessionId, key === 'histories' ? [{ role: 'user', content: 'fixture' }] : key === 'tasks' || key === 'loadedSkills' ? new Map() : key === 'loadedSkillResources' ? new Set() : { sessionId: deletedSessionId });
+        state[key].set(keptSessionId, key === 'histories' ? [{ role: 'user', content: 'fixture' }] : key === 'tasks' || key === 'loadedSkills' ? new Map() : key === 'loadedSkillResources' ? new Set() : { sessionId: keptSessionId });
       }
       state.pendingQuestions.set(deletedSessionId, [{ id: 'question-deleted' }]);
       state.pendingQuestions.set(keptSessionId, [{ id: 'question-kept' }]);
@@ -54,7 +56,7 @@ describe('AgentHost 会话删除清理', () => {
       state.controllers.set(deletedRequestId, deletedController);
       state.toolLedger.set('audit-kept', { ledgerId: 'audit-kept', runId: deletedRequestId });
 
-      host.DeleteSessionResources(deletedSessionId);
+      await host.DeleteSessionResources(deletedSessionId);
 
       expect(deletedController.signal.aborted).toBe(true);
       for (const key of ['histories', 'tasks', 'pendingQuestions', 'projectEnvironments', 'sessionSnapshots', 'sessionUsage', 'sessionScenarios', 'sessionAssistantStates', 'sessionResumeBindings', 'loadedSkills', 'loadedSkillResources']) {
@@ -71,8 +73,10 @@ describe('AgentHost 会话删除清理', () => {
       expect(state.runSnapshots.has(keptRequestId)).toBe(true);
       expect(state.toolLedger.has('audit-kept')).toBe(true);
 
-      const persisted = JSON.parse(readFileSync(join(hostPath, 'agent-state.json'), 'utf8'));
-      expect(persisted.histories).toEqual([[keptSessionId, { sessionId: keptSessionId }]]);
+      const reader = new AgentStateStore(hostPath);
+      const persisted = reader.Read().state;
+      reader.Close();
+      expect(persisted.histories).toEqual([[keptSessionId, [{ role: 'user', content: 'fixture' }]]]);
       expect(persisted.runSnapshots).toEqual([[keptRequestId, { sessionId: keptSessionId }]]);
     } finally {
       await host.Close();

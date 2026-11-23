@@ -16,7 +16,52 @@ function Fixture() {
   return { host, child };
 }
 describe('对话 IPC 生命周期', () => {
-  it.each(['agent:send', 'agent:respond-interaction', 'agent:compact-session'])('%s 长任务不因普通 IPC 超时误报，仍接受真实结果', async channel => {
+  it('致命异常结算在途对话，丢弃迟到事件并退避重启，不重发原请求', async () => {
+    vi.useFakeTimers(); const { host, child } = Fixture(); const events: unknown[] = [];
+    host.OnEvent(event => events.push(event));
+    const pending = host.Command('agent:send', 'key', { requestId: 'fatal-run', sessionId: 'fatal-session' }).catch(error => error);
+    try {
+      child.emit('message', { kind: 'backend-fatal', code: 'UNCAUGHT' });
+      expect(await pending).toMatchObject({ retryable: false, details: { statusUnknown: true } });
+      child.emit('message', { kind: 'event', payload: { type: 'content_delta', requestId: 'fatal-run', delta: 'late' } });
+      child.emit('exit', 1);
+      expect(events).toEqual([
+        expect.objectContaining({ type: 'error', requestId: 'fatal-run', sessionId: 'fatal-session' }),
+        { type: 'run_released', requestId: 'fatal-run', sessionId: 'fatal-session' },
+      ]);
+      expect(child.kill).toHaveBeenCalledTimes(1);
+      const replacement = Object.assign(new EventEmitter(), { postMessage: vi.fn(), kill: vi.fn() });
+      electron.fork.mockReturnValueOnce(replacement);
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(host.GetChild()).toBe(replacement);
+      expect(replacement.postMessage.mock.calls.some(([message]) => message.kind === 'command')).toBe(false);
+    } finally { host.Shutdown(); await vi.runOnlyPendingTimersAsync(); }
+  });
+  it.each([false, true])('旧代桌面能力迟到回执（失败=%s）不会转发给新后端', async fail => {
+    vi.useFakeTimers();
+    const first = Object.assign(new EventEmitter(), { postMessage: vi.fn(), kill: vi.fn() });
+    const second = Object.assign(new EventEmitter(), { postMessage: vi.fn(), kill: vi.fn() });
+    electron.fork.mockReturnValueOnce(first).mockReturnValueOnce(second);
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const capability = vi.fn(async () => { await gate; if (fail) throw new Error('old failure'); return 'old credential'; });
+    const host = CreateBackendHost({ appContext: {}, desktopCapabilities: { CredentialLoad: capability } });
+    try {
+      first.emit('message', { kind: 'ready' });
+      first.emit('message', { kind: 'desktop', id: 'old', capability: 'CredentialLoad' });
+      expect(capability).toHaveBeenCalledTimes(1);
+      first.emit('exit', 1);
+      await vi.advanceTimersByTimeAsync(1001);
+      second.emit('message', { kind: 'ready' });
+      release(); await vi.advanceTimersByTimeAsync(0);
+      expect(second.postMessage.mock.calls.map(([message]) => message).filter(message => message.kind === 'desktop-result')).toEqual([]);
+      expect(first.postMessage.mock.calls.map(([message]) => message).filter(message => message.kind === 'desktop-result')).toEqual([]);
+      first.emit('message', { kind: 'ready' });
+      first.emit('exit', 1);
+      expect(host.GetChild()).toBe(second);
+    } finally { release(); host.Shutdown(); await vi.runOnlyPendingTimersAsync(); }
+  });
+  it.each(['agent:send', 'agent:respond-interaction', 'agent:compact-session', 'workspace:conversations-delete', 'workspace:conversations-delete-archived'])('%s 长任务不因普通 IPC 超时误报，仍接受真实结果', async channel => {
     vi.useFakeTimers(); const { host, child } = Fixture();
     let settled = false;
     const result = host.Command(channel, 'write-key', { requestId: 'run' }).finally(() => { settled = true; });

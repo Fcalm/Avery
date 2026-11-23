@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { readFile, realpath } from 'node:fs/promises';
 import * as path from 'node:path';
 import { CompactContextHistory, RunAgentLoop, ScrubTraceContent } from '@avery/agent-core';
@@ -16,24 +16,35 @@ import { ConversationDocumentChanges } from './conversation-document-changes';
 import { ReadConversationResource } from './conversation-resource-reader';
 import { AgentResumePort } from './agent-resume-port';
 import { ResumeLockStore } from './resume-lock-store';
-import { CreateVisionUserMessage, HydrateVisionMessage } from './vision-input';
+import { CreateVisionUserMessage, HydrateVisionHistory } from './vision-input';
+import { AwaitPreparation } from './run-preparation';
+import { AgentStatePersistence } from './agent-state-persistence';
+import { AssertGoalModel, GoalBudgetReason, GoalResumeReviewSlots, GoalReviewLimit, GoalTimeLimit, ReviewGoal, type SessionGoal } from './goal-review';
+import { CreateObservabilityStoreClient } from '../../infra/observability-store-client';
+import type { AgentStatePort } from '../../infra/agent-state-contract';
 import { AgentBrowserRuntime } from './agent-browser-runtime';
 import { BrowserExtensionBridge, type BrowserTaskCleanupOutcome } from './browser-extension-bridge';
 import { AgentSkillRegistry } from './agent-skill-registry';
+import type { BrowserWorkspaceScope } from './agent-browser-runtime';
+import type { EgoWorkspaceBinding } from './ego-browser-runtime';
 import { CollectBossJobsToLibrary } from './job-collection-service';
 import { CreateAgentJobLibrary } from './agent-job-library';
 import type { JobLibraryCollectionService } from './job-library-collection-service';
 import { BossContactService } from './boss-contact-service';
-import { AgentInteractionResponseSchema, BrowserTaskGrantSchema, CreateCronTaskSchema, type AgentInteractionResponse, type AgentSendRequest, type BrowserTaskGrant, type BrowserTaskGrantPurpose } from '@avery/contracts';
+import { AgentGoalChangeSchema, AgentInteractionResponseSchema, BrowserTaskGrantSchema, CreateCronTaskSchema, type AgentInteractionResponse, type AgentSendRequest, type BrowserTaskGrant, type BrowserTaskGrantPurpose } from '@avery/contracts';
 
 /** 一个逻辑 Run 的等待点；状态、决定和结果与历史共用原子状态文件，不包含模型凭据。 */
 interface PausedAgentRun {
   modelConfiguration?: import('@avery/agent-sdk').ResolvedModelConfiguration;
   input: AgentSendRequest;
+  /** 包含本 Run 导出的文件授权；不能作为用户原始附件重新送入视觉输入。 */
+  authorizedAttachments?: NonNullable<AgentSendRequest['attachments']>;
   checkpoint: KernelCheckpoint;
   interactionId: string;
   kind: 'approval' | 'answer';
   status: 'waiting' | 'executing' | 'ready' | 'resuming';
+  /** 取消已在内存生效；落盘失败时保留此恢复记录，禁止任何迟到决定恢复原任务。 */
+  cancelled?: boolean;
   result?: AgentMessage;
   event?: AgentStreamEvent;
 }
@@ -132,6 +143,8 @@ function RequireString(value: unknown, field: string, maxLength = 20000): string
   return value.trim();
 }
 
+const GoalPausedByUser = new Error('目标已暂停。');
+
 type BrowserTaskGrantDraft = Omit<BrowserTaskGrant, 'grantedAt' | 'revokedAt'>;
 
 /** 未明确表达外部写入时按岗位搜索收窄；确认页会展示最终推断结果。 */
@@ -171,6 +184,8 @@ function BrowserGrantSummary(grant: BrowserTaskGrantDraft): string {
 type AgentHostBrowserRuntime = BrowserAutomationPort & {
   Close(): Promise<void>;
   GetBrowserTaskId?(): string | undefined;
+  SetWorkspaceScope?(scope?: BrowserWorkspaceScope): void;
+  SuspendWorkspace?(): Promise<BrowserTaskCleanupOutcome>;
   /** 收回当前交互 browserTaskId，保留共享扩展 Bridge 以便后续任务复用。 */
   CloseTask?(options?: { deadline: number }): Promise<BrowserTaskCleanupOutcome | void>;
   ResetPageReferences(): void;
@@ -184,12 +199,14 @@ export interface AgentHostOptions {
   business: any;
   observability: any;
   credentialPort: any;
+  /** 仅组合根注入模型网络栈，不能通过渲染进程或 IPC 改写。 */
+  providerFetch?: typeof fetch;
   resolveProjectEnvironment?: (projectId: string) => Promise<unknown> | unknown;
   resumeLockStore?: ResumeLockStore;
   externalBrowserPaths?: Partial<Record<'chrome' | 'edge' | 'ego', string>>;
   browserExtensionBridge?: BrowserExtensionBridge;
   /** 桌面主进程复用现有 PDF/PNG 渲染；仅 Backend AgentHost 能接收生成路径。 */
-  renderResumeFile?: (input: { resume: { name: string; summary: string; content: string }; format: 'pdf' | 'png'; assetId: string }) => Promise<{ path: string; fileName: string }>;
+  renderResumeFile?: (input: { resume: { name: string; summary: string; content: string }; format: 'pdf' | 'png'; assetId: string; signal?: AbortSignal }) => Promise<{ path: string; fileName: string }>;
   /** 构造期 Skill 固定目录测试接缝；生产环境使用应用内置 skills 目录。 */
   skillRootPath?: string;
   /** 构造期测试接缝；生产组合根不传入，不能由 Renderer、IPC 或环境变量选择。 */
@@ -206,6 +223,8 @@ export interface AgentHostOptions {
   onCronScheduleChanged?: () => Promise<void> | void;
   /** Cleanup deadline test seam; production defaults to six seconds. */
   browserTaskCleanupTimeoutMs?: number;
+  /** 生产复用既有 DB Worker；隔离宿主缺省使用其用户目录下的同实现存储。 */
+  stateStore?: AgentStatePort;
 }
 
 /**
@@ -214,6 +233,12 @@ export interface AgentHostOptions {
  * 六槽默认实现由 defaults 包提供、经 module-host ResolveModules 校验装配。
  */
 export class AgentHost {
+  private readonly statePersistence: AgentStatePersistence;
+  /** 入口即登记，删除会话也能取消尚未创建 runtimeControl 的准备阶段。 */
+  private readonly executingRunSessions = new Map<string, string>();
+  private readonly stateReady: Promise<void>;
+  private stateLoaded = false;
+  private closeStateClient?: () => Promise<void>;
   private readonly modelConfigurations: ModelConfigurationService;
   private statePath: string;
   private moduleConfigPath: string;
@@ -226,9 +251,10 @@ export class AgentHost {
   private generatedAssets = new Map<string, { sessionId: string; physicalPath: string; name: string; mimeType: 'application/pdf' | 'image/png' }>();
   private observabilityPort: any;
   private credentialPort: any;
+  private readonly providerFetch?: typeof fetch;
   private resolveProjectEnvironment: (projectId: string) => Promise<unknown> | unknown;
   private controllers = new Map<string, AbortController>();
-  private runtimeControls = new Map<string, { sessionId: string; confirmationMode: ConfirmationMode; toolContext: any }>();
+  private runtimeControls = new Map<string, { sessionId: string; confirmationMode: ConfirmationMode; toolContext: any; goalActiveSince: number }>();
   private histories = new Map<string, any[]>();
   private tasks = new Map<string, Map<string, any>>();
   private pendingQuestions = new Map<string, unknown>();
@@ -236,6 +262,8 @@ export class AgentHost {
   private pendingBrowserActions = new Map<string, any>();
   private pendingCronTasks = new Map<string, any>();
   private pausedRuns = new Map<string, PausedAgentRun>();
+  private sessionGoals = new Map<string, SessionGoal>();
+  private changingGoals = new Set<string>();
   private interactionDecisions = new Map<string, AgentInteractionResponse>();
   /** 旧执行释放与重复确认使用独立屏障；不依赖 Renderer 保存的 IPC Promise。 */
   private runReleases = new Map<string, Promise<unknown>>();
@@ -246,6 +274,8 @@ export class AgentHost {
   private structuredInteractionRequests = new Set<string>();
   private browserRunId: string | null = null;
   private browserSessionId: string | null = null;
+  private browserSessionEngine?: BrowserEngine;
+  private egoWorkspaces = new Map<string, EgoWorkspaceBinding>();
   private currentSessionId: string | null = null;
   /**
    * Host 侧的 task 收尾幂等屏障。Runtime 会在 CloseTask 前把自身引用清空，
@@ -314,6 +344,7 @@ export class AgentHost {
       options.Emit(event);
     };
     this.business = options.business;
+    this.providerFetch = options.providerFetch;
     this.workspacePath = options.workspacePath;
     this.renderResumeFile = options.renderResumeFile;
     this.observabilityPort = options.observability;
@@ -345,11 +376,14 @@ export class AgentHost {
       browserExtensionBridge: options.browserExtensionBridge ?? new BrowserExtensionBridge({
         statePath: path.join(options.userDataPath, 'browser-extension', 'bridge.json'),
         browserPaths: options.externalBrowserPaths,
+        recordLog: (level, event, detail) => options.observability?.RecordLog?.(level, event, detail),
       }),
       runtimeRoot: path.join(options.userDataPath, 'browser-runtime'),
       resolveUploadFile: async (fileId) => {
         const generated = this.generatedAssets.get(fileId);
         if (generated) return generated.physicalPath;
+        // 临时导出授权在重启后可能失效；不能把 asset URI 交给只接受 attachment URI 的存储端口。
+        if (!fileId.startsWith('attachment://')) return null;
         const resolved = await this.business?.ResolveAttachmentUri?.(fileId);
         return typeof resolved === 'string' ? resolved : resolved?.physicalPath ?? null;
       },
@@ -375,7 +409,27 @@ export class AgentHost {
     this.moduleError = null;
     this.moduleConfiguration = { enabled: false, trusted: false, status: 'default', directoryName: null, modules: [] };
     this.modules = this.BuildModules();
-    this.LoadState();
+    let statePort = options.stateStore;
+    if (!statePort) {
+      const client = CreateObservabilityStoreClient({ userDataPath: options.userDataPath,
+        workerPath: require.resolve('@avery/backend/dist/workers/observability-worker.js') });
+      statePort = client as AgentStatePort;
+      this.closeStateClient = async () => {
+        try { await client.Close(); }
+        finally { client.close(); }
+      };
+    }
+    this.statePersistence = new AgentStatePersistence(statePort);
+    this.stateReady = this.LoadState();
+    void this.stateReady.catch(() => undefined);
+  }
+
+  /** 所有恢复状态都由 Worker 完成加载/迁移后才可使用；构造函数不阻塞 Backend 事件循环。 */
+  Ready(): Promise<void> { return this.stateReady; }
+
+  private async LoadSessionHistory(sessionId: string, signal?: AbortSignal): Promise<void> {
+    const messages = await this.statePersistence.LoadHistory(sessionId, signal);
+    if (messages) this.histories.set(sessionId, messages as AgentMessage[]);
   }
 
   SetWorkspacePath(workspacePath: string): void {
@@ -394,7 +448,9 @@ export class AgentHost {
 
   async Close(): Promise<void> {
     this.modelConfigurations.Close();
-    await this.browserRuntime.Close();
+    for (const controller of this.controllers.values()) controller.abort();
+    try { await this.stateReady; await this.statePersistence.Flush(); }
+    finally { await this.closeStateClient?.(); await this.browserRuntime.Close(); }
     this.generatedAssets.clear();
     this.browserSessionId = null;
     this.browserRunId = null;
@@ -406,7 +462,7 @@ export class AgentHost {
     if (signal?.aborted) throw Object.assign(new Error('Resume file export was cancelled.'), { code: 'CANCELLED' });
     if (!Number.isSafeInteger(resume.revision) || (resume.revision as number) < 1) throw Object.assign(new Error('The bound resume revision is unavailable.'), { code: 'RESUME_BINDING_STALE' });
     const assetId = randomUUID();
-    const exported = await this.renderResumeFile({ resume: { name: resume.name, summary: resume.summary ?? '', content: resume.content }, format, assetId });
+    const exported = await this.renderResumeFile({ resume: { name: resume.name, summary: resume.summary ?? '', content: resume.content }, format, assetId, signal });
     const assetRoot = await realpath(path.join(this.workspacePath, 'exports', 'agent-resume-files', assetId));
     const physicalPath = await realpath(exported.path);
     if (path.dirname(physicalPath) !== assetRoot || path.basename(physicalPath) !== exported.fileName || path.extname(physicalPath).toLowerCase() !== `.${format}`) throw Object.assign(new Error('The exported resume path is invalid.'), { code: 'RESUME_EXPORT_INVALID' });
@@ -424,8 +480,21 @@ export class AgentHost {
     return { fileId, fileName: exported.fileName, mimeType, resumeId: resume.id, resumeRevision: resume.revision as number, sizeBytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') };
   }
 
+  private deletingSessions = new Set<string>();
+
+  /** 删除期间禁止新运行进入；在途运行由 DeleteSessionResources 取消并结算。 */
+  async WithSessionDeletion<T>(sessionId: string, operation: () => Promise<T>): Promise<T> {
+    if (this.deletingSessions.has(sessionId) || this.changingGoals.has(sessionId) || [...this.compactRequests].some(id => this.requestSessions.get(id) === sessionId)) {
+      throw Object.assign(new Error('对话正在压缩或清理，请稍后重试。'), { code: 'RESOURCE_LOCKED' });
+    }
+    this.deletingSessions.add(sessionId);
+    try { return await operation(); }
+    finally { this.deletingSessions.delete(sessionId); }
+  }
+
   /** 会话删除后清除全部会话私有运行态；Tool Ledger 与 Trace 作为外部动作审计继续保留。 */
   async DeleteSessionResources(sessionId: string): Promise<void> {
+    await this.Ready();
     for (const [fileId, asset] of this.generatedAssets) if (asset.sessionId === sessionId) this.generatedAssets.delete(fileId);
     const requestIds = new Set<string>();
     for (const [requestId, owner] of this.requestSessions) {
@@ -439,6 +508,12 @@ export class AgentHost {
       requestIds.add(requestId);
       this.controllers.get(requestId)?.abort();
     }
+    for (const [requestId, owner] of this.executingRunSessions) {
+      if (owner !== sessionId) continue;
+      requestIds.add(requestId); this.controllers.get(requestId)?.abort();
+    }
+    // 等待在途截图保存与取消收尾结算，再删除历史和解除引用，避免迟到写入复活图片保护。
+    await Promise.allSettled([...requestIds].map(requestId => this.runReleases.get(requestId)).filter((work): work is Promise<unknown> => work !== undefined));
     this.histories.delete(sessionId);
     this.tasks.delete(sessionId);
     this.pendingQuestions.delete(sessionId);
@@ -448,6 +523,8 @@ export class AgentHost {
     this.sessionScenarios.delete(sessionId);
     this.sessionAssistantStates.delete(sessionId);
     this.sessionResumeBindings.delete(sessionId);
+    this.sessionGoals.delete(sessionId);
+    this.egoWorkspaces.delete(sessionId);
     this.loadedSkills.delete(sessionId);
     this.loadedSkillResources.delete(sessionId);
     for (const [confirmationId, pending] of this.pendingEdits) {
@@ -469,13 +546,15 @@ export class AgentHost {
       this.documentChanges.Forget(requestId);
     }
     for (const [id, response] of this.interactionDecisions) if (response.sessionId === sessionId) this.interactionDecisions.delete(id);
-    this.SaveState();
+    await this.SaveState();
     await new CompactionArchive(path.join(path.dirname(this.statePath), 'compaction-archives')).RemoveSession(sessionId);
+    await this.business?.ReleaseAgentImages?.(sessionId);
   }
 
   /** 构造官方默认六槽；端口全部由宿主持有。 */
   private CreateDefaults(): any {
     const defaults = this.createDefaultModules({
+      providerFetch: this.providerFetch,
       getConfig: async () => { await this.modelConfigurations.Initialize(); return (await this.credentialPort?.Load?.()) ?? null; },
       resolveModelConfiguration: (provider: string, model: string, baseUrl: string) => this.modelConfigurations.Resolve({ provider: NormalizeProvider(provider), model, baseUrl }),
       saveConfig: async (config: unknown) => { await this.credentialPort?.Save?.(config); },
@@ -592,9 +671,10 @@ export class AgentHost {
     if (this.IsBusy()) throw Object.assign(new Error('Agent 正在运行，请稍后使用浏览器采集岗位。'), { code: 'AGENT_BUSY' });
     this.browserRunId = taskId;
     try {
-      await this.SyncBrowserEngine(true);
-      await this.CloseBrowserTask();
+      await this.ReleaseBrowserSession();
       this.browserSessionId = null;
+      this.browserRuntime.SetWorkspaceScope?.();
+      await this.SyncBrowserEngine(true);
       await this.browserRuntime.SetUnattended?.(false);
       this.browserRuntime.ResetPageReferences();
       return await run(this.browserRuntime);
@@ -604,10 +684,10 @@ export class AgentHost {
     }
   }
 
-  /** 读取不含密钥的会话与任务状态；损坏文件只会回退为空状态。 */
-  private LoadState(): void {
+  /** 异步加载不含密钥的会话与任务状态；迁移或读取失败保留原数据并停止初始化。 */
+  private async LoadState(): Promise<void> {
     try {
-      const state = JSON.parse(readFileSync(this.statePath, 'utf8')) as any;
+      const state = await this.statePersistence.Load() as any;
       this.histories = new Map(Array.isArray(state.histories) ? state.histories : []);
       this.tasks = new Map((Array.isArray(state.tasks) ? state.tasks : []).map(([sessionId, tasks]: [string, any[]]) => [sessionId, new Map(Array.isArray(tasks) ? tasks : [])]));
       this.projectEnvironments = new Map((Array.isArray(state.projectEnvironments) ? state.projectEnvironments : [])
@@ -634,10 +714,21 @@ export class AgentHost {
       this.documentChanges.Restore(state.documentChangeBaselines);
       this.pendingQuestions = new Map(Array.isArray(state.pendingQuestions) ? state.pendingQuestions : []);
       this.pausedRuns = new Map(Array.isArray(state.pausedRuns) ? state.pausedRuns : []);
+      this.sessionGoals = new Map((Array.isArray(state.sessionGoals) ? state.sessionGoals : []).map(([id, goal]: [string, SessionGoal]) =>
+        [id, goal.status === 'running' || goal.status === 'reviewing'
+          ? { ...goal, status: 'paused', reason: '应用已重启，目标进度已保留。继续前请核对上次操作。' } : goal]));
+      this.egoWorkspaces = new Map((Array.isArray(state.egoWorkspaces) ? state.egoWorkspaces : [])
+        .filter((entry: unknown): entry is [string, EgoWorkspaceBinding] => Array.isArray(entry) && typeof entry[0] === 'string'
+          && Number.isSafeInteger(entry[1]?.id) && entry[1].id > 0
+          && /^Avery ego-[a-f0-9-]{36}$/.test(entry[1]?.name)
+          && ['agent', 'delegated', 'released'].includes(entry[1]?.state)));
       this.interactionDecisions = new Map(Array.isArray(state.interactionDecisions) ? state.interactionDecisions : []);
       // 进程中断时执行结果不可猜测，也不能重放有副作用的原操作。
-      for (const run of this.pausedRuns.values()) {
-        if (run.status === 'executing') {
+      for (const [requestId, run] of this.pausedRuns) {
+        if (run.cancelled) {
+          this.DiscardPendingInteraction(run);
+          this.pausedRuns.delete(requestId);
+        } else if (run.status === 'executing') {
           run.result = { role: 'tool', tool_call_id: run.checkpoint.pendingCall.id, content: JSON.stringify({ ok: false, code: 'STATUS_UNKNOWN', message: 'The application stopped while handling this interaction. Verify the target state; do not repeat the action automatically.' }) };
           run.status = 'ready';
         } else if (run.status === 'resuming') run.status = 'ready';
@@ -652,14 +743,17 @@ export class AgentHost {
       this.loadedSkillResources = new Map((Array.isArray(state.loadedSkillResources) ? state.loadedSkillResources : [])
         .filter((entry: unknown) => Array.isArray(entry) && typeof entry[0] === 'string' && Array.isArray(entry[1]))
         .map(([sessionId, resources]: [string, unknown[]]) => [sessionId, new Set(resources.filter((entry): entry is string => typeof entry === 'string'))]));
-    } catch {
-      // First launch or corrupted state starts with empty runtime data.
+      this.statePersistence.Capture(this.SnapshotState());
+      await this.statePersistence.Flush();
+      this.stateLoaded = true;
+    } catch (error) {
+      throw Object.assign(new Error('无法加载 Agent 运行状态，原数据已保留。', { cause: error }), { code: 'STORAGE_ERROR', retryable: false });
     }
   }
 
-  /** 原子写入不含 API Key 的受保护运行状态。 */
-  private SaveState(): void {
-    const payload = {
+  /** 只组装引用；大型历史和快照不在 Backend 做 JSON 编码。 */
+  private SnapshotState(): Record<string, unknown> {
+    return {
       histories: [...this.histories.entries()],
       tasks: [...this.tasks.entries()].map(([sessionId, tasks]) => [sessionId, [...tasks.entries()]]),
       projectEnvironments: [...this.projectEnvironments.entries()],
@@ -674,20 +768,31 @@ export class AgentHost {
       documentChangeBaselines: this.documentChanges.Snapshot(),
       pendingQuestions: [...this.pendingQuestions.entries()],
       pausedRuns: [...this.pausedRuns.entries()],
+      sessionGoals: [...this.sessionGoals.entries()].map(([id, goal]) => {
+        const activeSince = this.runtimeControls.get(goal.requestId)?.goalActiveSince;
+        // 持久快照计入最后一次落盘前的活动时间；内存累加仍统一在运行片段结束时结算。
+        return [id, activeSince ? { ...goal, activeMs: goal.activeMs + Math.max(0, Date.now() - activeSince) } : goal];
+      }),
+      egoWorkspaces: [...this.egoWorkspaces.entries()],
       interactionDecisions: [...this.interactionDecisions.entries()],
       requestSessions: [...this.requestSessions.entries()],
       runSnapshots: [...this.runSnapshots.entries()],
       loadedSkills: [...this.loadedSkills.entries()].map(([sessionId, skills]) => [sessionId, [...skills.entries()]]),
       loadedSkillResources: [...this.loadedSkillResources.entries()].map(([sessionId, resources]) => [sessionId, [...resources]]),
     };
-    const temporaryPath = `${this.statePath}.tmp`;
-    mkdirSync(path.dirname(this.statePath), { recursive: true });
-    writeFileSync(temporaryPath, JSON.stringify(payload), 'utf8');
-    renameSync(temporaryPath, this.statePath);
+  }
+
+  /** 关键节点等待 Worker 的事务回执；失败保持待提交补丁，不能把未知提交当作未发生。 */
+  private async SaveState(): Promise<void> {
+    await this.stateReady;
+    this.statePersistence.Capture(this.SnapshotState());
+    await this.statePersistence.Flush();
+    for (const [requestId, run] of this.pausedRuns) if (run.cancelled) this.pausedRuns.delete(requestId);
   }
 
   /** 保存经校验的模型配置，API Key 经端口移交主进程 safeStorage 加密落盘。 */
   async Configure(input: unknown): Promise<any> {
+    await this.Ready();
     this.EnsureModulesReady(); await this.modelConfigurations.Initialize();
     const result = await this.modules.modelProvider.Configure(input);
     const status = await this.modules.modelProvider.GetStatus(result.provider);
@@ -714,6 +819,7 @@ export class AgentHost {
    * 不静默归一化——归一化会把其它供应商的模型列表交出去并被合并进错误的供应商。
    */
   async GetModels(provider?: unknown): Promise<any> {
+    await this.Ready();
     this.EnsureModulesReady();
     await this.modelConfigurations.Initialize();
     const result: Awaited<ReturnType<AgentModules['modelProvider']['GetModels']>> = await this.modules.modelProvider.GetModels(provider === undefined ? 'DeepSeek' : typeof provider === 'string' ? provider : String(provider));
@@ -722,10 +828,9 @@ export class AgentHost {
 
   /** 返回全部已配置 Provider 的模型目录；不包含 Base URL 之外的私有配置或凭据。 */
   async GetProviderCatalog(): Promise<any> {
+    await this.Ready();
     this.EnsureModulesReady(); await this.modelConfigurations.Initialize();
     const result: Awaited<ReturnType<AgentModules['modelProvider']['GetProviderCatalog']>> = await this.modules.modelProvider.GetProviderCatalog();
-    // 目录刷新只更新下一次读取与下一 Run；离线时当前目录和配置继续可用。
-    void this.modelConfigurations.Refresh().catch(() => this.modules.observability.RecordLog('WARN', 'model.directory.refresh', '公开模型目录暂时不可用，沿用本地快照。'));
     return { providers: result.providers.map((entry) => {
       const modelConfigurations = [...new Set([...entry.models, entry.model])].map((model) => this.modelConfigurations.Resolve({ provider: NormalizeProvider(entry.provider), model, baseUrl: entry.baseUrl }));
       const active = modelConfigurations.find((item) => item.model === entry.model)!;
@@ -734,8 +839,14 @@ export class AgentHost {
   }
   GetModelConfiguration(input: unknown): Promise<import('@avery/agent-sdk').ResolvedModelConfiguration> { return this.modelConfigurations.Get(input); }
   SaveModelConfiguration(input: unknown): Promise<import('@avery/agent-sdk').ResolvedModelConfiguration> { return this.modelConfigurations.Save(input); }
+  GetGoalModelTiers() { return this.modelConfigurations.GetGoalModelTiers(); }
+  SaveGoalModelTiers(input: unknown) {
+    this.EnsureModulesReady();
+    return this.modelConfigurations.SaveGoalModelTiers(input, tier => AssertGoalModel(this.modules.modelProvider, tier));
+  }
   /** 返回脱敏的配置状态。 */
   async GetStatus(): Promise<any> {
+    await this.Ready();
     await this.modelConfigurations.Initialize();
     const status = await this.modules.modelProvider.GetStatus();
     const modelConfiguration = this.modelConfigurations.Resolve({ provider: NormalizeProvider(status.provider), model: status.model, baseUrl: status.baseUrl });
@@ -745,18 +856,18 @@ export class AgentHost {
   /** 持久化写工具账本：每次状态迁移与会话状态一并原子落盘，供重启后幂等回放与对账。 */
   private CreateToolLedgerPort(): any {
     return {
-      Start: (entry: any) => {
+      Start: async (entry: any) => {
         this.toolLedger.set(entry.ledgerId, { ...entry, status: 'started' });
-        this.SaveState();
+        await this.SaveState();
       },
-      Finish: (ledgerId: string, status: string, extra?: any) => {
+      Finish: async (ledgerId: string, status: string, extra?: any) => {
         const current = this.toolLedger.get(ledgerId);
         if (!current) throw new Error(`Tool Ledger entry ${ledgerId} does not exist.`);
         if (current.status === 'status_unknown' && status !== 'status_unknown') {
           throw new Error(`Tool Ledger entry ${ledgerId} requires explicit reconciliation before leaving status_unknown.`);
         }
         this.toolLedger.set(ledgerId, { ...current, status, ...(extra ?? {}) });
-        this.SaveState();
+        await this.SaveState();
       },
       FindByIdempotencyKey: (idempotencyKey: string) => [...this.toolLedger.values()]
         .find((entry: any) => entry.idempotencyKey === idempotencyKey && entry.status !== 'started'),
@@ -767,19 +878,99 @@ export class AgentHost {
   async Cancel(requestId: string): Promise<any> {
     const controller = this.controllers.get(requestId);
     controller?.abort();
+    if (controller && !this.stateLoaded) return { cancelled: true };
+    await this.Ready();
     if (this.compactRequests.has(requestId)) return { cancelled: Boolean(controller) };
     const paused = this.pausedRuns.get(requestId);
     if (paused) {
-      this.pausedRuns.delete(requestId);
+      const sessionId = paused.input.sessionId;
+      const goal = this.sessionGoals.get(sessionId);
+      if (goal?.requestId === requestId) { goal.status = 'cancelled'; goal.reason = '已停止目标。'; }
+      // 替换对象身份先阻断仍在 await 中的旧恢复流程；写盘失败也不能让迟到批准或回执复活任务。
+      const result: AgentMessage = paused.result ?? { role: 'tool', tool_call_id: paused.checkpoint.pendingCall.id, content: JSON.stringify({ ok: false, code: paused.status === 'executing' ? 'STATUS_UNKNOWN' : 'CANCELLED', message: 'The user cancelled this run. Do not resume or repeat its pending action.' }) };
+      this.pausedRuns.set(requestId, { ...paused, cancelled: true, status: 'ready', result });
       this.DiscardPendingInteraction(paused);
-      const result: AgentMessage = { role: 'tool', tool_call_id: paused.checkpoint.pendingCall.id, content: JSON.stringify({ ok: false, code: paused.status === 'executing' ? 'STATUS_UNKNOWN' : 'CANCELLED', message: 'The user cancelled this run. Do not resume or repeat its pending action.' }) };
-      this.histories.set(paused.input.sessionId, [...(this.histories.get(paused.input.sessionId) ?? []), result, ...paused.checkpoint.remainingResults]);
-      this.SaveState();
-      this.Emit({ type: 'cancelled', requestId, sessionId: paused.input.sessionId });
-      await this.conversationRecorders.get(requestId)?.Flush();
-      if (this.browserSessionId === paused.input.sessionId && !controller) await this.CloseBrowserTask();
+      const history = this.histories.get(sessionId) ?? [];
+      const settled = new Set(history.filter((message) => message.role === 'tool').map((message) => message.tool_call_id));
+      const additions = [result, ...paused.checkpoint.remainingResults].filter((message) => {
+        if (message.role !== 'tool' || !message.tool_call_id) return true;
+        if (settled.has(message.tool_call_id)) return false;
+        settled.add(message.tool_call_id);
+        return true;
+      });
+      if (!paused.cancelled) this.histories.set(sessionId, [...history, ...additions]);
+      try { await this.SaveState(); }
+      catch (error) {
+        this.modules.observability.RecordLog('ERROR', 'conversation.cancel_save_failed', error instanceof Error ? error.message : '取消状态保存失败');
+        this.Emit({ type: 'conversation_save_error', requestId, sessionId, message: '本次取消已生效，但取消状态尚未保存；请在存储恢复后再次取消或继续对话以保存状态。' });
+      }
+      if (!paused.cancelled) {
+        this.modules.observability.FinishTrace(requestId, 'cancelled', 'Cancelled by user.');
+        this.Emit({ type: 'cancelled', requestId, sessionId });
+        if (goal?.requestId === requestId) this.EmitGoalState(sessionId);
+      }
+      try { await this.conversationRecorders.get(requestId)?.Flush(); }
+      catch (error) { this.modules.observability.RecordLog('ERROR', 'conversation.cancel_flush_failed', error instanceof Error ? error.message : '取消终态保存失败'); }
+      finally { if (this.browserSessionId === sessionId && !controller) await this.CloseBrowserTask(); }
     }
-    return { cancelled: Boolean(controller || paused) };
+    const goalEntry = [...this.sessionGoals].find(([, goal]) => goal.requestId === requestId && ['running', 'reviewing', 'waiting', 'paused'].includes(goal.status));
+    if (!paused && !controller && goalEntry) {
+      const [sessionId, goal] = goalEntry;
+      if (this.executingSessions.has(sessionId)) throw Object.assign(new Error('目标正在恢复，请在运行中停止。'), { code: 'AGENT_BUSY' });
+      goal.status = 'cancelled';
+      goal.reason = '已停止目标。';
+      await this.SaveState();
+      this.EmitGoalState(sessionId);
+      if (!this.browserRunId && this.browserSessionId === sessionId) await this.CloseBrowserTask();
+    }
+    return { cancelled: Boolean(controller || paused || goalEntry) };
+  }
+
+  /** 目标操作绑定当前会话和运行片段。停止后等待释放，再编辑或删除，避免迟到的运行结果覆盖新状态。 */
+  async ChangeGoal(input: unknown): ReturnType<DesktopAgentBridge['ChangeGoal']> {
+    const change = AgentGoalChangeSchema.parse(input);
+    const { sessionId, requestId, action } = change;
+    await this.Ready();
+    const goal = this.sessionGoals.get(sessionId);
+    if (!goal || goal.requestId !== requestId || this.deletingSessions.has(sessionId)) {
+      throw Object.assign(new Error('当前目标已变化，请重试。'), { code: 'REVISION_CONFLICT' });
+    }
+    const pending = this.pausedRuns.get(requestId);
+    const release = this.runReleases.get(requestId);
+    if (this.changingGoals.has(sessionId) || (this.executingSessions.has(sessionId) && !release)
+      || (pending && (action !== 'delete' || this.interactionFlights.has(pending.interactionId)))) {
+      throw Object.assign(new Error('请先处理当前交互或等待当前操作结束。'), { code: 'AGENT_BUSY' });
+    }
+    this.changingGoals.add(sessionId);
+    try {
+      this.controllers.get(requestId)?.abort(action === 'delete' ? undefined : GoalPausedByUser);
+      await release?.catch(() => undefined);
+      if (this.sessionGoals.get(sessionId) !== goal || this.deletingSessions.has(sessionId)) {
+        throw Object.assign(new Error('当前目标已变化，请重试。'), { code: 'REVISION_CONFLICT' });
+      }
+      if (action === 'delete') {
+        await this.Cancel(requestId);
+        this.sessionGoals.delete(sessionId);
+        await this.SaveState();
+        this.Emit({ type: 'goal_updated', sessionId, requestId });
+      } else if (change.action === 'edit') {
+        if (this.pausedRuns.has(requestId)) throw Object.assign(new Error('请先处理当前交互，再编辑目标。'), { code: 'AGENT_BUSY' });
+        // 保留用户消息与执行证据，移除针对旧目标生成的内部审核反馈。
+        const history = this.histories.get(sessionId);
+        if (history) this.histories.set(sessionId, history.filter(message => message.metadata?.kind !== 'goal_feedback' || message.metadata.goalId !== goal.id));
+        goal.objective = change.objective;
+        goal.status = 'paused';
+        goal.reason = GoalPausedByUser.message;
+        goal.lastCandidate = undefined;
+        goal.lastEvidenceHash = undefined;
+        goal.repeatedReviews = 0;
+        await this.SaveState();
+        this.EmitGoalState(sessionId);
+      }
+      return { goal: this.PublicGoalState(sessionId) };
+    } finally {
+      this.changingGoals.delete(sessionId);
+    }
   }
 
   /** 丢弃已消费或取消的交互提案；不删除审计账本，也不把未执行操作记作成功。 */
@@ -793,7 +984,11 @@ export class AgentHost {
   /** 决定已落盘但 Kernel 尚未接收结果时，补齐原工具协议并结束旧 Run；恢复不重放外部动作。 */
   private async CompleteResolvedInteraction(run: PausedAgentRun, message: string): Promise<void> {
     const { requestId, sessionId } = run.input;
-    const recorder = await this.RestoreConversationRecorder(requestId, sessionId);
+    let recorder = this.conversationRecorders.get(requestId);
+    try { recorder ??= await this.RestoreConversationRecorder(requestId, sessionId); }
+    catch {
+      this.Emit({ type: 'conversation_save_error', requestId, sessionId, message: '无法恢复原会话记录；任务仍会结束，已执行的操作不会重放。' });
+    }
     if (this.pausedRuns.get(requestId) !== run) return;
     if (!run.result || run.status !== 'ready') throw Object.assign(new Error('该交互仍在处理中。'), { code: 'AGENT_BUSY' });
     const decision = this.interactionDecisions.get(run.interactionId);
@@ -812,7 +1007,7 @@ export class AgentHost {
     this.histories.set(sessionId, [...history, ...additions]);
     this.pausedRuns.delete(requestId);
     this.DiscardPendingInteraction(run);
-    this.SaveState();
+    await this.SaveState();
     this.modules.observability.AppendTraceEvent(requestId, 'interaction_recovery_completed', { interactionId: run.interactionId, toolCallId: run.checkpoint.pendingCall.id });
     this.modules.observability.FinishTrace(requestId, 'failed', ScrubTraceContent(message));
     recorder?.Accept({ type: 'error', requestId, sessionId, message });
@@ -822,17 +1017,20 @@ export class AgentHost {
 
   /** 统一审批与问答入口；决定只绑定原等待点，重试不能再次执行原操作。 */
   async RespondToInteraction(value: unknown): Promise<{ accepted: boolean; requestId: string; replayed?: boolean }> {
+    await this.Ready();
     const parsed = AgentInteractionResponseSchema.safeParse(value);
     if (!parsed.success) throw Object.assign(new Error('交互响应格式无效。'), { code: 'VALIDATION_ERROR' });
     const response = parsed.data;
     // 卡片事件可能先于 Kernel 检查点；等待宿主释放，不能把用户的早确认静默丢弃。
     await this.runReleases.get(response.requestId);
+    if (this.changingGoals.has(response.sessionId)) throw Object.assign(new Error('目标正在调整，请稍后重试。'), { code: 'AGENT_BUSY' });
     const previous = this.interactionDecisions.get(response.interactionId);
     const signature = (decision: AgentInteractionResponse) => JSON.stringify({ ...decision, ...(decision.kind === 'answer' ? { answers: Object.fromEntries(Object.entries(decision.answers).sort(([a], [b]) => a.localeCompare(b))) } : {}) });
     if (previous && signature(previous) !== signature(response)) throw Object.assign(new Error('该交互已经提交了不同的决定。'), { code: 'REVISION_CONFLICT' });
     const running = this.interactionFlights.get(response.interactionId);
     if (running) return running;
     const run = this.pausedRuns.get(response.requestId);
+    if (run?.cancelled) throw Object.assign(new Error('任务已取消，不能恢复原交互。'), { code: 'CANCELLED' });
     if (!run || run.interactionId !== response.interactionId) {
       if (previous) return { accepted: true, requestId: response.requestId, replayed: true };
       throw Object.assign(new Error('该交互已失效或任务已取消，请刷新会话状态。'), { code: 'VALIDATION_ERROR' });
@@ -843,9 +1041,12 @@ export class AgentHost {
       const questions = this.pendingQuestions.get(response.sessionId) as Array<{ id: string }> | undefined;
       if (!previous && (!Array.isArray(questions) || questions.length !== Object.keys(response.answers).length || questions.some((question) => !response.answers[question.id]?.trim()))) throw Object.assign(new Error('请回答全部问题，且不要提交额外的问题 ID。'), { code: 'VALIDATION_ERROR' });
     }
-    this.interactionDecisions.set(response.interactionId, response);
-    this.SaveState();
-    const promise = this.ResumeInteraction(run, response).finally(() => this.interactionFlights.delete(response.interactionId));
+    // 持久化已改为异步；必须在首次 await 前登记整个决定流程，避免两个点击同时执行同一批准动作。
+    const promise = (async () => {
+      this.interactionDecisions.set(response.interactionId, response);
+      await this.SaveState();
+      return this.ResumeInteraction(run, response);
+    })().finally(() => this.interactionFlights.delete(response.interactionId));
     this.interactionFlights.set(response.interactionId, promise);
     return promise;
   }
@@ -864,7 +1065,7 @@ export class AgentHost {
     this.Emit({ type: 'run_resumed', requestId, sessionId, confirmationId: response.interactionId });
     if (!run.result) {
       run.status = 'executing';
-      this.SaveState();
+      await this.SaveState();
       const controller = new AbortController();
       this.controllers.set(requestId, controller);
       let payload: Record<string, unknown>;
@@ -904,6 +1105,10 @@ export class AgentHost {
         return { accepted: true, requestId };
       }
       if (payload.code === 'USER_REJECTED') payload.message = 'The user rejected this action. Do not repeat it or ask for the same confirmation unless the user explicitly requests it again.';
+      const goal = this.sessionGoals.get(sessionId);
+      if (goal?.requestId === requestId && (payload.status === 'status_unknown' || /STATUS_UNKNOWN/.test(String(payload.code ?? '')))) {
+        goal.outcomeUnknown = true;
+      }
       if (run.checkpoint.pendingCall.function.name === 'BrowserRunScript') {
         // 只结算被冻结的子动作；保留此前完成步骤，恢复后由 Agent 重新观察并规划，绝不重跑脚本。
         const stopped = JSON.parse(run.checkpoint.pendingResult.content);
@@ -914,13 +1119,13 @@ export class AgentHost {
       run.result = { role: 'tool', tool_call_id: run.checkpoint.pendingCall.id, content: JSON.stringify(payload) };
       run.status = 'ready';
       this.DiscardPendingInteraction(run);
-      this.SaveState();
+      await this.SaveState();
       this.modules.observability.AppendTraceEvent(requestId, 'interaction_resolved', { interactionId: run.interactionId, toolCallId: run.checkpoint.pendingCall.id, kind: response.kind, approved: response.kind === 'approval' ? response.approved : undefined, ok: payload.ok, code: payload.code });
       await recorder?.ResolveInteraction(response.kind === 'answer' || response.approved, payload.ok === true ? 'succeeded' : payload.code === 'USER_REJECTED' ? 'skipped' : 'failed', response.kind === 'answer' ? '已收到用户回答' : undefined, true);
     }
     this.DiscardPendingInteraction(run);
     run.status = 'resuming';
-    this.SaveState();
+    await this.SaveState();
     try { await this.StartRun(run.input, run); }
     catch (error) {
       const message = error instanceof Error ? error.message : '恢复任务失败，请发送新消息继续。';
@@ -936,6 +1141,7 @@ export class AgentHost {
 
   /** 更新当前 Run 的确认权限；不扩展场景白名单、资源授权或工具能力。 */
   async UpdateConfirmationMode(requestId: string, value: unknown): Promise<any> {
+    await this.Ready();
     const control = this.runtimeControls.get(requestId);
     if (!control) return { updated: false, reason: 'not_running' };
     const confirmationMode = NormalizeConfirmationMode(value);
@@ -950,6 +1156,7 @@ export class AgentHost {
 
   /** 保存会话级思考强度；当前 Run 保持启动时快照，下一 Run 使用新值。 */
   async UpdateReasoningEffort(sessionId: string, value: unknown): Promise<any> {
+    await this.Ready();
     const normalizedSessionId = RequireString(sessionId, 'sessionId', 200);
     const reasoningEffort = NormalizeReasoningEffort(value);
     const current = await this.RestoreSessionAssistantState(normalizedSessionId);
@@ -959,6 +1166,7 @@ export class AgentHost {
 
   /** 应用或丢弃待确认的简历补丁：接受时经简历写端口落库并释放 Agent 锁。 */
   async ConfirmResumeEdit(confirmationId: string, accepted: boolean): Promise<any> {
+    await this.Ready();
     const pending = this.pendingEdits.get(confirmationId) as { kind?: string; sessionId?: string; resumeId?: string; ownerId?: string } | undefined;
     const requestId = pending?.ownerId?.replace(/^agent-/, '');
     if (requestId && pending?.sessionId) await this.RestoreConversationRecorder(requestId, pending.sessionId);
@@ -977,22 +1185,22 @@ export class AgentHost {
       if (requestId && !this.pendingEdits.has(confirmationId)) await this.SettleConversationInteraction(requestId, pending?.sessionId, accepted, 'failed', '简历确认未能完成，请核对当前简历后继续。');
       throw error;
     } finally {
-      this.SaveState();
+      await this.SaveState();
     }
     if (result.applied && pending?.kind === 'edit' && pending.sessionId && pending.resumeId) {
       const current = await this.resumeReadPort.ReadCurrent(pending.resumeId);
       if (current) {
         this.sessionResumeBindings.set(pending.sessionId, { resumeId: current.id, ...(current.revision !== undefined ? { revision: current.revision } : {}), boundAt: Date.now() });
-        this.SaveState();
+        await this.SaveState();
       }
     }
-    this.SaveState();
+    await this.SaveState();
     if (requestId) await this.SettleConversationInteraction(requestId, pending?.sessionId, result.applied === true);
     return result;
   }
 
   /** 冻结 CronTask 创建参数；简历是可选授权资源，纯岗位搜索和 JD 阅读不得被强制绑定。 */
-  private PrepareCronTask(input: unknown, context: { requestId: string; resumeId?: string; profileIds?: string[] }): { confirmationId: string; summary: string; scenarioId: 'default' | 'application' } {
+  private async PrepareCronTask(input: unknown, context: { requestId: string; resumeId?: string; profileIds?: string[] }): Promise<{ confirmationId: string; summary: string; scenarioId: 'default' | 'application' }> {
     const parsed = CreateCronTaskSchema.parse(input);
     const confirmationId = `cron-confirmation-${randomUUID()}`;
     const browserTaskGrantDraft = parsed.scenarioId === 'application' ? InferBrowserTaskGrant(parsed, context) : undefined;
@@ -1000,12 +1208,13 @@ export class AgentHost {
       ? `系统可在计划时间唤醒或后台启动应用。${BrowserGrantSummary(browserTaskGrantDraft!)}确认创建即冻结以上 BrowserTaskGrant，并允许任务在整个周期内以无人值守模式执行；执行时不会逐项确认。授权只属于此任务，任务结束、删除或手动撤销后失效；登录失效、验证码或站点风控时任务会暂停。${context.resumeId ? '任务可通过 ReadResume 读取创建前已绑定的简历；第一版不携带临时附件，网页要求上传文件时会标记为需要你接管。' : '当前未绑定简历；任何需要简历内容或投递状态写入的步骤都必须停止并请你接管。'}`
       : '系统可在计划时间唤醒或后台启动应用。该计划将在整个周期内以无人值守完全信任模式创建新会话并执行指定消息；执行时不会逐项确认。';
     this.pendingCronTasks.set(confirmationId, { input: parsed, resumeId: context.resumeId, browserTaskGrantDraft, requestId: context.requestId, createdAt: Date.now(), summary });
-    this.SaveState();
+    await this.SaveState();
     return { confirmationId, summary, scenarioId: parsed.scenarioId };
   }
 
   /** 用户确认整个 CronTask 周期；与完全信任提交共用冻结提案和调度失败回滚。 */
   async ConfirmCronTask(confirmationId: string, accepted: boolean): Promise<any> {
+    await this.Ready();
     return this.ApplyCronTaskCreation(confirmationId, accepted, true);
   }
 
@@ -1015,7 +1224,7 @@ export class AgentHost {
     const pending = this.pendingCronTasks.get(normalizedId);
     if (!pending) throw Object.assign(new Error('CronTask confirmation is unavailable or expired.'), { code: 'VALIDATION_ERROR' });
     this.pendingCronTasks.delete(normalizedId);
-    this.SaveState();
+    await this.SaveState();
     if (!accepted) {
       if (settleInteraction) await this.SettleConversationInteraction(pending.requestId, this.requestSessions.get(pending.requestId), false);
       return { created: false };
@@ -1050,6 +1259,7 @@ export class AgentHost {
 
   /** 执行被冻结的浏览器提案；确认后仍重新校验页面 revision 和目标引用，拒绝模型重建动作。 */
   async ConfirmBrowserAction(confirmationId: string, accepted: boolean, execution: { signal?: AbortSignal; sessionId?: string } = {}): Promise<any> {
+    await this.Ready();
     const normalizedId = RequireString(confirmationId, 'confirmationId', 200);
     if (this.browserRunId) throw Object.assign(new Error('Another browser Agent run is already active.'), { code: 'AGENT_BUSY' });
     const confirmationRunId = `confirmation:${normalizedId}`;
@@ -1066,7 +1276,7 @@ export class AgentHost {
       || pending.sessionId !== execution.sessionId
       || (accepted && (pending.sessionId !== this.currentSessionId || pendingTaskId !== currentTaskId))) {
       this.pendingBrowserActions.delete(normalizedId);
-      this.SaveState();
+      await this.SaveState();
       throw Object.assign(new Error('Browser confirmation belongs to a different session or browser task.'), { code: 'BROWSER_CONFIRMATION_SESSION_MISMATCH' });
     }
     const binding = pending.binding;
@@ -1148,13 +1358,13 @@ export class AgentHost {
       )))
     if (!bindingMatches && !legacyBindingMatches) {
       this.pendingBrowserActions.delete(normalizedId);
-      this.SaveState();
+      await this.SaveState();
       throw Object.assign(new Error('Browser confirmation proposal binding is invalid or stale.'), { code: 'BROWSER_CONFIRMATION_BINDING_MISMATCH' });
     }
     // Consume before the first await. Two concurrent clicks must never both
     // observe the same pending record and execute the external action.
     this.pendingBrowserActions.delete(normalizedId);
-    this.SaveState();
+    await this.SaveState();
     // 拒绝不会操作页面；页面变化、关闭或提案过期不能把用户的“不执行”改成可重试的动作错误。
     if (!accepted) {
       if (pending.proposal?.toolName === 'ContactBossJobs') await this.bossContactPort?.Cancel(pending.proposal);
@@ -1304,15 +1514,20 @@ export class AgentHost {
     });
   }
 
-  private async SyncBrowserEngine(force = false): Promise<void> {
+  private async SyncBrowserEngine(force = false, signal?: AbortSignal, boundEngine?: BrowserEngine): Promise<BrowserEngine | undefined> {
     // 设置页可能在投递 Run 期间刷新状态；此时只保存偏好，不得关闭正在使用的浏览器。
-    if (this.browserRunId && !force) return;
-    const settings = (await this.business?.GetStoredSettings?.()) ?? {};
-    const engine = settings.browserEngine === 'chrome' || settings.browserEngine === 'edge' || settings.browserEngine === 'ego'
+    if (!force && (this.browserRunId || this.browserSessionId && this.browserRuntime.GetBrowserTaskId?.())) return undefined;
+    const reading = Promise.resolve(this.business?.GetStoredSettings?.());
+    const settings = (await (signal ? AwaitPreparation(reading, signal) : reading)) ?? {};
+    signal?.throwIfAborted();
+    if (!force && (this.browserRunId || this.browserSessionId && this.browserRuntime.GetBrowserTaskId?.())) return undefined;
+    const engine = boundEngine ?? (settings.browserEngine === 'chrome' || settings.browserEngine === 'edge' || settings.browserEngine === 'ego'
       ? settings.browserEngine
-      : this.defaultBrowserEngine;
+      : this.defaultBrowserEngine);
     await this.browserRuntime.SetEngine?.(engine);
+    signal?.throwIfAborted();
     await this.browserRuntime.SetCloseTaskTabs?.(settings.closeTaskTabs !== false);
+    return engine;
   }
 
   /** 返回浏览器运行时状态；显式探测会做只读握手，Renderer 始终看不到本地物理路径。 */
@@ -1416,10 +1631,13 @@ export class AgentHost {
   }
 
   /** 绑定单会话单项目目录；会话一旦绑定，后续请求不得切换到其它目录；项目只经 projectId 掩码解析真实路径。 */
-  async BindProjectEnvironment(sessionId: string, projectId: string): Promise<string | null> {
+  async BindProjectEnvironment(sessionId: string, projectId: string, signal?: AbortSignal): Promise<string | null> {
+    await (signal ? AwaitPreparation(this.Ready(), signal) : this.Ready());
     const existing = this.projectEnvironments.get(sessionId) ?? null;
     if (!projectId) return existing?.rootPath ?? null;
-    const requested = (await this.resolveProjectEnvironment(projectId)) ?? null;
+    const read = Promise.resolve(this.resolveProjectEnvironment(projectId));
+    const requested = (await (signal ? AwaitPreparation(read, signal) : read)) ?? null;
+    signal?.throwIfAborted();
     const requestedBinding = NormalizeProjectBinding(requested);
     if (requestedBinding && !requestedBinding.projectId) requestedBinding.projectId = projectId;
     if (existing && requestedBinding && existing.rootPath !== requestedBinding.rootPath) throw new Error('A project environment is already bound to this session. Create a new conversation to switch projects.');
@@ -1428,14 +1646,16 @@ export class AgentHost {
       const stat = statSync(project.rootPath);
       if (!stat.isDirectory()) throw new Error('The selected project environment is unavailable.');
       this.projectEnvironments.set(sessionId, project);
-      this.SaveState();
+      await this.SaveState();
     }
     return project?.rootPath ?? null;
   }
 
   /** 从会话快照的可序列化部分读取偏好，工作空间数据库优先于本机运行态。 */
-  private async ReadPersistedSessionAssistantState(sessionId: string): Promise<SessionAssistantState | null> {
-    const stored = await this.business?.GetConversationSnapshots?.(sessionId);
+  private async ReadPersistedSessionAssistantState(sessionId: string, signal?: AbortSignal): Promise<SessionAssistantState | null> {
+    const read = Promise.resolve(this.business?.GetConversationSnapshots?.(sessionId));
+    const stored = await (signal ? AwaitPreparation(read, signal) : read);
+    signal?.throwIfAborted();
     if (stored?.toolSnapshotJson) {
       try {
         const combined = JSON.parse(stored.toolSnapshotJson);
@@ -1451,59 +1671,43 @@ export class AgentHost {
     return this.sessionAssistantStates.get(sessionId) ?? null;
   }
 
-  /** 解析已保存模型：无效值回退当前 Provider 默认；网络不可用时保留本地结构校验后的选择。 */
-  private async ResolvePersistedSessionModel(value: unknown, provider: SupportedProvider, status: any): Promise<string> {
+  /** 用本地供应商配置校验会话模型，无效值回退到该供应商默认模型。 */
+  private ResolvePersistedSessionModel(value: unknown, provider: SupportedProvider): string {
     const fallback = this.modules.modelProvider.ResolveRequestModel(undefined, provider);
     if (typeof value !== 'string' || !value.trim()) return fallback;
-    let model: string;
     try {
-      model = this.modules.modelProvider.ResolveRequestModel(value.trim(), provider);
+      return this.modules.modelProvider.ResolveRequestModel(value.trim(), provider);
     } catch {
       return fallback;
-    }
-    // /models 是 DeepSeek 的在线校验能力；MiMo 允许手工添加官方列表之外的新模型，会话恢复不按列表剔除。
-    if (!status.configured || provider !== 'DeepSeek') return model;
-    try {
-      const result = await this.modules.modelProvider.GetModels(provider);
-      const models = Array.isArray(result?.models) ? result.models.filter((item: unknown): item is string => typeof item === 'string') : [];
-      if (!models.length || models.includes(model)) return model;
-      if (models.includes(fallback)) return fallback;
-      const providerFallback = models.find((item: string) => {
-        try {
-          return this.modules.modelProvider.ResolveRequestModel(item, provider) === item;
-        } catch {
-          return false;
-        }
-      });
-      return providerFallback ?? fallback;
-    } catch {
-      // /models 是在线能力；暂时无法联网时不把结构有效的会话选择误判为失效。
-      return model;
     }
   }
 
   /** 恢复并校验会话偏好，模型回退后立即写回会话快照，避免下次重载重复命中失效值。 */
-  private async RestoreSessionAssistantState(sessionId: string): Promise<SessionAssistantState> {
-    const stored = await this.ReadPersistedSessionAssistantState(sessionId);
-    const activeStatus = await this.modules.modelProvider.GetStatus();
+  private async RestoreSessionAssistantState(sessionId: string, signal?: AbortSignal): Promise<SessionAssistantState> {
+    const read = <T>(work: Promise<T>) => signal ? AwaitPreparation(work, signal) : work;
+    const stored = await read(this.ReadPersistedSessionAssistantState(sessionId, signal));
+    const activeStatus = await read((this.modules as AgentModules).modelProvider.GetStatus());
     const provider = stored?.provider ?? NormalizeProvider(activeStatus.provider);
-    const status = await this.modules.modelProvider.GetStatus(provider);
     const next: SessionAssistantState = {
       provider,
-      model: await this.ResolvePersistedSessionModel(stored?.model, provider, status),
+      model: this.ResolvePersistedSessionModel(stored?.model, provider),
       confirmationMode: stored?.confirmationMode ?? 'always_confirm',
       reasoningEffort: stored?.reasoningEffort ?? 'medium',
     };
+    signal?.throwIfAborted();
     if (!stored || stored.provider !== next.provider || stored.model !== next.model || stored.confirmationMode !== next.confirmationMode || stored.reasoningEffort !== next.reasoningEffort) {
-      await this.PersistSessionAssistantState(sessionId, next);
+      await this.PersistSessionAssistantState(sessionId, next, signal);
     }
     return next;
   }
 
   /** 将会话偏好并入既有快照包，绝不覆盖会话前缀、工具、Skill 或场景冻结信息。 */
-  private async PersistSessionAssistantState(sessionId: string, state: SessionAssistantState): Promise<void> {
-    this.sessionAssistantStates.set(sessionId, state);
+  private async PersistSessionAssistantState(sessionId: string, state: SessionAssistantState, signal?: AbortSignal): Promise<void> {
     const cached = this.sessionSnapshots.get(sessionId);
+    const read = Promise.resolve(cached ? undefined : this.business?.GetConversationSnapshots?.(sessionId));
+    const stored = await (signal ? AwaitPreparation(read, signal) : read);
+    signal?.throwIfAborted();
+    this.sessionAssistantStates.set(sessionId, state);
     if (cached) {
       await this.business?.SetConversationSnapshots?.(sessionId, {
         toolSnapshotJson: JSON.stringify({
@@ -1515,18 +1719,17 @@ export class AgentHost {
           assistantState: state,
         }),
       });
-      this.SaveState();
+      await this.SaveState();
       return;
     }
-    const stored = await this.business?.GetConversationSnapshots?.(sessionId);
     if (!stored?.toolSnapshotJson) {
-      this.SaveState();
+      await this.SaveState();
       return;
     }
     try {
       const combined = JSON.parse(stored.toolSnapshotJson);
       if (!combined || typeof combined !== 'object' || Array.isArray(combined)) {
-        this.SaveState();
+        await this.SaveState();
         return;
       }
       await this.business?.SetConversationSnapshots?.(sessionId, {
@@ -1535,11 +1738,12 @@ export class AgentHost {
     } catch {
       // 无法验证的旧快照不写回，下一次 Send 会以新快照和当前偏好原子替换。
     }
-    this.SaveState();
+    await this.SaveState();
   }
 
   /** 经业务消息中的引用授权读取产物，资源路径不进入 IPC。 */
   async ReadConversationResource(sessionId: string, resource: import('@avery/contracts').ConversationResource): Promise<import('@avery/contracts').ConversationResourceView> {
+    await this.Ready();
     return ReadConversationResource(sessionId, resource, {
       workspacePath: this.workspacePath,
       presentations: (id) => this.business.GetConversationPresentations(id),
@@ -1593,16 +1797,19 @@ export class AgentHost {
     if (legacyRun) {
       this.pausedRuns.delete(requestId);
       this.DiscardPendingInteraction(legacyRun);
-      this.SaveState();
+      await this.SaveState();
     }
   }
 
   /** 只恢复当前业务消息的投影，确认在重启后仍更新原始消息。 */
-  private async RestoreConversationRecorder(requestId: string, sessionId: string): Promise<ConversationRecorder | undefined> {
+  private async RestoreConversationRecorder(requestId: string, sessionId: string, signal?: AbortSignal): Promise<ConversationRecorder | undefined> {
+    signal?.throwIfAborted();
     const existing = this.conversationRecorders.get(requestId);
     if (existing) return existing;
     if (typeof this.business?.GetConversationPresentations !== 'function') return undefined;
-    const presentations: import('@avery/agent-sdk').ConversationPresentation[] = await this.business.GetConversationPresentations(sessionId);
+    const read = this.business.GetConversationPresentations(sessionId);
+    const presentations: import('@avery/agent-sdk').ConversationPresentation[] = await (signal ? AwaitPreparation(read, signal) : read);
+    signal?.throwIfAborted();
     const initial = presentations.find((item) => item.requestId === requestId);
     if (!initial) return undefined;
     const recorder = new ConversationRecorder(requestId, sessionId, (id, value) => this.business.SaveConversationPresentation(id, value), (event) => this.EmitPresentation(event), initial);
@@ -1612,12 +1819,14 @@ export class AgentHost {
 
   /** 返回会话专属 usage、项目标签及已校验的模型与确认权限；默认值绝不回退到其它会话。 */
   async GetSessionAssistantState(sessionId: string): Promise<any> {
+    await this.Ready();
     const normalizedSessionId = RequireString(sessionId, 'sessionId', 200);
     const assistantState = await this.RestoreSessionAssistantState(normalizedSessionId);
     const { contextLimit, threshold } = this.modules.modelProvider.GetRuntimeLimits(assistantState.provider, assistantState.model);
     const storedUsage = this.sessionUsage.get(normalizedSessionId) ?? null;
     const project = this.projectEnvironments.get(normalizedSessionId) ?? null;
     return {
+      goal: this.PublicGoalState(normalizedSessionId),
       tasks: [...(this.tasks.get(normalizedSessionId)?.values() ?? [])],
       pendingEvents: this.GetPendingConversationEvents(normalizedSessionId),
       activeRequestId: [...this.runtimeControls].find(([, control]) => control.sessionId === normalizedSessionId)?.[0],
@@ -1644,8 +1853,99 @@ export class AgentHost {
     };
   }
 
+  private PublicGoalState(sessionId: string): import('@avery/contracts').AgentGoalState | undefined {
+    const goal = this.sessionGoals.get(sessionId);
+    if (!goal) return undefined;
+    const { requestId, objective, status, reason, reviewCount, reviewer, reviewTokens, unreportedReviews } = goal;
+    const canContinue = ['paused', 'waiting'].includes(status) && !goal.outcomeUnknown
+      && reviewCount + GoalResumeReviewSlots <= GoalReviewLimit && !GoalBudgetReason(goal, 0)
+      && !this.GoalLedger(goal).some(row => row.status === 'started' || row.status === 'status_unknown');
+    const activeSince = this.runtimeControls.get(requestId)?.goalActiveSince;
+    return { requestId, objective, status, reason, reviewCount, reviewer, reviewTokens, unreportedReviews, canContinue, activeMs: goal.activeMs, ...(activeSince ? { activeSince } : {}) };
+  }
+
+  /** 审核仅在当前 Run 的交付边界运行。先保存进度，再允许内核继续或发出完成事件。 */
+  private async ReviewSessionGoal(
+    sessionId: string, goal: SessionGoal, candidate: Parameters<typeof ReviewGoal>[0]['candidate'], signal: AbortSignal, startedAt: number,
+    phase: 'stop' | 'resume', previousReason?: string, clarification?: string, browserConnection?: Parameters<typeof ReviewGoal>[0]['browserConnection'],
+  ): Promise<import('@avery/agent-sdk').KernelGoalDecision> {
+    const trace = this.modules.observability;
+    const RecordReview = (status: NonNullable<import('@avery/agent-sdk').ConversationActivity['goalReview']>['status'], summary: string) => {
+      this.Emit({ type: 'conversation_activity', requestId: goal.requestId, sessionId, activity: {
+        kind: 'goal_review', stepId: candidate.stepId, partId: candidate.stepId + ':goal-review',
+        goalReview: { phase, status, summary: ScrubTraceContent(summary).slice(0, 500) },
+      } });
+    };
+    const pause = async (message: string): Promise<import('@avery/agent-sdk').KernelGoalDecision> => {
+      goal.status = 'paused'; goal.reason = message;
+      await this.SaveState();
+      signal.throwIfAborted();
+      this.EmitGoalState(sessionId);
+      return { status: 'paused', message };
+    };
+    const limit = GoalBudgetReason(goal, Date.now() - startedAt);
+    if (limit) return pause(limit);
+    goal.status = 'reviewing';
+    const ledger = this.GoalLedger(goal);
+    if (ledger.some(row => row.status === 'started' || row.status === 'status_unknown')) {
+      goal.outcomeUnknown = true;
+      return pause('有操作结果未知，请核对实际结果后用新目标描述剩余工作。');
+    }
+    goal.reviewCount += 1;
+    if (phase === 'stop' && candidate.text.trim()) goal.lastCandidate = candidate.text.slice(0, 12_000);
+    await this.SaveState();
+    signal.throwIfAborted();
+    this.EmitGoalState(sessionId);
+    RecordReview('reviewing', '正在审核');
+    const result = await ReviewGoal({ goal, candidate, phase, previousReason, clarification, browserConnection,
+      provider: this.modules.modelProvider, ledger, signal, remainingMs: GoalTimeLimit - goal.activeMs - (Date.now() - startedAt) });
+    signal.throwIfAborted();
+    const usage = result.usage;
+    if (usage && [usage.promptTokens, usage.completionTokens, usage.totalTokens].every(value => Number.isSafeInteger(value) && value >= 0)
+      && usage.totalTokens === usage.promptTokens + usage.completionTokens) goal.reviewTokens += usage.totalTokens;
+    else goal.unreportedReviews += 1;
+    if (phase === 'stop') {
+      goal.repeatedReviews = result.evidenceHash && goal.lastEvidenceHash === result.evidenceHash ? goal.repeatedReviews + 1 : 0;
+      goal.lastEvidenceHash = result.evidenceHash;
+    }
+    goal.status = result.status;
+    goal.reason = result.reason;
+    trace.AppendTraceEvent(goal.requestId, 'goal_review', {
+      goalId: goal.id, stepId: candidate.stepId, phase, review: goal.reviewCount, status: result.status, reviewer: goal.reviewer,
+      evidenceIds: result.evidenceIds, checks: result.checks?.map(check => ({ met: check.met, evidenceIds: check.evidenceIds })),
+      reportedUsage: Boolean(usage), usage: usage && { input: usage.promptTokens, output: usage.completionTokens, total: usage.totalTokens, cachedInput: usage.cachedInputTokens },
+    }, 0);
+    if (result.decision.status === 'continue') {
+      const pauseReason = goal.repeatedReviews >= 2 ? '连续三次审核发现相同缺口，目标已暂停。' + result.reason
+        : goal.reviewCount >= GoalReviewLimit ? '目标审核次数已达上限。' + result.reason
+          : GoalBudgetReason(goal, Date.now() - startedAt);
+      if (pauseReason) {
+        const decision = await pause(pauseReason);
+        RecordReview('paused', pauseReason);
+        return decision;
+      }
+    }
+    await this.SaveState();
+    signal.throwIfAborted();
+    this.EmitGoalState(sessionId);
+    RecordReview(result.decision.status === 'continue' ? 'continue'
+      : result.status === 'waiting' || result.status === 'blocked' || result.status === 'achieved' ? result.status : 'paused', result.reason);
+    return result.decision;
+  }
+
+  private EmitGoalState(sessionId: string): void {
+    const goal = this.PublicGoalState(sessionId);
+    if (goal) this.Emit({ type: 'goal_updated', sessionId, requestId: goal.requestId, goal });
+  }
+
+  private GoalLedger(goal: SessionGoal): import('@avery/agent-sdk').ToolLedgerEntry[] {
+    const ids = new Set([goal.requestId, ...(goal.previousRequestIds ?? [])]);
+    return [...this.toolLedger.values()].filter(row => ids.has(row.runId));
+  }
+
   /** 批量返回会话场景映射（只读）；数据与 GetSessionAssistantState 同源，随宿主状态快照持久化。 */
   async GetSessionScenes(): Promise<Record<string, 'default' | 'application'>> {
+    await this.Ready();
     return Object.fromEntries(this.sessionScenarios);
   }
 
@@ -1679,7 +1979,8 @@ export class AgentHost {
           promptTokens: 0, completionTokens: 0, totalTokens: 0, cachedInputTokens: 0, reportedRequestCount: 0, unreportedRequestCount: (previous?.unreportedRequestCount ?? 0) + 1, updatedAt: Date.now(),
         };
       this.sessionUsage.set(sessionId, next);
-      this.SaveState();
+      this.statePersistence.Capture(this.SnapshotState());
+
       return;
     }
     this.RecordProviderUsageFact(requestId, {
@@ -1691,9 +1992,10 @@ export class AgentHost {
       reportedRequestCount: base.reportedRequestCount + 1, unreportedRequestCount: base.unreportedRequestCount, updatedAt: Date.now(),
     };
     this.sessionUsage.set(sessionId, next);
+    this.statePersistence.Capture(this.SnapshotState());
     this.lastContextUsage = { inputTokens: next.inputTokens, contextLimit };
     this.modules.observability.RecordLog('INFO', 'context.usage', `${usage.promptTokens} / ${contextLimit} actual tokens`);
-    this.SaveState();
+
   }
 
   /** 构建不可变的 Tool Array 快照：内置工具固定前缀、MCP 预留末尾；不保存 MCP 凭据。 */
@@ -1746,13 +2048,15 @@ export class AgentHost {
   }
 
   /** 创建完整会话前缀快照并原子写入会话表；普通 Run 只复用，不重编译。 */
-  private async CreateAndPersistSnapshots(sessionId: string, sessionRevision: number, refreshReason: 'session_created' | 'ttl_elapsed' | 'user_reload', scenarioId: 'default' | 'application'): Promise<any> {
-    const session = await this.modules.contextBuilder.BuildSessionContextSnapshot(sessionId, sessionRevision, {
+  private async CreateAndPersistSnapshots(sessionId: string, sessionRevision: number, refreshReason: 'session_created' | 'ttl_elapsed' | 'user_reload', scenarioId: 'default' | 'application', signal?: AbortSignal): Promise<any> {
+    const read = <T>(work: Promise<T>) => signal ? AwaitPreparation(work, signal) : work;
+    const session = await read(this.modules.contextBuilder.BuildSessionContextSnapshot(sessionId, sessionRevision, {
       now: Date.now(), ttlMs: SessionSnapshotTtlMs, refreshReason,
-    });
+    }));
     const module = this.BuildModuleSnapshot(sessionId, sessionRevision);
     const tool = this.BuildToolSnapshot(sessionId, sessionRevision, scenarioId);
-    const skills = await this.skillRegistry.BuildSnapshot(sessionId, sessionRevision, scenarioId);
+    const skills = await read(this.skillRegistry.BuildSnapshot(sessionId, sessionRevision, scenarioId));
+    signal?.throwIfAborted();
     const instructions = this.compileInstructions(scenarioId, tool.toolsetHash);
     const entry = { session, module, tool, skills, instructions, scenarioId };
     const assistantState = this.sessionAssistantStates.get(sessionId);
@@ -1763,7 +2067,7 @@ export class AgentHost {
     this.sessionSnapshots.set(sessionId, entry);
     this.sessionScenarios.set(sessionId, scenarioId);
     if (refreshReason === 'ttl_elapsed' || refreshReason === 'user_reload') this.ResetSkillState(sessionId, refreshReason, sessionRevision);
-    this.SaveState();
+    await this.SaveState();
     return entry;
   }
 
@@ -1797,6 +2101,7 @@ export class AgentHost {
   private HasCompleteToolBundle(tool: any, instructions: any): boolean {
     if (!Array.isArray(tool?.builtInTools) || !Array.isArray(tool?.orderedToolNames) || typeof tool?.toolsetHash !== 'string') return false;
     if (typeof instructions?.compiled !== 'string' || typeof instructions?.manifest?.compiledHash !== 'string') return false;
+    if (instructions.compiled.includes('do not request space creation, load an ego Skill')) return false;
     const definitionsHash = this.HashToolPolicy(tool.builtInTools);
     const orderedNames = tool.builtInTools.map((item: any) => item?.definition?.function?.name);
     const promptHash = createHash('sha256').update(instructions.compiled).digest('hex');
@@ -1821,7 +2126,8 @@ export class AgentHost {
   }
 
   /** 读取或惰性创建会话快照：内存缓存优先，其次会话表，最后新建并持久化。 */
-  private async LoadOrCreateSnapshots(sessionId: string, requestedScenarioId?: 'default' | 'application'): Promise<any> {
+  private async LoadOrCreateSnapshots(sessionId: string, requestedScenarioId?: 'default' | 'application', signal?: AbortSignal): Promise<any> {
+    signal?.throwIfAborted();
     const cached = this.sessionSnapshots.get(sessionId);
     const cachedScenarioId = cached?.scenarioId ?? cached?.tool?.scenarioId ?? this.sessionScenarios.get(sessionId) ?? 'default';
     if (requestedScenarioId && cached && requestedScenarioId !== cachedScenarioId) throw new Error('A scenario is already bound to this conversation. Create a new conversation to switch scenarios.');
@@ -1830,9 +2136,11 @@ export class AgentHost {
       const expiredCompleteBundle = this.HasCompleteSessionSnapshot(cached.session)
         && this.HasCompleteToolBundle(cached.tool, cached.instructions)
         && this.HasCompleteSkillSnapshot(cached.skills);
-      return this.CreateAndPersistSnapshots(sessionId, (cached.session?.sessionRevision ?? 0) + 1, expiredCompleteBundle ? 'ttl_elapsed' : 'session_created', cachedScenarioId);
+      return this.CreateAndPersistSnapshots(sessionId, (cached.session?.sessionRevision ?? 0) + 1, expiredCompleteBundle ? 'ttl_elapsed' : 'session_created', cachedScenarioId, signal);
     }
-    const stored = await this.business?.GetConversationSnapshots?.(sessionId);
+    const read = Promise.resolve(this.business?.GetConversationSnapshots?.(sessionId));
+    const stored = await (signal ? AwaitPreparation(read, signal) : read);
+    signal?.throwIfAborted();
     let session: any = null;
     let module: any = null;
     let tool: any = null;
@@ -1876,11 +2184,12 @@ export class AgentHost {
     const hadCompleteBundle = this.HasCompleteSessionSnapshot(session)
       && this.HasCompleteToolBundle(tool, instructions)
       && this.HasCompleteSkillSnapshot(skills);
-    return this.CreateAndPersistSnapshots(sessionId, nextRevision, hadCompleteBundle ? 'ttl_elapsed' : 'session_created', scenarioId);
+    return this.CreateAndPersistSnapshots(sessionId, nextRevision, hadCompleteBundle ? 'ttl_elapsed' : 'session_created', scenarioId, signal);
   }
 
   /** 已有会话使用冻结索引；新对话只预览当前注册表，不创建会话或授予任何工具权限。 */
   async GetCommandSkills(input: { sessionId?: string; scenarioId: 'default' | 'application' }): Promise<Array<{ id: string; name: string; description: string }>> {
+    await this.Ready();
     this.EnsureModulesReady();
     if (!input || !['default', 'application'].includes(input.scenarioId)) throw Object.assign(new Error('命令面板场景无效。'), { code: 'VALIDATION_ERROR' });
     let snapshot: import('@avery/agent-sdk').SkillSnapshot | undefined;
@@ -1906,6 +2215,7 @@ export class AgentHost {
 
   /** 空闲时原子重载会话上下文与 Tool 快照；任一步失败保留旧快照。 */
   async ReloadSession(sessionId: string): Promise<any> {
+    await this.Ready();
     if (typeof sessionId !== 'string' || sessionId.length === 0 || sessionId.length > 200) throw new Error('Session id is invalid.');
     if (this.IsBusy()) return { reloaded: false, reason: 'busy' };
     await this.RestoreSessionAssistantState(sessionId);
@@ -1930,11 +2240,13 @@ export class AgentHost {
 
   /** 专用压缩控制请求只有一次模型工具选择；不改思考设置，不发送强制 tool_choice。 */
   async CompactSession(input: Parameters<DesktopAgentBridge['CompactSession']>[0]): ReturnType<DesktopAgentBridge['CompactSession']> {
+    await this.Ready();
     const requestId = RequireString(input?.requestId, 'requestId', 200);
     const sessionId = RequireString(input?.sessionId, 'sessionId', 200);
     const focus = input.instructions ?? '';
+    if (this.deletingSessions.has(sessionId)) throw Object.assign(new Error('对话正在清理。'), { code: 'RESOURCE_LOCKED' });
     if (typeof focus !== 'string' || focus.length > 4000) throw new Error('压缩关注文本不能超过 4000 字符。');
-    if (this.IsBusy() || this.executingSessions.has(sessionId) || [...this.pausedRuns.values()].some((run) => run.input.sessionId === sessionId)) {
+    if (this.IsBusy() || this.changingGoals.has(sessionId) || this.executingSessions.has(sessionId) || [...this.pausedRuns.values()].some((run) => !run.cancelled && run.input.sessionId === sessionId)) {
       throw Object.assign(new Error('请先结束、确认或取消当前任务，再压缩上下文。'), { code: 'AGENT_BUSY' });
     }
     if (this.requestSessions.has(requestId)) throw new Error('压缩请求 ID 不可重复使用。');
@@ -1981,6 +2293,8 @@ export class AgentHost {
       this.Emit({ type: 'completed', requestId, sessionId });
     };
     try {
+      if (this.business?.AssertConversationAvailable) await AwaitPreparation(this.business.AssertConversationAvailable(sessionId), signal);
+      await AwaitPreparation(this.LoadSessionHistory(sessionId, signal), signal);
       if (typeof this.business?.SaveConversationPresentation === 'function') {
         recorder = new ConversationRecorder(requestId, sessionId, (id, presentation) => this.business.SaveConversationPresentation(id, presentation), (event) => this.EmitPresentation(event));
         this.conversationRecorders.set(requestId, recorder);
@@ -2069,7 +2383,7 @@ export class AgentHost {
       const previousContextPending = currentUsage?.contextPending;
       this.histories.set(sessionId, result.history);
       if (currentUsage) { currentUsage.compressionCount += 1; currentUsage.contextPending = true; }
-      try { this.SaveState(); } catch (error) {
+      try { await this.SaveState(); } catch (error) {
         this.histories.set(sessionId, history);
         if (currentUsage) { currentUsage.compressionCount -= 1; currentUsage.contextPending = previousContextPending; }
         throw error;
@@ -2124,6 +2438,15 @@ export class AgentHost {
     }
   }
 
+  /** 切换对话仅释放传输；已登记的工作区和未提交表单仍归原任务。 */
+  private async ReleaseBrowserSession(): Promise<BrowserTaskCleanupOutcome | null> {
+    if (this.browserSessionId && this.egoWorkspaces.has(this.browserSessionId) && this.browserRuntime.SuspendWorkspace) {
+      await this.browserRuntime.SuspendWorkspace();
+      return null;
+    }
+    return this.CloseBrowserTask();
+  }
+
   private async CloseBrowserTask(): Promise<BrowserTaskCleanupOutcome | null> {
     const closeTask = this.browserRuntime.CloseTask;
     if (!closeTask) return null;
@@ -2166,7 +2489,7 @@ export class AgentHost {
     }
   }
 
-  private RecordBrowserTaskCleanup(requestId: string, outcome: BrowserTaskCleanupOutcome, index: number): void {
+  private async RecordBrowserTaskCleanup(requestId: string, outcome: BrowserTaskCleanupOutcome, index: number): Promise<void> {
     const now = Date.now();
     const ledgerId = `browser-cleanup-${randomUUID()}`;
     this.toolLedger.set(ledgerId, {
@@ -2184,16 +2507,11 @@ export class AgentHost {
       finishedAt: now,
       cleanupOutcome: outcome,
     });
-    this.SaveState();
+    await this.SaveState();
   }
 
   /** 在显式状态机内执行一次受限的流式对话回合：编排完成后委托 Kernel 运行循环。 */
   async Send(input: any): Promise<any> {
-    const sessionId = RequireString(input?.sessionId, 'sessionId', 200);
-    const waiting = [...this.pausedRuns.values()].filter((run) => run.input.sessionId === sessionId);
-    if (waiting.length && (this.executingSessions.has(sessionId) || waiting.some((run) => !run.result || run.status !== 'ready' || this.runReleases.has(run.input.requestId)))) throw Object.assign(new Error('请先回答、确认或取消当前待处理交互。'), { code: 'AGENT_BUSY' });
-    // 旧版本或进程中断遗留的已决检查点只补齐结果；新消息不能重新授权、执行原待确认动作。
-    for (const run of waiting) await this.CompleteResolvedInteraction(run, '上次交互的结果已恢复，原任务未能继续；可在新消息中调整后续任务。');
     return this.StartRun(input);
   }
 
@@ -2201,22 +2519,31 @@ export class AgentHost {
   private StartRun(input: any, resume?: PausedAgentRun): Promise<any> {
     const requestId = RequireString(input?.requestId, 'requestId', 200);
     const sessionId = RequireString(input?.sessionId, 'sessionId', 200);
+    if (this.changingGoals.has(sessionId)) return Promise.reject(Object.assign(new Error('目标正在调整，请稍后重试。'), { code: 'AGENT_BUSY' }));
+    if (this.deletingSessions.has(sessionId)) return Promise.reject(Object.assign(new Error('对话正在清理。'), { code: 'RESOURCE_LOCKED' }));
     if (this.runReleases.has(requestId) || this.executingSessions.has(sessionId)) return Promise.reject(Object.assign(new Error('The session is already running.'), { code: 'AGENT_BUSY' }));
     if (this.requestSessions.has(requestId) && !resume) return Promise.reject(Object.assign(new Error('Run ID cannot be reused.'), { code: 'VALIDATION_ERROR' }));
     this.executingSessions.add(sessionId);
-    const promise = this.ExecuteRun(input, resume).finally(() => {
+    this.executingRunSessions.set(requestId, sessionId);
+    const controller = new AbortController();
+    this.controllers.set(requestId, controller);
+    const promise = this.ExecuteRun(input, resume, controller).finally(() => {
+      if (this.controllers.get(requestId) === controller) this.controllers.delete(requestId);
+      this.runtimeControls.delete(requestId);
       if (this.runReleases.get(requestId) === promise) this.runReleases.delete(requestId);
       this.executingSessions.delete(sessionId);
+      this.executingRunSessions.delete(requestId);
     });
     this.runReleases.set(requestId, promise);
     return promise;
   }
 
-  private async ExecuteRun(input: any, resume?: PausedAgentRun): Promise<any> {
+  private async ExecuteRun(input: any, resume: PausedAgentRun | undefined, controller: AbortController): Promise<any> {
     this.EnsureModulesReady();
     const requestId = RequireString(input?.requestId, 'requestId', 200);
     const sessionId = RequireString(input?.sessionId, 'sessionId', 200);
-    const userContent = RequireString(input?.content, 'content');
+    const goalControlOnly = input?.goal === 'continue' && typeof input.content === 'string' && !input.content.trim();
+    const userContent = goalControlOnly ? '' : RequireString(input?.content, 'content');
     const requestedScenario = ResolveScenario(input?.scenarioId);
     const scenario = this.scenarioOverride ?? requestedScenario;
     if (this.scenarioOverride && requestedScenario.id !== this.scenarioOverride.id) {
@@ -2224,28 +2551,69 @@ export class AgentHost {
     }
     const scenarioId = scenario.id as 'default' | 'application';
     const unattended = this.scheduledRequestIds.has(requestId);
+    if (input.goal !== undefined && (unattended || this.scenarioOverride || input.goal !== 'start' && input.goal !== 'continue')) {
+      throw Object.assign(new Error('目标模式仅可由用户在会话中开启。'), { code: 'VALIDATION_ERROR' });
+    }
     const cronToolNames = new Set(['CreateCronTask', 'ReadCronTask', 'UpdateCronTask', 'DeleteCronTask']);
     // 后台不递归调度；工作场景后台禁止编辑简历和档案，聊天后台仍为只读。
-    const runScenario = unattended ? { ...scenario, toolNames: scenario.toolNames.filter((name) => !cronToolNames.has(name)
+    let runScenario = unattended ? { ...scenario, toolNames: scenario.toolNames.filter((name) => !cronToolNames.has(name)
       && !(scenarioId === 'application' && ['CreateResume', 'UpdateResume', 'UpdateProfile'].includes(name))) } : scenario;
     let retainBrowserTask = false;
+    let settledBrowserRun = false;
+    let workspaceScope: BrowserWorkspaceScope | undefined;
+    let fixedWorkspaceSkill: string | undefined;
     const cleanupOutcomes: BrowserTaskCleanupOutcome[] = [];
-    if (this.browserRunId) throw Object.assign(new Error('Another browser Agent run is already active.'), { code: 'AGENT_BUSY' });
+    let kernelStarted = false;
+    const signal = controller.signal;
+    let ownsBrowserRun = false;
+    let goal: SessionGoal | undefined;
+    let goalStartedAt = 0;
     try {
+    await AwaitPreparation(this.Ready(), signal);
+    if (this.business?.AssertConversationAvailable) await AwaitPreparation(this.business.AssertConversationAvailable(sessionId), signal);
+    await AwaitPreparation(this.LoadSessionHistory(sessionId, signal), signal);
+    if (this.requestSessions.has(requestId) && !resume) throw Object.assign(new Error('Run ID cannot be reused.'), { code: 'VALIDATION_ERROR' });
+    if (!resume) {
+      const waiting = [...this.pausedRuns.values()].filter((run) => !run.cancelled && run.input.sessionId === sessionId);
+      if (waiting.some((run) => !run.result || run.status !== 'ready' || this.runReleases.has(run.input.requestId))) throw Object.assign(new Error('请先回答、确认或取消当前待处理交互。'), { code: 'AGENT_BUSY' });
+      for (const run of waiting) await this.CompleteResolvedInteraction(run, '上次交互的结果已恢复，原任务未能继续；可在新消息中调整后续任务。');
+      signal.throwIfAborted();
+    }
+    if (this.browserRunId) throw Object.assign(new Error('Another browser Agent run is already active.'), { code: 'AGENT_BUSY' });
     if (scenarioId === 'application') {
       // 先同步占用，再进入任何 await；否则两个并发 Send 都可能通过上面的检查，
       // 后者切换/关闭前者刚创建的 browserTaskId。
       this.browserRunId = requestId;
+      ownsBrowserRun = true;
       this.currentSessionId = sessionId;
       try {
-        await this.SyncBrowserEngine(true);
-        if (this.browserSessionId && this.browserSessionId !== sessionId) {
-          // 一次交互任务只绑定一个会话；切换会话时只关闭旧 task 页，不关闭共享 Bridge。
-          const cleanup = await this.CloseBrowserTask();
+        const sameBrowserSession = this.browserSessionId === sessionId && !unattended && input.goal !== 'start';
+        const originalEngine = sameBrowserSession && this.browserRuntime.GetBrowserTaskId?.() ? this.browserSessionEngine : undefined;
+        if (this.browserSessionId && !sameBrowserSession) {
+          const cleanup = await this.ReleaseBrowserSession();
           if (cleanup) cleanupOutcomes.push(cleanup);
           this.browserSessionId = null;
+          this.browserRuntime.SetWorkspaceScope?.();
         }
+        const canUseWorkspace = !unattended && !this.scenarioOverride && this.browserRuntime.SetWorkspaceScope && this.browserRuntime.ManageWorkspace;
+        const boundWorkspace = canUseWorkspace && input.goal !== 'start' ? this.egoWorkspaces.get(sessionId) : undefined;
+        this.browserSessionEngine = await this.SyncBrowserEngine(true, signal, boundWorkspace ? 'ego' : originalEngine);
+        signal.throwIfAborted();
         this.browserSessionId = sessionId;
+        if (canUseWorkspace && this.browserSessionEngine === 'ego') {
+          if (input.goal === 'start' && this.egoWorkspaces.delete(sessionId)) await this.SaveState();
+          workspaceScope = {
+            read: () => this.egoWorkspaces.get(sessionId),
+            save: async (workspace) => {
+              if (workspace) this.egoWorkspaces.set(sessionId, workspace);
+              else this.egoWorkspaces.delete(sessionId);
+              await this.SaveState();
+            },
+            userApproved: false,
+          };
+          fixedWorkspaceSkill = await AwaitPreparation(this.skillRegistry.ReadEgoWorkspaceInstructions(), signal);
+        }
+        this.browserRuntime.SetWorkspaceScope?.(workspaceScope);
         // 页面元素引用不得跨 Run 复用；用户可能在两次发送之间接管可见浏览器并改变 DOM。
         this.browserRuntime.ResetPageReferences();
       } catch (error) {
@@ -2257,7 +2625,8 @@ export class AgentHost {
       if (switchingBrowserSession) this.browserRunId = requestId;
       try {
         if (switchingBrowserSession) {
-          const cleanup = await this.CloseBrowserTask();
+          const cleanup = await this.ReleaseBrowserSession();
+          this.browserRuntime.SetWorkspaceScope?.();
           if (cleanup) cleanupOutcomes.push(cleanup);
           this.browserSessionId = null;
         }
@@ -2266,9 +2635,10 @@ export class AgentHost {
         if (switchingBrowserSession && this.browserRunId === requestId) this.browserRunId = null;
       }
     }
-    const restoredAssistantState = await this.RestoreSessionAssistantState(sessionId);
+    const restoredAssistantState = await this.RestoreSessionAssistantState(sessionId, signal);
+    signal.throwIfAborted();
     const provider = NormalizeProvider(input?.provider, restoredAssistantState.provider);
-    const status = await this.modules.modelProvider.GetStatus(provider);
+    const status = await AwaitPreparation((this.modules as AgentModules).modelProvider.GetStatus(provider), signal);
     if (!status.configured) throw new Error(`${provider} API Key is not configured.`);
     const hasRequestedModel = input?.model !== undefined;
     const model = hasRequestedModel
@@ -2276,7 +2646,7 @@ export class AgentHost {
       : provider === restoredAssistantState.provider
         ? restoredAssistantState.model
         : this.modules.modelProvider.ResolveRequestModel(undefined, provider);
-    if (this.controllers.has(requestId)) throw new Error('The request is already running.');
+    if (this.controllers.get(requestId) !== controller) throw new Error('The request is no longer active.');
     const confirmationMode = input?.confirmationMode === undefined
       ? restoredAssistantState.confirmationMode
       : NormalizeConfirmationMode(input.confirmationMode);
@@ -2285,9 +2655,15 @@ export class AgentHost {
       : NormalizeReasoningEffort(input.reasoningEffort);
     const assistantStateChanged = provider !== restoredAssistantState.provider || model !== restoredAssistantState.model || confirmationMode !== restoredAssistantState.confirmationMode || reasoningEffort !== restoredAssistantState.reasoningEffort;
     this.sessionAssistantStates.set(sessionId, { provider, model, confirmationMode, reasoningEffort });
-    const attachments = Array.isArray(input?.attachments) ? input.attachments.slice(0, 10).map((attachment: any) => ({
+    const submittedAttachments = Array.isArray(input?.attachments) ? input.attachments.slice(0, 10).map((attachment: any) => ({
       name: String(attachment?.name ?? '').slice(0, 200), path: String(attachment?.path ?? '').slice(0, 1000),
     })).filter((attachment: any) => attachment.name && attachment.path) : [];
+    // 旧等待点曾把 Host 发行的导出 UUID 混入用户输入；仅恢复旧记录时将其分离，普通新请求仍严格解析原附件。
+    const userAttachments = resume && resume.authorizedAttachments === undefined
+      ? submittedAttachments.filter((attachment: { path: string }) => !/^asset:\/\/resume\/[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(attachment.path))
+      : submittedAttachments;
+    // 工具会追加导出文件；独立副本保证确认、问答和多次续轮都不改变原用户消息。
+    const attachments = (resume?.authorizedAttachments ?? submittedAttachments).map((attachment: { name: string; path: string }) => ({ ...attachment }));
     const scheduledBrowserTaskGrant = unattended && input?.browserTaskGrant !== undefined
       ? BrowserTaskGrantSchema.parse(input.browserTaskGrant)
       : undefined;
@@ -2298,15 +2674,16 @@ export class AgentHost {
       : '';
     const projectId = typeof input?.projectId === 'string' ? input.projectId.slice(0, 200) : '';
     // 快照可能因 TTL 刷新并追加 Skill reset；必须先完成刷新，再读取本次请求历史。
-    const snapshots = resume && this.sessionSnapshots.has(sessionId) ? this.sessionSnapshots.get(sessionId) : await this.LoadOrCreateSnapshots(sessionId, scenarioId);
+    const snapshots = resume && this.sessionSnapshots.has(sessionId) ? this.sessionSnapshots.get(sessionId) : await this.LoadOrCreateSnapshots(sessionId, scenarioId, signal);
+    signal.throwIfAborted();
     // 不悄悄替换用户冻结的前缀；旧场景快照必须显式重载后才能继续执行。
     if (snapshots.tool.scenarioPolicyVersion !== ScenarioPolicyVersion) {
       throw Object.assign(new Error('场景权限已更新为“聊天 / 工作”。请发送 /reload 重载当前会话，或新建会话后继续。'), { code: 'SCENARIO_RELOAD_REQUIRED' });
     }
     this.EnsureModuleSnapshotCompatible(snapshots.module);
-    if (assistantStateChanged) await this.PersistSessionAssistantState(sessionId, { provider, model, confirmationMode, reasoningEffort });
-    const projectRoot = await this.BindProjectEnvironment(sessionId, projectId);
-    const allProfiles = (await this.business?.GetProfiles?.())?.items ?? [];
+    if (assistantStateChanged) await this.PersistSessionAssistantState(sessionId, { provider, model, confirmationMode, reasoningEffort }, signal);
+    const projectRoot = await this.BindProjectEnvironment(sessionId, projectId, signal);
+    const allProfiles = (await AwaitPreparation(Promise.resolve(this.business?.GetProfiles?.()), signal))?.items ?? [];
     const authorizedProfileIds = new Set((scheduledBrowserTaskGrant?.resourceIds ?? [])
       .filter((resourceId) => resourceId.startsWith('profile:'))
       .map((resourceId) => resourceId.slice('profile:'.length)));
@@ -2314,14 +2691,41 @@ export class AgentHost {
       ? allProfiles.filter((profile: any) => authorizedProfileIds.has(String(profile.id)))
       : allProfiles;
     const persistedBinding = this.sessionResumeBindings.get(sessionId);
-    let boundResumeSnapshot = persistedBinding ? await this.resumeReadPort.ReadCurrent(persistedBinding.resumeId) : null;
+    let boundResumeSnapshot = persistedBinding ? await AwaitPreparation(this.resumeReadPort.ReadCurrent(persistedBinding.resumeId), signal) : null;
     if (persistedBinding && (!boundResumeSnapshot || boundResumeSnapshot.revision !== persistedBinding.revision)) {
       this.sessionResumeBindings.delete(sessionId);
       boundResumeSnapshot = null;
     }
     let resumeEditing = boundResumeSnapshot ? this.resumePort.IsUserEditing(boundResumeSnapshot.id) : false;
-    await this.modelConfigurations.Initialize();
+    await AwaitPreparation(this.modelConfigurations.Initialize(), signal);
     const modelConfiguration = resume?.modelConfiguration ?? this.modelConfigurations.Resolve({ provider, model, baseUrl: this.modules.modelProvider.BaseUrl(provider) });
+    const previousGoal = this.sessionGoals.get(sessionId);
+    if (resume && previousGoal?.requestId === requestId) {
+      goal = previousGoal;
+    } else if (!resume && input.goal === 'continue') {
+      if (input.goalRequestId !== undefined && input.goalRequestId !== previousGoal?.requestId) {
+        throw Object.assign(new Error('当前目标已变化，请重试。'), { code: 'REVISION_CONFLICT' });
+      }
+      if (!previousGoal || !['paused', 'waiting'].includes(previousGoal.status)) throw Object.assign(new Error('当前没有可继续的目标。'), { code: 'VALIDATION_ERROR' });
+      const budget = GoalBudgetReason(previousGoal, 0) ?? (previousGoal.reviewCount + GoalResumeReviewSlots > GoalReviewLimit
+        ? '剩余审核次数不足以继续和验收，请重新设定目标。' : undefined);
+      if (budget) throw Object.assign(new Error(budget), { code: 'GOAL_BUDGET_EXHAUSTED' });
+      if (previousGoal.outcomeUnknown || this.GoalLedger(previousGoal).some(row => row.status === 'status_unknown' || row.status === 'started')) {
+        throw Object.assign(new Error('上次有结果未知的操作。请先核对实际结果，再用新目标描述剩余工作。'), { code: 'GOAL_RECONCILIATION_REQUIRED' });
+      }
+      await AwaitPreparation(AssertGoalModel(this.modules.modelProvider, previousGoal.modelConfiguration), signal);
+      goal = { ...previousGoal, requestId, previousRequestIds: [...(previousGoal.previousRequestIds ?? []), previousGoal.requestId] };
+    } else if (!resume && input.goal === 'start') {
+      const tiers = await AwaitPreparation(this.modelConfigurations.GetGoalModelTiers(), signal);
+      const secondary = tiers.tiers[0];
+      if (secondary) await AwaitPreparation(AssertGoalModel(this.modules.modelProvider, secondary), signal);
+      const reviewerConfiguration = secondary ? this.modelConfigurations.Resolve(secondary) : modelConfiguration;
+      goal = {
+        id: randomUUID(), requestId, objective: RequireString(userContent, 'goal', 4000), status: 'running',
+        reviewer: { provider: reviewerConfiguration.provider, model: reviewerConfiguration.model }, modelConfiguration: reviewerConfiguration,
+        reviewCount: 0, reviewTokens: 0, unreportedReviews: 0, executionTokens: 0, activeMs: 0, repeatedReviews: 0,
+      };
+    }
     const runtimeContext = {
       modelCapabilities: { ...modelConfiguration.values, source: modelConfiguration.source, verified: false },
       resumeEditing,
@@ -2329,7 +2733,7 @@ export class AgentHost {
       profiles,
       attachments,
       projectId,
-      ...(scenarioId === 'application' ? { browserConnection: await this.ReadBrowserConnectionContext() } : {}),
+      ...(scenarioId === 'application' ? { browserConnection: await AwaitPreparation(this.ReadBrowserConnectionContext(), signal) } : {}),
     };
     const history = this.histories.get(sessionId) || [];
     const sessionLoadedSkills = this.loadedSkills.get(sessionId) ?? new Map<string, string>();
@@ -2364,6 +2768,21 @@ export class AgentHost {
       role: 'user', content: `本轮用户明确指定使用技能 /${explicitSkill.manifest.id}。请按已加载的该技能处理本轮任务；场景、工具与确认权限保持不变。`,
       metadata: { source: 'runtime', visibility: 'hidden', kind: 'runtime_context' },
     });
+    const IsGoalContext = (message: AgentMessage) => message.metadata?.kind === 'goal_feedback'
+      && message.metadata.goalId === goal?.id && message.content.startsWith('<goal-context>');
+    const existingGoalContext = history.find(IsGoalContext);
+    if (goal && !resume) {
+      // 同一目标的完成条件在会话历史保留一份。继续时审核会生成当前反馈。
+      if (!existingGoalContext) messagesAfterUser.push({
+        role: 'user',
+        content: `<goal-context>当前目标：${goal.objective}\n如与旧目标不同，以当前目标为准。请按原有工具权限执行，准备交付时给出实际结果和已核对的证据。</goal-context>`,
+        metadata: { source: 'runtime', visibility: 'hidden', kind: 'goal_feedback', goalId: goal.id },
+      });
+      if (input.goal === 'continue' && scenarioId === 'application') messagesAfterUser.push({
+        role: 'user', content: '继续前请先观察当前浏览器状态，核对历史操作与回执。不要重放已执行或结果未知的操作。',
+        metadata: { source: 'runtime', visibility: 'hidden', kind: 'runtime_context' },
+      });
+    }
     const snapshot = this.modules.contextBuilder.CreateDynamicSnapshot(sessionId, runtimeContext);
     // 动态快照只服务本次 Run；历史中的旧格式快照必须先移除，避免过期档案继续影响模型判断。
     const messagesBeforeUser: AgentMessage[] = [
@@ -2372,14 +2791,23 @@ export class AgentHost {
     ];
     const usesVisionInput = modelConfiguration.values.inputImage;
     const resolveAttachment = (uri: string) => this.business?.ResolveAttachmentUri?.(uri) ?? Promise.resolve(null);
-    const persistedHistory = history.filter((message: AgentMessage) => !IsRuntimeContextMessage(message));
+    const persistedHistory = history.filter((message: AgentMessage) => !IsRuntimeContextMessage(message)
+      && (message.metadata?.kind !== 'goal_feedback' || message.metadata.goalId === goal?.id)
+      && (!IsGoalContext(message) || message === existingGoalContext));
+    const previousImageUris = persistedHistory.flatMap((message: AgentMessage) => message.imageAttachments?.map(image => image.uri) ?? []);
+    if (previousImageUris.length && typeof this.business?.RetainAgentImages === 'function') await this.business.RetainAgentImages(sessionId, previousImageUris);
+    signal.throwIfAborted();
     const requestHistory: AgentMessage[] = usesVisionInput
-      ? await Promise.all(persistedHistory.map((message: AgentMessage) => HydrateVisionMessage(message, resolveAttachment)))
+      ? await AwaitPreparation(HydrateVisionHistory(persistedHistory, resolveAttachment, signal), signal)
       : persistedHistory;
     const userMessage = usesVisionInput
-      ? await CreateVisionUserMessage(userContent, attachments, resolveAttachment)
+      ? await AwaitPreparation(CreateVisionUserMessage(userContent, userAttachments, resolveAttachment, signal), signal)
       : { role: 'user' as const, content: userContent };
-    const controller = new AbortController();
+    if (userMessage.imageAttachments?.length) {
+      if (typeof this.business?.RetainAgentImages !== 'function') throw Object.assign(new Error('图片附件引用保护不可用，图片未发送给模型。'), { code: 'STORAGE_ERROR' });
+      await this.business.RetainAgentImages(sessionId, userMessage.imageAttachments.map(image => image.uri));
+    }
+    signal.throwIfAborted();
     this.modules.observability.RecordLog('INFO', 'conversation.send', `session=${sessionId}`);
     if (!resume) this.modules.observability.StartTrace(requestId, sessionId, model);
     if (!resume && this.pendingQuestions.has(sessionId)) {
@@ -2389,6 +2817,13 @@ export class AgentHost {
     this.pendingQuestions.delete(sessionId);
     const activeTools = this.HydrateToolSnapshot(snapshots.tool, scenarioId)
       .filter((tool: any) => runScenario.toolNames.includes(tool.definition.function.name));
+    if (fixedWorkspaceSkill) {
+      const workspaceTool = (this.modules as AgentModules).tools.GetToolDefinitions(scenarioId, { browserWorkspace: true }).find((tool) => tool.definition.function.name === 'BrowserWorkspace');
+      if (workspaceTool) {
+        activeTools.push(workspaceTool);
+        runScenario = { ...runScenario, toolNames: [...runScenario.toolNames, 'BrowserWorkspace'] };
+      } else fixedWorkspaceSkill = undefined;
+    }
     const activeToolNames = activeTools.map((tool: any) => tool.definition.function.name);
     const missingScenarioTools = runScenario.toolNames.filter((name) => !activeToolNames.includes(name));
     if (missingScenarioTools.length) {
@@ -2427,8 +2862,11 @@ export class AgentHost {
       if (oldestRunId === undefined) break;
       this.runSnapshots.delete(oldestRunId);
     }
-    this.SaveState();
-    const contextContent = this.modules.contextBuilder.SerializeSessionContext(snapshots.session);
+    await this.SaveState();
+    const contextContent = [
+      this.modules.contextBuilder.SerializeSessionContext(snapshots.session),
+      fixedWorkspaceSkill ? `<runtime-skill id="ego-workspace">\n${fixedWorkspaceSkill}\n</runtime-skill>` : '',
+    ].filter(Boolean).join('\n\n');
     const sessionTasks = this.tasks.get(sessionId) ?? new Map();
     this.tasks.set(sessionId, sessionTasks);
     const scopedResumeRead = {
@@ -2455,13 +2893,14 @@ export class AgentHost {
         toolContext.boundResume = resume;
         toolContext.resumeEditing = resumeEditing;
       }
-      this.SaveState();
+      await this.SaveState();
     };
     toolContext = {
       sessionId,
       requestId,
       confirmationMode,
       supportsVisionInput: usesVisionInput,
+      ...(workspaceScope?.read()?.targetId || goal && scenarioId === 'application' && (input.goal === 'continue' || resume) ? { requiresBrowserSnapshot: true } : {}),
       resumeEditing,
       projectRoot,
       attachments,
@@ -2481,6 +2920,13 @@ export class AgentHost {
           },
         }, () => this.business.ReadProfilesSnapshot()),
         browser: scenarioId === 'application' ? this.browserRuntime : undefined,
+        images: { Save: async (dataUrl: string, imageSignal?: AbortSignal) => {
+          imageSignal?.throwIfAborted();
+          if (typeof this.business?.ImportAgentImage !== 'function') throw Object.assign(new Error('截图附件存储不可用，图片未发送给模型。'), { code: 'STORAGE_ERROR' });
+          const reference = await this.business.ImportAgentImage(sessionId, dataUrl);
+          imageSignal?.throwIfAborted();
+          return reference;
+        } },
         resumeExport: scenarioId === 'application' ? { Export: (input: { resume: ResumeSnapshot; format: 'pdf' | 'png'; sessionId: string; signal?: AbortSignal }) => this.ExportBoundResumeFile(input.resume, input.format, input.sessionId, input.signal) } : undefined,
         jobLibrary: this.jobLibraryPort ? {
           Read: (input: Parameters<JobLibraryPort['Read']>[0]) => this.jobLibraryPort!.Read(input),
@@ -2558,6 +3004,7 @@ export class AgentHost {
       pendingBrowserActions: this.pendingBrowserActions,
       ledger: this.CreateToolLedgerPort(),
       runId: requestId,
+      ...(goal ? { idempotencyScope: 'goal:' + goal.id } : {}),
       scenarioSnapshotId: runSnapshot.snapshotId,
       scenarioId,
       emit: (event: unknown) => this.Emit(event),
@@ -2568,31 +3015,80 @@ export class AgentHost {
       unattended,
       ...(scheduledBrowserTaskGrant ? { browserTaskGrant: scheduledBrowserTaskGrant } : {}),
     };
-    const runtimeControl = { sessionId, confirmationMode, toolContext };
+    const runtimeControl = { sessionId, confirmationMode, toolContext, goalActiveSince: 0 };
     this.runtimeControls.set(requestId, runtimeControl);
     this.controllers.set(requestId, controller);
     this.requestSessions.set(requestId, sessionId);
-    // Renderer 与 Cron Runner 都先创建 reply 占位；后台任务同样保留有序过程和产物。
-    const recorder = resume ? await this.RestoreConversationRecorder(requestId, sessionId) : typeof this.business?.SaveConversationPresentation === 'function'
-      ? new ConversationRecorder(requestId, sessionId,
-        (id, presentation) => this.business.SaveConversationPresentation(id, presentation),
-        (event) => this.EmitPresentation(event))
-      : undefined;
-    if (recorder) this.conversationRecorders.set(requestId, recorder);
     try {
+      // 会话记录恢复也属于运行资源保护范围，读取失败仍须释放刚注册的 controller 和运行状态。
+      const recorder = resume ? await this.RestoreConversationRecorder(requestId, sessionId, signal) : typeof this.business?.SaveConversationPresentation === 'function'
+        ? new ConversationRecorder(requestId, sessionId,
+          (id, presentation) => this.business.SaveConversationPresentation(id, presentation),
+          (event) => this.EmitPresentation(event))
+        : undefined;
+      signal.throwIfAborted();
+      if (recorder) this.conversationRecorders.set(requestId, recorder);
+      if (goal) {
+        goal.status = 'running';
+        goal.reason = undefined;
+        goalStartedAt = Date.now();
+        runtimeControl.goalActiveSince = goalStartedAt;
+        toolContext.deadline = goalStartedAt + Math.max(0, GoalTimeLimit - goal.activeMs);
+        this.sessionGoals.set(sessionId, goal);
+        await this.SaveState();
+        signal.throwIfAborted();
+        this.EmitGoalState(sessionId);
+      }
+      if (workspaceScope && resume?.checkpoint.pendingCall.function.name === 'BrowserWorkspace' && resume.result) {
+        const answer = JSON.parse(resume.result.content);
+        if (answer.answers?.['browser-workspace-resume'] === '继续操作' && answer.ok === true) {
+          workspaceScope.userApproved = true;
+          try {
+            const state = await this.browserRuntime.ManageWorkspace!('resume', { signal, deadline: Date.now() + 15_000 });
+            resume.result = { ...resume.result, content: JSON.stringify({ ok: true, ...state, message: 'Read a fresh BrowserSnapshot before continuing on the original workspace.' }) };
+          } catch (error) {
+            const value = error as { code?: string; message?: string };
+            resume.result = { ...resume.result, content: JSON.stringify({ ok: false, code: value.code ?? 'BROWSER_COMMAND_FAILED', message: value.message }) };
+          } finally { workspaceScope.userApproved = false; }
+        } else if (answer.answers) {
+          resume.result = { ...resume.result, content: JSON.stringify({ ok: false, code: 'USER_REJECTED', message: 'Leave the workspace with the user.' }) };
+        }
+      }
       let modelRequestCompleted = false;
+      kernelStarted = true;
       const result = await RunAgentLoop({
         requestId, sessionId, provider: runSnapshot.provider.provider, model: runSnapshot.provider.model, reasoningEffort, modelConfiguration,
         systemContext: contextContent, requestHistory, userContent, userMessage,
+        omitUserMessage: goalControlOnly && !userMessage.imageAttachments?.length,
         messagesBeforeUser: resume ? [] : messagesBeforeUser, messagesAfterUser: resume ? [] : messagesAfterUser,
         ...(resume?.result ? { resume: { checkpoint: resume.checkpoint, result: resume.result } } : {}),
         onResumed: () => this.pausedRuns.delete(requestId),
+        ...(goal ? { goal: {
+          id: goal.id,
+          deadline: toolContext.deadline!,
+          modelSignal: AbortSignal.any([signal, AbortSignal.timeout(Math.max(1, toolContext.deadline! - Date.now()))]),
+          pauseReason: () => signal.reason === GoalPausedByUser ? GoalPausedByUser.message : undefined,
+          stopReason: () => goal!.outcomeUnknown ? '有操作结果未知，请先核对实际结果。'
+            : GoalBudgetReason(goal!, Date.now() - goalStartedAt)
+              ?? (goal!.reviewCount >= GoalReviewLimit ? '目标审核次数已达上限，当前结果尚未验收。' : undefined),
+        }, hooks: {
+          stop: (candidate) => this.ReviewSessionGoal(sessionId, goal!, candidate, signal, goalStartedAt, 'stop'),
+          ...(!resume && input.goal === 'continue' ? {
+            resume: async (candidate: import('@avery/agent-sdk').KernelHookCandidate) => {
+              const decision = await this.ReviewSessionGoal(sessionId, goal!, { ...candidate, text: goal!.lastCandidate ?? '' },
+                signal, goalStartedAt, 'resume', previousGoal?.reason, userContent, runtimeContext.browserConnection);
+              if (decision.status === 'achieved') throw new Error('Goal resume hook cannot accept a final candidate.');
+              return decision;
+            },
+          } : {}),
+        } } : {}),
         onCheckpoint: (checkpoint) => {
           const pending = JSON.parse(checkpoint.pendingResult.content) as { confirmationId?: string };
           const interactionId = pending.confirmationId ?? checkpoint.pendingCall.id;
           const event = this.GetPendingConversationEvents(sessionId).find((event) => (event.confirmationId ?? event.browserAction?.confirmationId) === interactionId || (event.type === 'question_requested' && event.requestId === requestId));
           this.pausedRuns.set(requestId, {
-            input: { requestId, sessionId, content: userContent, provider, model, reasoningEffort, confirmationMode: runtimeControl.confirmationMode, attachments, scenarioId, ...(projectId ? { projectId } : {}) },
+            input: { requestId, sessionId, content: userContent, provider, model, reasoningEffort, confirmationMode: runtimeControl.confirmationMode, attachments: userAttachments, scenarioId, ...(projectId ? { projectId } : {}) },
+            authorizedAttachments: attachments.map((attachment: { name: string; path: string }) => ({ ...attachment })),
             checkpoint, interactionId, modelConfiguration, kind: checkpoint.pendingResult.disposition === 'wait_user_input' ? 'answer' : 'approval', status: 'waiting',
             ...(event ? { event: { ...event, confirmationId: interactionId } } : {}),
           });
@@ -2620,7 +3116,11 @@ export class AgentHost {
         createId: () => randomUUID(),
         scenario: runSnapshot.scenario,
         instructions: runSnapshot.instructions,
-        onModelUsage: (usage) => { modelRequestCompleted = true; this.RecordSessionUsage(requestId, sessionId, usage, contextLimit, threshold); },
+        onModelUsage: (usage) => {
+          modelRequestCompleted = true;
+          if (goal && usage.source === 'provider') goal.executionTokens += usage.totalTokens;
+          this.RecordSessionUsage(requestId, sessionId, usage, contextLimit, threshold);
+        },
       });
       // circuit_open 是轮数/工具预算耗尽的 terminal failure。Kernel 会先发
       // error，但结果的旧 disposition 仍是 paused；不能把它误当成可续接的
@@ -2628,7 +3128,30 @@ export class AgentHost {
       const resumableWait = result.outcome === 'waiting_user_input'
         || result.outcome === 'waiting_confirmation'
         || (result.outcome === 'paused' && result.reason !== 'iteration_limit' && result.reason !== 'tool_call_limit');
-      retainBrowserTask = scenarioId === 'application' && resumableWait;
+      settledBrowserRun = true;
+      retainBrowserTask = scenarioId === 'application' && (resumableWait && goal?.status !== 'blocked'
+        || Boolean(workspaceScope?.read() && result.outcome !== 'completed' && result.outcome !== 'cancelled'));
+      if (goal) {
+        if (result.outcome === 'paused' && (goal.outcomeUnknown || this.GoalLedger(goal).some(row => row.status === 'status_unknown' || row.status === 'started'))) {
+          goal.outcomeUnknown = true;
+          goal.reason = '有操作结果未知，请核对实际结果后用新目标描述剩余工作。';
+        }
+        if (result.reason === 'goal_paused') { goal.status = 'paused'; goal.reason ??= GoalPausedByUser.message; }
+        else if (result.outcome === 'cancelled') { goal.status = 'cancelled'; goal.reason = '已停止目标。'; }
+        else if (result.outcome === 'waiting_confirmation' || result.outcome === 'waiting_user_input') {
+          goal.status = 'waiting';
+          goal.reason = result.outcome === 'waiting_confirmation' ? '等待用户确认。' : '等待用户回答或接管浏览器。';
+        }
+        else if (result.outcome !== 'completed' && goal.status === 'running') {
+          goal.status = 'paused';
+          goal.reason = goal.outcomeUnknown ? '有操作结果未知，请核对实际结果后用新目标描述剩余工作。'
+            : GoalBudgetReason(goal, Date.now() - goalStartedAt)
+              ?? (goal.reviewCount >= GoalReviewLimit ? '目标审核次数已达上限。' : '任务已暂停，目标尚未验收。');
+        }
+        goal.activeMs += Date.now() - goalStartedAt;
+        goalStartedAt = 0;
+        runtimeControl.goalActiveSince = 0;
+      }
       if (result.outcome === 'cancelled') RestoreSkillState();
       this.compressionCount += result.compressionCount;
       const currentUsage = this.sessionUsage.get(sessionId);
@@ -2644,28 +3167,58 @@ export class AgentHost {
           promptTokens: 0, completionTokens: 0, totalTokens: 0, cachedInputTokens: 0, reportedRequestCount: 0, unreportedRequestCount: 1, updatedAt: Date.now(),
         });
       }
-      this.SaveState();
+      await this.SaveState();
+      if (goal) this.EmitGoalState(sessionId);
       await recorder?.Flush();
       return { accepted: true, ...(result.outcome === 'cancelled' ? { cancelled: true } : {}) };
     } catch (error) {
+      if (goal && goalStartedAt) {
+        goal.activeMs += Date.now() - goalStartedAt;
+        const pausedByUser = signal.reason === GoalPausedByUser;
+        goal.status = signal.aborted && !pausedByUser ? 'cancelled' : 'paused';
+        goal.reason = pausedByUser ? GoalPausedByUser.message : signal.aborted ? '已停止目标。' : '运行中断，目标尚未验收。';
+        goalStartedAt = 0;
+        runtimeControl.goalActiveSince = 0;
+      }
       RestoreSkillState();
-      try { this.SaveState(); }
+      if (!kernelStarted && !signal.aborted) {
+        this.modules.observability.FinishTrace(requestId, 'failed', '会话恢复准备失败');
+        this.Emit({ type: 'error', requestId, sessionId, message: error instanceof Error ? error.message : '会话恢复准备失败' });
+      }
+      try { await this.SaveState(); if (goal) this.EmitGoalState(sessionId); }
       catch (saveError) { this.modules.observability.RecordLog('ERROR', 'conversation.state_save_failed', saveError instanceof Error ? saveError.message : '运行状态保存失败'); }
       throw error;
     } finally {
       this.controllers.delete(requestId);
       this.runtimeControls.delete(requestId);
     }
+    } catch (error) {
+      if (!kernelStarted && signal.aborted) {
+        if (signal.reason === GoalPausedByUser) {
+          this.modules.observability.FinishTrace(requestId, 'paused', GoalPausedByUser.message);
+          this.Emit({ type: 'paused', requestId, sessionId, message: GoalPausedByUser.message });
+          return { accepted: true };
+        }
+        this.modules.observability.FinishTrace(requestId, 'cancelled', 'Cancelled during preparation.');
+        this.Emit({ type: 'cancelled', requestId, sessionId });
+        return { accepted: true, cancelled: true };
+      }
+      throw error;
     } finally {
-      if (scenarioId === 'application' && !retainBrowserTask) {
+      if (ownsBrowserRun && !retainBrowserTask) {
         // waiting_* / paused 会把同一 browserTaskId 留给后续续轮；其他终态收回本次 task。
-        const cleanup = await this.CloseBrowserTask();
+        const cleanup = !settledBrowserRun && workspaceScope?.read()
+          ? await this.ReleaseBrowserSession()
+          : await this.CloseBrowserTask();
         if (cleanup) cleanupOutcomes.push(cleanup);
-        if (this.browserSessionId === sessionId) this.browserSessionId = null;
+        if (this.browserSessionId === sessionId) {
+          this.browserSessionId = null;
+          this.browserRuntime.SetWorkspaceScope?.();
+        }
       }
       if (this.browserRunId === requestId) this.browserRunId = null;
       for (const [index, cleanup] of cleanupOutcomes.entries()) {
-        try { this.RecordBrowserTaskCleanup(requestId, cleanup, index); } catch { /* run_released remains the authoritative bounded cleanup report. */ }
+        try { await this.RecordBrowserTaskCleanup(requestId, cleanup, index); } catch { /* run_released remains the authoritative bounded cleanup report. */ }
         try { this.modules.observability.AppendTraceEvent(requestId, 'browser_task_cleanup', cleanup, 0); } catch { /* telemetry cannot keep the Host lock held. */ }
         if (cleanup.status !== 'confirmed') {
           try {
@@ -2687,6 +3240,7 @@ export class AgentHost {
 
   /** 聚合运行时内存态与可观测性库数据，供开发者界面展示脱敏日志与 Trace。 */
   async GetObservability(): Promise<any> {
+    await this.Ready();
     const status = await this.modules.modelProvider.GetStatus();
     const { contextLimit, threshold } = this.modules.modelProvider.GetRuntimeLimits();
     const contextUsage = { ...(this.lastContextUsage ?? { inputTokens: 0, contextLimit }), compressionCount: this.compressionCount, compressionThreshold: threshold };

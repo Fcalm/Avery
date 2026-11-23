@@ -22,6 +22,7 @@ describe('Host 会话交互恢复与结算', () => {
       SaveConversationPresentation: async (_owner: string, snapshot: ConversationPresentation) => { presentation = snapshot; return { saved: true }; },
     };
     const host = new AgentHost({ userDataPath: root, workspacePath: root, Emit: () => undefined, business, observability: null });
+    await host.Ready();
     (host as any).requestSessions.set('cron-expired', 'owner');
     (host as any).pendingCronTasks.set('cron1', { requestId: 'cron-expired', input: {}, createdAt: 1 });
     await expect(host.ConfirmCronTask('cron1', true)).rejects.toThrow('expired');
@@ -36,14 +37,15 @@ describe('Host 会话交互恢复与结算', () => {
     const root = await Root();
     const business = { GetStoredSettings: async () => ({}), ResolveAttachmentUri: async () => null };
     const host = new AgentHost({ userDataPath: root, workspacePath: root, Emit: () => undefined, business, observability: null });
+    await host.Ready();
     const state = host as any;
     state.requestSessions.set('req1', 'deleted');
     state.requestSessions.set('req2', 'kept');
     state.pendingCronTasks.set('cron1', { requestId: 'req1', input: {}, createdAt: Date.now() });
     state.pendingCronTasks.set('cron2', { requestId: 'req2', input: {}, createdAt: Date.now() });
-    state.SaveState();
+    await state.SaveState();
     const restarted = new AgentHost({ userDataPath: root, workspacePath: root, Emit: () => undefined, business, observability: null });
-    restarted.DeleteSessionResources('deleted');
+    await restarted.DeleteSessionResources('deleted');
     expect((restarted as any).requestSessions.has('req1')).toBe(false);
     expect((restarted as any).pendingCronTasks.has('cron1')).toBe(false);
     expect((await restarted.GetSessionAssistantState('kept')).pendingEvents).toMatchObject([{ confirmationId: 'cron2' }]);
@@ -63,10 +65,11 @@ describe('Host 会话交互恢复与结算', () => {
       SaveConversationPresentation: async (_sessionId: string, snapshot: ConversationPresentation) => { presentation = snapshot; return { saved: true }; },
     };
     const host = new AgentHost({ userDataPath: root, workspacePath: root, Emit: () => undefined, business, observability: null });
+    await host.Ready();
     const state = host as any;
     state.requestSessions.set('req-failed', 'owner');
     state.pendingEdits.set('resume-confirmation-failed', { kind: 'edit', sessionId: 'owner', ownerId: 'agent-req-failed', resumeId: 'r1', resume, baseRevision: 1, content: '新文', reason: '优化', idempotencyKey: 'failed1', proposalHash: 'hash1' });
-    state.SaveState();
+    await state.SaveState();
     await expect(host.ConfirmResumeEdit('resume-confirmation-failed', true)).rejects.toThrow('disk write failed');
     const restarted = new AgentHost({ userDataPath: root, workspacePath: root, Emit: () => undefined, business, observability: null });
     expect((await restarted.GetSessionAssistantState('owner')).pendingEvents).toEqual([]);
@@ -81,12 +84,13 @@ describe('Host 会话交互恢复与结算', () => {
     const root = await Root();
     const business = { GetStoredSettings: async () => ({}), ResolveAttachmentUri: async () => null };
     const host = new AgentHost({ userDataPath: root, workspacePath: root, Emit: () => undefined, business, observability: null });
+    await host.Ready();
     const state = host as any;
     state.requestSessions.set('req1', 'owner');
     state.pendingEdits.set('resume-confirmation-one', { sessionId: 'owner', ownerId: 'agent-req1', content: '待确认正文', reason: '优化', name: '简历' });
     state.pendingQuestions.set('owner', [{ id: 'q1', question: '城市？', options: ['广州', '深圳'] }]);
     state.tasks.set('owner', new Map([['todo1', { id: 'todo1', title: '准备简历', description: '', status: 'pending' }]]));
-    state.SaveState();
+    await state.SaveState();
     const restarted = new AgentHost({ userDataPath: root, workspacePath: root, Emit: () => undefined, business, observability: null });
     const restored = await restarted.GetSessionAssistantState('owner');
     expect(restored.tasks).toMatchObject([{ id: 'todo1', title: '准备简历' }]);
@@ -111,10 +115,11 @@ describe('Host 会话交互恢复与结算', () => {
       SaveConversationPresentation: async (sessionId: string, snapshot: ConversationPresentation) => { expect(sessionId).toBe('owner'); presentation = snapshot; return { saved: true }; },
     };
     const host = new AgentHost({ userDataPath: root, workspacePath: root, Emit: (event: AgentStreamEvent) => events.push(event), business, observability: null });
+    await host.Ready();
     const state = host as any;
     state.requestSessions.set('req1', 'owner');
     state.pendingEdits.set('resume-confirmation-one', { kind: 'edit', sessionId: 'owner', ownerId: 'agent-req1', resumeId: 'r1', resume, baseRevision: 1, content: '更新正文', reason: '优化', idempotencyKey: 'edit1', proposalHash: 'hash1' });
-    state.SaveState();
+    await state.SaveState();
     const restarted = new AgentHost({ userDataPath: root, workspacePath: root, Emit: (event: AgentStreamEvent) => events.push(event), business, observability: null });
     expect(await restarted.ConfirmResumeEdit('resume-confirmation-one', true)).toMatchObject({ applied: true });
     expect(write).toHaveBeenCalledTimes(1);

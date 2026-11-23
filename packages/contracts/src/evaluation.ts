@@ -1,5 +1,6 @@
 /** Agent 测评类型；第一版只开放 Prompt 与本地浏览器两类 Runner。 */
 export type EvalRunnerType = 'prompt' | 'browser';
+export type EvalProvider = 'DeepSeek' | 'Z.AI' | 'MIMO' | '自定义';
 export type EvalRunStatus = 'queued' | 'preparing' | 'running' | 'scoring' | 'completed' | 'failed' | 'cancelled';
 export type EvalCaseRunStatus = 'queued' | 'running' | 'scoring' | 'completed' | 'failed' | 'cancelled' | 'not_run';
 export type EvalUserSimulatorStrategy = 'approve_valid' | 'reject_submit_once' | 'scripted';
@@ -29,6 +30,15 @@ export interface EvalPromptCandidate {
   promptOverrides: Record<string, string>;
 }
 
+export interface EvalRubricDimension { id: string; label: string; weight: number; }
+export interface EvalScriptedResponse {
+  kind: 'confirmation' | 'input';
+  accepted?: boolean;
+  content?: string;
+  /** 多问题一次提问时按稳定问题 ID 回答；与 content 二选一。 */
+  answers?: Record<string, string>;
+}
+
 export interface EvalExpectedResult {
   requiredFacts: string[];
   requiredBehaviors: string[];
@@ -46,6 +56,8 @@ export interface EvalDatasetCase {
   fixtures: { resume?: Record<string, unknown>; profile?: unknown[]; files?: Array<{ name: string; content: string }> };
   expected: EvalExpectedResult;
   tags: string[];
+  /** Prompt 的模拟交互脚本；浏览器旧格式 browser.scriptedResponses 仍可使用。 */
+  scriptedResponses?: EvalScriptedResponse[];
   browser?: {
     /** 拟真网申平台案例；未配置时沿用原招聘 Fixture。 */
     benchmark?: { scenarioId: string; goal: 'fill' | 'preview' | 'submit' };
@@ -55,22 +67,24 @@ export interface EvalDatasetCase {
     initialState?: Record<string, unknown>;
     expectedTargets?: string[];
     forbiddenTargets?: string[];
-    scriptedResponses?: Array<{ kind: 'confirmation' | 'input'; accepted?: boolean; content?: string }>;
+    scriptedResponses?: EvalScriptedResponse[];
     assertions?: EvalBrowserAssertion[];
   };
 }
 
 export interface EvalProjectConfig {
-  executionProvider: 'DeepSeek';
+  executionProvider: EvalProvider;
   executionModel: string;
   /** 只有 Prompt Runner 需要 Judge；Browser Runner 不应配置或调用 Judge。 */
-  judgeProvider?: 'DeepSeek';
+  judgeProvider?: EvalProvider;
   judgeModel?: string;
   candidates: EvalPromptCandidate[];
   toolNames: string[];
   userSimulator: EvalUserSimulatorStrategy;
   maxModelTurns: number;
   repeatCount: number;
+  /** 维度 ID 和权重是冻结的评分契约；权重之和必须为 100。 */
+  rubricDimensions?: EvalRubricDimension[];
   fixtureBranch?: 'clean' | 'realistic-dom' | 'career-portal';
 }
 
@@ -96,7 +110,8 @@ export interface EvalProjectInput {
   id?: string;
   name: string;
   runnerType: EvalRunnerType;
-  config: EvalProjectConfig;
+  /** 新建时省略工具集，由后端按正式场景生成；更新时省略则保留现值。 */
+  config: Omit<EvalProjectConfig, 'toolNames'> & { toolNames?: string[] };
   rubric?: string;
   judgePrompt?: string;
   judgeStrictJson?: boolean;
@@ -122,12 +137,35 @@ export interface EvalDatasetImportResult {
   revision: number;
 }
 
+/** 导入预检只读取文本与项目配置；诊断可直接展示，不包含本地路径或凭据。 */
+export interface EvalDatasetDiagnostic {
+  line: number | null;
+  caseId?: string;
+  code: string;
+  declaredVersion: string | null;
+  expectedVersion: string | null;
+  message: string;
+  action: string;
+}
+
+export interface EvalDatasetImportPreview {
+  valid: boolean;
+  caseCount: number;
+  environment: 'prompt' | 'browser' | 'career-portal';
+  expectedFixtureVersion: string | null;
+  diagnostics: EvalDatasetDiagnostic[];
+  templateJsonl: string;
+}
+
 export interface EvalRunSummary {
   totalCaseRuns: number;
   completedCaseRuns: number;
   unscoredCaseRuns?: number;
   failedCaseRuns: number;
   cancelledCaseRuns: number;
+  notRunCaseRuns?: number;
+  taskEvaluatedCaseRuns?: number;
+  taskCompletedCaseRuns?: number;
   averageScore: number | null;
   taskCompletionRate: number | null;
   toolErrorCount: number;
@@ -152,6 +190,7 @@ export interface EvalRun {
 }
 
 export interface EvalRequirementResult {
+  id?: string;
   requirement: string;
   passed: boolean;
   reason: string;
@@ -223,6 +262,7 @@ export interface EvalPromptPreview {
   projectRevision: number;
   generatedAt: number;
   toolsetHash: string;
+  tools: { allowed: string[]; invalid: string[]; suggested: string[] };
   /** 未应用候选替换的生产 Prompt 编译结果，供界面标识候选版本的行级差异。 */
   productionPrompt: string;
   /** 当前生产 Prompt 的可替换片段；界面用它构造结构化编辑器，不要求用户编写 JSON。 */
@@ -276,6 +316,21 @@ export interface EvalComparison {
   right: EvalRunDetail;
   strictComparison: boolean;
   differingSnapshotFields: string[];
+  samples?: {
+    commonCaseCount: number;
+    leftOnlyCaseCount: number;
+    rightOnlyCaseCount: number;
+    pairedCount: number;
+    leftMean: number | null;
+    rightMean: number | null;
+    rows: Array<{
+      caseId: string; leftCandidate: string; rightCandidate: string;
+      leftTotal: number; rightTotal: number; leftScored: number; rightScored: number;
+      pairedCount: number;
+      left: { mean: number | null; stddev: number | null };
+      right: { mean: number | null; stddev: number | null };
+    }>;
+  };
 }
 
 export interface EvalEvent {
@@ -295,11 +350,13 @@ export interface DesktopEvaluationBridge {
   ListProjects: () => Promise<EvalProject[]>;
   DeleteProject: (id: string) => Promise<{ deleted: boolean }>;
   ImportDataset: (projectId: string, jsonl: string, rubric: string, expectedRevision: number) => Promise<EvalDatasetImportResult>;
+  /** 只读校验案例模式、Fixture 版本与断言，返回逐行诊断及当前环境的有效模板。 */
+  PreviewDatasetImport: (projectId: string, jsonl: string) => Promise<EvalDatasetImportPreview>;
   /** 版本库读取：按导入时间倒序列出项目的全部测试集版本。 */
   ListDatasetVersions: (projectId: string) => Promise<EvalDatasetVersion[]>;
   /** 把项目指针切到历史版本；版本文件缺失时拒绝，避免指向不可运行的数据集。 */
   SelectDatasetVersion: (projectId: string, version: string, expectedRevision: number) => Promise<EvalProject>;
-  /** 删除一个版本并删除其文件；删除当前版本时项目自动切回最近的剩余版本。 */
+  /** 删除版本；当前版本回退到最近剩余版本，无剩余时清空；文件清理失败后台重试。 */
   DeleteDatasetVersion: (projectId: string, version: string, expectedRevision: number) => Promise<EvalProject>;
   /** candidateId 提供时只运行该候选（单选候选语义），省略时保持旧行为运行全部候选。 */
   StartRun: (projectId: string, candidateId?: string) => Promise<EvalRun>;

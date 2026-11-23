@@ -4,13 +4,17 @@ import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { BundledModelDirectory, FindModelDirectoryEntry, NormalizeModelEndpoint, OfficialModelEndpoints, UnknownModelCapabilities } from '@avery/agent-sdk';
 import type { ModelCapabilityOverrides, ModelCapabilityValues, ModelConfigurationIdentity, ModelDirectoryEntry, ResolvedModelConfiguration } from '@avery/agent-sdk';
-import { GetModelConfigurationSchema, ModelCapabilityOverridesSchema, ModelConfigurationIdentitySchema, SaveModelConfigurationSchema } from '@avery/contracts';
+import { GetModelConfigurationSchema, GoalModelTierSchema, GoalModelTiersSchema, ModelCapabilityOverridesSchema, ModelConfigurationIdentitySchema, SaveGoalModelTiersSchema, SaveModelConfigurationSchema, type GoalModelTiersConfiguration } from '@avery/contracts';
 
 const DirectorySources = ['https://models.dev/api.json', 'https://raw.githubusercontent.com/anomalyco/opencode/dev/packages/core/src/models-dev/snapshot.txt'] as const;
 const MaximumDirectoryBytes = 16 * 1024 * 1024;
 const RefreshIntervalMs = 24 * 60 * 60_000;
 const RecordSchema = ModelConfigurationIdentitySchema.extend({ baseUrl: z.string(), overrides: ModelCapabilityOverridesSchema, revision: z.number().int().positive() }).strict();
 const StoreSchema = z.object({ version: z.literal(1), records: z.array(RecordSchema).max(5000) }).strict();
+// 历史三档文件读取时保留最低档和最高档，显式保存时写入当前格式。
+const LegacyGoalModelTiersSchema = z.tuple([GoalModelTierSchema, GoalModelTierSchema, GoalModelTierSchema])
+  .transform(([secondary, , advanced]) => [secondary, advanced]).pipe(GoalModelTiersSchema);
+const GoalTiersStoreSchema = z.object({ version: z.literal(1), revision: z.number().int().positive(), tiers: z.union([GoalModelTiersSchema, LegacyGoalModelTiersSchema]) }).strict();
 type SavedRecord = z.infer<typeof RecordSchema>;
 
 /** 固定公开目录的投影：只提取事实字段，不执行远端脚本，也不向目录发送供应商凭据。 */
@@ -145,7 +149,29 @@ export class ModelConfigurationService {
     this.writes = operation;
     return operation;
   }
-  /** 仅请求固定公开数据源；失败保留原目录，背景刷新不阻塞启动与当前 Run。 */
+  /** 配置按版本提交，避免两个设置窗口覆盖彼此的最低档选择。 */
+  async GetGoalModelTiers(): Promise<GoalModelTiersConfiguration> {
+    const saved = await this.ReadOptional('goal-model-tiers.json');
+    if (saved === undefined) return { revision: 0, tiers: [] };
+    const { revision, tiers } = GoalTiersStoreSchema.parse(saved);
+    return { revision, tiers };
+  }
+
+  async SaveGoalModelTiers(input: unknown, validate: (tier: GoalModelTiersConfiguration['tiers'][number]) => Promise<void>): Promise<GoalModelTiersConfiguration> {
+    const parsed = SaveGoalModelTiersSchema.parse(input);
+    const tiers = GoalModelTiersSchema.parse(parsed.tiers.map(tier => ({ ...tier, baseUrl: NormalizeModelEndpoint(tier.baseUrl) })));
+    const operation = this.writes.catch(() => undefined).then(async () => {
+      const current = await this.GetGoalModelTiers();
+      if (current.revision !== parsed.expectedRevision) throw Object.assign(new Error('模型档次已改变，请重新加载后保存。'), { code: 'REVISION_CONFLICT' });
+      for (const tier of tiers) await validate(tier);
+      const next = { revision: current.revision + 1, tiers };
+      await this.WriteAtomic('goal-model-tiers.json', { version: 1, ...next });
+      return next;
+    });
+    this.writes = operation;
+    return operation;
+  }
+  /** 仅请求固定公开数据源；失败保留原目录。 */
   async Refresh(force = false): Promise<void> {
     await this.Initialize();
     if (this.refreshPromise) return this.refreshPromise;

@@ -254,6 +254,12 @@ export class BusinessStore {
   RenameConversation(id: string, title: string, expectedRevision?: number): any { return this.conversationService.Rename(id, title, expectedRevision); }
   /** 删除会话并级联清理其消息。 */
   DeleteConversation(id: string): any { return this.conversationService.Delete(id); }
+  /** 内部清理接口仅供 Backend 生命周期编排，不直接暴露给 Renderer。 */
+  DeleteArchivedConversation(id: string, revision: number, dueBefore?: number): any { return this.conversations.DeleteArchived(id, revision, dueBefore); }
+  ListExpiredConversations(now: number): any { return this.conversations.ListExpired(now); }
+  ListPendingConversationCleanup(): string[] { return this.conversations.ListPendingCleanup(); }
+  CompleteConversationCleanup(id: string): void { this.conversations.CompleteCleanup(id); }
+  AssertConversationAvailable(id: string): void { this.conversations.AssertAvailable(id); }
   /** 设置会话置顶标记；透传期望版本供外部修改冲突检测。 */
   SetConversationPinned(id: string, pinned: boolean, expectedRevision?: number): any { return this.conversationService.SetPinned(id, pinned, expectedRevision); }
   /** 设置会话归档标记；透传期望版本供外部修改冲突检测。 */
@@ -263,6 +269,7 @@ export class BusinessStore {
   /** 写入流式占位消息的最终正文。 */
   SaveConversationPresentation(conversationId: string, presentation: import('@avery/agent-sdk').ConversationPresentation): { saved: boolean } { return this.conversationService.SavePresentation(conversationId, presentation); }
   GetConversationPresentations(conversationId: string): import('@avery/agent-sdk').ConversationPresentation[] { return this.conversations.GetPresentations(conversationId); }
+  RecoverInterruptedConversations(): { recovered: number } { return this.conversations.RecoverInterrupted(); }
   /** 写入流式占位消息的最终正文。 */
   CompleteConversationMessage(conversationId: string, messageId: string, content: string, thinkingContent?: string): any { return this.conversationService.CompleteMessage(conversationId, messageId, content, thinkingContent); }
   /** 移除未完成请求的临时占位消息。 */
@@ -313,7 +320,7 @@ export class BusinessStore {
       experience: input.experience ?? existingJob?.experience ?? '', jobSeekingType: input.jobSeekingType ?? input.employmentType ?? existingJob?.jobSeekingType ?? 'social_recruitment',
       education: input.education ?? existingJob?.education, companySize: input.companySize ?? existingJob?.companySize,
       channel: input.channel ?? existingJob?.channel ?? 'company_website', favorite: input.favorite ?? existingJob?.favorite ?? false,
-      url: input.url, jd: input.jd ?? existingJob?.jd ?? '', matchScore: input.matchScore ?? existingJob?.matchScore,
+      url: input.url, jd: input.jd ?? existingJob?.jd ?? '',
       contactStatus: input.contactStatus ?? existingJob?.contactStatus,
       contactedAt: input.contactedAt ?? existingJob?.contactedAt,
       bossContactBatchId: input.bossContactBatchId ?? existingJob?.bossContactBatchId,
@@ -416,6 +423,10 @@ export class BusinessStore {
   RecoverWorkspaceOperations(): any { return this.workspaceOperations.Recover({ synchronizeProfiles: (items) => this.profileService.SynchronizeAttachmentLinks(items) }); }
   /** 将虚拟附件 URI 解析为受控工作空间文件，拒绝任意物理路径输入。 */
   ResolveAttachmentUri(uri: string): any { return this.workspaceService.ResolveAttachmentUri(uri); }
+  /** 内部图片端口不注册 Renderer IPC；所有截图先保存附件，再获得稳定的虚拟引用。 */
+  ImportAgentImage(sessionId: string, dataUrl: string): any { return this.workspaceService.ImportAgentImage(sessionId, dataUrl); }
+  RetainAgentImages(sessionId: string, uris: string[]): void { this.attachmentLifecycle.RetainAgentImages(sessionId, uris); }
+  ReleaseAgentImages(sessionId: string): void { this.attachmentLifecycle.RemoveLinks('agent', sessionId); }
   ResolveAttachmentMarkdownUri(uri: string): Promise<any> { return this.workspaceService.ResolveAttachmentMarkdownUri(uri); }
   /** 创建一致性的业务数据库和档案备份；附件以原始内容寻址文件继续由 manifest 引用。 */
   CreateBackup(): any { return this.workspaceService.CreateBackup(); }

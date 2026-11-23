@@ -25,6 +25,7 @@ function CreateRepository(file = ':memory:', initialize = true) {
     CREATE TABLE cron_runs(id TEXT PRIMARY KEY, cron_task_id TEXT NOT NULL REFERENCES cron_tasks(id), conversation_id TEXT REFERENCES conversations(id));
     CREATE TABLE audit_events(id TEXT PRIMARY KEY, actor_type TEXT, action TEXT, entity_type TEXT, entity_id TEXT, metadata_json TEXT, created_at INTEGER);
   `);
+  if (initialize) db.exec((require('node:fs') as typeof import('node:fs')).readFileSync('migrations/business/v19-conversation-retention.sql', 'utf8'));
   return {
     db,
     repository: new ConversationRepository({ db, attachmentLifecycle: { RemoveConversationLinks: () => undefined, ReplaceLinks: () => undefined, RemoveLinks: () => undefined } }),
@@ -32,6 +33,25 @@ function CreateRepository(file = ':memory:', initialize = true) {
 }
 
 describe('ConversationRepository 创建', () => {
+  it('重启结算遗留运行投影，保留等待审批、已完成状态和已有工具结果', () => {
+    const { repository, db } = CreateRepository();
+    try {
+      repository.Create({ id: 'recovery', title: '恢复' });
+      for (const status of ['running', 'waiting', 'completed'] as const) {
+        const requestId = `request-${status}`;
+        repository.AppendMessages('recovery', [{ id: `reply-${requestId}`, role: 'assistant', content: '' }]);
+        let presentation = ApplyConversationActivity(CreateConversationPresentation(requestId), { kind: 'tool', toolCallId: 'saved', name: 'UpdateResume', toolStatus: 'succeeded', summary: '真实保存完成' }, 1, 1);
+        presentation = ApplyConversationActivity(presentation, { kind: 'status', status }, 2, 2);
+        repository.SavePresentation('recovery', presentation);
+      }
+      expect(repository.RecoverInterrupted()).toEqual({ recovered: 1 });
+      const results = repository.GetPresentations('recovery');
+      expect(results.find(item => item.requestId === 'request-running')).toMatchObject({ status: 'failed', parts: [expect.objectContaining({ status: 'succeeded', summary: '真实保存完成' })] });
+      expect(results.find(item => item.requestId === 'request-waiting')?.status).toBe('waiting');
+      expect(results.find(item => item.requestId === 'request-completed')?.status).toBe('completed');
+      expect(repository.RecoverInterrupted()).toEqual({ recovered: 0 });
+    } finally { db.close(); }
+  });
   it('技能展示快照与附件随消息落库，幂等追加和重启后均可恢复且不混入正文', async () => {
     const root = await mkdtemp(join(tmpdir(), 'avery-message-metadata-'));
     const file = join(root, 'conversation.db');
@@ -95,6 +115,15 @@ describe('ConversationRepository 创建', () => {
 });
 
 describe('ConversationRepository 删除', () => {
+  it('归档持久化失败时整体回滚，不能留下已开始倒计时的半完成状态', () => {
+    const { db, repository } = CreateRepository();
+    try {
+      repository.Create({ id: 'atomic-archive', title: '事务回滚' });
+      db.exec("CREATE TRIGGER fail_archive_audit BEFORE INSERT ON audit_events WHEN NEW.action='set-archived' BEGIN SELECT RAISE(ABORT, 'injected storage failure'); END;");
+      expect(() => repository.SetArchived('atomic-archive', true, 1)).toThrow('injected storage failure');
+      expect(repository.ListAll()[0]).toMatchObject({ revision: 1, archived: false, archivedAt: null, autoDeleteAt: null });
+    } finally { db.close(); }
+  });
   it('删除定时任务创建的对话时保留运行历史并清空关联', () => {
     const { db, repository } = CreateRepository();
     repository.Create({ id: 'cron-conversation-1', title: '定时投递' });

@@ -11,7 +11,7 @@ const Sse = (content = '成功') => new Response(`data: ${JSON.stringify({ choic
 async function Fixture(fetcher: typeof fetch, options = {}) {
   vi.stubGlobal('fetch', fetcher);
   const provider = CreateProviderModule({ getConfig: async () => null, saveConfig: async () => undefined, getStoredSettings: async () => ({}) } as never,
-    { initialDelayMs: 1, maxDelayMs: 5, ...options });
+    { maxAttempts: 3, initialDelayMs: 1, maxDelayMs: 5, ...options });
   await provider.Configure({ provider: 'MIMO', model: 'mimo-v2.6-flash', apiKey: 'fixture-secret', thinkingEnabled: true });
   const controller = new AbortController();
   const input: Parameters<ModelProviderModule['StreamCompletion']>[0] = { requestId: 'recovery', provider: 'MIMO', model: 'mimo-v2.6-flash', reasoningEffort: 'medium', history: [], tools: [], signal: controller.signal, onDelta: vi.fn(), instructions: { compiled: 'audit' } as never };
@@ -19,13 +19,38 @@ async function Fixture(fetcher: typeof fetch, options = {}) {
 }
 
 describe('模型连接恢复与流式降级', () => {
-  it('退避为 1 秒、2 秒，取消可立即结束等待', async () => {
+  it('默认三次重连依次等待 2 秒、4 秒、16 秒，最后一次才降级', async () => {
     vi.useFakeTimers(); const times: number[] = [], notices: unknown[] = [];
-    const work = WithProviderRecovery(async () => { times.push(Date.now()); if (times.length < 3) throw ProtocolError('PROTOCOL_TEST', 'broken'); return 'ok'; },
+    const work = WithProviderRecovery(async () => { times.push(Date.now()); if (times.length < 4) throw ProtocolError('PROTOCOL_TEST', 'broken'); return 'ok'; },
       { stream: true, policy: DefaultProviderTransportPolicy, onRecovery: event => notices.push(event) });
-    await vi.advanceTimersByTimeAsync(3000); await expect(work).resolves.toBe('ok');
-    expect(times.map(time => time - times[0])).toEqual([0, 1000, 3000]);
-    expect(notices).toMatchObject([{ attempt: 2, delayMs: 1000 }, { attempt: 3, delayMs: 2000, mode: 'nonstream' }]);
+    await vi.advanceTimersByTimeAsync(0);
+    for (const [index, delay] of [2000, 4000, 16000].entries()) {
+      await vi.advanceTimersByTimeAsync(delay - 1); expect(times).toHaveLength(index + 1);
+      await vi.advanceTimersByTimeAsync(1); expect(times).toHaveLength(index + 2);
+    }
+    await expect(work).resolves.toBe('ok');
+    expect(times.map(time => time - times[0])).toEqual([0, 2000, 6000, 22000]);
+    expect(notices).toMatchObject([{ attempt: 2, maxAttempts: 4, delayMs: 2000, mode: 'stream' }, { attempt: 3, maxAttempts: 4, delayMs: 4000, mode: 'stream' }, { attempt: 4, maxAttempts: 4, delayMs: 16000, mode: 'nonstream' }]);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+  it('持续断网在四次请求后结束，不产生第五次请求', async () => {
+    vi.useFakeTimers();
+    const perform = vi.fn(async () => { throw new TypeError('fetch failed'); });
+    const work = WithProviderRecovery(perform, { stream: true, policy: DefaultProviderTransportPolicy });
+    const rejected = expect(work).rejects.toMatchObject({ code: 'PROVIDER_CONNECTION_INTERRUPTED', retryable: false });
+    await vi.advanceTimersByTimeAsync(22000); await rejected;
+    await vi.advanceTimersByTimeAsync(60000);
+    expect(perform).toHaveBeenCalledTimes(4); expect(vi.getTimerCount()).toBe(0);
+  });
+  it('16 秒退避期间取消立即停止，且释放定时器', async () => {
+    vi.useFakeTimers(); const controller = new AbortController();
+    const perform = vi.fn(async () => { throw new TypeError('fetch failed'); });
+    const work = WithProviderRecovery(perform, { stream: true, signal: controller.signal, policy: DefaultProviderTransportPolicy });
+    const rejected = expect(work).rejects.toThrow('user cancelled');
+    await vi.advanceTimersByTimeAsync(6000); expect(perform).toHaveBeenCalledTimes(3);
+    await vi.advanceTimersByTimeAsync(5000); controller.abort(new Error('user cancelled')); await rejected;
+    await vi.advanceTimersByTimeAsync(60000);
+    expect(perform).toHaveBeenCalledTimes(3); expect(vi.getTimerCount()).toBe(0);
   });
   it('503 与 429 重试，认证或参数错误不重试，错误凭据被脱敏', async () => {
     const fetcher = vi.fn().mockResolvedValueOnce(new Response('{}', { status: 503 })).mockResolvedValueOnce(new Response('{}', { status: 429, headers: { 'Retry-After': '300' } })).mockImplementation(async () => Sse());

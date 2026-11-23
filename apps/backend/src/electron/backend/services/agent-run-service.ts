@@ -29,6 +29,9 @@ export class AgentRunService {
   /** 模型能力读取和保存复用 Host 的严格 Schema 与 revision 校验。 */
   GetModelConfiguration(input: unknown): ReturnType<DesktopAgentBridge['GetModelConfiguration']> { return this.agent.GetModelConfiguration(input); }
   SaveModelConfiguration(input: unknown): ReturnType<DesktopAgentBridge['SaveModelConfiguration']> { return this.agent.SaveModelConfiguration(input); }
+  GetGoalModelTiers(): ReturnType<DesktopAgentBridge['GetGoalModelTiers']> { return this.agent.GetGoalModelTiers(); }
+  SaveGoalModelTiers(input: unknown): ReturnType<DesktopAgentBridge['SaveGoalModelTiers']> { return this.agent.SaveGoalModelTiers(input); }
+  ChangeGoal(input: unknown): ReturnType<DesktopAgentBridge['ChangeGoal']> { return this.agent.ChangeGoal(input); }
 
   /** 提交一轮受限的流式对话回合。 */
   Send(request: any): any { return this.agent.Send(request); }

@@ -3,6 +3,40 @@ import type { AgentModules } from './modules';
 import type { RegisteredAgentTool, ToolContext } from './tools';
 import type { AgentMessage, CompiledInstructions, ConfirmationMode, ProviderUsageFact, ReasoningEffort, RunDisposition, ScenarioSnapshot, ToolCallFragment, ToolExecutionResult } from './types';
 
+/** 宿主负责审核模型和持久状态，内核只在交付边界消费审核决定。 */
+export type KernelGoalDecision =
+  | { status: 'achieved' }
+  | { status: 'continue'; feedback: string }
+  | { status: 'paused'; message: string };
+
+/** 宿主注册的生命周期钩子。等待中的工具批次和中断不会触发 Stop。 */
+export interface KernelHookCandidate {
+  stepId: string;
+  text: string;
+  history: AgentMessage[];
+}
+
+export interface KernelRunHooks {
+  stop: (candidate: KernelHookCandidate) => Promise<KernelGoalDecision>;
+  /** 显式继续目标前检查现有证据；最终验收仍由 Stop 完成。 */
+  resume?: (candidate: KernelHookCandidate) => Promise<Exclude<KernelGoalDecision, { status: 'achieved' }>>;
+}
+
+export interface GoalProgress {
+  requestId: string;
+  objective: string;
+  status: 'running' | 'reviewing' | 'waiting' | 'paused' | 'achieved' | 'blocked' | 'cancelled';
+  reason?: string;
+  reviewCount: number;
+  reviewer: { provider: 'DeepSeek' | 'Z.AI' | 'MIMO' | '自定义'; model: string };
+  reviewTokens: number;
+  unreportedReviews: number;
+  canContinue: boolean;
+  /** 已完成的运行片段累计时长。当前片段以 activeSince 为起点。 */
+  activeMs: number;
+  activeSince?: number;
+}
+
 /** 等待交互时的持久检查点；待决工具尚未产生最终消息，恢复时只追加真实结果。 */
 export interface KernelCheckpoint {
   turn: number;
@@ -36,12 +70,25 @@ export interface KernelRunInput {
   userContent: string;
   /** 可选的多模态用户消息；缺省时 Kernel 仍按 userContent 构造纯文本消息。 */
   userMessage?: AgentMessage;
+  /** 仅切换运行状态的用户动作不产生用户聊天消息。 */
+  omitUserMessage?: boolean;
   /** 恢复原 Run，不追加 user 消息；result 必须来自宿主已校验的交互与执行回执。 */
   resume?: { checkpoint: KernelCheckpoint; result: AgentMessage };
   /** 发出等待事件之前保存检查点；失败时不得向用户宣告可恢复。 */
   onCheckpoint?: (checkpoint: KernelCheckpoint) => void;
   /** 真实工具结果进入历史后清除待决检查点，与历史一同持久化。 */
   onResumed?: () => void;
+  goal?: {
+    id: string;
+    deadline: number;
+    /** 由宿主注入带运行期限的模型调用信号，内核不依赖宿主平台实现。 */
+    modelSignal: AbortSignal;
+    /** 中止运行片段时，宿主可将用户主动暂停与取消区分开。 */
+    pauseReason?: () => string | undefined;
+    /** 每次主模型调用前检查整个目标的共享预算。 */
+    stopReason: () => string | undefined;
+  };
+  hooks?: KernelRunHooks;
   /** 首次索引或显式 Skill 正文等位于真实 user 消息周围的合成 user 消息。 */
   messagesBeforeUser?: AgentMessage[];
   messagesAfterUser?: AgentMessage[];

@@ -355,7 +355,7 @@ export function CreateProviderModule(ports: AgentDefaultPorts, transportPolicy: 
   let config: ProviderConfig = defaultConfig;
   const configs = new Map<SupportedProvider, ProviderConfig>([['DeepSeek', defaultConfig]]);
   let configLoadPromise: Promise<void> | null = null;
-  const providerFetch = globalThis.fetch;
+  const providerFetch = ports.providerFetch ?? globalThis.fetch;
   const policy = { ...DefaultProviderTransportPolicy, ...transportPolicy };
 
   /** 惰性加载宿主私有配置；并发入口共享同一个 Promise，不能在凭据尚未读完时误用默认配置。 */
@@ -588,17 +588,17 @@ export function CreateProviderModule(ports: AgentDefaultPorts, transportPolicy: 
       const available = [...new Set(models)].sort((left, right) => left.localeCompare(right));
       return { provider: selected.provider, models: available.length ? available : DefaultDeepSeekModels };
     },
+    /** 目录读取不触发厂商 /models 请求；模型同步由显式 GetModels 操作负责。 */
     async GetProviderCatalog() {
       await EnsureConfig();
-      const providers = await Promise.all((['DeepSeek', 'Z.AI', 'MIMO', '自定义'] as SupportedProvider[]).map(async (provider) => {
+      const providers = (['DeepSeek', 'Z.AI', 'MIMO', '自定义'] as SupportedProvider[]).map((provider) => {
         const selected = ConfigFor(provider);
         const metadata = { baseUrl: selected.baseUrl, contextLimit: selected.contextLimit, contextLimitMode: selected.contextLimitMode ?? 'default' as const, compressionThreshold: selected.compressionThreshold, thinkingEnabled: selected.thinkingEnabled };
         if (!selected.apiKey) return { provider, configured: false, model: selected.model, models: [], ...metadata };
-        let models: string[];
-        try { models = (await this.GetModels(provider)).models; }
-        catch { models = provider === 'DeepSeek' ? DefaultDeepSeekModels : provider === 'MIMO' ? DefaultMimoModels : [selected.model]; }
+        const defaults = provider === 'DeepSeek' ? DefaultDeepSeekModels : provider === 'MIMO' ? DefaultMimoModels : [];
+        const models = [...new Set([...defaults, selected.model])];
         return { provider, configured: true, model: selected.model, models, ...metadata };
-      }));
+      });
       return { providers };
     },
     /** 调用兼容 OpenAI Chat Completions 的流式接口并转发思考与正文增量；畸形 SSE 直接失败，不静默忽略。 */

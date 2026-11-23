@@ -9,7 +9,7 @@ export type { AgentStreamEvent } from './events';
 export type { ProviderAmount, ProviderQuotaWindow, ProviderAccountUsage, ProviderUsageSnapshot } from './provider-usage';
 export { ApplyConversationActivity, CreateConversationPresentation, GetConversationResult, GetConversationArtifacts, IsConversationPresentation, MatchConversationResourceHref } from './conversation';
 export type { ConversationActivity, ConversationPart, ConversationPresentation, ConversationResource, ConversationRunStatus, ConversationToolStatus } from './conversation';
-export type { KernelCheckpoint, KernelRunFunction, KernelRunInput, KernelRunResult } from './kernel';
+export type { GoalProgress, KernelCheckpoint, KernelGoalDecision, KernelHookCandidate, KernelRunFunction, KernelRunHooks, KernelRunInput, KernelRunResult } from './kernel';
 export { DropOldestTurnGroups, IsRuntimeContextMessage, IsUserTurn, KeepRecentTurnGroups, SplitTurnGroups } from './turn-group';
 export type {
   BossContactPort, BrowserActionProposal, BrowserAutomationPort, BrowserEngine, BrowserTaskGrantSnapshot, BrowserToolName, FileReadPort, JobCollectionCandidate, JobCollectionFilters, JobCollectionPort, JobCollectionQuery, JobSearchPort, ProfileWritePort, RegisteredAgentTool, ResumeReadPort, ResumeWritePort,

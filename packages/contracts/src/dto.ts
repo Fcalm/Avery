@@ -45,10 +45,21 @@ export interface ConversationDto {
   updatedAt?: number;
   pinned?: boolean;
   archived?: boolean;
+  /** 后端归档时间及 30 天清理期限；旧归档未知时为 null。 */
+  archivedAt?: number | null;
+  autoDeleteAt?: number | null;
   scenarioId?: 'default' | 'application';
   projectId?: string | null;
   projectName?: string | null;
   messages: ChatMessageDto[];
+}
+
+/** 删除的对象必须来自用户确认时的归档快照，禁止用执行时的全部归档替代。 */
+export interface ArchivedConversationSelection { id: string; expectedRevision: number }
+export interface ArchivedConversationDeleteResult {
+  deletedIds: string[];
+  skipped: Array<{ id: string; reason: 'not_found' | 'changed' }>;
+  failed: Array<{ id: string; message: string }>;
 }
 
 /** 简历 DTO：document_json 即页面 Resume ViewModel，正文变化提升 revision 并追加版本快照。 */
@@ -79,7 +90,6 @@ export interface JobDto {
   jobSeekingType?: JobSeekingType;
   channel: Channel;
   favorite: boolean;
-  matchScore?: number;
   url?: string;
   jd: string;
   /** 截止时间（UTC 毫秒）；到时后由岗位库自动清理，缺省表示长期有效。 */
@@ -148,9 +158,9 @@ export interface SettingsDto {
   language?: 'zh' | 'en';
   /** 常规-通用：启动时打开「上次的对话」或停留在工作区首页（新对话页）。 */
   startPage?: 'last' | 'home';
-  /** 常规-通知：窗口未聚焦时长任务完成时弹出系统通知；主进程在收到完成事件时读取。 */
+  /** 常规-通知：窗口未聚焦时，任务完成、审批及问答显示白色桌面通知。 */
   notifyOnComplete?: boolean;
-  /** 常规-通知：完成通知附带系统提示音；仅在 notifyOnComplete 开启时生效。 */
+  /** 常规-通知：完成通知播放本地柔和短音；仅在 notifyOnComplete 开启时生效。 */
   notifySound?: boolean;
   /** 常规-更新：有新版本时在后台自动下载；更新发布通道接入前仅保存偏好。 */
   autoUpdate?: boolean;

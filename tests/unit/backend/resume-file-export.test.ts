@@ -106,7 +106,7 @@ describe('Agent resume file export', () => {
       currentRevision = 2;
       invalidPath = true;
       await expect(state.ExportBoundResumeFile(resume, 'pdf', 'session-1')).rejects.toThrow();
-      host.DeleteSessionResources('session-1');
+      await host.DeleteSessionResources('session-1');
       expect(state.generatedAssets.has(result.fileId)).toBe(false);
     } finally { await host.Close(); }
   });

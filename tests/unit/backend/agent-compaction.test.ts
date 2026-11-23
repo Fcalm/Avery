@@ -37,7 +37,7 @@ async function Host() {
   const state = {
     modules: h.modules, modelConfigurations, statePath: path.join(root, 'agent-state.json'),
     histories: new Map([['s', history]]), tasks: new Map(), toolLedger: new Map(),
-    executingSessions: new Set(), compactRequests: new Set(), controllers: new Map(), requestSessions: new Map(),
+    executingSessions: new Set(), deletingSessions: new Set(), compactRequests: new Set(), controllers: new Map(), requestSessions: new Map(),
     pausedRuns: new Map(), browserRunId: null, sessionUsage: new Map(), compressionCount: 0,
     conversationRecorders: new Map(),
     business: { SaveConversationPresentation: vi.fn(async (_id, presentation) => { presentations.push(structuredClone(presentation)); return { saved: true }; }) },
@@ -48,6 +48,7 @@ async function Host() {
     EnsureModuleSnapshotCompatible: vi.fn(), HydrateToolSnapshot: vi.fn(() => []),
     LoadOrCreateSnapshots: vi.fn(async () => state.sessionSnapshots.get('s')),
     RecordSessionUsage: vi.fn(), SaveState: vi.fn(),
+    LoadSessionHistory: vi.fn(async () => undefined),
   };
   const host = Object.assign(Object.create(AgentHost.prototype), state) as AgentHost;
   return { host, state, history, modules: h.modules, root, events, presentations };

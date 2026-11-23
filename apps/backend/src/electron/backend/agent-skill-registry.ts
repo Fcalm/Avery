@@ -6,6 +6,7 @@ import type { AgentMessage, FrozenSkill, SkillManifest, SkillSnapshot } from '@a
 
 const { load: ParseYaml } = require('js-yaml') as { load(source: string): unknown };
 
+const EgoWorkspaceSkillId = 'ego-workspace';
 const MaximumSkillBytes = 64 * 1024;
 const MaximumResourceBytes = 64 * 1024;
 const MaximumResourcesPerSkill = 16;
@@ -163,12 +164,19 @@ export class AgentSkillRegistry {
     return { manifest, content, contentHash, resources };
   }
 
+  /** 此 Skill 随实际浏览器运行期注入，独立于会话索引和显式 LoadSkill。 */
+  async ReadEgoWorkspaceInstructions(): Promise<string> {
+    const skill = await this.ReadSkill(path.join(this.rootPath, EgoWorkspaceSkillId), 'application');
+    if (!skill) throw new Error('The built-in workspace Skill is unavailable.');
+    return skill.content.replace(/^---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/, '').trim();
+  }
+
   /** 读取当前注册表并冻结完整正文；后续普通 Run 只能使用此快照。 */
   async BuildSnapshot(sessionId: string, sessionRevision: number, scenarioId: string): Promise<SkillSnapshot> {
     const entries = await readdir(this.rootPath, { withFileTypes: true });
     const skills: FrozenSkill[] = [];
     for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
-      if (!entry.isDirectory()) continue;
+      if (!entry.isDirectory() || entry.name === EgoWorkspaceSkillId) continue;
       const directory = path.join(this.rootPath, entry.name);
       if (!(await HasSkillEntrypoint(directory))) continue;
       const skill = await this.ReadSkill(directory, scenarioId);

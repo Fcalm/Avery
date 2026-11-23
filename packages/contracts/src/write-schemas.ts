@@ -2,6 +2,14 @@ import { z } from 'zod';
 import { ResumeDataSchema } from './resume-data';
 import { JobSeekingTypeValues } from './enums';
 
+const GoalIdentitySchema = z.object({ sessionId: z.string().trim().min(1).max(200), requestId: z.string().trim().min(1).max(200) });
+export const AgentGoalChangeSchema = z.discriminatedUnion('action', [
+  GoalIdentitySchema.extend({ action: z.literal('edit'), objective: z.string().trim().min(1).max(4000) }).strict(),
+  GoalIdentitySchema.extend({ action: z.literal('pause') }).strict(),
+  GoalIdentitySchema.extend({ action: z.literal('delete') }).strict(),
+]);
+export type AgentGoalChange = z.infer<typeof AgentGoalChangeSchema>;
+
 /**
  * 写通道负载的形状校验 Schema（阶段 6 A2 收口）：
  * 校验对象结构、必填的结构字段与字符串长度上限；未知字段放行，枚举与业务规则仍由领域层负责。
@@ -47,7 +55,7 @@ export const ResumeUpsertSchema = z.object({
   templateId: z.enum(['classic', 'compact']).optional(),
 }).passthrough();
 
-/** 岗位 upsert：id 必需，其余字段类型/长度校验但允许缺省（领域层负责枚举）。 */
+/** 岗位 upsert：id 必需；兼容旧客户端与备份输入时剔除退役分数字段，其余字段由领域层校验。 */
 export const JobUpsertSchema = z.object({
   id: z.string().min(1).max(200),
   company: z.string().max(200).optional(),
@@ -60,11 +68,10 @@ export const JobUpsertSchema = z.object({
   jobSeekingType: z.enum(JobSeekingTypeValues).optional(),
   channel: z.string().max(100).optional(),
   favorite: z.boolean().optional(),
-  matchScore: z.number().optional(),
   url: z.string().max(2000).optional(),
   jd: z.string().max(200000).optional(),
   deadline: z.number().int().positive().optional(),
-}).passthrough();
+}).passthrough().transform(({ matchScore: _legacyMatchScore, match_score: _legacyMatchScoreColumn, ...job }) => job);
 
 /** 投递 upsert：id/jobId/resumeId 为结构必需；日期字段为 YYYY-MM-DD。 */
 export const ApplicationUpsertSchema = z.object({

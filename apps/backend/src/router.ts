@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import {
+  AgentGoalChangeSchema,
   AgentInteractionResponseSchema,
   ApplicationUpsertSchema,
   ChatMessagesSchema,
@@ -25,6 +26,7 @@ export const MaxCommandPayloadBytes = 10 * 1024 * 1024;
 export const ReadOnlyChannels = new Set<string>([
   'workspace:preview-resume-pdf',
   'agent:get-model-configuration',
+  'agent:get-goal-model-tiers',
   'agent:get-provider-usage',
   'workspace:status', 'workspace:get-view-model', 'workspace:get-settings',
   'workspace:jobs-query',
@@ -33,7 +35,7 @@ export const ReadOnlyChannels = new Set<string>([
   'workspace:recovery-status',
   'workspace:database-recovery-status',
   'agent:status', 'agent:observability', 'agent:trace-events', 'agent:test-connection', 'agent:get-balance', 'agent:get-models', 'agent:get-provider-catalog', 'agent:get-session-assistant-state', 'agent:browser-runtime-status', 'agent:cron-browser-access', 'cron:status',
-  'evaluation:projects-list', 'evaluation:project-read', 'evaluation:project-validate', 'evaluation:project-preview', 'evaluation:dataset-versions-list', 'evaluation:runs-list', 'evaluation:run-read', 'evaluation:case-read', 'evaluation:runs-compare',
+  'evaluation:projects-list', 'evaluation:project-read', 'evaluation:project-validate', 'evaluation:project-preview', 'evaluation:dataset-preview', 'evaluation:dataset-versions-list', 'evaluation:runs-list', 'evaluation:run-read', 'evaluation:case-read', 'evaluation:runs-compare',
 ]);
 
 /**
@@ -61,6 +63,9 @@ export const MethodRoutes: Record<string, MethodRoute> = {
   'agent:get-provider-catalog': { service: 'agent', method: 'GetProviderCatalog' },
   'agent:get-model-configuration': { service: 'agent', method: 'GetModelConfiguration' },
   'agent:save-model-configuration': { service: 'agent', method: 'SaveModelConfiguration' },
+  'agent:get-goal-model-tiers': { service: 'agent', method: 'GetGoalModelTiers' },
+  'agent:save-goal-model-tiers': { service: 'agent', method: 'SaveGoalModelTiers' },
+  'agent:change-goal': { service: 'agent', method: 'ChangeGoal' },
   'agent:send': { service: 'agent', method: 'Send' },
   'agent:respond-interaction': { service: 'agent', method: 'RespondToInteraction' },
   'agent:cancel': { service: 'agent', method: 'Cancel' },
@@ -99,6 +104,7 @@ export const MethodRoutes: Record<string, MethodRoute> = {
   'evaluation:projects-list': { service: 'evaluation', method: 'ListProjects' },
   'evaluation:project-delete': { service: 'evaluation', method: 'DeleteProject' },
   'evaluation:dataset-import': { service: 'evaluation', method: 'ImportDataset' },
+  'evaluation:dataset-preview': { service: 'evaluation', method: 'PreviewDatasetImport' },
   'evaluation:dataset-versions-list': { service: 'evaluation', method: 'ListDatasetVersions' },
   'evaluation:dataset-version-select': { service: 'evaluation', method: 'SelectDatasetVersion' },
   'evaluation:dataset-version-delete': { service: 'evaluation', method: 'DeleteDatasetVersion' },
@@ -117,6 +123,7 @@ export const MethodRoutes: Record<string, MethodRoute> = {
   'workspace:conversations-create': { service: 'conversations', method: 'CreateConversation' },
   'workspace:conversations-rename': { service: 'conversations', method: 'RenameConversation' },
   'workspace:conversations-delete': { service: 'conversations', method: 'DeleteConversation' },
+  'workspace:conversations-delete-archived': { service: 'conversations', method: 'DeleteArchivedConversations' },
   'workspace:conversations-set-pinned': { service: 'conversations', method: 'SetConversationPinned' },
   'workspace:conversations-set-archived': { service: 'conversations', method: 'SetConversationArchived' },
   'workspace:conversations-append-messages': { service: 'conversations', method: 'AppendConversationMessages' },
@@ -162,7 +169,7 @@ export const MethodRoutes: Record<string, MethodRoute> = {
 export const FunctionRouteChannels = ['workspace:migrate'];
 
 /** 事件发送通道：preload 用 ipcRenderer.on 订阅，不经 HandleCommand 分发。 */
-export const EventChannels = ['agent:stream', 'evaluation:event'];
+export const EventChannels = ['agent:stream', 'evaluation:event', 'workspace:conversations-changed'];
 
 /** 结构必需的实体 ID：长度受限，防止超长标识进入领域层。 */
 const EntityId = z.string().min(1).max(200);
@@ -179,6 +186,7 @@ const EvalDatasetVersionHash = z.string().regex(/^[a-f0-9]{64}$/);
 
 /** 写通道负载的整数组形状校验表（阶段 6 A2 收口）：键为通道，值为对该通道 args 的整体 tuple 校验。 */
 const WriteArgsSchemas: Record<string, z.ZodTuple> = {
+  'agent:change-goal': z.tuple([AgentGoalChangeSchema]),
   'agent:respond-interaction': z.tuple([AgentInteractionResponseSchema]),
   'agent:confirm-cron-task': z.tuple([EntityId, z.boolean()]),
   // 浏览器确认必须把 Renderer 当前会话显式带回主进程；Host 会再与
@@ -196,6 +204,7 @@ const WriteArgsSchemas: Record<string, z.ZodTuple> = {
   'workspace:conversations-create': z.tuple([ConversationCreateSchema]),
   'workspace:conversations-rename': z.tuple([EntityId, z.string().max(200), Revision]),
   'workspace:conversations-delete': z.tuple([EntityId]),
+  'workspace:conversations-delete-archived': z.tuple([z.array(z.object({ id: EntityId, expectedRevision: RequiredRevision }).strict()).min(1).max(10000).refine(items => new Set(items.map(item => item.id)).size === items.length, 'Duplicate conversation IDs.')]),
   'workspace:conversations-set-pinned': z.tuple([EntityId, z.boolean(), Revision]),
   'workspace:conversations-set-archived': z.tuple([EntityId, z.boolean(), Revision]),
   'workspace:conversations-append-messages': z.tuple([EntityId, ChatMessagesSchema]),
@@ -331,6 +340,9 @@ export function CreateBackend(options: CreateBackendOptions) {
         }
 
         const writeSchema = WriteArgsSchemas[channel];
+        if (channel === 'evaluation:dataset-preview' && !z.tuple([EntityId, z.string().max(8 * 1024 * 1024)]).safeParse(args).success) {
+          throw Object.assign(new Error('测试集预检参数无效。'), { code: 'VALIDATION_ERROR' });
+        }
         if (channel === 'workspace:job-collection-task' && !z.tuple([EntityId.optional()]).safeParse(args).success) {
           throw Object.assign(new Error('采集任务 ID 无效。'), { code: 'VALIDATION_ERROR' });
         }

@@ -16,6 +16,9 @@
     { "version": 14, "name": "v14-cron-browser-task-grant", "file": "v14-cron-browser-task-grant.sql", "kind": "sql", "checksumSeed": "avery-cron-browser-task-grant-v1" },
     { "version": 15, "name": "v15-job-collection-identity", "file": "v15-job-collection-identity.sql", "kind": "sql", "checksumSeed": "avery-job-collection-identity-v1" },
     { "version": 16, "name": "v16-conversation-presentation", "file": "v16-conversation-presentation.sql", "kind": "sql", "checksumSeed": "avery-conversation-presentation-v1" },
-    { "version": 17, "name": "v17-message-metadata", "file": "v17-message-metadata.sql", "kind": "sql", "checksumSeed": "avery-message-metadata-v1" }
+    { "version": 17, "name": "v17-message-metadata", "file": "v17-message-metadata.sql", "kind": "sql", "checksumSeed": "avery-message-metadata-v1" },
+    { "version": 18, "name": "v18-agent-image-links", "file": "v18-agent-image-links.sql", "kind": "sql", "checksumSeed": "avery-agent-image-links-v1" },
+    { "version": 19, "name": "v19-conversation-retention", "file": "v19-conversation-retention.sql", "kind": "sql", "checksumSeed": "avery-conversation-retention-v1" },
+    { "version": 20, "name": "v20-remove-job-match-score", "file": "v20-remove-job-match-score.sql", "kind": "sql", "checksumSeed": "avery-remove-job-match-score-v1" }
   ]
 }

@@ -21,3 +21,13 @@ export const SaveModelConfigurationSchema = ModelConfigurationIdentitySchema.ext
 export type GetModelConfigurationInput = z.infer<typeof GetModelConfigurationSchema>;
 export type SaveModelConfigurationInput = z.infer<typeof SaveModelConfigurationSchema>;
 export type { ResolvedModelConfiguration };
+
+export const GoalModelTierSchema = ModelConfigurationIdentitySchema.extend({ baseUrl: z.string().url().max(500) });
+/** 按次级、高级的顺序保存。模型档次与供应商凭据、单模型能力覆盖分别保存。 */
+export const GoalModelTiersSchema = z.array(GoalModelTierSchema).length(2);
+export const SaveGoalModelTiersSchema = z.object({ tiers: GoalModelTiersSchema, expectedRevision: z.number().int().nonnegative() }).strict();
+export type SaveGoalModelTiersInput = z.infer<typeof SaveGoalModelTiersSchema>;
+export interface GoalModelTiersConfiguration {
+  revision: number;
+  tiers: SaveGoalModelTiersInput['tiers'];
+}
